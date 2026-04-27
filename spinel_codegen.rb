@@ -2981,7 +2981,7 @@ class Compiler
     if t == "fiber" || t == "bigint"
       return 1
     end
-    if t == "proc"
+    if t == "proc" || t == "&proc"
       return 1
     end
     if is_obj_type(t) == 1
@@ -3162,6 +3162,12 @@ class Compiler
       return "sp_RbVal"
     end
     if t == "proc"
+      return "sp_Proc *"
+    end
+    # &block param shares the C representation of a positional Proc;
+    # distinguished only at the param-type-string level so call sites
+    # can pass NULL when no block is given. See collect_ptypes_str.
+    if t == "&proc"
       return "sp_Proc *"
     end
     if t == "stringio"
@@ -3804,14 +3810,19 @@ class Compiler
         result = result + "int_array"
       end
     end
-    # Block parameter (&block)
+    # Block parameter (&block) — typed as "&proc" rather than plain "proc"
+    # so the call-site dispatcher can distinguish a method with `&block`
+    # from one with a positional Proc parameter (which gets type "proc"
+    # via `infer_lambda_param_types`). Without this marker, calling a
+    # `&block`-receiving method without a block at the call site can't
+    # be detected, leading to "too few arguments" C compile errors.
     blk = @nd_block[params]
     if blk >= 0
       if @nd_type[blk] == "BlockParameterNode"
         if result != ""
           result = result + ","
         end
-        result = result + "proc"
+        result = result + "&proc"
       end
     end
     result
@@ -4268,14 +4279,15 @@ class Compiler
           ptypes_str = ptypes_str + "int_array"
         end
       end
-      # Block param (&block)
+      # Block param (&block) — see collect_ptypes_str for the rationale
+      # behind "&proc" vs plain "proc".
       blk = @nd_block[params]
       if blk >= 0
         if @nd_type[blk] == "BlockParameterNode"
           if ptypes_str != ""
             ptypes_str = ptypes_str + ","
           end
-          ptypes_str = ptypes_str + "proc"
+          ptypes_str = ptypes_str + "&proc"
         end
       end
     end
@@ -12707,22 +12719,36 @@ class Compiler
       if @meth_has_yield[mi] == 1
         yargs = ", NULL, NULL"
       end
-      # Check if function has a &block param and caller provides a block
+      # Check if the function declares a `&block` parameter. If yes,
+      # ALWAYS append a block argument at the C-level call site —
+      # `compile_proc_literal(nid)` when the call has a block, NULL
+      # otherwise. The empty-positional-args case (block-only methods)
+      # gets `sp_f(block_arg)` without a leading comma.
+      #
+      # We check for the "&proc" marker rather than plain "proc" so a
+      # positional Proc parameter (e.g., `def transform(x, fn); ...; end`
+      # where `fn` is type-inferred to "proc" via lambda inference)
+      # doesn't accidentally trigger the block-passing path.
       ptypes = @meth_param_types[mi].split(",")
       has_block_param = 0
       pk = 0
       while pk < ptypes.length
-        if ptypes[pk] == "proc"
+        if ptypes[pk] == "&proc"
           has_block_param = 1
         end
         pk = pk + 1
       end
       if has_block_param == 1
+        block_arg = "NULL"
         if @nd_block[nid] >= 0
           @needs_proc = 1
-          block_proc = compile_proc_literal(nid)
-          return "sp_" + sanitize_name(mname) + "(" + compile_call_args(nid) + ", " + block_proc + ")"
+          block_arg = compile_proc_literal(nid)
         end
+        ca = compile_call_args(nid)
+        if ca == ""
+          return "sp_" + sanitize_name(mname) + "(" + block_arg + ")"
+        end
+        return "sp_" + sanitize_name(mname) + "(" + ca + ", " + block_arg + ")"
       end
       return "sp_" + sanitize_name(mname) + "(" + compile_call_args_with_defaults(nid, mi) + yargs + ")"
     end
@@ -12911,9 +12937,11 @@ class Compiler
           end
           ri = ri + 1
         end
-        # Check if it's a proc variable
+        # Check if it's a proc variable. "&proc" is the variant marker
+        # used for `&block` parameters; same C representation, treated
+        # identically for `.call(...)` dispatch.
         vt = find_var_type(rname)
-        if vt == "proc"
+        if vt == "proc" || vt == "&proc"
           return "sp_proc_call(lv_" + rname + ", " + compile_arg0(nid) + ")"
         end
       end
