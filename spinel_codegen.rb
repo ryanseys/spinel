@@ -695,6 +695,53 @@ class Compiler
     result
   end
 
+  # Returns the inner expression of a BlockArgumentNode (the proc being
+  # forwarded via `&proc_var`), or -1 if the call doesn't have a
+  # block-arg form. Prism stores `&expr` in CallNode's block slot, not
+  # arguments — so we read @nd_block[nid] and only return non-negative
+  # when it's a BlockArgumentNode (BlockNode literal blocks return -1
+  # to keep them in their own forwarding lane).
+  def find_block_arg(nid)
+    blk = @nd_block[nid]
+    if blk < 0
+      return -1
+    end
+    if @nd_type[blk] != "BlockArgumentNode"
+      return -1
+    end
+    @nd_expression[blk]
+  end
+
+  # Returns 1 if @nd_block[nid] is a literal BlockNode (do/end body),
+  # 0 if it's a BlockArgumentNode (forwarded proc), or 0 if absent.
+  # Pairs with find_block_arg to dispatch correctly at forwarding sites.
+  def has_literal_block(nid)
+    blk = @nd_block[nid]
+    if blk < 0
+      return 0
+    end
+    if @nd_type[blk] == "BlockNode"
+      return 1
+    end
+    0
+  end
+
+  # Strip BlockArgumentNode entries from a positional-args id list.
+  # The block-arg is forwarded via the call's trailing &block slot,
+  # not as a positional, so it must not appear in the comma-separated
+  # arg list for the callee's regular params.
+  def strip_block_arg(arg_ids)
+    result = []
+    k = 0
+    while k < arg_ids.length
+      if @nd_type[arg_ids[k]] != "BlockArgumentNode"
+        result.push(arg_ids[k])
+      end
+      k = k + 1
+    end
+    result
+  end
+
   # Flatten a constant reference into an internal name.
   #   C       -> C
   #   ::C     -> C
@@ -13610,10 +13657,27 @@ class Compiler
         pk = pk + 1
       end
       if has_block_param == 1
-        if @nd_block[nid] >= 0
+        block_proc = ""
+        if has_literal_block(nid) == 1
           @needs_proc = 1
           block_proc = compile_proc_literal(nid)
-          return "sp_" + sanitize_name(mname) + "(" + compile_call_args(nid) + ", " + block_proc + ")"
+        else
+          ba_n = find_block_arg(nid)
+          if ba_n >= 0
+            @needs_proc = 1
+            block_proc = compile_expr(ba_n)
+          end
+        end
+        # If the call site provides a block (literal or &proc_var), forward it.
+        # Otherwise fall through — `proc`-typed ptype is not a reliable
+        # &block marker (positional proc args also type as proc), so we
+        # only emit the trailing slot when we actually have a block.
+        if block_proc != ""
+          ca_n = compile_call_args(nid)
+          if ca_n == ""
+            return "sp_" + sanitize_name(mname) + "(" + block_proc + ")"
+          end
+          return "sp_" + sanitize_name(mname) + "(" + ca_n + ", " + block_proc + ")"
         end
       end
       return "sp_" + sanitize_name(mname) + "(" + compile_call_args_with_defaults(nid, mi) + yargs + ")"
@@ -13690,23 +13754,57 @@ class Compiler
       if cidx >= 0
         owner = find_method_owner(@current_class_idx, mname)
         # Look up the method's owning class so we can fill in defaults
-        # from @cls_meth_defaults (issue #49).
+        # from @cls_meth_defaults (issue #49) and check for a &block slot.
         owner_ci = find_class_idx(owner)
         owner_midx = -1
         if owner_ci >= 0
           owner_midx = cls_find_method_direct(owner_ci, mname)
         end
+        # Pre-compute has_proc so we omit the trailing &block slot from
+        # default-padding (we'll fill it explicitly below from the call
+        # site's literal block or `&proc_var` forward).
+        has_proc = 0
+        if owner_ci >= 0 && owner_midx >= 0
+          all_ptypes_a = @cls_meth_ptypes[owner_ci].split("|")
+          if owner_midx < all_ptypes_a.length
+            pts_a = all_ptypes_a[owner_midx].split(",")
+            pk_a = 0
+            while pk_a < pts_a.length
+              if pts_a[pk_a] == "proc"
+                has_proc = 1
+              end
+              pk_a = pk_a + 1
+            end
+          end
+        end
         ca = ""
         if owner_midx >= 0
-          ca = compile_typed_call_args(nid, owner_ci, owner_midx)
+          ca = compile_typed_call_args(nid, owner_ci, owner_midx, has_proc)
         else
           ca = compile_call_args(nid)
         end
-        if ca != ""
-          return "sp_" + owner + "_" + sanitize_name(mname) + "(self, " + ca + ")"
-        else
-          return "sp_" + owner + "_" + sanitize_name(mname) + "(self)"
+        bp = ""
+        if has_proc == 1
+          if has_literal_block(nid) == 1
+            @needs_proc = 1
+            bp = compile_proc_literal(nid)
+          else
+            ba_a = find_block_arg(nid)
+            if ba_a >= 0
+              @needs_proc = 1
+              bp = compile_expr(ba_a)
+            end
+          end
         end
+        tail = ""
+        if ca != "" && bp != ""
+          tail = ", " + ca + ", " + bp
+        elsif ca != ""
+          tail = ", " + ca
+        elsif bp != ""
+          tail = ", " + bp
+        end
+        return "sp_" + owner + "_" + sanitize_name(mname) + "(self" + tail + ")"
       end
       # Check attr_readers (bare method call like `x` meaning self.x)
       readers = @cls_attr_readers[@current_class_idx].split(";")
@@ -16569,24 +16667,54 @@ class Compiler
           if oci2 >= 0
             midx2 = cls_find_method_direct(oci2, mname)
           end
+          # Pre-compute has_proc so we omit the trailing &block slot
+          # from default-padding (filled explicitly from the call
+          # site's literal block or `&proc_var` forward below).
+          has_proc = 0
+          if oci2 >= 0 && midx2 >= 0
+            all_ptypes = @cls_meth_ptypes[oci2].split("|")
+            if midx2 < all_ptypes.length
+              pts = all_ptypes[midx2].split(",")
+              pk = 0
+              while pk < pts.length
+                if pts[pk] == "proc"
+                  has_proc = 1
+                end
+                pk = pk + 1
+              end
+            end
+          end
           ca = ""
           if midx2 >= 0
-            ca = compile_typed_call_args(nid, oci2, midx2)
+            ca = compile_typed_call_args(nid, oci2, midx2, has_proc)
           else
             ca = compile_call_args(nid)
           end
+          bp = ""
+          if has_proc == 1
+            if has_literal_block(nid) == 1
+              @needs_proc = 1
+              bp = compile_proc_literal(nid)
+            else
+              ba_b = find_block_arg(nid)
+              if ba_b >= 0
+                @needs_proc = 1
+                bp = compile_expr(ba_b)
+              end
+            end
+          end
+          tail = ""
+          if ca != "" && bp != ""
+            tail = ", " + ca + ", " + bp
+          elsif ca != ""
+            tail = ", " + ca
+          elsif bp != ""
+            tail = ", " + bp
+          end
           if owner == cname
-            if ca != ""
-              return "sp_" + owner + "_" + sanitize_name(mname) + "(" + rc + ", " + ca + ")"
-            else
-              return "sp_" + owner + "_" + sanitize_name(mname) + "(" + rc + ")"
-            end
+            return "sp_" + owner + "_" + sanitize_name(mname) + "(" + rc + tail + ")"
           else
-            if ca != ""
-              return "sp_" + owner + "_" + sanitize_name(mname) + "((sp_" + owner + " *)" + rc + ", " + ca + ")"
-            else
-              return "sp_" + owner + "_" + sanitize_name(mname) + "((sp_" + owner + " *)" + rc + ")"
-            end
+            return "sp_" + owner + "_" + sanitize_name(mname) + "((sp_" + owner + " *)" + rc + tail + ")"
           end
         end
       end
@@ -16637,7 +16765,7 @@ class Compiler
           end
           ca2 = ""
           if midx3 >= 0
-            ca2 = compile_typed_call_args(nid, oci3, midx3)
+            ca2 = compile_typed_call_args(nid, oci3, midx3, 0)
           else
             ca2 = compile_call_args(nid)
           end
@@ -16959,7 +17087,7 @@ class Compiler
     args_id = @nd_arguments[nid]
     arg_ids = []
     if args_id >= 0
-      arg_ids = get_args(args_id)
+      arg_ids = strip_block_arg(get_args(args_id))
     end
     pnames = @meth_param_names[mi].split(",")
     ptypes = @meth_param_types[mi].split(",")
@@ -17106,7 +17234,7 @@ class Compiler
       if init_ci >= 0
         init_idx = cls_find_method_direct(init_ci, "initialize")
         if init_idx >= 0
-          return compile_typed_call_args(nid, init_ci, init_idx)
+          return compile_typed_call_args(nid, init_ci, init_idx, 0)
         end
       end
       return ""
@@ -17251,7 +17379,7 @@ class Compiler
     if args_id < 0
       return ""
     end
-    arg_ids = get_args(args_id)
+    arg_ids = strip_block_arg(get_args(args_id))
     # Check if multiple args may trigger GC
     gc_count = 0
     k = 0
@@ -17306,15 +17434,20 @@ class Compiler
     result
   end
 
-  def compile_typed_call_args(nid, target_ci, target_midx)
+  def compile_typed_call_args(nid, target_ci, target_midx, omit_trailing)
     # Like compile_call_args but casts arguments to match target method param
     # types AND fills in defaults from @cls_meth_defaults for trailing
     # parameters the caller omitted (issue #49). Returns "" only when the
     # method takes no parameters at all.
+    #
+    # `omit_trailing` is the number of trailing param slots to leave out
+    # entirely — block-forwarding call sites pass 1 so the &block slot
+    # isn't default-padded with "0" (the actual proc is appended by the
+    # caller after this returns).
     args_id = @nd_arguments[nid]
     arg_ids = []
     if args_id >= 0
-      arg_ids = get_args(args_id)
+      arg_ids = strip_block_arg(get_args(args_id))
     end
     all_ptypes = @cls_meth_ptypes[target_ci].split("|")
     all_defaults = @cls_meth_defaults[target_ci].split("|")
@@ -17326,7 +17459,11 @@ class Compiler
     if target_midx < all_defaults.length
       defaults = all_defaults[target_midx].split(",")
     end
-    total = ptypes.length
+    eff_ptypes_len = ptypes.length - omit_trailing
+    if eff_ptypes_len < 0
+      eff_ptypes_len = 0
+    end
+    total = eff_ptypes_len
     if arg_ids.length > total
       total = arg_ids.length
     end
