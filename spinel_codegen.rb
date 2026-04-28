@@ -148,6 +148,7 @@ class Compiler
     @current_method_name = ""
     @current_lexical_scope = ""
     @current_method_return = ""
+    @current_method_block_param = ""
     @in_main = 0
     @in_loop = 0
     @hoisted_strlen_var = ""
@@ -724,6 +725,23 @@ class Compiler
       return 1
     end
     0
+  end
+
+  # Returns the name of a method's &block param (proc-typed) or "" if
+  # the method doesn't take an explicit block parameter. Used both at
+  # method-emit time (to set @current_method_block_param) and by the
+  # block_given? handler.
+  def find_block_param_name(pnames, ptypes)
+    k = 0
+    while k < pnames.length
+      if k < ptypes.length
+        if ptypes[k] == "proc"
+          return pnames[k]
+        end
+      end
+      k = k + 1
+    end
+    ""
   end
 
   # Strip BlockArgumentNode entries from a positional-args id list.
@@ -10698,6 +10716,7 @@ class Compiler
     @current_class_idx = ci
     @current_method_name = mname
     @current_method_return = rt
+    @current_method_block_param = find_block_param_name(pnames, ptypes)
     @indent = 1
     @in_gc_scope = 0
 
@@ -10760,6 +10779,7 @@ class Compiler
     pop_scope
     @current_class_idx = -1
     @current_method_name = ""
+    @current_method_block_param = ""
     @in_yield_method = 0
     @indent = 0
     emit_raw("  return " + c_return_default(rt) + ";")
@@ -10772,6 +10792,7 @@ class Compiler
     @current_class_idx = ci
     @current_method_name = mname
     @current_method_return = rt
+    @current_method_block_param = find_block_param_name(pnames, ptypes)
     @indent = 1
     @in_gc_scope = 0
 
@@ -10796,6 +10817,7 @@ class Compiler
     pop_scope
     @current_class_idx = -1
     @current_method_name = ""
+    @current_method_block_param = ""
     @indent = 0
     emit_raw("  return " + c_return_default(rt) + ";")
     emit_raw("}")
@@ -10873,6 +10895,7 @@ class Compiler
 
     pnames = @meth_param_names[mi].split(",")
     ptypes = @meth_param_types[mi].split(",")
+    @current_method_block_param = find_block_param_name(pnames, ptypes)
 
     yp = ""
     if @meth_has_yield[mi] == 1
@@ -10934,6 +10957,7 @@ class Compiler
     rt = @meth_return_types[mi]
     pop_scope
     @current_method_name = ""
+    @current_method_block_param = ""
     @in_yield_method = 0
     @indent = 0
     emit_raw("  return " + c_return_default(rt) + ";")
@@ -13497,6 +13521,11 @@ class Compiler
     if mname == "block_given?"
       if @in_yield_method == 1
         return "(_block != NULL)"
+      end
+      # &block parameter form: when the enclosing method declares
+      # `def m(&block)`, `block_given?` is `(lv_block != NULL)`.
+      if @current_method_block_param != ""
+        return "(lv_" + @current_method_block_param + " != NULL)"
       end
       return "0"
     end
