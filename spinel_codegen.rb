@@ -14288,6 +14288,19 @@ class Compiler
         # Check if it's a proc variable
         vt = find_var_type(rname)
         if vt == "proc"
+          # Dispatch to the right `sp_proc_call_N` runtime helper based
+          # on the call-site arg count. The proc's stored function
+          # pointer is read back via the matching cast inside the
+          # helper, so the literal's param arity must agree with the
+          # call's arg count — UB otherwise.
+          aid = @nd_arguments[nid]
+          ac = 0
+          if aid >= 0
+            ac = get_args(aid).length
+          end
+          if ac >= 2
+            return "sp_proc_call_" + ac.to_s + "(lv_" + rname + ", " + compile_call_args(nid) + ")"
+          end
           return "sp_proc_call(lv_" + rname + ", " + compile_arg0(nid) + ")"
         end
       end
@@ -21723,15 +21736,39 @@ class Compiler
     end
   end
 
+  # Emit the function-signature trailer ", mrb_int lv_<bp>" for every
+  # block param in bps to @lambda_funcs. Shared by both the captures
+  # and no-captures proc-fn signature emits (identical shape, called
+  # twice). Operates on the ivar directly so Spinel's type inference
+  # doesn't have to cross a method-parameter boundary on the buffer.
+  def emit_proc_fn_params(bps)
+    bk = 0
+    while bk < bps.length
+      @lambda_funcs << ", mrb_int lv_"
+      @lambda_funcs << bps[bk]
+      bk = bk + 1
+    end
+  end
+
   def compile_proc_literal(nid)
     blk = @nd_block[nid]
     if blk < 0
       return "sp_proc_new(NULL, NULL, NULL)"
     end
-    bp = get_block_param(nid, 0)
-    if bp == ""
-      bp = "_unused"
+    # Collect every block param name. Single-param blocks fall through
+    # to the existing `_unused` fallback for parameterless bodies.
+    bps = "".split(",")
+    pi = 0
+    pn = get_block_param(nid, pi)
+    while pn != ""
+      bps.push(pn)
+      pi = pi + 1
+      pn = get_block_param(nid, pi)
     end
+    if bps.length == 0
+      bps.push("_unused")
+    end
+    bp = bps[0]
     # Generate a static function for the proc body
     @proc_counter = @proc_counter + 1
     pid = @proc_counter
@@ -21741,12 +21778,14 @@ class Compiler
     bbody = @nd_body[blk]
 
     # Detect captures (free variables that resolve in outer scope).
+    # Every block param is in scope inside the body; only locals from
+    # the outer scope read inside the body count as free.
     free_vars = "".split(",")
     if bbody >= 0
-      proc_params = "".split(",")
-      proc_params.push(bp)
+      # scan_lambda_free_vars treats `params` as read-only, so bps can
+      # be passed directly without an intermediate copy.
       proc_locals = "".split(",")
-      scan_lambda_free_vars(bbody, proc_params, proc_locals, free_vars)
+      scan_lambda_free_vars(bbody, bps, proc_locals, free_vars)
     end
     captures = "".split(",")
     capture_types = "".split(",")
@@ -21781,7 +21820,11 @@ class Compiler
       @proc_capture_types = capture_types
     end
     push_scope
-    declare_var(bp, "int")
+    di = 0
+    while di < bps.length
+      declare_var(bps[di], "int")
+      di = di + 1
+    end
     bexpr = "0"
     body_stmts = ""
     if bbody >= 0
@@ -21859,8 +21902,8 @@ class Compiler
       @lambda_funcs << "}\n"
       @lambda_funcs << "static mrb_int "
       @lambda_funcs << fname
-      @lambda_funcs << "(void *_cap_raw, mrb_int lv_"
-      @lambda_funcs << bp
+      @lambda_funcs << "(void *_cap_raw"
+      emit_proc_fn_params(bps)
       @lambda_funcs << ") {\n"
       @lambda_funcs << "  "
       @lambda_funcs << cap_name
@@ -21922,8 +21965,8 @@ class Compiler
     # with NULL cap and NULL scan.
     @lambda_funcs << "static mrb_int "
     @lambda_funcs << fname
-    @lambda_funcs << "(void *_cap, mrb_int lv_"
-    @lambda_funcs << bp
+    @lambda_funcs << "(void *_cap"
+    emit_proc_fn_params(bps)
     @lambda_funcs << ") {\n"
     @lambda_funcs << "  (void)_cap;\n"
     if body_stmts != ""
