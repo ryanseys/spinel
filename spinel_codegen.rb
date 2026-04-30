@@ -1317,6 +1317,28 @@ class Compiler
     @out_lines.push(s)
   end
 
+  def with_indent(&block)
+    @indent = @indent + 1
+    yield
+    @indent = @indent - 1
+  end
+
+  def with_scope(&block)
+    push_scope
+    yield
+    pop_scope
+  end
+
+  def with_block(&block)
+    emit("{")
+    @indent = @indent + 1
+    push_scope
+    yield
+    pop_scope
+    @indent = @indent - 1
+    emit("}")
+  end
+
 
   # ---- Type inference ----
   def infer_type(nid)
