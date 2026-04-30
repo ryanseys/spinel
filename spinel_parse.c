@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <limits.h>
 #include <prism.h>
 
 /* ---- Output buffer ---- */
@@ -666,6 +667,13 @@ static int flatten(pm_node_t *node) {
     I("start_line", (long long)line);
     break;
   }
+  case PM_SOURCE_FILE_NODE: {
+    N("SourceFileNode");
+    /* The actual path is threaded to the codegen via the top-of-AST
+       SOURCE_FILE directive (emitted in main). The node itself is just
+       a marker. */
+    break;
+  }
   case PM_SPLAT_NODE: {
     pm_splat_node_t *n = (pm_splat_node_t *)node;
     N("SplatNode");
@@ -1176,6 +1184,30 @@ int main(int argc, char **argv) {
   }
 
   fprintf(out, "ROOT %d\n", root_id);
+  /* SOURCE_FILE is the path as the user invoked us with — matches
+     CRuby's `__FILE__` which preserves the as-given relative-or-
+     absolute form without resolving symlinks. SOURCE_DIR is the
+     realpath of the dirname — matches CRuby's `__dir__`, which
+     canonicalizes to an absolute path with symlinks resolved. */
+  fprintf(out, "SOURCE_FILE %s\n", source_file);
+  {
+    char resolved_path[PATH_MAX];
+    if (realpath(source_file, resolved_path) != NULL) {
+      char *last_slash = strrchr(resolved_path, '/');
+      if (last_slash != NULL) {
+        if (last_slash == resolved_path) {
+          fprintf(out, "SOURCE_DIR /\n");
+        } else {
+          *last_slash = '\0';
+          fprintf(out, "SOURCE_DIR %s\n", resolved_path);
+        }
+      } else {
+        fprintf(out, "SOURCE_DIR .\n");
+      }
+    } else {
+      fprintf(out, "SOURCE_DIR .\n");
+    }
+  }
   for (int i = 0; i < line_count; i++) {
     fprintf(out, "%s\n", lines[i]);
     free(lines[i]);

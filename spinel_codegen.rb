@@ -92,6 +92,16 @@ class Compiler
 
     @nd_count = 0
     @root_id = 0
+    # Path to the source .rb file. Threaded from spinel_parse via the
+    # SOURCE_FILE directive at the top of the AST text. Used to lower
+    # __FILE__ (SourceFileNode) to a compile-time string literal.
+    # Preserves the as-given path (no symlink resolution) so output
+    # matches CRuby's __FILE__ semantics.
+    @source_path = ""
+    # Realpath-resolved dirname of the source. Threaded as SOURCE_DIR
+    # alongside SOURCE_FILE; powers __dir__'s compile-time lowering,
+    # matching CRuby's symlink-canonicalized File.dirname(__FILE__).
+    @source_dir = ""
 
     # Issue: unresolved-call warnings deduped by "<mname>:<recv_type>"
     # so a hot call site that fails to resolve emits one warning, not N.
@@ -412,6 +422,12 @@ class Compiler
         if parts.length >= 2
           if parts.first == "ROOT"
             @root_id = parts[1].to_i
+          end
+          if parts.first == "SOURCE_FILE"
+            @source_path = parts[1]
+          end
+          if parts.first == "SOURCE_DIR"
+            @source_dir = parts[1]
           end
           if parts.first == "N"
             nid = parts[1].to_i
@@ -1360,6 +1376,9 @@ class Compiler
     if t == "InterpolatedXStringNode"
       return "string"
     end
+    if t == "SourceFileNode"
+      return "string"
+    end
     if t == "ArrayNode"
       return infer_array_elem_type(nid)
     end
@@ -2298,6 +2317,9 @@ class Compiler
       return "int"
     end
     if mname == "__method__"
+      return "string"
+    end
+    if mname == "__dir__"
       return "string"
     end
     if mname == "join"
@@ -13677,6 +13699,11 @@ class Compiler
     if t == "SourceLineNode"
       return @nd_value[nid].to_s
     end
+    if t == "SourceFileNode"
+      # __FILE__ → absolute path of the source .rb (threaded from
+      # spinel_parse via the top-of-AST SOURCE_FILE directive).
+      return c_string_literal(@source_path)
+    end
     if t == "ArgumentsNode"
       arg_ids = parse_id_list(@nd_args[nid])
       if arg_ids.length > 0
@@ -14920,6 +14947,14 @@ class Compiler
     end
     if mname == "__method__"
       return "\"" + @current_method_name + "\""
+    end
+    if mname == "__dir__"
+      # __dir__ → realpath-canonicalized dirname of the source file.
+      # spinel_parse pre-resolves via realpath() and threads the result
+      # as SOURCE_DIR so the codegen emits a single string literal
+      # without needing to expand-path at runtime. Matches CRuby's
+      # File.realpath(File.dirname(__FILE__)) semantics.
+      return c_string_literal(@source_dir)
     end
     if mname == "Integer"
       args_id = @nd_arguments[nid]
