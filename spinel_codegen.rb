@@ -16155,52 +16155,20 @@ class Compiler
       return "sp_imod(" + compile_expr(recv) + ", " + compile_arg0(nid) + ")"
     end
     if mname == "<"
-      lt = infer_type(recv)
-      if lt == "string"
-        cc = try_char_cmp(nid, "<")
-        if cc != ""
-          return cc
-        end
-        return "(strcmp(" + compile_expr(recv) + ", " + compile_arg0(nid) + ") < 0)"
-      end
-      return "(" + compile_expr(recv) + " < " + compile_arg0(nid) + ")"
+      return compile_numeric_or_strcmp_cmp(nid, recv, "<", "<")
     end
     if mname == ">"
-      lt = infer_type(recv)
-      if lt == "string"
-        cc = try_char_cmp(nid, ">")
-        if cc != ""
-          return cc
-        end
-        return "(strcmp(" + compile_expr(recv) + ", " + compile_arg0(nid) + ") > 0)"
-      end
-      if lt == "poly"
+      if infer_type(recv) == "poly"
         @needs_rb_value = 1
         return "sp_poly_gt(" + compile_expr(recv) + ", " + box_expr_to_poly(get_args(@nd_arguments[nid])[0]) + ")"
       end
-      return "(" + compile_expr(recv) + " > " + compile_arg0(nid) + ")"
+      return compile_numeric_or_strcmp_cmp(nid, recv, ">", ">")
     end
     if mname == "<="
-      lt = infer_type(recv)
-      if lt == "string"
-        cc = try_char_cmp(nid, "<=")
-        if cc != ""
-          return cc
-        end
-        return "(strcmp(" + compile_expr(recv) + ", " + compile_arg0(nid) + ") <= 0)"
-      end
-      return "(" + compile_expr(recv) + " <= " + compile_arg0(nid) + ")"
+      return compile_numeric_or_strcmp_cmp(nid, recv, "<=", "<=")
     end
     if mname == ">="
-      lt = infer_type(recv)
-      if lt == "string"
-        cc = try_char_cmp(nid, ">=")
-        if cc != ""
-          return cc
-        end
-        return "(strcmp(" + compile_expr(recv) + ", " + compile_arg0(nid) + ") >= 0)"
-      end
-      return "(" + compile_expr(recv) + " >= " + compile_arg0(nid) + ")"
+      return compile_numeric_or_strcmp_cmp(nid, recv, ">=", ">=")
     end
     if mname == "=~"
       # str =~ /pattern/ → sp_re_match(pat, str)
@@ -19288,6 +19256,18 @@ class Compiler
       return ""
     end
     "(" + str_c + "[(mrb_int)" + idx_c + "] " + c_op + " '" + ch + "')"
+  end
+
+  def compile_numeric_or_strcmp_cmp(nid, recv, mname, c_op)
+    lt = infer_type(recv)
+    if lt == "string"
+      cc = try_char_cmp(nid, mname)
+      if cc != ""
+        return cc
+      end
+      return "(strcmp(#{compile_expr(recv)}, #{compile_arg0(nid)}) #{c_op} 0)"
+    end
+    "(#{compile_expr(recv)} #{c_op} #{compile_arg0(nid)})"
   end
 
   def compile_eq(nid, op)
