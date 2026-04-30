@@ -43,8 +43,34 @@ EVAL_SCRIPT=""
 EVAL_USED=0
 EVAL_TMP=""
 
+SPINEL_VERSION="0.1.0"
+
+print_usage() {
+  cat <<EOF
+Spinel AOT Compiler ${SPINEL_VERSION}
+
+Usage: spinel app.rb              - compile to ./app
+       spinel app.rb -o myapp     - compile to ./myapp
+       spinel app.rb -c           - generate app.c only
+       spinel app.rb -S           - print C to stdout
+       spinel -e 'puts 42'        - compile inline source
+
+Options:
+  -o FILE     Output file
+  -c          C source only (don't compile)
+  -S          Print C to stdout
+  -O LEVEL    Optimization level (default: 2)
+  --cc=CMD    C compiler (default: cc)
+  -e STR      Inline Ruby source (repeatable; joined with newlines)
+  --version   Print version and exit
+  --help, -h  Print this help and exit
+EOF
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
+    --version)  echo "spinel ${SPINEL_VERSION}"; exit 0 ;;
+    --help|-h)  print_usage; exit 0 ;;
     --source=*) SOURCE="${1#--source=}" ;;
     --output=*) OUTPUT="${1#--output=}" ;;
     --cc=*)     CC_CMD="${1#--cc=}" ;;
