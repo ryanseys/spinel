@@ -383,6 +383,11 @@ static mrb_bool sp_IntStrHash_has_key(sp_IntStrHash*h,mrb_int k){mrb_int idx=_sp
 static mrb_int sp_IntStrHash_length(sp_IntStrHash*h){return h->len;}
 static sp_IntArray*sp_IntStrHash_keys(sp_IntStrHash*h){sp_IntArray*a=sp_IntArray_new();for(mrb_int i=0;i<h->len;i++)sp_IntArray_push(a,h->order[i]);return a;}
 static sp_StrArray*sp_IntStrHash_values(sp_IntStrHash*h){sp_StrArray*a=sp_StrArray_new();for(mrb_int i=0;i<h->len;i++)sp_StrArray_push(a,sp_IntStrHash_get(h,h->order[i]));return a;}
+/* Hash#invert variants. Mirror the existing sp_StrStrHash_invert pattern: walk
+   self.order, set r[old_value] = old_key. Keys/values swap C types so we use the
+   matching opposite-typed hash for the result. */
+static sp_IntStrHash*sp_StrIntHash_invert(sp_StrIntHash*h){sp_IntStrHash*r=sp_IntStrHash_new();for(mrb_int i=0;i<h->len;i++){const char*k=h->order[i];sp_IntStrHash_set(r,sp_StrIntHash_get(h,k),k);}return r;}
+static sp_StrIntHash*sp_IntStrHash_invert(sp_IntStrHash*h){sp_StrIntHash*r=sp_StrIntHash_new();for(mrb_int i=0;i<h->len;i++){mrb_int k=h->order[i];sp_StrIntHash_set(r,sp_IntStrHash_get(h,k),k);}return r;}
 
 /* Reuse an existing StrArray for split, avoiding GC alloc.
    Clears a->len and refills.  Substring strings are still malloc'd. */

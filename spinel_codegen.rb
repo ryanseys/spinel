@@ -2684,6 +2684,12 @@ class Compiler
       return "int_array"
     end
     if mname == "invert"
+      if recv >= 0
+        rt = infer_type(recv)
+        return "int_str_hash" if rt == "str_int_hash"
+        return "str_int_hash" if rt == "int_str_hash"
+        return rt if rt == "str_str_hash"
+      end
       return "str_str_hash"
     end
     if mname == "push"
@@ -8494,6 +8500,16 @@ class Compiler
     end
     if t == "NilNode"
       return "nil"
+    end
+    # Hash literal with non-empty assoc list: pre-resolve the matching
+    # *_hash variant so a follow-up call like `h.invert` whose return
+    # type depends on the hash key/value shape resolves correctly in
+    # scan_locals' first pass.
+    if t == "HashNode"
+      elems = parse_id_list(@nd_elements[nid])
+      if elems.length > 0
+        return infer_hash_val_type(nid)
+      end
     end
     ""
   end
@@ -18316,6 +18332,10 @@ class Compiler
       if mname == "values"
         return "sp_StrIntHash_values(" + rc + ")"
       end
+      if mname == "invert"
+        @needs_int_str_hash = 1
+        return "sp_StrIntHash_invert(" + rc + ")"
+      end
       if (mname == "select" || mname == "reject") && @nd_block[nid] >= 0
         return compile_hash_select_reject(nid, "str_int_hash", rc, mname)
       end
@@ -18433,6 +18453,10 @@ class Compiler
       if mname == "values"
         @needs_str_array = 1
         return "sp_IntStrHash_values(" + rc + ")"
+      end
+      if mname == "invert"
+        @needs_str_int_hash = 1
+        return "sp_IntStrHash_invert(" + rc + ")"
       end
       if mname == "fetch"
         args_id = @nd_arguments[nid]
