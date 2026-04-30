@@ -86,7 +86,7 @@ PRISM_SRC    = $(wildcard $(PRISM_DIR)/src/*.c) $(wildcard $(PRISM_DIR)/src/util
 PRISM_OBJ    = $(patsubst $(PRISM_DIR)/src/%.c,build/prism/%.o,$(PRISM_SRC))
 PRISM_LIB    = build/libprism.a
 
-.PHONY: all parse bootstrap test bench clean install uninstall deps
+.PHONY: all parse bootstrap test bench bench-time clean install uninstall deps
 
 # Make built-in: when a recipe fails (signal, non-zero exit, etc.),
 # delete the partially-written target. Keeps `make bootstrap` from
@@ -219,6 +219,39 @@ test: spinel_parse$(EXE) $(SP_RT_LIB)
 	rm -f /tmp/_sp_t.ast /tmp/_sp_t.c /tmp/_sp_t_bin$(EXE); \
 	echo "Tests: $$pass pass, $$fail fail, $$err error"; \
 	if [ $$fail -ne 0 ] || [ $$err -ne 0 ]; then exit 1; fi
+
+# Wall-clock benchmark harness. Mirrors `make bench` (compile + run
+# CRuby + Spinel-binary, compare stdout) but additionally measures
+# wall-clock time for each pair using `hyperfine` if available,
+# falling back to `/usr/bin/time` otherwise. Output is a Markdown
+# table on stdout — pipe to a file (or `tee`) to regenerate the
+# README benchmarks reproducibly.
+HYPERFINE := $(shell command -v hyperfine 2>/dev/null)
+
+bench-time: spinel_parse$(EXE) $(SP_RT_LIB)
+	@if [ ! -f spinel_codegen$(EXE) ]; then echo "Run 'make bootstrap' first"; exit 1; fi
+	@if [ -z "$(HYPERFINE)" ]; then echo "Note: 'hyperfine' not found; falling back to /usr/bin/time -p (lower-precision wall-clock)."; fi
+	@printf '| Benchmark | CRuby (s) | Spinel (s) | Speedup |\n'
+	@printf '|---|---:|---:|---:|\n'
+	@for f in benchmark/*.rb; do \
+	  bn=$$(basename "$$f" .rb); \
+	  $(TIMEOUT10) ./spinel_parse$(EXE) "$$f" /tmp/_sp_b.ast 2>/dev/null && \
+	  $(TIMEOUT10) ./spinel_codegen$(EXE) /tmp/_sp_b.ast /tmp/_sp_b.c 2>/dev/null && \
+	  $(CC) $(CFLAGS) -Werror $(SEC_FLAGS) -Ilib /tmp/_sp_b.c $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o /tmp/_sp_b_bin$(EXE) 2>/dev/null || continue; \
+	  if [ -n "$(HYPERFINE)" ]; then \
+	    out=$$($(HYPERFINE) --warmup 1 --runs 3 --style none --export-csv /tmp/_sp_hf.csv "ruby $$f" "/tmp/_sp_b_bin$(EXE)" 2>/dev/null); \
+	    rt=$$(awk -F, 'NR==2 {printf "%.3f", $$2}' /tmp/_sp_hf.csv 2>/dev/null); \
+	    st=$$(awk -F, 'NR==3 {printf "%.3f", $$2}' /tmp/_sp_hf.csv 2>/dev/null); \
+	  else \
+	    rt=$$( { /usr/bin/time -p ruby $$f >/dev/null 2>/tmp/_sp_rt.txt; } && awk '/real/ {print $$2}' /tmp/_sp_rt.txt); \
+	    st=$$( { /usr/bin/time -p /tmp/_sp_b_bin$(EXE) >/dev/null 2>/tmp/_sp_st.txt; } && awk '/real/ {print $$2}' /tmp/_sp_st.txt); \
+	  fi; \
+	  if [ -n "$$rt" ] && [ -n "$$st" ] && [ "$$st" != "0.000" ]; then \
+	    sp=$$(awk -v r=$$rt -v s=$$st 'BEGIN { if (s > 0) printf "%.2fx", r/s; else print "—"; }'); \
+	  else sp="—"; fi; \
+	  printf '| %s | %s | %s | %s |\n' "$$bn" "$${rt:-—}" "$${st:-—}" "$$sp"; \
+	done; \
+	rm -f /tmp/_sp_b.ast /tmp/_sp_b.c /tmp/_sp_b_bin$(EXE) /tmp/_sp_hf.csv /tmp/_sp_rt.txt /tmp/_sp_st.txt
 
 bench: spinel_parse$(EXE) $(SP_RT_LIB)
 	@if [ ! -f spinel_codegen$(EXE) ]; then echo "Run 'make bootstrap' first"; exit 1; fi
