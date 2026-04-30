@@ -81,12 +81,18 @@ gen2.c == gen3.c   (bootstrap loop closed)
 
 ## Benchmarks
 
-74 tests pass. 55 benchmarks pass.
+192 tests pass. 56 benchmarks pass.
 Geometric mean: **~11.6x faster** than miniruby (Ruby 4.1.0dev) across
 the 28 benchmarks below. Baseline is the latest CRuby `miniruby` build
 (without bundled gems), which is considerably faster than the system
 `ruby` (3.2.3); Spinel's advantage is correspondingly smaller but still
 substantial on computation-heavy workloads.
+
+The per-benchmark numbers below are a snapshot from the previous
+release; `make bench` ships in this repo and the harness verifies
+correctness against CRuby on every run, but absolute wall-clock
+numbers are sensitive to host hardware and CRuby build flags, so
+re-measure locally if you need an apples-to-apples comparison.
 
 ### Computation
 
@@ -139,12 +145,28 @@ substantial on computation-heavy workloads.
 **Control Flow**: `if`/`elsif`/`else`, `unless`, `case`/`when`,
 `case`/`in` (pattern matching), `while`, `until`, `loop`, `for..in`
 (range and array), `break`, `next`, `return`, `catch`/`throw`,
-`&.` (safe navigation).
+`&.` (safe navigation), rightward assignment `expr => var` (Ruby 3.0+).
 
-**Blocks**: `yield`, `block_given?`, `&block`, `proc {}`, `Proc.new`,
-lambda `-> x { }`, `method(:name)`. Block methods: `each`,
-`each_with_index`, `map`, `select`, `reject`, `reduce`, `sort_by`,
-`any?`, `all?`, `none?`, `times`, `upto`, `downto`.
+**Methods**: classic `def name(args); ...; end` plus endless form
+`def name(args) = expr` (Ruby 3.0+).
+
+**Blocks**: `yield` (multi-arg `yield a, b, c`), `block_given?` (works
+inside `&block`-only methods), `&block`, anonymous `&` forwarding
+(`def f(&); g(&); end`, Ruby 3.1+), `proc {}`, `Proc.new`, lambda
+`-> x { }`, multi-arg `block.call(a, b)` on proc-object slots,
+`method(:name)`. Numbered block params `_1`, `_2` and Ruby 3.4+
+implicit `it`. Block methods: `each`, `each_with_index`, `map`,
+`select`, `reject`, `reduce`, `sort_by`, `any?`, `all?`, `none?`,
+`times`, `upto`, `downto`, `tap`, `then` / `yield_self`.
+
+**Splat**: `*args` and `*rest` at call sites; splat in multi-assign
+destructuring (`a, *b, c = arr`); both fix-prefix and trailing-splat
+forms with type-flow from the source array's element type to fixed
+prefix params.
+
+**Hashes**: literal forms `{a: 1, "k" => v}`, plus shorthand
+`{x:, y:}` (Ruby 3.1+) for local-variable values. Indexed access
+`h[k]`, `h[k] = v`, `each`, `keys`, `values`, `merge`, `delete`.
 
 **Exceptions**: `begin`/`rescue`/`ensure`/`retry`, `raise`,
 custom exception classes.
@@ -252,18 +274,40 @@ Whole-program type inference drives several compile-time optimizations:
 - **Warning-free build**: generated C compiles cleanly at the default
   warning level across every test and benchmark; the harness uses
   `-Werror` so regressions surface immediately.
+- **Splat call expansion**: `*args` at call sites compiles to a
+  per-element runtime expansion via `sp_*Array_slice`, with type
+  inference flowing from the splat-source's element type to fixed
+  prefix params — no intermediate allocation.
+- **Splat destructure**: `a, *b, c = arr` is handled inline; element
+  types propagate per fixed target so the prefix slots get a precise
+  C type rather than a poly box.
+- **Block forwarding**: anonymous `&` and named `&block` parameters
+  forward without allocating a proc when the receiver is statically
+  dispatched (typed-receiver and self-call paths).
+- **`instance_eval(&b)` trampoline inlining**: single-statement
+  trampoline methods (`def m(&b); instance_eval(&b); end`) are
+  spliced at the call site with `self` rebound by static type,
+  eliminating proc allocation in DSL idioms.
+- **Hash `keys.each` fusion**: `hash.keys.each { ... }` emits a
+  direct order-array loop with no intermediate `sp_IntArray`
+  allocation.
+- **Poly array dispatch**: `length` / `size` and `[]` over a poly
+  slot route through the matching built-in (Int / Float / Str / Sym /
+  Ptr) array helper instead of falling back to a string-pointer
+  print, so heterogeneous `puts arr` and `arr.to_s` paths produce
+  CRuby-byte-identical inspect output.
 
 ## Architecture
 
 ```
 spinel                One-command wrapper script (POSIX shell)
-spinel_parse.c        C frontend: libprism → text AST (1_061 lines)
-spinel_codegen.rb     Compiler backend: AST → C code (21_109 lines)
-lib/sp_runtime.h      Runtime library header (581 lines)
+spinel_parse.c        C frontend: libprism → text AST (1_219 lines)
+spinel_codegen.rb     Compiler backend: AST → C code (25_991 lines)
+lib/sp_runtime.h      Runtime library header (858 lines)
 lib/sp_bigint.c       Arbitrary precision integers (5_394 lines)
-lib/regexp/           Built-in regexp engine (1_759 lines)
-test/                 74 feature tests
-benchmark/            55 benchmarks
+lib/regexp/           Built-in regexp engine (1_866 lines)
+test/                 192 feature tests
+benchmark/            56 benchmarks
 Makefile              Build automation
 ```
 
@@ -347,11 +391,24 @@ them behind compile-time switches.
 
 ## Limitations
 
-- **No eval**: `eval`, `instance_eval`, `class_eval`
+- **No eval**: `eval`, `class_eval`. `instance_eval` is supported in
+  two restricted forms: the block form `obj.instance_eval { ... }` for
+  DSL receivers (PR #15), and the trampoline form
+  `def m(&b); instance_eval(&b); end` inlined as a single statement
+  (PR #124). Full reflective `instance_eval` over a string remains
+  unsupported.
 - **No metaprogramming**: `send`, `method_missing`, `define_method` (dynamic)
 - **No threads**: `Thread`, `Mutex` (Fiber is supported)
 - **No encoding**: assumes UTF-8/ASCII
 - **No general lambda calculus**: deeply nested `-> x { }` with `[]` calls
+- **No multi-arg numbered params over destructured pairs**: `_2` only
+  works when the block already receives multiple yielded values; it
+  doesn't auto-destructure an array element or hash entry into
+  `(_1, _2)`. Use named params for that case.
+- **No full pattern matching in rightward assign**: `expr => var`
+  works for the simple-target form; array / hash / pinned patterns
+  (`expr => [a, b]`, `expr => {key:}`, `^x`) fall through unhandled.
+  The standard `case .. in ..` form already covers most uses.
 
 ## Dependencies
 
