@@ -1339,6 +1339,28 @@ class Compiler
     emit("}")
   end
 
+  def emit_decl(c_type, var, init = "")
+    if init == ""
+      emit("#{c_type} #{var};")
+    else
+      emit("#{c_type} #{var} = #{init};")
+    end
+  end
+
+  def emit_assign(lhs, rhs)
+    emit("#{lhs} = #{rhs};")
+  end
+
+  def emit_for_idx(idx, len_expr, &block)
+    emit("for (mrb_int #{idx} = 0; #{idx} < #{len_expr}; #{idx}++) {")
+    @indent = @indent + 1
+    push_scope
+    yield
+    pop_scope
+    @indent = @indent - 1
+    emit("}")
+  end
+
 
   # ---- Type inference ----
   def infer_type(nid)
