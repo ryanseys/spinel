@@ -88,6 +88,13 @@ PRISM_LIB    = build/libprism.a
 
 .PHONY: all parse bootstrap test bench clean install uninstall deps
 
+# Make built-in: when a recipe fails (signal, non-zero exit, etc.),
+# delete the partially-written target. Keeps `make bootstrap` from
+# leaving a stale spinel_codegen$(EXE) on a partial run that the next
+# invocation might mistake for a working compiler. Pairs with the
+# explicit intermediate cleanup in the bootstrap recipe below.
+.DELETE_ON_ERROR:
+
 all: parse regexp bootstrap
 
 # ---- Dependencies ----
@@ -162,18 +169,25 @@ regexp: $(SP_RT_LIB)
 
 bootstrap: spinel_codegen$(EXE)
 
+# `set -e` + `trap` collapse the four bootstrap stages into one shell
+# invocation so an interrupt (^C, SIGTERM) clears the intermediate
+# files instead of leaving a half-finished `build/gen2.c` for the next
+# run to pick up. `make clean` still wipes the whole `build/` tree;
+# this trap just covers the partial-run case.
 spinel_codegen$(EXE): spinel_codegen.rb spinel_parse$(EXE)
-	@echo "=== Bootstrap Step 1: parse ==="
-	./spinel_parse$(EXE) spinel_codegen.rb build/codegen.ast
-	@echo "=== Bootstrap Step 2: gen1 (CRuby) ==="
-	ruby spinel_codegen.rb build/codegen.ast build/gen1.c
-	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/gen1.c $(LDFLAGS) -lm -o build/bin1$(EXE)
-	@echo "=== Bootstrap Step 3: gen2 (bin1) ==="
-	./build/bin1$(EXE) build/codegen.ast build/gen2.c
-	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/gen2.c $(LDFLAGS) -lm -o build/bin2$(EXE)
-	@echo "=== Bootstrap Step 4: gen3 (bin2) - verify ==="
-	./build/bin2$(EXE) build/codegen.ast build/gen3.c
-	@diff build/gen2.c build/gen3.c > /dev/null && echo "gen2.c == gen3.c (bootstrap OK)" || (echo "BOOTSTRAP FAILED: gen2.c != gen3.c" && exit 1)
+	@set -e; \
+	trap 'rc=$$?; if [ $$rc -ne 0 ]; then rm -f build/codegen.ast build/gen1.c build/bin1$(EXE) build/gen2.c build/bin2$(EXE) build/gen3.c; fi; exit $$rc' INT TERM HUP EXIT; \
+	echo "=== Bootstrap Step 1: parse ==="; \
+	./spinel_parse$(EXE) spinel_codegen.rb build/codegen.ast; \
+	echo "=== Bootstrap Step 2: gen1 (CRuby) ==="; \
+	ruby spinel_codegen.rb build/codegen.ast build/gen1.c; \
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/gen1.c $(LDFLAGS) -lm -o build/bin1$(EXE); \
+	echo "=== Bootstrap Step 3: gen2 (bin1) ==="; \
+	./build/bin1$(EXE) build/codegen.ast build/gen2.c; \
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/gen2.c $(LDFLAGS) -lm -o build/bin2$(EXE); \
+	echo "=== Bootstrap Step 4: gen3 (bin2) - verify ==="; \
+	./build/bin2$(EXE) build/codegen.ast build/gen3.c; \
+	diff build/gen2.c build/gen3.c > /dev/null && echo "gen2.c == gen3.c (bootstrap OK)" || (echo "BOOTSTRAP FAILED: gen2.c != gen3.c" && exit 1); \
 	cp build/bin2$(EXE) spinel_codegen$(EXE)
 
 # ---- Test ----
