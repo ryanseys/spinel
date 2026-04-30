@@ -14449,6 +14449,80 @@ class Compiler
     tmp_fb
   end
 
+  # Constant-fold integer-only `+`, `-`, `*` expressions at codegen time.
+  # Walks the receiver/arg pair; if both subtrees evaluate to integer
+  # literals (recursively for chained ops like `60 * 60 * 24`), returns
+  # the folded value as a digit string. Returns "" otherwise so the
+  # caller falls back to runtime arithmetic.
+  #
+  # Limitations: skips `/` and `%` (Ruby uses floor division which
+  # diverges from C truncation for negatives) and `**` (overflow risk
+  # multiplies fast). Also skips when an intermediate sub-result would
+  # exceed 60 bits — far below i64 max but a generous margin around
+  # the typical SECONDS_PER_DAY-shaped folds.
+  def try_fold_int_const_expr(nid)
+    if nid < 0
+      return ""
+    end
+    t = @nd_type[nid]
+    if t == "IntegerNode"
+      return @nd_value[nid].to_s
+    end
+    if t == "ParenthesesNode"
+      pb = @nd_body[nid]
+      if pb >= 0
+        ps = get_stmts(pb)
+        if ps.length == 1
+          return try_fold_int_const_expr(ps[0])
+        end
+      end
+      return ""
+    end
+    if t != "CallNode"
+      return ""
+    end
+    mname = @nd_name[nid]
+    if mname != "+" && mname != "-" && mname != "*"
+      return ""
+    end
+    recv = @nd_receiver[nid]
+    args_id = @nd_arguments[nid]
+    if recv < 0 || args_id < 0
+      return ""
+    end
+    args = get_args(args_id)
+    if args.length != 1
+      return ""
+    end
+    lhs_str = try_fold_int_const_expr(recv)
+    if lhs_str == ""
+      return ""
+    end
+    rhs_str = try_fold_int_const_expr(args[0])
+    if rhs_str == ""
+      return ""
+    end
+    lhs_n = lhs_str.to_i
+    rhs_n = rhs_str.to_i
+    result = 0
+    if mname == "+"
+      result = lhs_n + rhs_n
+    elsif mname == "-"
+      result = lhs_n - rhs_n
+    elsif mname == "*"
+      result = lhs_n * rhs_n
+    end
+    # Conservative bound: bail above 2 billion (well within i32 range,
+    # comfortably below any realistic constant-folded compile-time
+    # number from `SECONDS_PER_DAY`-shaped expressions). Larger folded
+    # chains can be added once the codegen handles arbitrary mrb_int
+    # literals reliably. Returns "" so the runtime path takes over.
+    if result > 2000000000 || result < -2000000000
+      return ""
+    end
+    result.to_s
+  end
+
   # Returns the C expression for a CallNode. Symmetric with
   # `infer_call_type` (which returns the call's C type) — see the
   # docstring there for the maintenance rule on adding new shapes.
@@ -15450,6 +15524,15 @@ class Compiler
         return "((mrb_int)pow((double)" + compile_expr(recv) + ", (double)" + compile_arg0(nid) + "))"
       end
       return "pow(" + compile_expr(recv) + ", " + compile_arg0(nid) + ")"
+    end
+    # Constant-fold integer-only +, -, * before falling through to the
+    # normal compile paths. Catches `60 * 60 * 24` => `86400` so the
+    # generated C carries the literal instead of three runtime mul ops.
+    if mname == "+" || mname == "-" || mname == "*"
+      folded = try_fold_int_const_expr(nid)
+      if folded != ""
+        return folded
+      end
     end
     if mname == "+"
       lt = infer_type(recv)
