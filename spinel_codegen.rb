@@ -25079,19 +25079,56 @@ class Compiler
       emit("  }")
     end
     if rt == "range"
-      tmp = new_temp
-      tmp2 = new_temp
-      emit("  sp_Range " + tmp2 + " = " + rc + ";")
-      emit("  for (lv_" + bp1 + " = " + tmp2 + ".first; lv_" + bp1 + " <= " + tmp2 + ".last; lv_" + bp1 + "++) {")
-      @indent = @indent + 1
-      push_scope
-      if has_bp == 1
-        declare_var(bp1, "int")
+      # Fuse `(lo..hi).each { |i| ... }` over a literal RangeNode (or a
+      # parens-wrapped one) to a tight C for-loop with the bounds
+      # inlined. Skips the sp_Range struct copy and lets the C compiler
+      # see lo/hi as constants for unrolling and bound-check elision.
+      # The shape mirrors the to_a / count literal-range path elsewhere
+      # in the file. Non-literal receivers fall through to the existing
+      # sp_Range-copy form below.
+      lit_range = -1
+      rcv0 = @nd_receiver[nid]
+      if rcv0 >= 0 && @nd_type[rcv0] == "RangeNode"
+        lit_range = rcv0
       end
-      compile_stmts_body(@nd_body[@nd_block[nid]])
-      pop_scope
-      @indent = @indent - 1
-      emit("  }")
+      if rcv0 >= 0 && @nd_type[rcv0] == "ParenthesesNode"
+        pb_r = @nd_body[rcv0]
+        if pb_r >= 0
+          ps_r = get_stmts(pb_r)
+          if ps_r.length > 0 && @nd_type[ps_r.first] == "RangeNode"
+            lit_range = ps_r.first
+          end
+        end
+      end
+      if lit_range >= 0
+        cmp = range_excl_end(lit_range) == 1 ? "<" : "<="
+        lo = compile_expr(@nd_left[lit_range])
+        hi = compile_expr(@nd_right[lit_range])
+        emit("  for (lv_" + bp1 + " = " + lo + "; lv_" + bp1 + " " + cmp + " " + hi + "; lv_" + bp1 + "++) {")
+        @indent = @indent + 1
+        push_scope
+        if has_bp == 1
+          declare_var(bp1, "int")
+        end
+        compile_stmts_body(@nd_body[@nd_block[nid]])
+        pop_scope
+        @indent = @indent - 1
+        emit("  }")
+      else
+        tmp = new_temp
+        tmp2 = new_temp
+        emit("  sp_Range " + tmp2 + " = " + rc + ";")
+        emit("  for (lv_" + bp1 + " = " + tmp2 + ".first; lv_" + bp1 + " <= " + tmp2 + ".last; lv_" + bp1 + "++) {")
+        @indent = @indent + 1
+        push_scope
+        if has_bp == 1
+          declare_var(bp1, "int")
+        end
+        compile_stmts_body(@nd_body[@nd_block[nid]])
+        pop_scope
+        @indent = @indent - 1
+        emit("  }")
+      end
     end
     if rt == "poly_array"
       tmp = new_temp
