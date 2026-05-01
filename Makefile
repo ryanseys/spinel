@@ -94,7 +94,7 @@ PRISM_SRC    = $(wildcard $(PRISM_DIR)/src/*.c) $(wildcard $(PRISM_DIR)/src/util
 PRISM_OBJ    = $(patsubst $(PRISM_DIR)/src/%.c,build/prism/%.o,$(PRISM_SRC))
 PRISM_LIB    = build/libprism.a
 
-.PHONY: all parse bootstrap verify-bootstrap test check-no-warnings bench clean install uninstall deps
+.PHONY: all parse bootstrap verify-bootstrap test check-no-warnings bench smoke smoke-deps clean install uninstall deps
 
 all: parse regexp bootstrap
 
@@ -311,6 +311,59 @@ bench: spinel_parse$(EXE) $(SP_RT_LIB)
 	rm -f /tmp/_sp_b.ast /tmp/_sp_b.c /tmp/_sp_b_bin$(EXE); \
 	echo "Benchmarks: $$pass pass, $$fail fail, $$err error, $$skip skip"; \
 	if [ $$fail -ne 0 ] || [ $$err -ne 0 ]; then exit 1; fi
+
+# ---- Smoke (informational) ----
+#
+# Real-world program harness. mame's recent codegen fixes (#178, #179,
+# #180, #190) all cite optcarrot — the canonical Ruby NES emulator —
+# as their motivating reproducer. Codifying the discovery loop here
+# means we surface the same bugs they're surfacing, on the same
+# program, without needing a side checkout.
+#
+# Informational only at this stage: every shell stage is wrapped in
+# `|| true` and the recipe always exits 0. The output is a
+# diagnostic — which stage (parse / codegen / cc) was reached, and
+# what error surfaced if any. Promote to a gating target once it
+# stays green for a couple of weeks.
+#
+# Vendoring follows the existing prism pattern: `smoke-deps` clones
+# optcarrot at OPTCARROT_VERSION on demand into vendor/optcarrot
+# (gitignored). Pin OPTCARROT_VERSION to a known-good sha or tag
+# when CI integration warrants it.
+OPTCARROT_VERSION ?= master
+OPTCARROT_DIR     ?= vendor/optcarrot
+OPTCARROT_ENTRY   ?= $(OPTCARROT_DIR)/bin/optcarrot
+
+smoke-deps: $(OPTCARROT_ENTRY)
+
+$(OPTCARROT_ENTRY):
+	@mkdir -p vendor
+	@if [ ! -d $(OPTCARROT_DIR)/.git ]; then \
+	   echo "Cloning optcarrot ($(OPTCARROT_VERSION)) into $(OPTCARROT_DIR)..."; \
+	   git clone --depth 1 --branch $(OPTCARROT_VERSION) https://github.com/mame/optcarrot $(OPTCARROT_DIR) || \
+	     (echo "smoke-deps: clone failed (network?). $(OPTCARROT_DIR) not populated."; exit 0); \
+	 fi
+	@test -f $@ && echo "smoke-deps: $(OPTCARROT_DIR) ready" || true
+
+smoke: spinel_parse$(EXE) $(SP_RT_LIB) smoke-deps
+	@if [ ! -f spinel_codegen$(EXE) ]; then echo "Run 'make bootstrap' first"; exit 1; fi
+	@if [ ! -f $(OPTCARROT_ENTRY) ]; then \
+	   echo "smoke: $(OPTCARROT_ENTRY) missing (smoke-deps did not clone). Skipping."; \
+	   exit 0; \
+	 fi
+	@echo "=== smoke: optcarrot pipeline (informational; does not gate) ==="
+	@stage=parse; \
+	 ./spinel_parse$(EXE) $(OPTCARROT_ENTRY) /tmp/_smoke.ast 2>/tmp/_smoke.err && stage=codegen && \
+	 ./spinel_codegen$(EXE) /tmp/_smoke.ast /tmp/_smoke.c 2>/tmp/_smoke.err && stage=compile && \
+	 $(CC) $(CFLAGS) $(SEC_FLAGS) -Ilib /tmp/_smoke.c $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o /tmp/_smoke_bin$(EXE) 2>/tmp/_smoke.err && stage=done; \
+	 echo "smoke: reached stage=$$stage"; \
+	 if [ "$$stage" != "done" ]; then \
+	   echo "--- first 20 lines of $$stage stderr ---"; head -20 /tmp/_smoke.err 2>/dev/null || true; \
+	 else \
+	   ls -la /tmp/_smoke.ast /tmp/_smoke.c /tmp/_smoke_bin$(EXE) 2>/dev/null | awk '{ printf "  %-12s %s\n", $$5, $$NF }'; \
+	 fi
+	@rm -f /tmp/_smoke.ast /tmp/_smoke.c /tmp/_smoke_bin$(EXE) /tmp/_smoke.err
+	@echo "smoke: done (informational; exit 0 always)"
 
 # ---- Install ----
 
