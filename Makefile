@@ -71,6 +71,14 @@ TIMEOUT60 := $(if $(TIMEOUT_BIN),$(TIMEOUT_BIN) 60,)
 # which the bootstrap miniruby can't load.
 REF_RUBY ?= ruby
 
+# Minimum CRuby version required for test references. Some tests
+# in test/ use Ruby 3.4+ syntax (implicit `it` block parameter) and
+# diverge silently on older interpreters — masked until 83e0e09 made
+# `make test` fail-loud, then 47225cb pinned CI to 3.4. The `test`
+# recipe emits a single warning line (never an error) when
+# `$(REF_RUBY)` reports an older RUBY_VERSION; bootstrap is unaffected.
+RUBY_REQUIRED ?= 3.4
+
 # Prism library: prefer vendor/prism (fetched via `make deps`), then
 # fall back to the Prism gem if one is installed. Override by setting
 # PRISM_DIR=/path/to/prism on the command line.
@@ -181,6 +189,11 @@ spinel_codegen$(EXE): spinel_codegen.rb spinel_parse$(EXE)
 test: spinel_parse$(EXE) $(SP_RT_LIB)
 	@if [ ! -f spinel_codegen$(EXE) ]; then echo "Run 'make bootstrap' first"; exit 1; fi
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
+	@actual=$$($(REF_RUBY) -e 'print RUBY_VERSION' 2>/dev/null || echo 0.0); \
+	 awk -v a="$$actual" -v r="$(RUBY_REQUIRED)" 'BEGIN { \
+	   split(a, aa, "."); split(r, rr, "."); \
+	   if (aa[1]+0 < rr[1]+0 || (aa[1]+0 == rr[1]+0 && aa[2]+0 < rr[2]+0)) \
+	     printf "WARN: $(REF_RUBY) reports RUBY_VERSION=%s; tests added after Apr 2026 require Ruby %s+. Some FAILs may be version-induced.\n", a, r > "/dev/stderr" }'
 	@pass=0; fail=0; err=0; \
 	for f in test/*.rb; do \
 	  bn=$$(basename "$$f" .rb); \

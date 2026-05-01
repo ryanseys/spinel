@@ -33,6 +33,14 @@ Native binary           Standalone, no runtime dependencies
 
 ## Quick Start
 
+> **Reference Ruby:** `make test` and `make bench` compare Spinel's
+> output against the system `ruby` (override with `REF_RUBY=...`).
+> Tests added after Apr 2026 use Ruby 3.4+ syntax (implicit `it`
+> block parameter). On older interpreters those tests will silently
+> diverge; CI is pinned to 3.4. The `test` recipe emits a warning
+> line when `REF_RUBY` is older than `RUBY_REQUIRED` (default `3.4`).
+> Bootstrap itself runs on any CRuby ≥ 3.0.
+
 ```bash
 # Fetch libprism sources (from the prism gem on rubygems.org):
 make deps
