@@ -94,7 +94,7 @@ PRISM_SRC    = $(wildcard $(PRISM_DIR)/src/*.c) $(wildcard $(PRISM_DIR)/src/util
 PRISM_OBJ    = $(patsubst $(PRISM_DIR)/src/%.c,build/prism/%.o,$(PRISM_SRC))
 PRISM_LIB    = build/libprism.a
 
-.PHONY: all parse bootstrap test bench clean install uninstall deps
+.PHONY: all parse bootstrap verify-bootstrap test bench clean install uninstall deps
 
 all: parse regexp bootstrap
 
@@ -183,6 +183,28 @@ spinel_codegen$(EXE): spinel_codegen.rb spinel_parse$(EXE)
 	./build/bin2$(EXE) build/codegen.ast build/gen3.c
 	@diff build/gen2.c build/gen3.c > /dev/null && echo "gen2.c == gen3.c (bootstrap OK)" || (echo "BOOTSTRAP FAILED: gen2.c != gen3.c" && exit 1)
 	cp build/bin2$(EXE) spinel_codegen$(EXE)
+
+# Standalone bootstrap-idempotence check. The full `bootstrap` recipe
+# already verifies `gen2.c == gen3.c` as its last step, but that's
+# locked behind a 30s rebuild. This target re-runs the current
+# spinel_codegen against the saved build/codegen.ast and diffs the
+# fresh output against build/gen2.c — a cheap (~1-2s) gate that
+# surfaces non-deterministic codegen drift introduced by an edit
+# without needing a full bootstrap cycle. Useful as a fast post-edit
+# check and as a CI step that depends on the bootstrap artifact.
+verify-bootstrap: spinel_codegen$(EXE)
+	@if [ ! -f build/codegen.ast ] || [ ! -f build/gen2.c ]; then \
+	   echo "verify-bootstrap: build/codegen.ast or build/gen2.c missing — run 'make bootstrap' first"; exit 1; \
+	 fi
+	@./spinel_codegen$(EXE) build/codegen.ast /tmp/_sp_verify_gen.c
+	@if diff build/gen2.c /tmp/_sp_verify_gen.c > /dev/null; then \
+	   echo "verify-bootstrap: OK (codegen is idempotent)"; \
+	   rm -f /tmp/_sp_verify_gen.c; \
+	 else \
+	   echo "BOOTSTRAP DRIFT: spinel_codegen output differs from build/gen2.c"; \
+	   diff build/gen2.c /tmp/_sp_verify_gen.c | head -50; \
+	   rm -f /tmp/_sp_verify_gen.c; exit 1; \
+	 fi
 
 # ---- Test ----
 
