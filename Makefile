@@ -94,7 +94,7 @@ PRISM_SRC    = $(wildcard $(PRISM_DIR)/src/*.c) $(wildcard $(PRISM_DIR)/src/util
 PRISM_OBJ    = $(patsubst $(PRISM_DIR)/src/%.c,build/prism/%.o,$(PRISM_SRC))
 PRISM_LIB    = build/libprism.a
 
-.PHONY: all parse bootstrap verify-bootstrap test bench clean install uninstall deps
+.PHONY: all parse bootstrap verify-bootstrap test check-no-warnings bench clean install uninstall deps
 
 all: parse regexp bootstrap
 
@@ -240,6 +240,43 @@ test: spinel_parse$(EXE) $(SP_RT_LIB)
 	rm -f /tmp/_sp_t.ast /tmp/_sp_t.c /tmp/_sp_t_bin$(EXE); \
 	echo "Tests: $$pass pass, $$fail fail, $$err error"; \
 	if [ $$fail -ne 0 ] || [ $$err -ne 0 ]; then exit 1; fi
+
+# Strict-warning sweep over test/*.rb. Same per-file pipeline as `test`
+# but the user-program C compile re-enables the warning class that
+# surfaces type-inference bugs at the C boundary — int/pointer
+# conversions, implicit function declarations, and the pointer-int
+# integer-from-pointer slot mismatch that was the discovery vehicle
+# for matz/spinel#190 (gcc's -Wint-conversion firing on a Helper*
+# argument to an mrb_int slot).
+#
+# Default `test` uses `-Werror -Wno-all` which suppresses these. This
+# target re-enables them and reports per-file C compile failures
+# (without comparing program output, since a strict-failed file
+# never produced a binary). Slower and noisier than `test` — use
+# as a pre-PR sweep, not a default check.
+STRICT_CFLAGS = -O2 -Werror=int-conversion \
+                -Werror=incompatible-pointer-types \
+                -Werror=implicit-function-declaration
+
+check-no-warnings: spinel_parse$(EXE) $(SP_RT_LIB)
+	@if [ ! -f spinel_codegen$(EXE) ]; then echo "Run 'make bootstrap' first"; exit 1; fi
+	@clean=0; warn=0; err=0; \
+	for f in test/*.rb; do \
+	  bn=$$(basename "$$f" .rb); \
+	  ./spinel_parse$(EXE) "$$f" /tmp/_sp_t.ast 2>/dev/null && \
+	  ./spinel_codegen$(EXE) /tmp/_sp_t.ast /tmp/_sp_t.c 2>/dev/null; \
+	  if [ $$? -ne 0 ]; then \
+	    echo "ERR:  $$bn (parse/codegen)"; err=$$((err+1)); continue; \
+	  fi; \
+	  if $(CC) $(STRICT_CFLAGS) $(SEC_FLAGS) -Ilib /tmp/_sp_t.c $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o /tmp/_sp_t_bin$(EXE) 2>/dev/null; then \
+	    clean=$$((clean+1)); \
+	  else \
+	    echo "WARN: $$bn (strict-C compile)"; warn=$$((warn+1)); \
+	  fi; \
+	done; \
+	rm -f /tmp/_sp_t.ast /tmp/_sp_t.c /tmp/_sp_t_bin$(EXE); \
+	echo "check-no-warnings: $$clean clean, $$warn with strict warnings, $$err parse/codegen errors"; \
+	if [ $$err -ne 0 ]; then exit 1; fi
 
 bench: spinel_parse$(EXE) $(SP_RT_LIB)
 	@if [ ! -f spinel_codegen$(EXE) ]; then echo "Run 'make bootstrap' first"; exit 1; fi
