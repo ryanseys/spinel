@@ -942,6 +942,75 @@ static int flatten(pm_node_t *node) {
     A("parts", &n->parts);
     break;
   }
+  case PM_CONSTANT_OPERATOR_WRITE_NODE: {
+    /* `FOO += val`. Spinel constants are mutable C globals (cst_FOO),
+       so the compound write reduces to a load-op-store sequence at
+       the codegen side. */
+    pm_constant_operator_write_node_t *n = (pm_constant_operator_write_node_t *)node;
+    N("ConstantOperatorWriteNode");
+    NAME("name", n->name);
+    NAME("binary_operator", n->binary_operator);
+    R("value", n->value);
+    break;
+  }
+  case PM_CONSTANT_OR_WRITE_NODE: {
+    /* `FOO ||= val`. Truthiness check on the current value; if
+       falsy, assign. Inherits the C-truthy-vs-Ruby-truthy gap
+       (numeric 0 is C-falsy, Ruby-truthy) -- documented per-test. */
+    pm_constant_or_write_node_t *n = (pm_constant_or_write_node_t *)node;
+    N("ConstantOrWriteNode");
+    NAME("name", n->name);
+    R("value", n->value);
+    break;
+  }
+  case PM_CONSTANT_AND_WRITE_NODE: {
+    /* `FOO &&= val`. Mirror of OrWrite with the condition inverted. */
+    pm_constant_and_write_node_t *n = (pm_constant_and_write_node_t *)node;
+    N("ConstantAndWriteNode");
+    NAME("name", n->name);
+    R("value", n->value);
+    break;
+  }
+  case PM_CONSTANT_TARGET_NODE: {
+    /* `FOO, BAR = 1, 2` -- LHS slot in multi-assign. Routed through
+       emit_multi_write_target which has a new arm for this case. */
+    pm_constant_target_node_t *n = (pm_constant_target_node_t *)node;
+    N("ConstantTargetNode");
+    NAME("name", n->name);
+    break;
+  }
+  case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE: {
+    /* `M::FOO += val`. */
+    pm_constant_path_operator_write_node_t *n = (pm_constant_path_operator_write_node_t *)node;
+    N("ConstantPathOperatorWriteNode");
+    R("target", n->target);
+    NAME("binary_operator", n->binary_operator);
+    R("value", n->value);
+    break;
+  }
+  case PM_CONSTANT_PATH_OR_WRITE_NODE: {
+    pm_constant_path_or_write_node_t *n = (pm_constant_path_or_write_node_t *)node;
+    N("ConstantPathOrWriteNode");
+    R("target", n->target);
+    R("value", n->value);
+    break;
+  }
+  case PM_CONSTANT_PATH_AND_WRITE_NODE: {
+    pm_constant_path_and_write_node_t *n = (pm_constant_path_and_write_node_t *)node;
+    N("ConstantPathAndWriteNode");
+    R("target", n->target);
+    R("value", n->value);
+    break;
+  }
+  case PM_CONSTANT_PATH_TARGET_NODE: {
+    /* `M::FOO, M::BAR = 1, 2`. The target carries `parent` (module)
+       and `name` (constant). */
+    pm_constant_path_target_node_t *n = (pm_constant_path_target_node_t *)node;
+    N("ConstantPathTargetNode");
+    if (n->parent) R("parent", n->parent);
+    NAME("name", n->name);
+    break;
+  }
   case PM_REDO_NODE:
     /* `redo`. Re-run the current iteration of the enclosing loop
        without re-evaluating the loop guard or advancing the

@@ -179,6 +179,14 @@ class Compiler
     @const_expr_ids = []
     @const_scope_names = "".split(",")
 
+    # `FOO += val`, `FOO ||= val`, `FOO &&= val`, ConstantTargetNode
+    # all MUTATE the constant after its initial declaration. The
+    # const_literal_c_value fold-to-literal optimization must NOT
+    # apply to such constants -- otherwise `FOO += 1; puts FOO`
+    # reads the folded initial literal instead of the mutated cst_FOO
+    # global. This bitmap (1 = mutated) gates the optimization.
+    @const_mutated = []
+
     # `redo` -- labeled-goto target stack. Each loop emitter pushes
     # a fresh label name when entering an iteration body and pops on
     # exit; a `redo` jumps to the top of the innermost label.
@@ -1598,6 +1606,13 @@ class Compiler
     if ci < 0 || ci >= @const_expr_ids.length
       return ""
     end
+    # Constants targeted by compound writes (FOO += val, etc.) or
+    # multi-assign (FOO, BAR = ...) diverge from their initializer
+    # at runtime; backing off the literal fold here forces use sites
+    # to read the cst_<name> C global so they observe the mutation.
+    if ci < @const_mutated.length && @const_mutated[ci] == 1
+      return ""
+    end
     eid = @const_expr_ids[ci]
     if eid < 0
       return ""
@@ -1812,6 +1827,32 @@ class Compiler
       # behaviour (sym_int_hash keys, ===) won't work, but puts/==/
       # string interpolation/regex match all do.
       return "string"
+    end
+    if t == "ConstantOperatorWriteNode" ||
+       t == "ConstantOrWriteNode" ||
+       t == "ConstantAndWriteNode"
+      # Compound writes return the resulting value; type matches the
+      # constant's stored type (set when the constant was first
+      # collected via collect_constant).
+      rname = resolve_const_read_name(@nd_name[nid])
+      ci = find_const_idx(rname)
+      if ci >= 0
+        return @const_types[ci]
+      end
+      return "int"
+    end
+    if t == "ConstantPathOperatorWriteNode" ||
+       t == "ConstantPathOrWriteNode" ||
+       t == "ConstantPathAndWriteNode"
+      target = @nd_target[nid]
+      if target >= 0
+        cpname = resolve_const_ref_name(target)
+        ci = find_const_idx(cpname)
+        if ci >= 0
+          return @const_types[ci]
+        end
+      end
+      return "int"
     end
     if t == "TrueNode"
       return "bool"
@@ -5342,6 +5383,13 @@ class Compiler
       end
     }
 
+    # Pass 2.2: mark constants targeted by compound writes / multi-
+    # assign as runtime-mutated, so const_literal_c_value backs off
+    # for them and use sites read the cst_<name> C global. Walks the
+    # whole AST (constants can be mutated from any expression depth,
+    # not just toplevel).
+    mark_mutated_constants_in(@root_id)
+
     # Pass 2.6: hoist `recv.instance_eval do ... end` blocks into
     # file-scope static functions. Receiver-class flow analysis picks the
     # receiver's class, the block body is later compiled as a function
@@ -5859,6 +5907,110 @@ class Compiler
     @const_types.push(ct)
     @const_expr_ids.push(expr_id)
     @const_scope_names.push(scope_name)
+    @const_mutated.push(0)
+  end
+
+  # Mark a constant slot as runtime-mutated so the literal-fold
+  # optimization in const_literal_c_value backs off and use sites
+  # read the cst_<name> C global instead of the folded initializer.
+  # Called from the ConstantOperator/Or/And/TargetWriteNode pre-pass
+  # (Pass 2.2 in collect_all).
+  def mark_const_mutated(rname)
+    ci = find_const_idx(rname)
+    if ci >= 0 && ci < @const_mutated.length
+      @const_mutated[ci] = 1
+    end
+  end
+
+  # Recursive walk that visits every node and marks the targeted
+  # constant as mutated when a compound-write or multi-target form
+  # is encountered. Constant compound writes can appear at any depth
+  # (e.g. inside method bodies or class body branches), so we walk
+  # the whole AST rather than just toplevel statements.
+  def mark_mutated_constants_in(nid)
+    if nid < 0 || nid >= @nd_count
+      return
+    end
+    t = @nd_type[nid]
+    if t == "ConstantOperatorWriteNode" ||
+       t == "ConstantOrWriteNode" ||
+       t == "ConstantAndWriteNode" ||
+       t == "ConstantTargetNode"
+      mark_const_mutated(@nd_name[nid])
+    end
+    if t == "ConstantPathOperatorWriteNode" ||
+       t == "ConstantPathOrWriteNode" ||
+       t == "ConstantPathAndWriteNode"
+      target = @nd_target[nid]
+      if target >= 0
+        cpname = resolve_const_ref_name(target)
+        mark_const_mutated(cpname)
+      end
+    end
+    if t == "ConstantPathTargetNode"
+      cpname = ""
+      leaf = @nd_name[nid]
+      parent = @nd_receiver[nid]
+      if parent >= 0
+        base = resolve_const_ref_name(parent)
+        if base != ""
+          cpname = base + "_" + leaf
+        end
+      else
+        cpname = leaf
+      end
+      mark_const_mutated(cpname)
+    end
+    # Walk child refs.
+    if @nd_body[nid] >= 0
+      mark_mutated_constants_in(@nd_body[nid])
+    end
+    if @nd_receiver[nid] >= 0
+      mark_mutated_constants_in(@nd_receiver[nid])
+    end
+    if @nd_arguments[nid] >= 0
+      mark_mutated_constants_in(@nd_arguments[nid])
+    end
+    if @nd_block[nid] >= 0
+      mark_mutated_constants_in(@nd_block[nid])
+    end
+    if @nd_predicate[nid] >= 0
+      mark_mutated_constants_in(@nd_predicate[nid])
+    end
+    if @nd_subsequent[nid] >= 0
+      mark_mutated_constants_in(@nd_subsequent[nid])
+    end
+    if @nd_else_clause[nid] >= 0
+      mark_mutated_constants_in(@nd_else_clause[nid])
+    end
+    if @nd_left[nid] >= 0
+      mark_mutated_constants_in(@nd_left[nid])
+    end
+    if @nd_right[nid] >= 0
+      mark_mutated_constants_in(@nd_right[nid])
+    end
+    if @nd_expression[nid] >= 0
+      mark_mutated_constants_in(@nd_expression[nid])
+    end
+    # Walk child arrays.
+    children = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < children.length
+      mark_mutated_constants_in(children[k])
+      k = k + 1
+    end
+    children = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < children.length
+      mark_mutated_constants_in(children[k])
+      k = k + 1
+    end
+    children = parse_id_list(@nd_targets[nid])
+    k = 0
+    while k < children.length
+      mark_mutated_constants_in(children[k])
+      k = k + 1
+    end
   end
 
   def collect_class_with_prefix(nid, module_prefix)
@@ -17467,6 +17619,48 @@ class Compiler
       end
       return ivar_lhs(@nd_name[nid])
     end
+    if t == "ConstantOperatorWriteNode"
+      # Expression-form: method body ending in `FOO += 1`.
+      rname = resolve_const_read_name(@nd_name[nid])
+      cname = "cst_" + rname
+      op = @nd_binop[nid]
+      val = compile_expr(@nd_expression[nid])
+      if op == "%"
+        return "(" + cname + " = sp_imod(" + cname + ", " + val + "))"
+      end
+      return "(" + cname + " = " + cname + " " + op + " " + val + ")"
+    end
+    if t == "ConstantOrWriteNode"
+      rname = resolve_const_read_name(@nd_name[nid])
+      cname = "cst_" + rname
+      val = compile_expr(@nd_expression[nid])
+      return "(" + cname + " ? " + cname + " : (" + cname + " = " + val + "))"
+    end
+    if t == "ConstantAndWriteNode"
+      rname = resolve_const_read_name(@nd_name[nid])
+      cname = "cst_" + rname
+      val = compile_expr(@nd_expression[nid])
+      return "(" + cname + " ? (" + cname + " = " + val + ") : " + cname + ")"
+    end
+    if t == "ConstantPathOperatorWriteNode" ||
+       t == "ConstantPathOrWriteNode" ||
+       t == "ConstantPathAndWriteNode"
+      target = @nd_target[nid]
+      cpname = resolve_const_ref_name(target)
+      cname = "cst_" + cpname
+      val = compile_expr(@nd_expression[nid])
+      if t == "ConstantPathOperatorWriteNode"
+        op = @nd_binop[nid]
+        if op == "%"
+          return "(" + cname + " = sp_imod(" + cname + ", " + val + "))"
+        end
+        return "(" + cname + " = " + cname + " " + op + " " + val + ")"
+      end
+      if t == "ConstantPathOrWriteNode"
+        return "(" + cname + " ? " + cname + " : (" + cname + " = " + val + "))"
+      end
+      return "(" + cname + " ? (" + cname + " = " + val + ") : " + cname + ")"
+    end
     if t == "InstanceVariableWriteNode"
       # Issue #130: same poly-slot boxing as the statement-form emit.
       # Expression form (`x = (@y = expr)`) is rarer but reaches the
@@ -24913,6 +25107,30 @@ class Compiler
       emit("  goto " + lbl + ";")
       return
     end
+    if t == "ConstantOperatorWriteNode"
+      compile_constant_compound_assign(nid, "Operator")
+      return
+    end
+    if t == "ConstantAndWriteNode"
+      compile_constant_compound_assign(nid, "And")
+      return
+    end
+    if t == "ConstantOrWriteNode"
+      compile_constant_compound_assign(nid, "Or")
+      return
+    end
+    if t == "ConstantPathOperatorWriteNode"
+      compile_constant_path_compound_assign(nid, "Operator")
+      return
+    end
+    if t == "ConstantPathAndWriteNode"
+      compile_constant_path_compound_assign(nid, "And")
+      return
+    end
+    if t == "ConstantPathOrWriteNode"
+      compile_constant_path_compound_assign(nid, "Or")
+      return
+    end
     if t == "LocalVariableWriteNode"
       lname = @nd_name[nid]
       # Check for method(:name) assignment
@@ -25449,6 +25667,41 @@ class Compiler
         else
           emit("  sp_" + cls_n + "_" + mname + "_eq(" + recv_c + ", " + value_expr + ");")
         end
+      end
+    end
+    if @nd_type[tid] == "ConstantTargetNode"
+      # Multi-assign LHS: `FOO, BAR = 1, 2`. Resolves through the
+      # lexical scope just like ConstantReadNode/Write.
+      rname = resolve_const_read_name(@nd_name[tid])
+      ci = find_const_idx(rname)
+      if ci >= 0
+        emit("  cst_" + rname + " = " + value_expr + ";")
+      else
+        $stderr.puts "Spinel: ConstantTargetNode for `" + rname + "` -- constant not declared"
+        exit(1)
+      end
+    end
+    if @nd_type[tid] == "ConstantPathTargetNode"
+      # Multi-assign LHS: `M::FOO, M::BAR = 1, 2`. Parser stored the
+      # `parent` ref slot in @nd_receiver and the leaf `name` as a
+      # string. Build the qualified C const name manually.
+      cpname = ""
+      leaf = @nd_name[tid]
+      parent = @nd_receiver[tid]
+      if parent >= 0
+        base = resolve_const_ref_name(parent)
+        if base != ""
+          cpname = base + "_" + leaf
+        end
+      else
+        cpname = leaf
+      end
+      ci = find_const_idx(cpname)
+      if ci >= 0
+        emit("  cst_" + cpname + " = " + value_expr + ";")
+      else
+        $stderr.puts "Spinel: ConstantPathTargetNode for `" + cpname + "` -- constant not declared"
+        exit(1)
       end
     end
     if @nd_type[tid] == "IndexTargetNode"
@@ -29011,6 +29264,85 @@ class Compiler
       emit("      sp_SymIntHash_set(" + tt + ", " + ti + ", (" + val + "));")
       emit("    }")
       emit("  }")
+      return
+    end
+  end
+
+  # `FOO += val`, `FOO ||= val`, `FOO &&= val`. Spinel constants are
+  # mutable C globals (cst_<name>), so the compound write is just a
+  # load-op-store on the same C lvalue. Constants resolve through
+  # the lexical scope just like ConstantReadNode, so the same name
+  # is used for the read and the write.
+  def compile_constant_compound_assign(nid, kind)
+    rname = resolve_const_read_name(@nd_name[nid])
+    ci = find_const_idx(rname)
+    if ci < 0
+      $stderr.puts "Spinel: Constant" + kind + "WriteNode for `" + rname + "` -- constant must be declared before its first compound write"
+      exit(1)
+    end
+    cname = "cst_" + rname
+    val = compile_expr(@nd_expression[nid])
+    if kind == "Operator"
+      op = @nd_binop[nid]
+      ct = @const_types[ci]
+      if op == "+" && ct == "string" && infer_type(@nd_expression[nid]) == "string"
+        emit("  " + cname + " = sp_str_concat(" + cname + ", (" + val + "));")
+        return
+      end
+      if op == "%"
+        emit("  " + cname + " = sp_imod(" + cname + ", (" + val + "));")
+      else
+        emit("  " + cname + " = " + cname + " " + op + " (" + val + ");")
+      end
+      return
+    end
+    if kind == "And"
+      emit("  if (" + cname + ") " + cname + " = (" + val + ");")
+      return
+    end
+    if kind == "Or"
+      emit("  if (!(" + cname + ")) " + cname + " = (" + val + ");")
+      return
+    end
+  end
+
+  # `M::FOO += val`, etc. The path-qualified constant resolves to
+  # cst_<NS_Name>; the write is the same load-op-store as the bare
+  # constant case.
+  def compile_constant_path_compound_assign(nid, kind)
+    target = @nd_target[nid]
+    cpname = resolve_const_ref_name(target)
+    if cpname == ""
+      $stderr.puts "Spinel: ConstantPath" + kind + "WriteNode -- could not resolve target name"
+      exit(1)
+    end
+    ci = find_const_idx(cpname)
+    if ci < 0
+      $stderr.puts "Spinel: ConstantPath" + kind + "WriteNode for `" + cpname + "` -- constant must be declared before its first compound write"
+      exit(1)
+    end
+    cname = "cst_" + cpname
+    val = compile_expr(@nd_expression[nid])
+    if kind == "Operator"
+      op = @nd_binop[nid]
+      ct = @const_types[ci]
+      if op == "+" && ct == "string" && infer_type(@nd_expression[nid]) == "string"
+        emit("  " + cname + " = sp_str_concat(" + cname + ", (" + val + "));")
+        return
+      end
+      if op == "%"
+        emit("  " + cname + " = sp_imod(" + cname + ", (" + val + "));")
+      else
+        emit("  " + cname + " = " + cname + " " + op + " (" + val + ");")
+      end
+      return
+    end
+    if kind == "And"
+      emit("  if (" + cname + ") " + cname + " = (" + val + ");")
+      return
+    end
+    if kind == "Or"
+      emit("  if (!(" + cname + ")) " + cname + " = (" + val + ");")
       return
     end
   end
