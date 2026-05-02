@@ -1078,6 +1078,16 @@ static int flatten(pm_node_t *node) {
     out_add("R %d statements %d", id, stmts_id);
     break;
   }
+  case PM_PRE_EXECUTION_NODE: {
+    /* `BEGIN { ... }`. CRuby runs all BEGIN blocks in source order
+       BEFORE any other top-level statements. Spinel collects the
+       bodies during a pre-pass and emits them at the very top of
+       main() in source-encounter order. */
+    pm_pre_execution_node_t *n = (pm_pre_execution_node_t *)node;
+    N("PreExecutionNode");
+    if (n->statements) R("statements", n->statements);
+    break;
+  }
   case PM_UNDEF_NODE: {
     /* `undef foo, bar` inside a class body. CRuby raises NoMethodError
        at runtime when an undef'd method is called; Spinel's AOT model
