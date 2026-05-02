@@ -291,6 +291,12 @@ class Compiler
     @needs_rand = 0
     @regexp_patterns = "".split(",")
     @regexp_flags = "".split(",")
+    # FlipFlopNode sites: each `if a..b in conditional context` gets a
+    # unique `static int sp_ff_<i> = 0;` slot at file scope. Sites are
+    # tracked by AST node id so repeated visits (from infer_type or
+    # multi-pass analysis) reuse the same slot. The list of registered
+    # nids drives the file-scope global emission.
+    @flipflop_sites = []
     # `var = /lit/` resolution. Parallel arrays: `@local_regex_names`
     # holds the local-variable name and `@local_regex_idx` holds the
     # corresponding `@regexp_patterns` index, or -1 when the same name
@@ -10366,6 +10372,17 @@ class Compiler
       # the linker fails on the unreferenced sp_re_init main() call.
       @needs_regexp = 1
     end
+    if t == "FlipFlopNode"
+      # Pre-register the per-site state slot so emit_flipflop_state has
+      # the full list before bodies are compiled. Without this pre-scan
+      # the file-scope `static int sp_ff_<nid>` declarations would be
+      # missing when compile_expr first visits the node.
+      already_seen = 0
+      @flipflop_sites.each { |sn| if sn == nid; already_seen = 1; end }
+      if already_seen == 0
+        @flipflop_sites.push(nid)
+      end
+    end
     if t == "RegularExpressionNode"
       @needs_regexp = 1
       # Collect pattern and flags
@@ -11755,6 +11772,8 @@ class Compiler
     if @needs_regexp == 1
       emit_regexp_runtime
     end
+    # Emit per-site FlipFlop state slots
+    emit_flipflop_state
     emit_class_structs
     emit_raw("/*TUPLE_INSERT_POINT*/")
     emit_gc_scan_functions
@@ -12411,6 +12430,21 @@ class Compiler
       i = i + 1
     end
     1
+  end
+
+  # FlipFlop sites: one `static int sp_ff_<nid> = 0;` per site at file
+  # scope. Spinel's AOT model fits this requirement exactly -- no
+  # fiber-locals or per-frame allocation needed; the C linker handles it.
+  def emit_flipflop_state
+    if @flipflop_sites.length == 0
+      return
+    end
+    i = 0
+    while i < @flipflop_sites.length
+      emit_raw("static int sp_ff_" + @flipflop_sites[i].to_s + " = 0;")
+      i = i + 1
+    end
+    emit_raw("")
   end
 
   def emit_regexp_runtime
@@ -16091,6 +16125,30 @@ class Compiler
       # Use sites that accept either string or symbol -- puts, ==,
       # string interpolation -- behave identically.
       return compile_interpolated(nid)
+    end
+    if t == "FlipFlopNode"
+      # `if a..b` -- bistable per-site state. Inclusive form (..)
+      # transitions to active when left fires (and returns true), then
+      # stays active until right fires (returns true on the closing
+      # tick, then resets). Exclusive form (...) returns true on the
+      # opening tick even if right would also fire that same eval.
+      already_seen = 0
+      @flipflop_sites.each { |sn| if sn == nid; already_seen = 1; end }
+      if already_seen == 0
+        @flipflop_sites.push(nid)
+      end
+      slot = "sp_ff_" + nid.to_s
+      l_expr = compile_expr(@nd_left[nid])
+      r_expr = compile_expr(@nd_right[nid])
+      excl = (@nd_flags[nid] & 4 != 0)
+      if excl
+        # Exclusive: when activating, do NOT also evaluate right on the
+        # same tick. The opening transition is independent.
+        return "(" + slot + " ? (" + r_expr + " ? (" + slot + " = 0, 1) : 1) : (" + l_expr + " ? (" + slot + " = 1, 1) : 0))"
+      end
+      # Inclusive: when activating, also peek at right so a single-eval
+      # range (left and right both fire same tick) closes immediately.
+      return "(" + slot + " ? (" + r_expr + " ? (" + slot + " = 0, 1) : 1) : (" + l_expr + " ? ((" + r_expr + ") ? 1 : (" + slot + " = 1, 1)) : 0))"
     end
     if t == "InterpolatedRegularExpressionNode"
       # `/foo_#{x}/` -- pattern is only known at execution time, so we

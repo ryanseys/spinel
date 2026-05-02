@@ -581,6 +581,22 @@ static int flatten(pm_node_t *node) {
     I("flags", n->base.flags);
     break;
   }
+  case PM_FLIP_FLOP_NODE: {
+    /* `if a..b` (or `a...b`) when used in conditional context. Per-call-
+       site bistable state: false until `a` evaluates true, then stays true
+       until `b` evaluates true (then back to false). Spinel emits a
+       `static int sp_ff_<i>` at file scope per FlipFlop site -- the AOT
+       model fits this requirement exactly. left/right are the trigger
+       expressions; flags carries PM_RANGE_FLAGS_EXCLUDE_END (bit 2) which
+       makes the `right` check happen on the same evaluation as `left` for
+       the exclusive `...` form. */
+    pm_flip_flop_node_t *n = (pm_flip_flop_node_t *)node;
+    N("FlipFlopNode");
+    R("left", n->left);
+    R("right", n->right);
+    I("flags", n->base.flags);
+    break;
+  }
   case PM_IF_NODE: {
     pm_if_node_t *n = (pm_if_node_t *)node;
     N("IfNode");
