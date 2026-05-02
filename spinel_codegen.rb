@@ -787,6 +787,12 @@ class Compiler
       # comparison (`^v`).
       @nd_expression[nid] = ref_id
     end
+    if field == "constant"
+      # ArrayPattern / HashPattern / FindPattern -- optional class
+      # qualifier (`Foo[a, b]` or `Foo(a, b)`). Reuses the constant_path
+      # slot since it serves the same role (refers to a class name).
+      @nd_constant_path[nid] = ref_id
+    end
   end
 
   def set_array_field(nid, field, ids_str)
@@ -15378,6 +15384,40 @@ class Compiler
         end
       end
     end
+    if @nd_type[nid] == "CaseMatchNode"
+      # `case x; in pattern; ...` -- pattern-bound LocalVariableTargets
+      # need to be declared as locals in the surrounding scope before
+      # codegen runs (scan_locals -> declare_var feeds infer_type).
+      # Element type is derived from the case predicate's static type:
+      # int_array element -> int, str_array element -> string, etc.
+      pred_id = @nd_predicate[nid]
+      pred_t = "int"
+      if pred_id >= 0
+        pt2 = infer_type(pred_id)
+        if pt2 == "int_array"
+          pred_t = "int"
+        elsif pt2 == "str_array"
+          pred_t = "string"
+        elsif pt2 == "sym_int_hash"
+          pred_t = "int"
+        elsif pt2 == "sym_str_hash"
+          pred_t = "string"
+        elsif pt2 == "sym_poly_hash"
+          pred_t = "poly"
+        else
+          pred_t = pt2
+        end
+      end
+      conds_lt = parse_id_list(@nd_conditions[nid])
+      ck = 0
+      while ck < conds_lt.length
+        in_id = conds_lt[ck]
+        if @nd_type[in_id] == "InNode"
+          collect_pattern_targets(@nd_pattern[in_id], pred_t, names, types, params)
+        end
+        ck = ck + 1
+      end
+    end
     if @nd_type[nid] == "ForNode"
       tgt = @nd_target[nid]
       if tgt >= 0
@@ -15704,6 +15744,92 @@ class Compiler
     end
     # Recurse
     scan_locals_children(nid, names, types, params)
+  end
+
+  # Walk a pattern AST and declare each LocalVariableTargetNode found
+  # with the given element type. Used by scan_locals's CaseMatchNode arm
+  # so pattern-bound names exist as locals in the surrounding scope
+  # before codegen runs.
+  def collect_pattern_targets(pat_id, elem_t, names, types, params)
+    if pat_id < 0
+      return
+    end
+    pt = @nd_type[pat_id]
+    if pt == "LocalVariableTargetNode"
+      lname = @nd_name[pat_id]
+      if not_in(lname, names) == 1
+        if not_in(lname, params) == 1
+          names.push(lname)
+          types.push(elem_t)
+          @scan_literal_flags.push("")
+          @scan_empty_flags.push("")
+          @scan_empty_hash_flags.push("")
+        end
+      end
+      return
+    end
+    if pt == "ArrayPatternNode"
+      reqs_lt = parse_id_list(@nd_requireds[pat_id])
+      reqs_lt.each { |r| collect_pattern_targets(r, elem_t, names, types, params) }
+      rest_id_lt = @nd_rest[pat_id]
+      if rest_id_lt >= 0 && @nd_type[rest_id_lt] == "SplatNode"
+        rt2 = @nd_expression[rest_id_lt]
+        if rt2 >= 0 && @nd_type[rt2] == "LocalVariableTargetNode"
+          rname = @nd_name[rt2]
+          if not_in(rname, names) == 1
+            if not_in(rname, params) == 1
+              # Rest target gets the array type, not element type.
+              array_t = elem_t == "string" ? "str_array" : "int_array"
+              names.push(rname)
+              types.push(array_t)
+              @scan_literal_flags.push("")
+              @scan_empty_flags.push("")
+              @scan_empty_hash_flags.push("")
+            end
+          end
+        end
+      end
+      posts_lt = parse_id_list(@nd_posts[pat_id])
+      posts_lt.each { |p| collect_pattern_targets(p, elem_t, names, types, params) }
+      return
+    end
+    if pt == "HashPatternNode"
+      els_lt = parse_id_list(@nd_elements[pat_id])
+      els_lt.each { |el|
+        if @nd_type[el] == "AssocNode"
+          val_id = @nd_expression[el]
+          if val_id >= 0
+            collect_pattern_targets(val_id, elem_t, names, types, params)
+          end
+        end
+      }
+      return
+    end
+    if pt == "CapturePatternNode"
+      tgt = @nd_target[pat_id]
+      if tgt >= 0
+        collect_pattern_targets(tgt, elem_t, names, types, params)
+      end
+      return
+    end
+    if pt == "FindPatternNode"
+      l_id = @nd_left[pat_id]
+      if l_id >= 0 && @nd_type[l_id] == "SplatNode"
+        lt2 = @nd_expression[l_id]
+        if lt2 >= 0
+          collect_pattern_targets(lt2, "int_array", names, types, params)
+        end
+      end
+      reqs_lt = parse_id_list(@nd_requireds[pat_id])
+      reqs_lt.each { |r| collect_pattern_targets(r, elem_t, names, types, params) }
+      r_id = @nd_right[pat_id]
+      if r_id >= 0 && @nd_type[r_id] == "SplatNode"
+        rt3 = @nd_expression[r_id]
+        if rt3 >= 0
+          collect_pattern_targets(rt3, "int_array", names, types, params)
+        end
+      end
+    end
   end
 
   def scan_locals_children(nid, names, types, params)
@@ -25092,19 +25218,13 @@ class Compiler
     pred_type = infer_type(pred)
     pred_val = compile_expr(pred)
     tmp = new_temp
-    if pred_type == "poly"
-      emit("  sp_RbVal " + tmp + " = " + pred_val + ";")
-    else
-      if pred_type == "string"
-        emit("  const char *" + tmp + " = " + pred_val + ";")
-      else
-        if pred_type == "float"
-          emit("  mrb_float " + tmp + " = " + pred_val + ";")
-        else
-          emit("  mrb_int " + tmp + " = " + pred_val + ";")
-        end
-      end
-    end
+    # Type the predicate temp by the inferred type so destructuring
+    # patterns (ArrayPattern needs an array pointer; HashPattern needs
+    # a hash pointer) can index into it natively. Earlier the default
+    # to mrb_int truncated array/hash predicates and broke their
+    # downstream pattern checks.
+    ctype = c_type(pred_type)
+    emit("  " + ctype + " " + tmp + " = " + pred_val + ";")
     conds = parse_id_list(@nd_conditions[nid])
     k = 0
     while k < conds.length
@@ -25199,6 +25319,134 @@ class Compiler
       left = compile_in_pattern(@nd_left[pat_id], tmp, pred_type)
       right = compile_in_pattern(@nd_right[pat_id], tmp, pred_type)
       return "(" + left + " || " + right + ")"
+    end
+    if pt == "CapturePatternNode"
+      # `pat => name` -- match inner pattern, then bind tmp to name.
+      # Returns the boolean (inner_check && (lv_name = tmp, 1)).
+      inner_pat = @nd_expression[pat_id]
+      target_id = @nd_target[pat_id]
+      inner_check = compile_in_pattern(inner_pat, tmp, pred_type)
+      bind_name = @nd_name[target_id]
+      return "(" + inner_check + " && ((lv_" + bind_name + " = " + tmp + "), 1))"
+    end
+    if pt == "LocalVariableTargetNode"
+      # Bare LocalVariableTarget in a pattern (rare at top-level; common
+      # inside ArrayPattern requireds). Always matches; binds tmp.
+      bind_name = @nd_name[pat_id]
+      return "((lv_" + bind_name + " = " + tmp + "), 1)"
+    end
+    if pt == "ArrayPatternNode"
+      # `[a, b, *r]` against a typed-array predicate. Length check first
+      # (>= N when there's a rest splat, == N otherwise), then bind each
+      # required to indexed access; bind rest to a slice.
+      reqs = parse_id_list(@nd_requireds[pat_id])
+      rest_id = @nd_rest[pat_id]
+      has_rest = (rest_id >= 0 && @nd_type[rest_id] == "SplatNode")
+      n = reqs.length
+      type_ok = "1"
+      len_expr = ""
+      get_pre = ""
+      slice_fn = ""
+      if pred_type == "int_array"
+        len_expr = tmp + "->len"
+        get_pre = "sp_IntArray_get(" + tmp + ", "
+        slice_fn = "sp_IntArray_slice"
+      elsif pred_type == "str_array"
+        len_expr = tmp + "->len"
+        get_pre = "sp_StrArray_get(" + tmp + ", "
+        slice_fn = "sp_StrArray_slice"
+      else
+        # Other predicate types (poly, scalar) can't deconstruct as
+        # array; pattern fails to match.
+        return "0"
+      end
+      # Length check
+      len_check = ""
+      if has_rest
+        len_check = "(" + len_expr + " >= " + n.to_s + ")"
+      else
+        len_check = "(" + len_expr + " == " + n.to_s + ")"
+      end
+      # Build binding chain via comma operator
+      binds = ""
+      i = 0
+      while i < n
+        req = reqs[i]
+        elem_c = get_pre + i.to_s + ")"
+        if @nd_type[req] == "LocalVariableTargetNode"
+          bn = @nd_name[req]
+          binds = binds + "(lv_" + bn + " = " + elem_c + "), "
+        else
+          # Sub-pattern check on the element. Wrap in && inside the
+          # binding comma chain by emitting (sub_check ? bind : 0).
+          # Simpler: inline the check before bindings via &&.
+          # Defer for now: only support LocalVariableTarget requireds.
+          return "0"
+        end
+        i = i + 1
+      end
+      if has_rest
+        rest_target = @nd_expression[rest_id]
+        if rest_target >= 0 && @nd_type[rest_target] == "LocalVariableTargetNode"
+          rn = @nd_name[rest_target]
+          binds = binds + "(lv_" + rn + " = " + slice_fn + "(" + tmp + ", " + n.to_s + ", " + len_expr + " - " + n.to_s + ")), "
+        end
+        # Anonymous splat -- still need length check, just no binding.
+      end
+      return "(" + type_ok + " && " + len_check + " && (" + binds + "1))"
+    end
+    if pt == "HashPatternNode"
+      # `{k:, m:, **r}` against a typed-hash predicate. Each element is
+      # an AssocNode mapping a SymbolNode key to a LocalVariableTargetNode
+      # (shorthand) or a sub-pattern. has_key + value-bind per element.
+      els = parse_id_list(@nd_elements[pat_id])
+      hash_get = ""
+      hash_has = ""
+      sym_k_pre = "sp_sym_"
+      if pred_type == "sym_int_hash"
+        hash_get = "sp_SymIntHash_get(" + tmp + ", "
+        hash_has = "sp_SymIntHash_has_key(" + tmp + ", "
+      elsif pred_type == "sym_poly_hash"
+        hash_get = "sp_SymPolyHash_get(" + tmp + ", "
+        hash_has = "sp_SymPolyHash_has_key(" + tmp + ", "
+      elsif pred_type == "sym_str_hash"
+        hash_get = "sp_SymStrHash_get(" + tmp + ", "
+        hash_has = "sp_SymStrHash_has_key(" + tmp + ", "
+      else
+        return "0"
+      end
+      checks = ""
+      binds = ""
+      i = 0
+      while i < els.length
+        el = els[i]
+        if @nd_type[el] == "AssocNode"
+          key_id = @nd_key[el]
+          val_id = @nd_expression[el]
+          if @nd_type[key_id] == "SymbolNode"
+            sym_c = sym_k_pre + @nd_content[key_id]
+            if checks != ""
+              checks = checks + " && "
+            end
+            checks = checks + hash_has + sym_c + ")"
+            if val_id >= 0 && @nd_type[val_id] == "LocalVariableTargetNode"
+              bn = @nd_name[val_id]
+              binds = binds + "(lv_" + bn + " = " + hash_get + sym_c + ")), "
+            end
+          end
+        end
+        i = i + 1
+      end
+      if checks == ""
+        checks = "1"
+      end
+      return "(" + checks + " && (" + binds + "1))"
+    end
+    if pt == "FindPatternNode"
+      # `[*, x, *]` -- find a contiguous middle subsequence matching
+      # the requireds. Niche; for now defer with a runtime no-match.
+      # A future CL would emit a linear scan loop.
+      return "0"
     end
     if pt == "PinnedVariableNode" || pt == "PinnedExpressionNode"
       # `^v` / `^(expr)` -- pin a value for equality comparison instead

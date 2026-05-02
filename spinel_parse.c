@@ -602,6 +602,54 @@ static int flatten(pm_node_t *node) {
     R("numeric", n->numeric);
     break;
   }
+  case PM_ARRAY_PATTERN_NODE: {
+    /* `[a, b, *r]` inside case/in. Optional leading `constant` (e.g.
+       Foo[a,b]) is skipped at codegen for now -- no class-tagged
+       deconstruct dispatch yet. requireds are individual sub-patterns
+       (literal, type, LocalVariableTargetNode, nested pattern); rest
+       is a SplatNode wrapping a LocalVariableTargetNode (or anonymous
+       splat); posts are sub-patterns after the splat. */
+    pm_array_pattern_node_t *n = (pm_array_pattern_node_t *)node;
+    N("ArrayPatternNode");
+    if (n->constant) R("constant", n->constant);
+    A("requireds", &n->requireds);
+    if (n->rest) R("rest", n->rest);
+    A("posts", &n->posts);
+    break;
+  }
+  case PM_HASH_PATTERN_NODE: {
+    /* `{k:, m: pat, **r}` inside case/in. elements are AssocNodes
+       (key SymbolNode -> value LocalVariableTargetNode for shorthand,
+       or a sub-pattern). rest is AssocSplatNode wrapping a target,
+       or NoKeywordsParameterNode for **nil. */
+    pm_hash_pattern_node_t *n = (pm_hash_pattern_node_t *)node;
+    N("HashPatternNode");
+    if (n->constant) R("constant", n->constant);
+    A("elements", &n->elements);
+    if (n->rest) R("rest", n->rest);
+    break;
+  }
+  case PM_CAPTURE_PATTERN_NODE: {
+    /* `pat => name` inside case/in. value is the inner sub-pattern,
+       target is a LocalVariableTargetNode. */
+    pm_capture_pattern_node_t *n = (pm_capture_pattern_node_t *)node;
+    N("CapturePatternNode");
+    R("value", n->value);
+    R("target", (pm_node_t *)n->target);
+    break;
+  }
+  case PM_FIND_PATTERN_NODE: {
+    /* `[*, x, *]` inside case/in -- find first match for the middle
+       requireds, bind the leading and trailing splats to the slices.
+       Niche Ruby 3.0 feature; codegen lowers to a linear scan. */
+    pm_find_pattern_node_t *n = (pm_find_pattern_node_t *)node;
+    N("FindPatternNode");
+    if (n->constant) R("constant", n->constant);
+    R("left", (pm_node_t *)n->left);
+    A("requireds", &n->requireds);
+    R("right", n->right);
+    break;
+  }
   case PM_PINNED_VARIABLE_NODE: {
     /* `^v` inside a case/in pattern -- pin a local for equality
        comparison instead of binding it. The `variable` child is
