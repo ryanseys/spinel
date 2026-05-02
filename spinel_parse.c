@@ -360,6 +360,13 @@ static int flatten(pm_node_t *node) {
     R("value", n->value);
     break;
   }
+  case PM_GLOBAL_VARIABLE_OR_WRITE_NODE: {
+    pm_global_variable_or_write_node_t *n = (pm_global_variable_or_write_node_t *)node;
+    N("GlobalVariableOrWriteNode");
+    NAME("name", n->name);
+    R("value", n->value);
+    break;
+  }
   case PM_INTEGER_NODE: {
     pm_integer_node_t *n = (pm_integer_node_t *)node;
     N("IntegerNode");

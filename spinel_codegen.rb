@@ -22398,6 +22398,15 @@ class Compiler
       end
       return
     end
+    if t == "GlobalVariableOrWriteNode"
+      # `$x ||= val`. Note: in Ruby, an undefined $-var reads as nil,
+      # which is falsy in C terms, so the `if (!cname)` guard fires
+      # both for never-assigned and for assigned-to-falsy globals.
+      cname = sanitize_gvar(@nd_name[nid])
+      val = compile_expr(@nd_expression[nid])
+      emit("  if (!(" + cname + ")) " + cname + " = " + val + ";")
+      return
+    end
     if t == "LocalVariableWriteNode"
       lname = @nd_name[nid]
       # Check for method(:name) assignment
