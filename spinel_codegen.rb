@@ -22887,6 +22887,12 @@ class Compiler
         end
       end
     end
+    if @nd_type[tid] == "GlobalVariableTargetNode"
+      # Multi-assign LHS: `$a, $b = 1, 2`. Same storage path as
+      # GlobalVariableWriteNode but without an embedded expression --
+      # the value is supplied by the caller.
+      emit("  " + sanitize_gvar(@nd_name[tid]) + " = " + value_expr + ";")
+    end
   end
 
   # Handle `a, *b = rhs` / `*a, b = rhs` / `a, *b, c = rhs`.
