@@ -380,6 +380,16 @@ static int flatten(pm_node_t *node) {
     NAME("name", n->name);
     break;
   }
+  case PM_NO_KEYWORDS_PARAMETER_NODE: {
+    /* `def f(**nil)` -- explicit kwarg rejection. Spinel's keyword-arg
+       handling is already conservative (only known keys accepted),
+       so the explicit "no keywords" marker is effectively a no-op
+       at the codegen level. We emit the node so a ParametersNode
+       carrying it doesn't leave a NULL keyword slot, but the
+       compile-time effect is nothing. */
+    N("NoKeywordsParameterNode");
+    break;
+  }
   case PM_INTEGER_NODE: {
     pm_integer_node_t *n = (pm_integer_node_t *)node;
     N("IntegerNode");
