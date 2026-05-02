@@ -1,0 +1,9 @@
+# Prism nodes intentionally not implemented in Spinel.
+# Format: <NodeName> # <one-line rationale>
+# This list is the source of truth for "what we documented as out of scope";
+# tools/check_node_coverage.rb cross-checks against it and only fails CI on
+# undocumented gaps.
+#
+# Currently empty — Phase 12 work (Rational, Imaginary, FlipFlop,
+# MatchLastLine, InterpolatedMatchLastLine) will populate this list once
+# the reject-vs-implement decision is made.

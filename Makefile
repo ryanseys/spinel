@@ -193,6 +193,9 @@ bootstrap: spinel_codegen$(EXE)
 
 # ---- Test ----
 
+check-coverage:
+	@ruby tools/check_node_coverage.rb
+
 TESTS := $(wildcard test/*.rb)
 TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 
