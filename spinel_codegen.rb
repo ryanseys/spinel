@@ -15828,11 +15828,14 @@ class Compiler
       return
     end
     if pt == "FindPatternNode"
+      # Splat targets get the array type matching the predicate's
+      # element type ("int" -> int_array, "string" -> str_array).
+      array_t_fp = elem_t == "string" ? "str_array" : "int_array"
       l_id = @nd_left[pat_id]
       if l_id >= 0 && @nd_type[l_id] == "SplatNode"
         lt2 = @nd_expression[l_id]
         if lt2 >= 0
-          collect_pattern_targets(lt2, "int_array", names, types, params)
+          collect_pattern_targets(lt2, array_t_fp, names, types, params)
         end
       end
       reqs_lt = parse_id_list(@nd_requireds[pat_id])
@@ -15841,7 +15844,7 @@ class Compiler
       if r_id >= 0 && @nd_type[r_id] == "SplatNode"
         rt3 = @nd_expression[r_id]
         if rt3 >= 0
-          collect_pattern_targets(rt3, "int_array", names, types, params)
+          collect_pattern_targets(rt3, array_t_fp, names, types, params)
         end
       end
     end
@@ -25475,10 +25478,64 @@ class Compiler
       return "(" + checks + " && (" + binds + "1))"
     end
     if pt == "FindPatternNode"
-      # `[*, x, *]` -- find a contiguous middle subsequence matching
-      # the requireds. Niche; for now defer with a runtime no-match.
-      # A future CL would emit a linear scan loop.
-      return "0"
+      # `[*pre, ...requireds..., *post]` -- find a contiguous window
+      # where requireds match, bind splats to before/after slices.
+      # Simplified implementation: when all requireds are
+      # LocalVariableTargetNodes (no literal anchors), match if the
+      # array has at least requireds.length elements; bind requireds
+      # to the first N elements and splats to before (empty) / after.
+      # Literal-anchored finds (e.g. [*, 3, *]) would need a runtime
+      # scan loop and stay deferred.
+      reqs_fp = parse_id_list(@nd_requireds[pat_id])
+      n_fp = reqs_fp.length
+      get_pre_fp = ""
+      slice_fn_fp = ""
+      len_expr_fp = ""
+      if pred_type == "int_array"
+        get_pre_fp = "sp_IntArray_get(" + tmp + ", "
+        slice_fn_fp = "sp_IntArray_slice"
+        len_expr_fp = tmp + "->len"
+      elsif pred_type == "str_array"
+        get_pre_fp = "sp_StrArray_get(" + tmp + ", "
+        slice_fn_fp = "sp_StrArray_slice"
+        len_expr_fp = tmp + "->len"
+      else
+        return "0"
+      end
+      # Verify all requireds are LocalVariableTargetNodes -- otherwise
+      # we'd need the literal-anchored scan loop.
+      all_targets = 1
+      reqs_fp.each { |r| if @nd_type[r] != "LocalVariableTargetNode"; all_targets = 0; end }
+      if all_targets == 0
+        return "0"
+      end
+      # Length check + bind requireds to indices 0..N-1
+      binds_fp = ""
+      i = 0
+      while i < n_fp
+        bn = @nd_name[reqs_fp[i]]
+        binds_fp = binds_fp + "(lv_" + bn + " = " + get_pre_fp + i.to_s + ")), "
+        i = i + 1
+      end
+      # Bind left splat to empty slice (slice from 0 length 0).
+      l_fp = @nd_left[pat_id]
+      if l_fp >= 0 && @nd_type[l_fp] == "SplatNode"
+        ltgt = @nd_expression[l_fp]
+        if ltgt >= 0 && @nd_type[ltgt] == "LocalVariableTargetNode"
+          ln2 = @nd_name[ltgt]
+          binds_fp = binds_fp + "(lv_" + ln2 + " = " + slice_fn_fp + "(" + tmp + ", 0, 0)), "
+        end
+      end
+      # Bind right splat to elements after index N-1.
+      r_fp = @nd_right[pat_id]
+      if r_fp >= 0 && @nd_type[r_fp] == "SplatNode"
+        rtgt = @nd_expression[r_fp]
+        if rtgt >= 0 && @nd_type[rtgt] == "LocalVariableTargetNode"
+          rn2 = @nd_name[rtgt]
+          binds_fp = binds_fp + "(lv_" + rn2 + " = " + slice_fn_fp + "(" + tmp + ", " + n_fp.to_s + ", " + len_expr_fp + " - " + n_fp.to_s + ")), "
+        end
+      end
+      return "((" + len_expr_fp + " >= " + n_fp.to_s + ") && (" + binds_fp + "1))"
     end
     if pt == "PinnedVariableNode" || pt == "PinnedExpressionNode"
       # `^v` / `^(expr)` -- pin a value for equality comparison instead
