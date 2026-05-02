@@ -163,6 +163,12 @@ class Compiler
     # storage model better. Documented in the test fixtures.
     @cvar_names = "".split(",")
     @cvar_types = "".split(",")
+    # Compile-time literal initializer per cvar, if the class-body
+    # write was `@@x = <literal>`. "" means "use type-default". This
+    # is necessary because Spinel doesn't run class-body statements
+    # at startup, so any initializer that's not a fold-able literal
+    # leaves the cvar at its type-default until first write.
+    @cvar_init_values = "".split(",")
     @const_expr_ids = []
     @const_scope_names = "".split(",")
 
@@ -1520,7 +1526,7 @@ class Compiler
   end
 
   # Register or update a cvar's inferred type. Called from
-  # scan_class_vars during the pre-pass and (defensively) again from
+  # collect_cvars during the pre-pass and (defensively) again from
   # compile_stmt when the write fires.
   def register_cvar(qname, t)
     ci = find_cvar_idx(qname)
@@ -1534,7 +1540,51 @@ class Compiler
     end
     @cvar_names.push(qname)
     @cvar_types.push(t)
+    @cvar_init_values.push("")
     @cvar_names.length - 1
+  end
+
+  # Try to compile-time fold a class-body cvar initializer. If the
+  # value is a simple literal (Integer/Float/String/Symbol/True/
+  # False/Nil), capture it as the static decl's initializer so the
+  # cvar enters the program with the source's value rather than the
+  # type default. Spinel doesn't run class-body statements at
+  # startup, so without this fold a `class C; @@x = 42; end` leaves
+  # cvar_C_x at 0 until the first write fires.
+  def try_fold_cvar_init(qname, value_id)
+    if value_id < 0
+      return
+    end
+    vt = @nd_type[value_id]
+    lit = ""
+    if vt == "IntegerNode"
+      lit = @nd_value[value_id].to_s
+    end
+    if vt == "FloatNode"
+      lit = @nd_content[value_id]
+    end
+    if vt == "StringNode"
+      lit = c_string_literal(@nd_content[value_id])
+    end
+    if vt == "SymbolNode"
+      lit = compile_symbol_literal(@nd_content[value_id])
+    end
+    if vt == "TrueNode"
+      lit = "TRUE"
+    end
+    if vt == "FalseNode"
+      lit = "FALSE"
+    end
+    if vt == "NilNode"
+      lit = "0"
+    end
+    if lit == ""
+      return
+    end
+    ci = find_cvar_idx(qname)
+    if ci >= 0
+      @cvar_init_values[ci] = lit
+    end
   end
 
   # If the constant's initializer is a simple literal, return the
@@ -1784,6 +1834,14 @@ class Compiler
     if t == "InstanceVariableReadNode"
       if @current_class_idx >= 0
         return cls_ivar_type(@current_class_idx, @nd_name[nid])
+      end
+      return "int"
+    end
+    if t == "ClassVariableReadNode"
+      qname = cvar_qname(@current_class_idx, @nd_name[nid])
+      ci = find_cvar_idx(qname)
+      if ci >= 0
+        return @cvar_types[ci]
       end
       return "int"
     end
@@ -5425,6 +5483,7 @@ class Compiler
       qname = cvar_qname(class_idx, @nd_name[nid])
       val_t = infer_type(@nd_expression[nid])
       register_cvar(qname, val_t)
+      try_fold_cvar_init(qname, @nd_expression[nid])
     end
     cs = []
     push_child_ids(nid, cs)
@@ -11915,11 +11974,18 @@ class Compiler
     end
     # Emit file-scope class-variable declarations. One C global per
     # (class, name) pair, named `cvar_<ClassName>_<var>`; populated
-    # by the ClassVariable*WriteNode codegen arms.
+    # by the ClassVariable*WriteNode codegen arms. If the class-body
+    # initializer was a simple literal, collect_cvars folded it into
+    # @cvar_init_values; otherwise we fall back to the type default
+    # and the cvar is undefined-acting until the first runtime write.
     i = 0
     while i < @cvar_names.length
       ctp = c_type(@cvar_types[i])
-      emit_raw("static " + ctp + " cvar_" + @cvar_names[i] + " = " + c_default_val(@cvar_types[i]) + ";")
+      init = @cvar_init_values[i]
+      if init == ""
+        init = c_default_val(@cvar_types[i])
+      end
+      emit_raw("static " + ctp + " cvar_" + @cvar_names[i] + " = " + init + ";")
       i = i + 1
     end
     if @cvar_names.length > 0
@@ -15486,6 +15552,26 @@ class Compiler
         mi3 = mi3 + 1
       end
       return self_arrow + sanitize_ivar(@nd_name[nid])
+    end
+    if t == "ClassVariableReadNode"
+      # `@@var` -- reads the per-(class,name) C global registered
+      # by collect_cvars. @current_class_idx is set during class
+      # body and class/instance method compilation, so the lookup
+      # resolves to whichever class's body or method we're in.
+      return "cvar_" + cvar_qname(@current_class_idx, @nd_name[nid])
+    end
+    if t == "ClassVariableWriteNode"
+      # Expression-form write: `def tick; @@x = @@x + 1; end` --
+      # the method body's last expression is the write, and
+      # CRuby returns the assigned value. Emits the C-comma
+      # form so the assignment fires AND the value is the
+      # result, matching the InstanceVariableWriteNode pattern
+      # at line 14780.
+      qname = cvar_qname(@current_class_idx, @nd_name[nid])
+      val = compile_expr(@nd_expression[nid])
+      val_t = infer_type(@nd_expression[nid])
+      register_cvar(qname, val_t)
+      return "(cvar_" + qname + " = " + val + ")"
     end
     if t == "InstanceVariableWriteNode"
       # Issue #130: same poly-slot boxing as the statement-form emit.
