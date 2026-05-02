@@ -6416,6 +6416,19 @@ class Compiler
       end
     }
 
+    # Third pass: handle alias / undef inside the class body. Must
+    # run AFTER all own methods + included module methods are
+    # registered, so the alias source can be located.
+    body_stmts.each { |sid|
+      if @nd_type[sid] == "AliasMethodNode"
+        nn = symbol_node_literal(@nd_new_name[sid])
+        on = symbol_node_literal(@nd_old_name[sid])
+        if nn != "" && on != ""
+          collect_class_method_alias(ci, nn, on)
+        end
+      end
+    }
+
     # Collect ivars. Pin the lexical scope to this class so any
     # `@x = Foo.new(...)` inside its methods resolves `Foo` against
     # the same scope chain the call site sees — without this,
@@ -6427,6 +6440,51 @@ class Compiler
     @current_class_idx = ci
     collect_ivars(ci)
     @current_class_idx = saved_idx
+  end
+
+  # Extract the literal name from a SymbolNode argument. Returns ""
+  # for InterpolatedSymbolNode and other shapes Spinel doesn't
+  # support as alias source/target at compile time.
+  def symbol_node_literal(nid)
+    if nid < 0
+      return ""
+    end
+    if @nd_type[nid] == "SymbolNode"
+      v = @nd_content[nid]
+      if v == ""
+        v = @nd_name[nid]
+      end
+      return v
+    end
+    ""
+  end
+
+  # `alias new old` -- copy the existing class method's slot to a
+  # new name in @cls_meth_*. CRuby snapshots the method body at
+  # alias time; copying the body_id (a number, not a reference)
+  # gives the same snapshot semantics: a later `def old` redefinition
+  # would assign a new body_id to the old slot but the alias slot
+  # keeps the original.
+  def collect_class_method_alias(ci, new_name, old_name)
+    src = cls_find_method_direct(ci, old_name)
+    if src < 0
+      $stderr.puts "Spinel: alias `" + new_name + "` -> `" + old_name + "`: source method not found in class " + @cls_names[ci]
+      exit(1)
+    end
+    pnames_all = @cls_meth_params[ci].split("|")
+    ptypes_all = @cls_meth_ptypes[ci].split("|")
+    rets_all   = @cls_meth_returns[ci].split(";")
+    bodies_all = @cls_meth_bodies[ci].split(";")
+    defs_all   = @cls_meth_defaults[ci].split("|")
+    params  = pnames_all[src] || ""
+    ptypes  = ptypes_all[src] || ""
+    ret     = rets_all[src] || "int"
+    body_id = bodies_all[src].to_i
+    defs    = defs_all[src] || ""
+    append_cls_meth(ci, new_name, params, ptypes, ret, body_id, defs)
+    if @cls_meth_has_yield[ci] != ""
+      @cls_meth_has_yield[ci] = @cls_meth_has_yield[ci] + ";0"
+    end
   end
 
   def collect_module_methods_into_class(ci, mod_name)
@@ -26049,6 +26107,13 @@ class Compiler
       # already populated @galias_*; references through
       # sanitize_gvar / scan_features / infer_type pick up the
       # rewrite. Nothing to emit at runtime.
+      return
+    end
+    if t == "AliasMethodNode"
+      # `alias new old` -- compile-time only. The class-collect pass
+      # already registered a duplicate method-table entry under the
+      # new name pointing to the same body_id; subsequent dispatch
+      # finds it like any other method.
       return
     end
     if t == "LocalVariableWriteNode"
