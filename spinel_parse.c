@@ -1025,6 +1025,19 @@ static int flatten(pm_node_t *node) {
     A("parts", &n->parts);
     break;
   }
+  case PM_ALIAS_METHOD_NODE: {
+    /* `alias new old` -- compile-time method-name aliasing inside a
+       class body. new_name and old_name are SymbolNode literals
+       (`alias greet hello` desugars to `alias :greet :hello`).
+       Spinel registers a duplicate method-table entry under the new
+       name pointing to the same body, so dispatch on `.greet` lands
+       on the same C function as `.hello`. */
+    pm_alias_method_node_t *n = (pm_alias_method_node_t *)node;
+    N("AliasMethodNode");
+    R("new_name", n->new_name);
+    R("old_name", n->old_name);
+    break;
+  }
   case PM_ALIAS_GLOBAL_VARIABLE_NODE: {
     /* `alias $copy $orig` -- compile-time gvar aliasing. The
        new_name and old_name slots are GlobalVariableReadNodes whose
