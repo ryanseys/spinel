@@ -714,6 +714,19 @@ static int flatten(pm_node_t *node) {
     N("SourceEncodingNode");
     break;
   }
+  case PM_SHAREABLE_CONSTANT_NODE: {
+    /* `# shareable_constant_value: literal` magic comment that wraps
+       a constant write. Spinel has no Ractor support, so the
+       shareability state is a no-op. We lower at parse time by
+       flattening the inner write directly into THIS node slot and
+       discarding the wrapper. Many later codegen scanner passes
+       look for ConstantWriteNode at the top level of statements;
+       lowering here lets all of them work without modification. */
+    pm_shareable_constant_node_t *n = (pm_shareable_constant_node_t *)node;
+    /* Re-flatten the inner write at *this* id by rewinding the counter. */
+    node_counter--;
+    return flatten(n->write);
+  }
   case PM_SPLAT_NODE: {
     pm_splat_node_t *n = (pm_splat_node_t *)node;
     N("SplatNode");
