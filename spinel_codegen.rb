@@ -22360,6 +22360,44 @@ class Compiler
         return
       end
     end
+    if t == "GlobalVariableOperatorWriteNode"
+      # `$x += val`, `$x -= val`, etc. Mirrors LocalVariableOperatorWriteNode
+      # for the storage path (sanitize_gvar instead of fiber_var_ref).
+      op = @nd_binop[nid]
+      val = compile_expr(@nd_expression[nid])
+      cname = sanitize_gvar(@nd_name[nid])
+      if op == "+"
+        emit("  " + cname + " += " + val + ";")
+      end
+      if op == "-"
+        emit("  " + cname + " -= " + val + ";")
+      end
+      if op == "*"
+        emit("  " + cname + " *= " + val + ";")
+      end
+      if op == "/"
+        emit("  " + cname + " /= " + val + ";")
+      end
+      if op == "%"
+        emit("  " + cname + " = sp_imod(" + cname + ", " + val + ");")
+      end
+      if op == "<<"
+        emit("  " + cname + " <<= " + val + ";")
+      end
+      if op == ">>"
+        emit("  " + cname + " >>= " + val + ";")
+      end
+      if op == "&"
+        emit("  " + cname + " &= " + val + ";")
+      end
+      if op == "|"
+        emit("  " + cname + " |= " + val + ";")
+      end
+      if op == "^"
+        emit("  " + cname + " ^= " + val + ";")
+      end
+      return
+    end
     if t == "LocalVariableWriteNode"
       lname = @nd_name[nid]
       # Check for method(:name) assignment

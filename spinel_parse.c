@@ -352,6 +352,14 @@ static int flatten(pm_node_t *node) {
     NAME("name", n->name);
     break;
   }
+  case PM_GLOBAL_VARIABLE_OPERATOR_WRITE_NODE: {
+    pm_global_variable_operator_write_node_t *n = (pm_global_variable_operator_write_node_t *)node;
+    N("GlobalVariableOperatorWriteNode");
+    NAME("name", n->name);
+    NAME("binary_operator", n->binary_operator);
+    R("value", n->value);
+    break;
+  }
   case PM_INTEGER_NODE: {
     pm_integer_node_t *n = (pm_integer_node_t *)node;
     N("IntegerNode");
