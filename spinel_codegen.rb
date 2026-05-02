@@ -68,6 +68,9 @@ class Compiler
     @nd_constant_path = []
     @nd_superclass = []
     @nd_rest = []
+    # ParametersNode#keyword_rest -- holds a KeywordRestParameterNode
+    # (def f(**kw)) or NoKeywordsParameterNode (def f(**nil)).
+    @nd_keyword_rest = []
     @nd_rescue_clause = []
     @nd_ensure_clause = []
     @nd_expression = []
@@ -89,6 +92,11 @@ class Compiler
     @nd_exceptions = "".split(",")
     @nd_targets = "".split(",")
     @nd_rights = "".split(",")
+    # ParametersNode#posts -- required params after the splat
+    # (def f(*r, x, y) → posts = [x, y]). Currently unused by codegen
+    # (post-rest parameters aren't observed in test/), but the parser
+    # emits the field so future tests get a proper AST.
+    @nd_posts = "".split(",")
     # AliasMethodNode / AliasGlobalVariableNode -- parallel ref slots
     # for the new and old names (SymbolNode for methods, GlobalVariableReadNode
     # for globals).
@@ -455,6 +463,7 @@ class Compiler
     @nd_constant_path.push(-1)
     @nd_superclass.push(-1)
     @nd_rest.push(-1)
+    @nd_keyword_rest.push(-1)
     @nd_rescue_clause.push(-1)
     @nd_ensure_clause.push(-1)
     @nd_expression.push(-1)
@@ -474,6 +483,7 @@ class Compiler
     @nd_exceptions.push("")
     @nd_targets.push("")
     @nd_rights.push("")
+    @nd_posts.push("")
     @nd_new_name.push(-1)
     @nd_old_name.push(-1)
     @nd_names.push("")
@@ -700,6 +710,9 @@ class Compiler
     if field == "rest"
       @nd_rest[nid] = ref_id
     end
+    if field == "keyword_rest"
+      @nd_keyword_rest[nid] = ref_id
+    end
     if field == "rescue_clause"
       @nd_rescue_clause[nid] = ref_id
     end
@@ -792,6 +805,9 @@ class Compiler
     if field == "names"
       # UndefNode -- list of SymbolNode names to undef.
       @nd_names[nid] = ids_str
+    end
+    if field == "posts"
+      @nd_posts[nid] = ids_str
     end
   end
 
@@ -6329,6 +6345,22 @@ class Compiler
         result = result + @nd_name[rest]
       end
     end
+    # Keyword rest (`**kw`). Anonymous `**` synthesizes `__anon_kwrest`.
+    # NoKeywordsParameterNode (`**nil`) is skipped here -- it doesn't
+    # carry a slot.
+    kwrest = @nd_keyword_rest[params]
+    if kwrest >= 0
+      if @nd_type[kwrest] == "KeywordRestParameterNode"
+        if result != ""
+          result = result + ","
+        end
+        kn = @nd_name[kwrest]
+        if kn == ""
+          kn = "__anon_kwrest"
+        end
+        result = result + kn
+      end
+    end
     # Block parameter (&block)
     blk = @nd_block[params]
     if blk >= 0
@@ -6422,6 +6454,17 @@ class Compiler
         result = result + "int_array"
       end
     end
+    # Keyword rest (**kw). Spinel kwargs use symbol keys (matches
+    # `f(a: 1)` keyword hash construction), so the slot is sym_poly_hash.
+    kwrest = @nd_keyword_rest[params]
+    if kwrest >= 0
+      if @nd_type[kwrest] == "KeywordRestParameterNode"
+        if result != ""
+          result = result + ","
+        end
+        result = result + "sym_poly_hash"
+      end
+    end
     # Block parameter (&block)
     blk = @nd_block[params]
     if blk >= 0
@@ -6482,6 +6525,17 @@ class Compiler
     rest = @nd_rest[params]
     if rest >= 0
       if @nd_type[rest] == "RestParameterNode"
+        if result != ""
+          result = result + ","
+        end
+        result = result + "-1"
+      end
+    end
+    # Keyword rest (**kw): no compile-time default, slot stays NULL
+    # until the caller provides a hash.
+    kwrest = @nd_keyword_rest[params]
+    if kwrest >= 0
+      if @nd_type[kwrest] == "KeywordRestParameterNode"
         if result != ""
           result = result + ","
         end

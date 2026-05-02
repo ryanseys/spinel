@@ -730,6 +730,8 @@ static int flatten(pm_node_t *node) {
     A("keywords", &n->keywords);
     if (n->rest) R("rest", n->rest);
     if (n->block) R("block", n->block);
+    A("posts", &n->posts);
+    if (n->keyword_rest) R("keyword_rest", n->keyword_rest);
     break;
   }
   case PM_REQUIRED_PARAMETER_NODE: {
