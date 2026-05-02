@@ -24440,6 +24440,18 @@ class Compiler
         return
       end
     end
+    if t == "GlobalVariableAndWriteNode"
+      # `$x &&= val`. Short-circuit: only evaluate RHS when LHS is
+      # truthy. compile_expr can emit prerequisite statements; running
+      # it inside the C `if` block keeps those side effects on the
+      # assign branch only. Mirror of OrWrite, condition inverted.
+      cname = sanitize_gvar(@nd_name[nid])
+      emit("  if (" + cname + ") {")
+      val = compile_expr(@nd_expression[nid])
+      emit("    " + cname + " = " + val + ";")
+      emit("  }")
+      return
+    end
     if t == "LocalVariableWriteNode"
       lname = @nd_name[nid]
       # Check for method(:name) assignment
