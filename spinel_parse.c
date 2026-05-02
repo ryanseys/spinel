@@ -752,6 +752,19 @@ static int flatten(pm_node_t *node) {
             (long)(node->location.start - g_parser->start));
     exit(1);
   }
+  case PM_IMPLICIT_NODE: {
+    /* Wraps an implicit value reference, e.g. the value side of a
+       hash-shorthand `{x:}` -- already unwrapped inline in
+       PM_ASSOC_NODE at line 445. This top-level case catches
+       PM_IMPLICIT_NODE in any other context (kwarg shorthand
+       inside KeywordHashNode, future Prism evolutions) by lowering
+       to its inner value at the same id slot, the same trick
+       PM_SHAREABLE_CONSTANT_NODE and PM_IT_LOCAL_VARIABLE_READ_NODE
+       already use. */
+    pm_implicit_node_t *n = (pm_implicit_node_t *)node;
+    node_counter--;
+    return flatten(n->value);
+  }
   case PM_SHAREABLE_CONSTANT_NODE: {
     /* `# shareable_constant_value: literal` magic comment that wraps
        a constant write. Spinel has no Ractor support, so the
