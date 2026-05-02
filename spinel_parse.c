@@ -851,6 +851,27 @@ static int flatten(pm_node_t *node) {
     N("LocalVariableReadNode");
     S("name", escape_str((const uint8_t *)"_1", 2));
     break;
+  case PM_EMBEDDED_VARIABLE_NODE: {
+    /* `"foo #@bar"` shorthand for `"foo #{@bar}"`. The cleanest
+       implementation is parser-side lowering: synthesize an
+       EmbeddedStatementsNode wrapping a StatementsNode whose single
+       body element is the variable read. The existing interpolation
+       path then handles it without any codegen change.
+
+       Same lowering trick as PM_IT_LOCAL_VARIABLE_READ_NODE -- emit
+       a different node type at the same `id` slot so parent walks
+       (parts list of the surrounding InterpolatedString) keep the
+       slot unchanged. The wrapped StatementsNode gets a fresh id
+       allocated via node_counter++. */
+    pm_embedded_variable_node_t *n = (pm_embedded_variable_node_t *)node;
+    int var_id = flatten(n->variable);
+    int stmts_id = node_counter++;
+    out_add("N %d StatementsNode", stmts_id);
+    out_add("A %d body %d", stmts_id, var_id);
+    N("EmbeddedStatementsNode");
+    out_add("R %d statements %d", id, stmts_id);
+    break;
+  }
   default: {
     /* Fallback: emit unknown node type */
     char buf[64];
