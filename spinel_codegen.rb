@@ -15807,8 +15807,23 @@ class Compiler
     end
     if pt == "CapturePatternNode"
       tgt = @nd_target[pat_id]
+      # Bound name's type comes from the inner pattern when it's a
+      # ConstantReadNode type check (Integer / String / Float). Otherwise
+      # falls back to the surrounding element type.
+      cap_t = elem_t
+      inner_pat = @nd_expression[pat_id]
+      if inner_pat >= 0 && @nd_type[inner_pat] == "ConstantReadNode"
+        cn2 = @nd_name[inner_pat]
+        if cn2 == "Integer"
+          cap_t = "int"
+        elsif cn2 == "String"
+          cap_t = "string"
+        elsif cn2 == "Float"
+          cap_t = "float"
+        end
+      end
       if tgt >= 0
-        collect_pattern_targets(tgt, elem_t, names, types, params)
+        collect_pattern_targets(tgt, cap_t, names, types, params)
       end
       return
     end
@@ -25322,12 +25337,27 @@ class Compiler
     end
     if pt == "CapturePatternNode"
       # `pat => name` -- match inner pattern, then bind tmp to name.
-      # Returns the boolean (inner_check && (lv_name = tmp, 1)).
+      # Returns the boolean (inner_check && (lv_name = bind_expr, 1)).
+      # When pred_type is poly and the inner pattern is a type check
+      # (ConstantReadNode for Integer/String/Float), unbox the value
+      # so the bound local gets the unboxed primitive (matching the
+      # type collect_pattern_targets gave it).
       inner_pat = @nd_expression[pat_id]
       target_id = @nd_target[pat_id]
       inner_check = compile_in_pattern(inner_pat, tmp, pred_type)
       bind_name = @nd_name[target_id]
-      return "(" + inner_check + " && ((lv_" + bind_name + " = " + tmp + "), 1))"
+      bind_expr = tmp
+      if pred_type == "poly" && @nd_type[inner_pat] == "ConstantReadNode"
+        cn = @nd_name[inner_pat]
+        if cn == "Integer"
+          bind_expr = tmp + ".v.i"
+        elsif cn == "String"
+          bind_expr = tmp + ".v.s"
+        elsif cn == "Float"
+          bind_expr = tmp + ".v.f"
+        end
+      end
+      return "(" + inner_check + " && ((lv_" + bind_name + " = " + bind_expr + "), 1))"
     end
     if pt == "LocalVariableTargetNode"
       # Bare LocalVariableTarget in a pattern (rare at top-level; common
