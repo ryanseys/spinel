@@ -22407,6 +22407,13 @@ class Compiler
       emit("  if (!(" + cname + ")) " + cname + " = " + val + ";")
       return
     end
+    if t == "GlobalVariableAndWriteNode"
+      # `$x &&= val`. Mirror of OrWrite, condition inverted.
+      cname = sanitize_gvar(@nd_name[nid])
+      val = compile_expr(@nd_expression[nid])
+      emit("  if (" + cname + ") " + cname + " = " + val + ";")
+      return
+    end
     if t == "LocalVariableWriteNode"
       lname = @nd_name[nid]
       # Check for method(:name) assignment
