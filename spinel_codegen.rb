@@ -24440,6 +24440,20 @@ class Compiler
         return
       end
     end
+    if t == "GlobalVariableOrWriteNode"
+      # `$x ||= val`. Short-circuit: only evaluate RHS when LHS is
+      # falsy. compile_expr can emit prerequisite statements; running
+      # it inside the C `if` block ensures those side effects only
+      # fire on the assign branch. Note: in Ruby, an undefined $-var
+      # reads as nil, which is falsy in C terms, so the `if (!cname)`
+      # guard fires both for never-assigned and assigned-to-falsy.
+      cname = sanitize_gvar(@nd_name[nid])
+      emit("  if (!(" + cname + ")) {")
+      val = compile_expr(@nd_expression[nid])
+      emit("    " + cname + " = " + val + ";")
+      emit("  }")
+      return
+    end
     if t == "LocalVariableWriteNode"
       lname = @nd_name[nid]
       # Check for method(:name) assignment
