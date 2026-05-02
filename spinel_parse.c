@@ -997,6 +997,23 @@ static int flatten(pm_node_t *node) {
     I("flags", n->base.flags);
     break;
   }
+  case PM_MATCH_LAST_LINE_NODE: {
+    /* `if /pat/` -- bare regex literal in conditional context. Implicit
+       `=~ $_`. Spinel populates sp_lastline at sp_gets/sp_readline. */
+    pm_match_last_line_node_t *n = (pm_match_last_line_node_t *)node;
+    N("MatchLastLineNode");
+    S("unescaped", escape_pm_string(&n->unescaped));
+    I("flags", n->base.flags);
+    break;
+  }
+  case PM_INTERPOLATED_MATCH_LAST_LINE_NODE: {
+    /* `if /pat_#{x}/` -- runtime-compiled regex against $_. */
+    pm_interpolated_match_last_line_node_t *n = (pm_interpolated_match_last_line_node_t *)node;
+    N("InterpolatedMatchLastLineNode");
+    A("parts", &n->parts);
+    I("flags", n->base.flags);
+    break;
+  }
   case PM_NUMBERED_REFERENCE_READ_NODE: {
     pm_numbered_reference_read_node_t *n = (pm_numbered_reference_read_node_t *)node;
     N("NumberedReferenceReadNode");

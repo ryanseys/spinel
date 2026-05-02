@@ -1497,7 +1497,7 @@ class Compiler
 
   # ---- Class/Method lookup (all parallel arrays) ----
   def find_regexp_index(nid)
-    if @nd_type[nid] == "RegularExpressionNode"
+    if @nd_type[nid] == "RegularExpressionNode" || @nd_type[nid] == "MatchLastLineNode"
       pat = @nd_unescaped[nid]
       i = 0
       while i < @regexp_patterns.length
@@ -1970,6 +1970,10 @@ class Compiler
       # registered type so the C codegen sees the correct format
       # specifier when interpolating or printing.
       gname = resolve_gvar_alias(@nd_name[nid])
+      # `$_` -- implicit last-line slot, populated by gets/readlines.
+      if gname == "$_"
+        return "string"
+      end
       gi = 0
       while gi < @gvar_names.length
         if @gvar_names[gi] == gname
@@ -10383,9 +10387,11 @@ class Compiler
         @flipflop_sites.push(nid)
       end
     end
-    if t == "RegularExpressionNode"
+    if t == "RegularExpressionNode" || t == "MatchLastLineNode"
       @needs_regexp = 1
-      # Collect pattern and flags
+      # Collect pattern and flags. MatchLastLineNode (`if /pat/`) shares
+      # the same `unescaped` + `flags` shape as RegularExpressionNode,
+      # so the static pre-compile path is identical.
       pat = @nd_unescaped[nid]
       flags = "0"
       if @nd_flags[nid] != 0
@@ -16126,6 +16132,38 @@ class Compiler
       # string interpolation -- behave identically.
       return compile_interpolated(nid)
     end
+    if t == "MatchLastLineNode"
+      # `if /pat/` -- match against $_ (sp_lastline). Pattern is
+      # pre-compiled at startup (registered via scan_features).
+      ridx = find_regexp_index(nid)
+      if ridx >= 0
+        return "(sp_lastline && sp_re_match_p(sp_re_pat_" + ridx.to_s + ", sp_lastline))"
+      end
+      return "0"
+    end
+    if t == "InterpolatedMatchLastLineNode"
+      # `if /pat_#{x}/` -- runtime-compiled pattern against sp_lastline.
+      pat_c = compile_interpolated(nid)
+      flags = "0"
+      if @nd_flags[nid] != 0
+        f = @nd_flags[nid]
+        parts2 = "".split(",")
+        if f & 4 != 0
+          parts2.push("1")
+        end
+        if f & 16 != 0
+          parts2.push("6")
+        end
+        if f & 8 != 0
+          parts2.push("8")
+        end
+        if parts2.length > 0
+          flags = parts2.join("|")
+        end
+      end
+      @needs_regexp = 1
+      return "(sp_lastline && sp_re_match_p(sp_re_runtime_compile(" + pat_c + ", " + flags + "), sp_lastline))"
+    end
     if t == "FlipFlopNode"
       # `if a..b` -- bistable per-site state. Inclusive form (..)
       # transitions to active when left fires (and returns true), then
@@ -16611,6 +16649,12 @@ class Compiler
       end
       if gname == "$?"
         return "sp_last_status"
+      end
+      if gname == "$_"
+        # Implicit "last line read by gets/readline". Updated at every
+        # sp_gets / sp_readlines call site; null-guarded like the
+        # BackReferenceReadNode arm above.
+        return "(sp_lastline ? sp_lastline : \"\")"
       end
       # General global variable
       return sanitize_gvar(gname)
