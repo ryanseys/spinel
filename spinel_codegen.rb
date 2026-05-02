@@ -14227,6 +14227,29 @@ class Compiler
             end
           end
         end
+        if @nd_type[tid] == "MultiTargetNode"
+          # Nested LHS: `a, (b, c) = 1, [2, 3]`. The inner targets'
+          # local-variable names need to be declared in this scope
+          # too, with the per-element type derived from the matching
+          # outer-RHS slot's array type.
+          inner_targets = parse_id_list(@nd_targets[tid])
+          inner_slot_type = multi_write_target_type(val_id2, ti2)
+          inner_elem_type = nested_target_elem_type(inner_slot_type)
+          inner_targets.each { |inner_tid|
+            if @nd_type[inner_tid] == "LocalVariableTargetNode"
+              ilname = @nd_name[inner_tid]
+              if not_in(ilname, names) == 1
+                if not_in(ilname, params) == 1
+                  names.push(ilname)
+                  types.push(inner_elem_type)
+                  @scan_literal_flags.push("")
+                  @scan_empty_flags.push("")
+                  @scan_empty_hash_flags.push("")
+                end
+              end
+            end
+          }
+        end
         ti2 = ti2 + 1
       }
       rest_id2 = @nd_rest[nid]
@@ -23298,6 +23321,13 @@ class Compiler
       register_cvar(qname, value_type)
       emit("  cvar_" + qname + " = " + value_expr + ";")
     end
+    if @nd_type[tid] == "MultiTargetNode"
+      # Nested LHS: `a, (b, c), d = 1, [2, 3], 4`. The slot of the
+      # outer multi-write that this node occupies is an array-typed
+      # value; recursively unpack it into the inner targets via
+      # per-element index reads.
+      compile_nested_multi_target(tid, value_expr, value_type)
+    end
     if @nd_type[tid] == "IndexTargetNode"
       # Multi-assign LHS: `a[0], b[1] = 1, 2`. Each LHS is an
       # IndexTargetNode with a receiver and an arguments slot.
@@ -23475,6 +23505,66 @@ class Compiler
     while k < nright
       offset_expr = len_tmp + " - " + (nright - k).to_s
       emit_multi_write_target(rights[k], get_fn + "(" + tmp + ", " + offset_expr + ")", elem_t)
+      k = k + 1
+    end
+  end
+
+  # The element type of an array-typed MultiTarget slot. For
+  # `a, (b, c) = 1, [2, 3]` the slot value_type is "int_array" and
+  # this returns "int" so b/c are declared as mrb_int. Mirrors the
+  # array-prefix dispatch in compile_nested_multi_target.
+  def nested_target_elem_type(slot_type)
+    if slot_type == "int_array"
+      return "int"
+    end
+    if slot_type == "float_array"
+      return "float"
+    end
+    if slot_type == "str_array"
+      return "string"
+    end
+    if slot_type == "sym_array"
+      return "sym"
+    end
+    "int"
+  end
+
+  # Recursively unpack a `MultiTargetNode` slot in a multi-assign.
+  # `value_expr` holds the value of this slot (always an array-typed
+  # expression, since the source is `a, (b, c), d = ..., [2, 3], ...`).
+  # We dispatch on the array's element type and emit per-target
+  # index reads.
+  def compile_nested_multi_target(tid, value_expr, value_type)
+    lefts = parse_id_list(@nd_targets[tid])
+    prefix = ""
+    elem_t = "int"
+    if value_type == "int_array"
+      prefix = "IntArray"
+      elem_t = "int"
+    end
+    if value_type == "float_array"
+      prefix = "FloatArray"
+      elem_t = "float"
+    end
+    if value_type == "str_array"
+      prefix = "StrArray"
+      elem_t = "string"
+    end
+    if value_type == "sym_array"
+      prefix = "IntArray"
+      elem_t = "sym"
+    end
+    if prefix == ""
+      $stderr.puts "Spinel: MultiTargetNode requires a typed-array RHS slot; got value_type \"" + value_type + "\""
+      exit(1)
+    end
+    @needs_gc = 1
+    tmp_arr = new_temp
+    emit("  sp_" + prefix + " *" + tmp_arr + " = " + value_expr + ";")
+    k = 0
+    while k < lefts.length
+      inner_val = "sp_" + prefix + "_get(" + tmp_arr + ", " + k.to_s + ")"
+      emit_multi_write_target(lefts[k], inner_val, elem_t)
       k = k + 1
     end
   end

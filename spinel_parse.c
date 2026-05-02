@@ -1025,6 +1025,18 @@ static int flatten(pm_node_t *node) {
     A("parts", &n->parts);
     break;
   }
+  case PM_MULTI_TARGET_NODE: {
+    /* Nested LHS in destructuring multi-assign:
+       `a, (b, c), d = 1, [2, 3], 4`. The inner (b, c) parenthesized
+       group becomes a MultiTargetNode that recursively unpacks its
+       slot of the RHS into the inner targets. */
+    pm_multi_target_node_t *n = (pm_multi_target_node_t *)node;
+    N("MultiTargetNode");
+    A("lefts", &n->lefts);
+    if (n->rest) R("rest", n->rest);
+    A("rights", &n->rights);
+    break;
+  }
   case PM_BACK_REFERENCE_READ_NODE: {
     /* `$&`, `$~`, `$'`, $`. Spinel populates sp_re_match_str / _pre /
        _post during regex matches alongside sp_re_captures (which the
