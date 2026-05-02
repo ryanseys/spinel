@@ -6390,6 +6390,16 @@ class Compiler
         end
         result = result + kn
       end
+      # `def f(...)` -- ForwardingParameterNode synthesizes the
+      # rest+kwrest+block triple under fixed __fwd_* names. Both this
+      # method's signature and any g(...) call inside it pivot on these
+      # exact names.
+      if @nd_type[kwrest] == "ForwardingParameterNode"
+        if result != ""
+          result = result + ","
+        end
+        result = result + "__fwd_a,__fwd_kw,__fwd_b"
+      end
     end
     # Block parameter (&block)
     blk = @nd_block[params]
@@ -6494,6 +6504,12 @@ class Compiler
         end
         result = result + "sym_poly_hash"
       end
+      if @nd_type[kwrest] == "ForwardingParameterNode"
+        if result != ""
+          result = result + ","
+        end
+        result = result + "int_array,sym_poly_hash,proc"
+      end
     end
     # Block parameter (&block)
     blk = @nd_block[params]
@@ -6570,6 +6586,12 @@ class Compiler
           result = result + ","
         end
         result = result + "-1"
+      end
+      if @nd_type[kwrest] == "ForwardingParameterNode"
+        if result != ""
+          result = result + ","
+        end
+        result = result + "-1,-1,-1"
       end
     end
     # Block param
@@ -22347,6 +22369,16 @@ class Compiler
     arg_ids = []
     if args_id >= 0
       arg_ids = get_args(args_id)
+    end
+    # Forwarding shortcut: `g(...)` from inside `def f(...)`. The caller's
+    # signature carries the synthetic __fwd_a / __fwd_kw / __fwd_b triple
+    # injected by collect_pnames. The callee, if also using `(...)`,
+    # declares the same triple in the matching last three slots. Bypass
+    # the per-param walker entirely and pass the locals through.
+    fwd = 0
+    arg_ids.each { |aid| if @nd_type[aid] == "ForwardingArgumentsNode"; fwd = 1; end }
+    if fwd == 1
+      return "lv___fwd_a, lv___fwd_kw, lv___fwd_b"
     end
     pnames = @meth_param_names[mi].split(",")
     ptypes = @meth_param_types[mi].split(",")

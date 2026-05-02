@@ -791,6 +791,21 @@ static int flatten(pm_node_t *node) {
     if (n->name) { NAME("name", n->name); }
     break;
   }
+  case PM_FORWARDING_PARAMETER_NODE: {
+    /* `def f(...)`. Prism puts this in the keyword_rest slot. The
+       codegen treats it as a marker that triggers the synthetic
+       triple (__fwd_a / __fwd_kw / __fwd_b) at signature time. No
+       fields to emit. */
+    N("ForwardingParameterNode");
+    break;
+  }
+  case PM_FORWARDING_ARGUMENTS_NODE: {
+    /* `g(...)`. Appears as a child inside an ArgumentsNode. Codegen
+       expands to *__fwd_a, **__fwd_kw, &__fwd_b at the call site.
+       No fields. */
+    N("ForwardingArgumentsNode");
+    break;
+  }
   case PM_REQUIRED_KEYWORD_PARAMETER_NODE: {
     pm_required_keyword_parameter_node_t *n = (pm_required_keyword_parameter_node_t *)node;
     N("RequiredKeywordParameterNode");
