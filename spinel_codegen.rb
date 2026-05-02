@@ -228,6 +228,12 @@ class Compiler
     # the top of main() during emit_main.
     @pre_execution_blocks = []
 
+    # `END { ... }` bodies, in source-encounter order. Each emits a
+    # static C function; main() startup registers them via atexit()
+    # which naturally invokes handlers LIFO -- matches CRuby's
+    # reverse-of-source-order END execution.
+    @post_execution_blocks = []
+
     # ---- Scope stack for local variables ----
     @scope_names = "".split(",")
     @scope_types = "".split(",")
@@ -5604,6 +5610,12 @@ class Compiler
         bid = @nd_body[sid]
         if bid >= 0
           @pre_execution_blocks.push(bid)
+        end
+      end
+      if @nd_type[sid] == "PostExecutionNode"
+        bid = @nd_body[sid]
+        if bid >= 0
+          @post_execution_blocks.push(bid)
         end
       end
     }
@@ -13636,6 +13648,11 @@ class Compiler
     emit_class_methods
     emit_ieval_funcs
     emit_toplevel_methods
+    # `END { ... }` -- emit one zero-arg static C function per
+    # PostExecutionNode body. main() startup will atexit()-register
+    # them in source order; atexit invokes handlers LIFO, matching
+    # CRuby's reverse-order END execution.
+    emit_post_execution_funcs
     # Emit lambda functions before main (they are generated during compilation)
     # We emit them in emit_main after forward declarations
     emit_main
@@ -16662,6 +16679,29 @@ class Compiler
     end
   end
 
+  # `END { ... }` -- one zero-arg static C function per registered
+  # PostExecutionNode body. main() registers them via atexit() at
+  # startup. atexit invokes handlers LIFO, matching CRuby's
+  # reverse-of-source-order END execution.
+  def emit_post_execution_funcs
+    pe = 0
+    while pe < @post_execution_blocks.length
+      bnid = @post_execution_blocks[pe]
+      emit_raw("static void sp_end_block_" + pe.to_s + "(void) {")
+      @indent = 1
+      @in_main = 1
+      push_scope
+      if bnid >= 0
+        compile_stmt(bnid)
+      end
+      pop_scope
+      @in_main = 0
+      emit_raw("}")
+      emit_raw("")
+      pe = pe + 1
+    end
+  end
+
   def emit_toplevel_method(mi)
     mfullname = @meth_names[mi]
     @current_method_name = mfullname
@@ -18333,6 +18373,17 @@ class Compiler
         compile_stmt(bnid)
       end
       pi = pi + 1
+    end
+
+    # `END { ... }` register-atexit: each PostExecutionNode body
+    # was emitted as a static `sp_end_block_<n>` function during
+    # emit_post_execution_funcs. We register them in source order;
+    # atexit invokes handlers LIFO, matching CRuby's reverse-order
+    # END semantics.
+    pe = 0
+    while pe < @post_execution_blocks.length
+      emit("  atexit(sp_end_block_" + pe.to_s + ");")
+      pe = pe + 1
     end
 
     # Compile main statements
@@ -26190,6 +26241,13 @@ class Compiler
       # @pre_execution_blocks; emit_main hoists it to the top of
       # main(). The toplevel statement itself is a no-op at its
       # source location.
+      return
+    end
+    if t == "PostExecutionNode"
+      # `END { ... }`. collect_all pushed the body onto
+      # @post_execution_blocks; emit_post_execution_funcs emits the
+      # static sp_end_block_<n> function and emit_main inserts an
+      # atexit() call at startup.
       return
     end
     if t == "LocalVariableWriteNode"
