@@ -193,6 +193,10 @@ class Compiler
     @undef_class_idx = []
     @undef_method = "".split(",")
 
+    # `BEGIN { ... }` bodies, in source-encounter order. Hoisted to
+    # the top of main() during emit_main.
+    @pre_execution_blocks = []
+
     # ---- Scope stack for local variables ----
     @scope_names = "".split(",")
     @scope_types = "".split(",")
@@ -5083,9 +5087,11 @@ class Compiler
       end
     }
 
-    # Pass 2.1: top-level `alias $copy $orig`. Records the rewrite
-    # in @galias_* so sanitize_gvar / scan_features / infer_type
-    # treat $copy and $orig as the same storage slot.
+    # Pass 2.1: top-level `alias $copy $orig` and BEGIN.
+    # Aliases are recorded into @galias_* (consulted by
+    # sanitize_gvar / scan_features / infer_type so $copy and
+    # $orig share storage). BEGIN bodies are queued for emit_main
+    # to hoist to the top of main() in source-encounter order.
     stmts.each { |sid|
       if @nd_type[sid] == "AliasGlobalVariableNode"
         nn = @nd_name[@nd_new_name[sid]]
@@ -5093,6 +5099,14 @@ class Compiler
         if nn != "" && on != ""
           @galias_new.push(nn)
           @galias_old.push(on)
+        end
+      end
+      if @nd_type[sid] == "PreExecutionNode"
+        # Parser maps the "statements" field onto @nd_body via
+        # set_ref_field at line 706.
+        bid = @nd_body[sid]
+        if bid >= 0
+          @pre_execution_blocks.push(bid)
         end
       end
     }
@@ -15612,6 +15626,19 @@ class Compiler
     # Pre-scan: map lambda variable names to their return types
     scan_lambda_ret_types(stmts)
 
+    # `BEGIN { ... }` hoist: each PreExecutionNode body runs at the
+    # very top of main, in source-encounter order, BEFORE any other
+    # top-level statements. Bodies were collected by collect_all
+    # Pass 2.1.
+    pi = 0
+    while pi < @pre_execution_blocks.length
+      bnid = @pre_execution_blocks[pi]
+      if bnid >= 0
+        compile_stmt(bnid)
+      end
+      pi = pi + 1
+    end
+
     # Compile main statements
     stmts.each { |sid|
       if @nd_type[sid] != "DefNode"
@@ -22990,6 +23017,13 @@ class Compiler
     if t == "UndefNode"
       # `undef foo` -- compile-time only. The class-collect pass
       # already recorded the removal in @undef_*; nothing to emit.
+      return
+    end
+    if t == "PreExecutionNode"
+      # `BEGIN { ... }`. The collect_all Pass 2.1 already pushed the
+      # body onto @pre_execution_blocks; emit_main hoists it to the
+      # top of main(). The toplevel statement itself is a no-op at
+      # its source location.
       return
     end
     if t == "LocalVariableWriteNode"
