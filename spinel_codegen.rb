@@ -1518,6 +1518,24 @@ class Compiler
     -1
   end
 
+  # Returns a C expression evaluating to a `mrb_regexp_pattern *`, or "" if
+  # the node isn't a regex source. Static literals resolve to their
+  # pre-compiled `sp_re_pat_<i>` global; InterpolatedRegularExpressionNode
+  # gets a runtime `sp_re_runtime_compile(...)` call. Centralizes the
+  # dispatch so each =~/match?/match/gsub/sub/scan/split call site doesn't
+  # have to repeat the InterpolatedRegex check.
+  def regex_pat_c_expr(nid)
+    ridx = find_regexp_index(nid)
+    if ridx >= 0
+      return "sp_re_pat_" + ridx.to_s
+    end
+    if @nd_type[nid] == "InterpolatedRegularExpressionNode"
+      @needs_regexp = 1
+      return compile_expr(nid)
+    end
+    ""
+  end
+
   def find_class_idx(name)
     i = 0
     while i < @cls_names.length
@@ -10236,6 +10254,12 @@ class Compiler
         @needs_setjmp = 1
       end
     end
+    if t == "InterpolatedRegularExpressionNode" || t == "InterpolatedMatchLastLineNode"
+      # Pre-flag so emit_regexp_runtime fires (defines sp_re_init) even
+      # when the program uses ONLY interpolated regexes -- without this,
+      # the linker fails on the unreferenced sp_re_init main() call.
+      @needs_regexp = 1
+    end
     if t == "RegularExpressionNode"
       @needs_regexp = 1
       # Collect pattern and flags
@@ -15962,6 +15986,33 @@ class Compiler
       # string interpolation -- behave identically.
       return compile_interpolated(nid)
     end
+    if t == "InterpolatedRegularExpressionNode"
+      # `/foo_#{x}/` -- pattern is only known at execution time, so we
+      # can't pre-compile to an sp_re_pat_<i> global. Build the pattern
+      # string via compile_interpolated, feed it to sp_re_runtime_compile.
+      # Flags map identically to the static RegularExpressionNode arm
+      # (Prism IGNORE_CASE=4 → engine 1; MULTI_LINE=16 → 6; EXTENDED=8 → 8).
+      pat_c = compile_interpolated(nid)
+      flags = "0"
+      if @nd_flags[nid] != 0
+        f = @nd_flags[nid]
+        parts2 = "".split(",")
+        if f & 4 != 0
+          parts2.push("1")
+        end
+        if f & 16 != 0
+          parts2.push("6")
+        end
+        if f & 8 != 0
+          parts2.push("8")
+        end
+        if parts2.length > 0
+          flags = parts2.join("|")
+        end
+      end
+      @needs_regexp = 1
+      return "sp_re_runtime_compile(" + pat_c + ", " + flags + ")"
+    end
     if t == "BackReferenceReadNode"
       # `$&`, `$~`, `$'`, `$`. Spinel populates sp_re_match_str /
       # _pre / _post in sp_re_set_captures alongside sp_re_captures
@@ -17320,19 +17371,20 @@ class Compiler
     # regex.match? / regex.match / regex =~ str  — receiver is the regex
     # (typically a constant referring to a /…/ literal). Dispatched here
     # rather than compile_string_method_expr, which wants a string
-    # receiver.
+    # receiver. Receiver can also be InterpolatedRegularExpressionNode
+    # for `/foo_#{x}/.match?(s)` (rare but valid).
     if recv >= 0 && (mname == "match?" || mname == "=~" || mname == "match")
-      ridx = find_regexp_index(recv)
-      if ridx >= 0
+      rpat = regex_pat_c_expr(recv)
+      if rpat != ""
         args_id = @nd_arguments[nid]
         if args_id >= 0
           arg_ids = get_args(args_id)
           if arg_ids.length > 0
             sc = compile_expr(arg_ids[0])
             if mname == "match?"
-              return "sp_re_match_p(sp_re_pat_" + ridx.to_s + ", " + sc + ")"
+              return "sp_re_match_p(" + rpat + ", " + sc + ")"
             end
-            return "sp_re_match(sp_re_pat_" + ridx.to_s + ", " + sc + ")"
+            return "sp_re_match(" + rpat + ", " + sc + ")"
           end
         end
       end
@@ -18495,15 +18547,17 @@ class Compiler
       return "(" + compile_expr(recv) + " >= " + compile_arg0(nid) + ")"
     end
     if mname == "=~"
-      # str =~ /pattern/ → sp_re_match(pat, str)
+      # str =~ /pattern/ → sp_re_match(pat, str). Pattern source can be
+      # a static literal, a regex-typed local/const (find_regexp_index),
+      # or InterpolatedRegularExpressionNode (runtime-compiled).
       rc = compile_expr_gc_rooted(recv)
       re_args_id = @nd_arguments[nid]
       if re_args_id >= 0
         argl = get_args(re_args_id)
         if argl.length > 0
-          ridx = find_regexp_index(argl[0])
-          if ridx >= 0
-            return "sp_re_match(sp_re_pat_" + ridx.to_s + ", " + rc + ")"
+          rpat = regex_pat_c_expr(argl[0])
+          if rpat != ""
+            return "sp_re_match(" + rpat + ", " + rc + ")"
           end
         end
       end
@@ -19070,9 +19124,9 @@ class Compiler
       if args_id >= 0
         a = get_args(args_id)
         if a.length > 0
-          ridx = find_regexp_index(a[0])
-          if ridx >= 0
-            return "sp_re_split(sp_re_pat_" + ridx.to_s + ", " + rc + ")"
+          rpat = regex_pat_c_expr(a[0])
+          if rpat != ""
+            return "sp_re_split(" + rpat + ", " + rc + ")"
           end
           # Peephole: literal "".split(literal) is the empty-StrArray idiom;
           # skip the strlen+sep scan and emit a direct allocator call.
@@ -19094,11 +19148,10 @@ class Compiler
         if args_id >= 0
           argl = get_args(args_id)
           if argl.length > 0
-            ridx = find_regexp_index(argl[0])
-            if ridx >= 0
+            rpat = regex_pat_c_expr(argl[0])
+            if rpat != ""
               @needs_str_array = 1
-              @needs_regexp = 1
-              return "sp_re_scan(sp_re_pat_" + ridx.to_s + ", " + rc + ")"
+              return "sp_re_scan(" + rpat + ", " + rc + ")"
             end
           end
         end
@@ -19109,9 +19162,9 @@ class Compiler
       if re_args_id >= 0
         argl = get_args(re_args_id)
         if argl.length > 0
-          ridx = find_regexp_index(argl[0])
-          if ridx >= 0
-            return "sp_re_match_p(sp_re_pat_" + ridx.to_s + ", " + rc + ")"
+          rpat = regex_pat_c_expr(argl[0])
+          if rpat != ""
+            return "sp_re_match_p(" + rpat + ", " + rc + ")"
           end
         end
       end
@@ -19122,9 +19175,9 @@ class Compiler
       if args_id >= 0
         a = get_args(args_id)
         if a.length >= 2
-          ridx = find_regexp_index(a[0])
-          if ridx >= 0
-            return "sp_re_gsub(sp_re_pat_" + ridx.to_s + ", " + rc + ", " + compile_expr(a[1]) + ")"
+          rpat = regex_pat_c_expr(a[0])
+          if rpat != ""
+            return "sp_re_gsub(" + rpat + ", " + rc + ", " + compile_expr(a[1]) + ")"
           end
           return "sp_str_gsub(" + rc + ", " + compile_expr(a[0]) + ", " + compile_expr(a[1]) + ")"
         end
@@ -19136,9 +19189,9 @@ class Compiler
       if args_id >= 0
         a = get_args(args_id)
         if a.length >= 2
-          ridx = find_regexp_index(a[0])
-          if ridx >= 0
-            return "sp_re_sub(sp_re_pat_" + ridx.to_s + ", " + rc + ", " + compile_expr(a[1]) + ")"
+          rpat = regex_pat_c_expr(a[0])
+          if rpat != ""
+            return "sp_re_sub(" + rpat + ", " + rc + ", " + compile_expr(a[1]) + ")"
           end
           return "sp_str_sub(" + rc + ", " + compile_expr(a[0]) + ", " + compile_expr(a[1]) + ")"
         end

@@ -942,6 +942,17 @@ static int flatten(pm_node_t *node) {
     I("flags", n->base.flags);
     break;
   }
+  case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {
+    /* `/foo_#{x}/`. Same shape as InterpolatedStringNode -- carries
+       `parts` -- plus a flags integer matching RegularExpressionNode.
+       Codegen builds the pattern string via compile_interpolated and
+       feeds it to sp_re_runtime_compile at execution time. */
+    pm_interpolated_regular_expression_node_t *n = (pm_interpolated_regular_expression_node_t *)node;
+    N("InterpolatedRegularExpressionNode");
+    A("parts", &n->parts);
+    I("flags", n->base.flags);
+    break;
+  }
   case PM_NUMBERED_REFERENCE_READ_NODE: {
     pm_numbered_reference_read_node_t *n = (pm_numbered_reference_read_node_t *)node;
     N("NumberedReferenceReadNode");

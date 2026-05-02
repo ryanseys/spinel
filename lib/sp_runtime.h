@@ -569,6 +569,17 @@ static void sp_re_set_captures(const char *str, int *caps, int ncaps) {
   }
 }
 
+/* Runtime-compiled regex pattern, used by InterpolatedRegularExpressionNode
+   (`/foo_#{x}/`) where the pattern string is only known at execution time.
+   Static `/lit/` literals stay on the existing pre-compile path through
+   sp_re_pat_<i> globals; this helper feeds the same engine but at the call
+   site. The returned pattern is heap-owned by the regex engine -- callers
+   are responsible for re_free() when done, but most call sites discard it
+   after a single match (Ruby's idiom `/.../.match(s)` is one-shot anyway). */
+static mrb_regexp_pattern *sp_re_runtime_compile(const char *pat, uint32_t flags) {
+  return re_compile(pat, (int64_t)strlen(pat), flags);
+}
+
 static mrb_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {
   int64_t slen = (int64_t)strlen(str);
   int ncaps = 32;
