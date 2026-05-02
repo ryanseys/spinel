@@ -1668,6 +1668,9 @@ class Compiler
     if t == "SourceFileNode"
       return "string"
     end
+    if t == "SourceEncodingNode"
+      return "string"
+    end
     if t == "SymbolNode"
       return "symbol"
     end
@@ -15642,6 +15645,11 @@ class Compiler
       # script path. (Inlined-require call sites all see the same
       # path; documented limitation in test/source_file.rb.)
       return c_string_literal(@nd_content[nid])
+    end
+    if t == "SourceEncodingNode"
+      # __ENCODING__ — Spinel has no Encoding runtime; we return
+      # the canonical "UTF-8" string. Documented in test/source_encoding.rb.
+      return c_string_literal("UTF-8")
     end
     if t == "ArgumentsNode"
       arg_ids = parse_id_list(@nd_args[nid])

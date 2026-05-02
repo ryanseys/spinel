@@ -707,6 +707,13 @@ static int flatten(pm_node_t *node) {
     free(path_e);
     break;
   }
+  case PM_SOURCE_ENCODING_NODE: {
+    /* `__ENCODING__`. CRuby returns an Encoding object; Spinel has
+       no Encoding runtime, so we return the canonical name as a
+       frozen string. All Spinel sources are UTF-8. */
+    N("SourceEncodingNode");
+    break;
+  }
   case PM_SPLAT_NODE: {
     pm_splat_node_t *n = (pm_splat_node_t *)node;
     N("SplatNode");
