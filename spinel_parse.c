@@ -43,6 +43,7 @@ static void out_add(const char *fmt, ...) {
 
 /* ---- Name from constant pool ---- */
 static const pm_parser_t *g_parser;
+static const char *g_source_file = "";
 
 static char *cstr(pm_constant_id_t id) {
   if (id == 0) return strdup("");
@@ -695,6 +696,17 @@ static int flatten(pm_node_t *node) {
     I("start_line", (long long)line);
     break;
   }
+  case PM_SOURCE_FILE_NODE: {
+    /* `__FILE__`. Spinel inlines `require`/`require_relative` at parse
+       time so we cannot recover the per-call-site source file. We
+       always return the toplevel script path passed to spinel_parse,
+       documented in test/source_file.rb. */
+    N("SourceFileNode");
+    char *path_e = escape_str((const uint8_t *)g_source_file, strlen(g_source_file));
+    emit_str(id, "content", path_e);
+    free(path_e);
+    break;
+  }
   case PM_SPLAT_NODE: {
     pm_splat_node_t *n = (pm_splat_node_t *)node;
     N("SplatNode");
@@ -1218,6 +1230,7 @@ int main(int argc, char **argv) {
   }
 
   g_parser = &parser;
+  g_source_file = source_file;
 
   /* Flatten AST to text */
   lines = NULL;

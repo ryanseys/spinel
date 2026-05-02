@@ -1665,6 +1665,9 @@ class Compiler
     if t == "StringNode"
       return "string"
     end
+    if t == "SourceFileNode"
+      return "string"
+    end
     if t == "SymbolNode"
       return "symbol"
     end
@@ -15633,6 +15636,12 @@ class Compiler
     end
     if t == "SourceLineNode"
       return @nd_value[nid].to_s
+    end
+    if t == "SourceFileNode"
+      # __FILE__ — parser populated @nd_content with the toplevel
+      # script path. (Inlined-require call sites all see the same
+      # path; documented limitation in test/source_file.rb.)
+      return c_string_literal(@nd_content[nid])
     end
     if t == "ArgumentsNode"
       arg_ids = parse_id_list(@nd_args[nid])
