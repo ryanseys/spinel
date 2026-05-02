@@ -1025,6 +1025,15 @@ static int flatten(pm_node_t *node) {
     A("parts", &n->parts);
     break;
   }
+  case PM_BACK_REFERENCE_READ_NODE: {
+    /* `$&`, `$~`, `$'`, $`. Spinel populates sp_re_match_str / _pre /
+       _post during regex matches alongside sp_re_captures (which the
+       NumberedReferenceReadNode arm already reads). */
+    pm_back_reference_read_node_t *n = (pm_back_reference_read_node_t *)node;
+    N("BackReferenceReadNode");
+    NAME("name", n->name);
+    break;
+  }
   case PM_EMBEDDED_VARIABLE_NODE: {
     /* `"foo #@bar"` shorthand for `"foo #{@bar}"`. The cleanest
        implementation is parser-side lowering: synthesize an

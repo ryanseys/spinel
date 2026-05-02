@@ -526,6 +526,16 @@ static const char *sp_re_captures[10] = {0};
 static int sp_re_caps[64];
 static const char *sp_re_last_str = "";
 
+/* Symbolic back-references populated alongside the numbered captures.
+   Read by codegen's BackReferenceReadNode arm:
+     $&  -> sp_re_match_str (the whole matched substring)
+     $`  -> sp_re_match_pre  (substring before the match)
+     $'  -> sp_re_match_post (substring after the match)
+   $~ falls back to $& since Spinel has no MatchData wrapper. */
+static const char *sp_re_match_str = NULL;
+static const char *sp_re_match_pre = NULL;
+static const char *sp_re_match_post = NULL;
+
 static void sp_re_set_captures(const char *str, int *caps, int ncaps) {
   sp_re_last_str = str;
   for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
@@ -536,6 +546,26 @@ static void sp_re_set_captures(const char *str, int *caps, int ncaps) {
       memcpy(buf, str+caps[i*2], len); buf[len] = 0;
       sp_re_captures[i] = buf;
     }
+  }
+  /* Populate the symbolic back-references from caps[0]/[1] (the whole
+     match span). NULL when the match failed; the codegen ternary
+     falls back to "". */
+  sp_re_match_str = NULL;
+  sp_re_match_pre = NULL;
+  sp_re_match_post = NULL;
+  if (ncaps >= 1 && caps[0] >= 0 && caps[1] >= 0) {
+    int slen = (int)strlen(str);
+    int mlen = caps[1] - caps[0];
+    char *m = sp_str_alloc_raw(mlen + 1);
+    memcpy(m, str + caps[0], mlen); m[mlen] = 0;
+    sp_re_match_str = m;
+    char *pre = sp_str_alloc_raw(caps[0] + 1);
+    memcpy(pre, str, caps[0]); pre[caps[0]] = 0;
+    sp_re_match_pre = pre;
+    int post_len = slen - caps[1];
+    char *post = sp_str_alloc_raw(post_len + 1);
+    memcpy(post, str + caps[1], post_len); post[post_len] = 0;
+    sp_re_match_post = post;
   }
 }
 
