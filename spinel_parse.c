@@ -959,6 +959,15 @@ static int flatten(pm_node_t *node) {
        at the top of the iteration body. */
     N("RedoNode");
     break;
+  case PM_BACK_REFERENCE_READ_NODE: {
+    /* `$&`, `$~`, `$'`, $`. Spinel populates sp_re_match_str / _pre /
+       _post during regex matches alongside sp_re_captures (which the
+       NumberedReferenceReadNode arm already reads). */
+    pm_back_reference_read_node_t *n = (pm_back_reference_read_node_t *)node;
+    N("BackReferenceReadNode");
+    NAME("name", n->name);
+    break;
+  }
   default: {
     /* Fallback: emit unknown node type */
     char buf[64];

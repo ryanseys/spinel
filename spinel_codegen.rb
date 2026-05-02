@@ -1825,6 +1825,11 @@ class Compiler
       # string interpolation/regex match all do.
       return "string"
     end
+    if t == "BackReferenceReadNode"
+      # `$&`, `$`, `$'`, `$~` -- all return the matched-string
+      # form. Same shape as NumberedReferenceReadNode at line 1474.
+      return "string"
+    end
     if t == "TrueNode"
       return "bool"
     end
@@ -17563,6 +17568,26 @@ class Compiler
       # Use sites that accept either string or symbol -- puts, ==,
       # string interpolation -- behave identically.
       return compile_interpolated(nid)
+    end
+    if t == "BackReferenceReadNode"
+      # `$&`, `$~`, `$'`, `$`. Spinel populates sp_re_match_str /
+      # _pre / _post in sp_re_set_captures alongside sp_re_captures
+      # (used by NumberedReferenceReadNode for $1..$9). Each accessor
+      # is null-guarded so unused reads return "" -- matches CRuby's
+      # post-no-match behavior. $~ falls back to $& since Spinel
+      # has no MatchData wrapper to expose.
+      n = @nd_name[nid]
+      if n == "$&" || n == "$~"
+        return "(sp_re_match_str ? sp_re_match_str : \"\")"
+      end
+      if n == "$`"
+        return "(sp_re_match_pre ? sp_re_match_pre : \"\")"
+      end
+      if n == "$'"
+        return "(sp_re_match_post ? sp_re_match_post : \"\")"
+      end
+      $stderr.puts "Spinel: BackReferenceReadNode `" + n + "` not supported"
+      exit(1)
     end
     if t == "NumberedReferenceReadNode"
       num = @nd_value[nid]
