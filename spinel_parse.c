@@ -337,6 +337,13 @@ static int flatten(pm_node_t *node) {
     R("value", n->value);
     break;
   }
+  case PM_CLASS_VARIABLE_WRITE_NODE: {
+    pm_class_variable_write_node_t *n = (pm_class_variable_write_node_t *)node;
+    N("ClassVariableWriteNode");
+    NAME("name", n->name);
+    R("value", n->value);
+    break;
+  }
   case PM_INDEX_OPERATOR_WRITE_NODE: {
     pm_index_operator_write_node_t *n = (pm_index_operator_write_node_t *)node;
     N("IndexOperatorWriteNode");
