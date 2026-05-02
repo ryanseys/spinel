@@ -25432,7 +25432,6 @@ class Compiler
       els = parse_id_list(@nd_elements[pat_id])
       hash_get = ""
       hash_has = ""
-      sym_k_pre = "sp_sym_"
       if pred_type == "sym_int_hash"
         hash_get = "sp_SymIntHash_get(" + tmp + ", "
         hash_has = "sp_SymIntHash_has_key(" + tmp + ", "
@@ -25454,7 +25453,10 @@ class Compiler
           key_id = @nd_key[el]
           val_id = @nd_expression[el]
           if @nd_type[key_id] == "SymbolNode"
-            sym_c = sym_k_pre + @nd_content[key_id]
+            # Use compile_symbol_literal so the sym id resolves through
+            # the codegen's existing intern table (SPS_<name> for valid
+            # C idents, ((sp_sym)<idx>) otherwise).
+            sym_c = compile_symbol_literal(@nd_content[key_id])
             if checks != ""
               checks = checks + " && "
             end
