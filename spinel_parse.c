@@ -714,6 +714,16 @@ static int flatten(pm_node_t *node) {
     N("SourceEncodingNode");
     break;
   }
+  case PM_MISSING_NODE: {
+    /* Prism emits MissingNode as an error-recovery placeholder. The
+       main loop bails out of flatten() entirely when error_list is
+       non-empty (line 1201), so reaching this case means Prism produced
+       a MissingNode without flagging an error -- a contract violation
+       we should still surface clearly rather than silently miscompile. */
+    fprintf(stderr, "spinel_parse: internal error: MissingNode reached flatten() at byte offset %ld; parse error not in error_list\n",
+            (long)(node->location.start - g_parser->start));
+    exit(1);
+  }
   case PM_SHAREABLE_CONSTANT_NODE: {
     /* `# shareable_constant_value: literal` magic comment that wraps
        a constant write. Spinel has no Ractor support, so the
