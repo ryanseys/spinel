@@ -380,6 +380,29 @@ static int flatten(pm_node_t *node) {
     R("value", n->value);
     break;
   }
+  case PM_INDEX_AND_WRITE_NODE: {
+    pm_index_and_write_node_t *n = (pm_index_and_write_node_t *)node;
+    N("IndexAndWriteNode");
+    R("receiver", n->receiver);
+    R("arguments", n->arguments);
+    R("value", n->value);
+    break;
+  }
+  case PM_INDEX_OR_WRITE_NODE: {
+    pm_index_or_write_node_t *n = (pm_index_or_write_node_t *)node;
+    N("IndexOrWriteNode");
+    R("receiver", n->receiver);
+    R("arguments", n->arguments);
+    R("value", n->value);
+    break;
+  }
+  case PM_INDEX_TARGET_NODE: {
+    pm_index_target_node_t *n = (pm_index_target_node_t *)node;
+    N("IndexTargetNode");
+    R("receiver", n->receiver);
+    R("arguments", n->arguments);
+    break;
+  }
   case PM_GLOBAL_VARIABLE_WRITE_NODE: {
     pm_global_variable_write_node_t *n = (pm_global_variable_write_node_t *)node;
     N("GlobalVariableWriteNode");

@@ -23067,6 +23067,14 @@ class Compiler
       compile_index_op_assign(nid)
       return
     end
+    if t == "IndexAndWriteNode"
+      compile_index_and_assign(nid)
+      return
+    end
+    if t == "IndexOrWriteNode"
+      compile_index_or_assign(nid)
+      return
+    end
     if t == "IfNode"
       compile_if_stmt(nid)
       return
@@ -23236,6 +23244,43 @@ class Compiler
       qname = cvar_qname(@current_class_idx, @nd_name[tid])
       register_cvar(qname, value_type)
       emit("  cvar_" + qname + " = " + value_expr + ";")
+    end
+    if @nd_type[tid] == "IndexTargetNode"
+      # Multi-assign LHS: `a[0], b[1] = 1, 2`. Each LHS is an
+      # IndexTargetNode with a receiver and an arguments slot.
+      # Routes through the same per-receiver-type sp_<TYPE>_set
+      # dispatch as compile_index_op_assign, but without the
+      # read-then-modify dance -- the value is supplied by the
+      # caller. The temp-receiver pattern keeps `a` and the index
+      # evaluated exactly once.
+      tgt_recv = @nd_receiver[tid]
+      tgt_args_id = @nd_arguments[tid]
+      tgt_arg_ids = tgt_args_id >= 0 ? get_args(tgt_args_id) : []
+      if tgt_arg_ids.length >= 1
+        rt = infer_type(tgt_recv)
+        rc = compile_expr_gc_rooted(tgt_recv)
+        idx = compile_expr(tgt_arg_ids[0])
+        if rt == "float_array" || rt == "int_array"
+          pfx = array_c_prefix(rt)
+          tt = new_temp
+          ti = new_temp
+          emit("  { sp_" + pfx + " *" + tt + " = " + rc + "; mrb_int " + ti + " = " + idx +
+               "; sp_" + pfx + "_set(" + tt + ", " + ti + ", (" + value_expr + ")); }")
+        end
+        if rt == "str_int_hash"
+          tt = new_temp
+          ti = new_temp
+          idx_s = compile_expr_as_string(tgt_arg_ids[0])
+          emit("  { sp_StrIntHash *" + tt + " = " + rc + "; const char *" + ti + " = " + idx_s +
+               "; sp_StrIntHash_set(" + tt + ", " + ti + ", (" + value_expr + ")); }")
+        end
+        if rt == "sym_int_hash"
+          tt = new_temp
+          ti = new_temp
+          emit("  { sp_SymIntHash *" + tt + " = " + rc + "; sp_sym " + ti + " = " + idx +
+               "; sp_SymIntHash_set(" + tt + ", " + ti + ", (" + value_expr + ")); }")
+        end
+      end
     end
   end
 
@@ -26577,6 +26622,101 @@ class Compiler
       emit("  { sp_SymIntHash *" + tt + " = " + rc + "; sp_sym " + ti + " = " + idx +
            "; sp_SymIntHash_set(" + tt + ", " + ti +
            ", sp_SymIntHash_get(" + tt + ", " + ti + ") " + op + " (" + val + ")); }")
+      return
+    end
+  end
+
+  # `a[i] &&= val` -- read once, conditionally write once. Mirrors
+  # compile_index_op_assign's per-receiver-type dispatch but routes
+  # the new value through a C `if (cur)` guard instead of an
+  # arithmetic op. The temp pattern keeps `a` and `i` evaluated
+  # exactly once, matching CRuby's `a[i] = a[i] && val` evaluation
+  # order.
+  def compile_index_and_assign(nid)
+    recv = @nd_receiver[nid]
+    args_id = @nd_arguments[nid]
+    arg_ids = args_id >= 0 ? get_args(args_id) : []
+    return if arg_ids.length < 1
+    rt = infer_type(recv)
+    rc = compile_expr_gc_rooted(recv)
+    idx = compile_expr(arg_ids[0])
+    val = compile_expr(@nd_expression[nid])
+
+    if rt == "float_array" || rt == "int_array"
+      pfx = array_c_prefix(rt)
+      tt = new_temp
+      ti = new_temp
+      emit("  { sp_" + pfx + " *" + tt + " = " + rc + "; mrb_int " + ti + " = " + idx +
+           "; if (sp_" + pfx + "_get(" + tt + ", " + ti +
+           ")) sp_" + pfx + "_set(" + tt + ", " + ti + ", (" + val + ")); }")
+      return
+    end
+    if rt == "str_int_hash"
+      tt = new_temp
+      ti = new_temp
+      idx_s = compile_expr_as_string(arg_ids[0])
+      emit("  { sp_StrIntHash *" + tt + " = " + rc + "; const char *" + ti + " = " + idx_s +
+           "; if (sp_StrIntHash_get(" + tt + ", " + ti +
+           ")) sp_StrIntHash_set(" + tt + ", " + ti + ", (" + val + ")); }")
+      return
+    end
+    if rt == "sym_int_hash"
+      tt = new_temp
+      ti = new_temp
+      emit("  { sp_SymIntHash *" + tt + " = " + rc + "; sp_sym " + ti + " = " + idx +
+           "; if (sp_SymIntHash_get(" + tt + ", " + ti +
+           ")) sp_SymIntHash_set(" + tt + ", " + ti + ", (" + val + ")); }")
+      return
+    end
+  end
+
+  # `a[i] ||= val` -- read once, write only if current is falsy.
+  # Same C-truthy vs Ruby-truthy gap as the LocalVariable/Global/
+  # Class compound forms (numeric 0 is C-falsy; documented in
+  # test/global_var_or_write.rb). For string-valued slots (NULL
+  # falsy, anything else truthy) the C and Ruby semantics agree.
+  def compile_index_or_assign(nid)
+    recv = @nd_receiver[nid]
+    args_id = @nd_arguments[nid]
+    arg_ids = args_id >= 0 ? get_args(args_id) : []
+    return if arg_ids.length < 1
+    rt = infer_type(recv)
+    rc = compile_expr_gc_rooted(recv)
+    idx = compile_expr(arg_ids[0])
+    val = compile_expr(@nd_expression[nid])
+
+    if rt == "float_array" || rt == "int_array"
+      pfx = array_c_prefix(rt)
+      tt = new_temp
+      ti = new_temp
+      emit("  { sp_" + pfx + " *" + tt + " = " + rc + "; mrb_int " + ti + " = " + idx +
+           "; if (!sp_" + pfx + "_get(" + tt + ", " + ti +
+           ")) sp_" + pfx + "_set(" + tt + ", " + ti + ", (" + val + ")); }")
+      return
+    end
+    if rt == "str_int_hash"
+      tt = new_temp
+      ti = new_temp
+      idx_s = compile_expr_as_string(arg_ids[0])
+      emit("  { sp_StrIntHash *" + tt + " = " + rc + "; const char *" + ti + " = " + idx_s +
+           "; if (!sp_StrIntHash_get(" + tt + ", " + ti +
+           ")) sp_StrIntHash_set(" + tt + ", " + ti + ", (" + val + ")); }")
+      return
+    end
+    if rt == "int_str_hash"
+      tt = new_temp
+      ti = new_temp
+      emit("  { sp_IntStrHash *" + tt + " = " + rc + "; mrb_int " + ti + " = " + idx +
+           "; if (!sp_IntStrHash_get(" + tt + ", " + ti +
+           ")) sp_IntStrHash_set(" + tt + ", " + ti + ", (" + val + ")); }")
+      return
+    end
+    if rt == "sym_int_hash"
+      tt = new_temp
+      ti = new_temp
+      emit("  { sp_SymIntHash *" + tt + " = " + rc + "; sp_sym " + ti + " = " + idx +
+           "; if (!sp_SymIntHash_get(" + tt + ", " + ti +
+           ")) sp_SymIntHash_set(" + tt + ", " + ti + ", (" + val + ")); }")
       return
     end
   end
