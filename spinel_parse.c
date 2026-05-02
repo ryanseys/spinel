@@ -424,14 +424,10 @@ static int flatten(pm_node_t *node) {
     N("AssocNode");
     R("key", n->key);
     /* Hash shorthand `{ x: }` lowers to an AssocNode whose value is a
-       PM_IMPLICIT_NODE wrapping the actual LocalVariableReadNode (or
-       MethodCallNode for an undeclared name). Unwrap one level here so
-       the codegen never sees the implicit wrapper. */
-    pm_node_t *val = n->value;
-    if (val && PM_NODE_TYPE_P(val, PM_IMPLICIT_NODE)) {
-      val = ((pm_implicit_node_t *)val)->value;
-    }
-    R("value", val);
+       PM_IMPLICIT_NODE. The top-level PM_IMPLICIT_NODE case below
+       handles the unwrap by recursing into n->value at the same id
+       slot, so the codegen never sees the implicit wrapper here. */
+    R("value", n->value);
     break;
   }
   case PM_KEYWORD_HASH_NODE: {
@@ -712,6 +708,16 @@ static int flatten(pm_node_t *node) {
     N("SourceFileNode");
     emit_str(id, "content", g_source_file_escaped);
     break;
+  }
+  case PM_IMPLICIT_NODE: {
+    /* Wraps an implicit value reference, e.g. the value side of a
+       hash-shorthand `{x:}`. Lowers to its inner value at the same
+       id slot so the codegen never sees the implicit wrapper. Covers
+       PM_IMPLICIT_NODE in any context (AssocNode value, kwarg
+       shorthand inside KeywordHashNode, future Prism evolutions). */
+    pm_implicit_node_t *n = (pm_implicit_node_t *)node;
+    node_counter--;
+    return flatten(n->value);
   }
   case PM_SPLAT_NODE: {
     pm_splat_node_t *n = (pm_splat_node_t *)node;
