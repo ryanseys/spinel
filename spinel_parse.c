@@ -376,6 +376,31 @@ static int flatten(pm_node_t *node) {
     R("arguments", n->arguments);
     break;
   }
+  case PM_CALL_OPERATOR_WRITE_NODE: {
+    pm_call_operator_write_node_t *n = (pm_call_operator_write_node_t *)node;
+    N("CallOperatorWriteNode");
+    R("receiver", n->receiver);
+    NAME("name", n->read_name);
+    NAME("binary_operator", n->binary_operator);
+    R("value", n->value);
+    break;
+  }
+  case PM_CALL_AND_WRITE_NODE: {
+    pm_call_and_write_node_t *n = (pm_call_and_write_node_t *)node;
+    N("CallAndWriteNode");
+    R("receiver", n->receiver);
+    NAME("name", n->read_name);
+    R("value", n->value);
+    break;
+  }
+  case PM_CALL_OR_WRITE_NODE: {
+    pm_call_or_write_node_t *n = (pm_call_or_write_node_t *)node;
+    N("CallOrWriteNode");
+    R("receiver", n->receiver);
+    NAME("name", n->read_name);
+    R("value", n->value);
+    break;
+  }
   case PM_GLOBAL_VARIABLE_WRITE_NODE: {
     pm_global_variable_write_node_t *n = (pm_global_variable_write_node_t *)node;
     N("GlobalVariableWriteNode");

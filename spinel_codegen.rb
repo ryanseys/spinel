@@ -25495,6 +25495,18 @@ class Compiler
       compile_index_or_assign(nid)
       return
     end
+    if t == "CallOperatorWriteNode"
+      compile_call_assign_typed(nid, "Operator")
+      return
+    end
+    if t == "CallAndWriteNode"
+      compile_call_assign_typed(nid, "And")
+      return
+    end
+    if t == "CallOrWriteNode"
+      compile_call_assign_typed(nid, "Or")
+      return
+    end
     if t == "IfNode"
       compile_if_stmt(nid)
       return
@@ -29158,6 +29170,67 @@ class Compiler
       emit("  { sp_SymIntHash *" + tt + " = " + rc + "; sp_sym " + ti + " = " + idx +
            "; sp_SymIntHash_set(" + tt + ", " + ti +
            ", sp_SymIntHash_get(" + tt + ", " + ti + ") " + op + " (" + val + ")); }")
+      return
+    end
+  end
+
+  # `obj.attr <op>= val` family helper -- builds the
+  # temp-receiver-once C block for typed-instance receivers backed by
+  # an attr_accessor (or struct field). For non-attr receivers, we
+  # exit with a precise error rather than fall through to an
+  # incorrect emission. The caller passes a fragment that takes the
+  # temp variable name and returns the C body to execute.
+  #
+  # Spec note: even for the typed-attr-accessor case the receiver is
+  # evaluated exactly ONCE -- the source `obj.bar += val` is
+  # `tmp = obj; tmp.bar = tmp.bar + val`, NOT `obj.bar = obj.bar + val`.
+  # The temp pattern matters when the receiver expression has side
+  # effects (e.g. `next_holder().attr += 1`).
+  def compile_call_assign_typed(nid, kind)
+    recv = @nd_receiver[nid]
+    rt = infer_type(recv)
+    bname = @nd_name[nid]   # parser emits read_name as "name"
+    if rt.length <= 4 || rt[0, 4] != "obj_"
+      $stderr.puts "Spinel: Call" + kind + "WriteNode requires a typed instance receiver with attr_accessor; got receiver type \"" + rt + "\""
+      exit(1)
+    end
+    cname = rt[4, rt.length - 4]
+    ci = find_class_idx(cname)
+    if ci < 0 || cls_has_attr_writer(ci, bname) == 0
+      $stderr.puts "Spinel: Call" + kind + "WriteNode for `." + bname + "` requires attr_accessor (or struct field) on class " + cname
+      exit(1)
+    end
+    rc = compile_expr_gc_rooted(recv)
+    val = compile_expr(@nd_expression[nid])
+    tt = new_temp
+    field = "iv_" + bname
+    if kind == "Operator"
+      op = @nd_binop[nid]
+      ivar_t = cls_ivar_type(ci, "@" + bname)
+      if op == "+" && ivar_t == "string" && infer_type(@nd_expression[nid]) == "string"
+        # String-valued attr with `+=` becomes sp_str_concat, mirroring
+        # the LocalVariableOperatorWriteNode arm at line 21786.
+        emit("  { sp_" + cname + " *" + tt + " = " + rc + "; " +
+             tt + "->" + field + " = sp_str_concat(" + tt + "->" + field + ", (" + val + ")); }")
+        return
+      end
+      if op == "%"
+        emit("  { sp_" + cname + " *" + tt + " = " + rc + "; " +
+             tt + "->" + field + " = sp_imod(" + tt + "->" + field + ", (" + val + ")); }")
+      else
+        emit("  { sp_" + cname + " *" + tt + " = " + rc + "; " +
+             tt + "->" + field + " = " + tt + "->" + field + " " + op + " (" + val + "); }")
+      end
+      return
+    end
+    if kind == "And"
+      emit("  { sp_" + cname + " *" + tt + " = " + rc + "; " +
+           "if (" + tt + "->" + field + ") " + tt + "->" + field + " = (" + val + "); }")
+      return
+    end
+    if kind == "Or"
+      emit("  { sp_" + cname + " *" + tt + " = " + rc + "; " +
+           "if (!" + tt + "->" + field + ") " + tt + "->" + field + " = (" + val + "); }")
       return
     end
   end
