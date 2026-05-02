@@ -1025,6 +1025,17 @@ static int flatten(pm_node_t *node) {
     A("parts", &n->parts);
     break;
   }
+  case PM_UNDEF_NODE: {
+    /* `undef foo, bar` inside a class body. CRuby raises NoMethodError
+       at runtime when an undef'd method is called; Spinel's AOT model
+       resolves dispatch at compile time, so we record the undefs but
+       leave compile-time enforcement of "calling an undef'd method
+       fails" to a future pass. */
+    pm_undef_node_t *n = (pm_undef_node_t *)node;
+    N("UndefNode");
+    A("names", &n->names);
+    break;
+  }
   case PM_ALIAS_METHOD_NODE: {
     /* `alias new old` -- compile-time method-name aliasing inside a
        class body. new_name and old_name are SymbolNode literals
