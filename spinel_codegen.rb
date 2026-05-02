@@ -152,6 +152,17 @@ class Compiler
     # ---- Constants (parallel arrays) ----
     @const_names = "".split(",")
     @const_types = "".split(",")
+
+    # ---- Class variables (@@var) ----
+    # Per-(class,name) parallel arrays. Storage is a per-class C global
+    # named `cvar_<ClassName>_<var>` (var without the @@ prefix).
+    # Spinel's class-var lookup does NOT walk the inheritance chain --
+    # each class's @@var is independent. CRuby's hierarchy-shared cvars
+    # are a known footgun (mame, ko1, et al. publicly disrecommend
+    # them); the simpler per-class semantics fit Spinel's compile-time
+    # storage model better. Documented in the test fixtures.
+    @cvar_names = "".split(",")
+    @cvar_types = "".split(",")
     @const_expr_ids = []
     @const_scope_names = "".split(",")
 
@@ -1479,6 +1490,51 @@ class Compiler
       i = i + 1
     end
     -1
+  end
+
+  # ---- Class variable helpers ----
+  # Qualified name for a class-var slot: `<ClassName>_<var>` where
+  # <var> drops the leading @@. Codegen emits one C global named
+  # `cvar_<qname>` per registered cvar.
+  def cvar_qname(class_idx, var_name)
+    cls = "Toplevel"
+    if class_idx >= 0
+      cls = @cls_names[class_idx]
+    end
+    bare = var_name
+    if bare.length >= 2 && bare[0, 2] == "@@"
+      bare = bare[2, bare.length - 2]
+    end
+    cls + "_" + bare
+  end
+
+  def find_cvar_idx(qname)
+    i = 0
+    while i < @cvar_names.length
+      if @cvar_names[i] == qname
+        return i
+      end
+      i = i + 1
+    end
+    -1
+  end
+
+  # Register or update a cvar's inferred type. Called from
+  # scan_class_vars during the pre-pass and (defensively) again from
+  # compile_stmt when the write fires.
+  def register_cvar(qname, t)
+    ci = find_cvar_idx(qname)
+    if ci >= 0
+      # Widen on type disagreement: int + string -> poly. Conservative
+      # for v1 -- when the gap matters we'll revisit.
+      if @cvar_types[ci] != t && @cvar_types[ci] != "poly" && t != ""
+        @cvar_types[ci] = "poly"
+      end
+      return ci
+    end
+    @cvar_names.push(qname)
+    @cvar_types.push(t)
+    @cvar_names.length - 1
   end
 
   # If the constant's initializer is a simple literal, return the
@@ -4874,6 +4930,11 @@ class Compiler
         collect_class(sid)
       end
     }
+    # Pass 1.4: register class variables (@@var). Walks each class
+    # body for any ClassVariable*WriteNode (Write, Operator, Or, And,
+    # Target) and records the inferred type per (class, name). The
+    # static C globals are emitted in pass-emit alongside constants.
+    collect_cvars
     # Pass 1.5: reject circular inheritance (`class A < B; class B < A`).
     # Every parent-walking helper (cls_find_method, cls_ivar_type,
     # is_class_or_ancestor, …) recurses through @cls_parents; a cycle
@@ -5322,6 +5383,56 @@ class Compiler
 
   def collect_class(nid)
     collect_class_with_prefix(nid, "")
+  end
+
+  # Walk every class body for class-var writes; register each
+  # (class, name) pair so the static-declaration pass can emit
+  # `static <type> cvar_<qname> = <default>;` ahead of the
+  # functions that touch it.
+  def collect_cvars
+    root = @root_id
+    if @nd_type[root] != "ProgramNode"
+      return
+    end
+    stmts = get_body_stmts(root)
+    stmts.each { |sid|
+      if @nd_type[sid] == "ClassNode"
+        cp = @nd_constant_path[sid]
+        if cp >= 0
+          cname = const_ref_flat_name(cp)
+          ci = find_class_idx(cname)
+          if ci >= 0
+            body_id = @nd_body[sid]
+            collect_cvars_in(body_id, ci)
+          end
+        end
+      end
+    }
+  end
+
+  # Recursively scan `nid`'s subtree for ClassVariable*WriteNode and
+  # register each. Only the WriteNode form contributes a static type
+  # at this stage; the compound forms (Operator/Or/And) are
+  # registered when their parent ClassVariableWriteNode is seen, OR
+  # lazily during compile_stmt if no plain Write precedes them in
+  # the same class.
+  def collect_cvars_in(nid, class_idx)
+    if nid < 0
+      return
+    end
+    t = @nd_type[nid]
+    if t == "ClassVariableWriteNode"
+      qname = cvar_qname(class_idx, @nd_name[nid])
+      val_t = infer_type(@nd_expression[nid])
+      register_cvar(qname, val_t)
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      collect_cvars_in(cs[k], class_idx)
+      k = k + 1
+    end
   end
 
   def collect_scoped_constant(scope_name, nid)
@@ -11800,6 +11911,18 @@ class Compiler
       i = i + 1
     end
     if @const_names.length > 0
+      emit_raw("")
+    end
+    # Emit file-scope class-variable declarations. One C global per
+    # (class, name) pair, named `cvar_<ClassName>_<var>`; populated
+    # by the ClassVariable*WriteNode codegen arms.
+    i = 0
+    while i < @cvar_names.length
+      ctp = c_type(@cvar_types[i])
+      emit_raw("static " + ctp + " cvar_" + @cvar_names[i] + " = " + c_default_val(@cvar_types[i]) + ";")
+      i = i + 1
+    end
+    if @cvar_names.length > 0
       emit_raw("")
     end
     # Issue #126 Stage 2: storage for module-level singleton accessors
@@ -22359,6 +22482,19 @@ class Compiler
         emit("  " + cname + " = " + val + ";")
         return
       end
+    end
+    if t == "ClassVariableWriteNode"
+      # `@@x = val` inside class body or method. Storage is the
+      # per-(class,name) C global cvar_<ClassName>_<var> registered
+      # by collect_cvars during the pre-pass. If the cvar wasn't seen
+      # there (e.g. inside a class-method that pre-pass missed) we
+      # register defensively.
+      qname = cvar_qname(@current_class_idx, @nd_name[nid])
+      val = compile_expr(@nd_expression[nid])
+      val_t = infer_type(@nd_expression[nid])
+      register_cvar(qname, val_t)
+      emit("  cvar_" + qname + " = " + val + ";")
+      return
     end
     if t == "GlobalVariableOperatorWriteNode"
       # `$x += val`, `$x -= val`, etc. Mirrors LocalVariableOperatorWriteNode
