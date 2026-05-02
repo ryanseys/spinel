@@ -89,6 +89,11 @@ class Compiler
     @nd_exceptions = "".split(",")
     @nd_targets = "".split(",")
     @nd_rights = "".split(",")
+    # AliasMethodNode / AliasGlobalVariableNode -- parallel ref slots
+    # for the new and old names (SymbolNode for methods, GlobalVariableReadNode
+    # for globals).
+    @nd_new_name = []
+    @nd_old_name = []
 
     @nd_count = 0
     @root_id = 0
@@ -171,6 +176,13 @@ class Compiler
     @cvar_init_values = "".split(",")
     @const_expr_ids = []
     @const_scope_names = "".split(",")
+
+    # `alias $copy $orig` -- maps new gvar name to its target.
+    # Populated by collect_all Pass 2.1 from AliasGlobalVariableNode
+    # statements; consulted by sanitize_gvar / scan_features /
+    # infer_type so $copy and $orig share storage.
+    @galias_new = "".split(",")
+    @galias_old = "".split(",")
 
     # ---- Scope stack for local variables ----
     @scope_names = "".split(",")
@@ -429,6 +441,8 @@ class Compiler
     @nd_exceptions.push("")
     @nd_targets.push("")
     @nd_rights.push("")
+    @nd_new_name.push(-1)
+    @nd_old_name.push(-1)
     @nd_count = @nd_count + 1
     nid
   end
@@ -693,6 +707,14 @@ class Compiler
     end
     if field == "call"
       @nd_receiver[nid] = ref_id
+    end
+    if field == "new_name"
+      # AliasMethodNode / AliasGlobalVariableNode -- the new-name slot
+      # (a SymbolNode for methods, GlobalVariableReadNode for globals).
+      @nd_new_name[nid] = ref_id
+    end
+    if field == "old_name"
+      @nd_old_name[nid] = ref_id
     end
   end
 
@@ -1833,7 +1855,10 @@ class Compiler
       return "int"
     end
     if t == "GlobalVariableReadNode"
-      gname = @nd_name[nid]
+      # `alias $copy $orig` -- a $copy read must look up $orig's
+      # registered type so the C codegen sees the correct format
+      # specifier when interpolating or printing.
+      gname = resolve_gvar_alias(@nd_name[nid])
       gi = 0
       while gi < @gvar_names.length
         if @gvar_names[gi] == gname
@@ -4673,11 +4698,28 @@ class Compiler
   end
 
   def sanitize_gvar(name)
+    # `alias $copy $orig` -- transparently rewrite `$copy` to `$orig`
+    # everywhere it appears so the C output uses one storage slot
+    # for both names. Compile-time only; matches CRuby's
+    # `$copy and $orig share storage` semantics for the static-alias
+    # case.
+    name = resolve_gvar_alias(name)
     # $last → gv_last, $1 → gv_1
     if name.length > 0 && name[0] == "$"
       return "gv_" + name[1, name.length - 1]
     end
     "gv_" + name
+  end
+
+  def resolve_gvar_alias(name)
+    i = 0
+    while i < @galias_new.length
+      if @galias_new[i] == name
+        return @galias_old[i]
+      end
+      i = i + 1
+    end
+    name
   end
 
   # ---- Array type helpers ----
@@ -5023,6 +5065,20 @@ class Compiler
       if @nd_type[sid] == "CallNode"
         if @nd_name[sid] == "define_method"
           collect_define_method(sid)
+        end
+      end
+    }
+
+    # Pass 2.1: top-level `alias $copy $orig`. Records the rewrite
+    # in @galias_* so sanitize_gvar / scan_features / infer_type
+    # treat $copy and $orig as the same storage slot.
+    stmts.each { |sid|
+      if @nd_type[sid] == "AliasGlobalVariableNode"
+        nn = @nd_name[@nd_new_name[sid]]
+        on = @nd_name[@nd_old_name[sid]]
+        if nn != "" && on != ""
+          @galias_new.push(nn)
+          @galias_old.push(on)
         end
       end
     }
@@ -10015,7 +10071,12 @@ class Compiler
     end
 
     if t == "GlobalVariableWriteNode"
-      gname = @nd_name[nid]
+      # `alias $copy $orig` -- a $copy = ... write must register
+      # the type under $orig's slot, not a separate $copy slot,
+      # otherwise the type-consistency check below would later see
+      # $orig and $copy as two slots that resolve to the same C
+      # global and fire a spurious type-mismatch error.
+      gname = resolve_gvar_alias(@nd_name[nid])
       if gname != "$stderr" && gname != "$stdout" && gname != "$?"
         gt = infer_type(@nd_expression[nid])
         if not_in(gname, @gvar_names) == 1
@@ -10037,7 +10098,9 @@ class Compiler
       end
     end
     if t == "GlobalVariableReadNode"
-      gname = @nd_name[nid]
+      # Same alias resolution as the write side -- $copy reads must
+      # land on $orig's slot.
+      gname = resolve_gvar_alias(@nd_name[nid])
       if gname != "$stderr" && gname != "$stdout" && gname != "$?"
         if not_in(gname, @gvar_names) == 1
           @gvar_names.push(gname)
@@ -22812,6 +22875,13 @@ class Compiler
       cname = sanitize_gvar(@nd_name[nid])
       val = compile_expr(@nd_expression[nid])
       emit("  if (" + cname + ") " + cname + " = " + val + ";")
+      return
+    end
+    if t == "AliasGlobalVariableNode"
+      # `alias $copy $orig` -- compile-time only. The collect_all
+      # Pass 2.1 already populated @galias_*; references through
+      # sanitize_gvar / scan_features / infer_type pick up the
+      # rewrite. Nothing to emit at runtime.
       return
     end
     if t == "LocalVariableWriteNode"

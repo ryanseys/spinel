@@ -1025,6 +1025,18 @@ static int flatten(pm_node_t *node) {
     A("parts", &n->parts);
     break;
   }
+  case PM_ALIAS_GLOBAL_VARIABLE_NODE: {
+    /* `alias $copy $orig` -- compile-time gvar aliasing. The
+       new_name and old_name slots are GlobalVariableReadNodes whose
+       `name` field carries the literal $-prefixed name. Spinel
+       resolves $copy to $orig everywhere the alias is in scope, so
+       the C output uses one storage slot for both. */
+    pm_alias_global_variable_node_t *n = (pm_alias_global_variable_node_t *)node;
+    N("AliasGlobalVariableNode");
+    R("new_name", n->new_name);
+    R("old_name", n->old_name);
+    break;
+  }
   case PM_MULTI_TARGET_NODE: {
     /* Nested LHS in destructuring multi-assign:
        `a, (b, c), d = 1, [2, 3], 4`. The inner (b, c) parenthesized
