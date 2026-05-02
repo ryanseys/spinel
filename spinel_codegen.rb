@@ -5485,6 +5485,21 @@ class Compiler
       register_cvar(qname, val_t)
       try_fold_cvar_init(qname, @nd_expression[nid])
     end
+    # Compound write forms: register the cvar so the static decl
+    # exists, but do NOT fold a literal (the compound semantics
+    # depend on the prior cvar value, not just the RHS literal).
+    if t == "ClassVariableOperatorWriteNode" || t == "ClassVariableOrWriteNode" || t == "ClassVariableAndWriteNode"
+      qname = cvar_qname(class_idx, @nd_name[nid])
+      val_t = infer_type(@nd_expression[nid])
+      register_cvar(qname, val_t)
+    end
+    if t == "ClassVariableTargetNode"
+      # Multi-assign LHS: type widens to "poly" if the RHS shape is
+      # heterogeneous; v1 just registers as int and lets the
+      # subsequent type-inference passes widen if needed.
+      qname = cvar_qname(class_idx, @nd_name[nid])
+      register_cvar(qname, "int")
+    end
     cs = []
     push_child_ids(nid, cs)
     k = 0
@@ -15573,6 +15588,44 @@ class Compiler
       register_cvar(qname, val_t)
       return "(cvar_" + qname + " = " + val + ")"
     end
+    if t == "ClassVariableOperatorWriteNode"
+      # Expression-form: `def bump; @@x += 1; end`. Only the
+      # arithmetic operators (+, -, *, /, %, |, &, ^) compose
+      # cleanly into a C expression; the shift operators (<<, >>)
+      # do too via C semantics. We emit a comma-bound assignment
+      # `(cvar_X = cvar_X <op> val)` so the side effect fires and
+      # the result is the new value, matching CRuby's "assignment
+      # returns the assigned value" semantics.
+      qname = cvar_qname(@current_class_idx, @nd_name[nid])
+      register_cvar(qname, infer_type(@nd_expression[nid]))
+      op = @nd_binop[nid]
+      val = compile_expr(@nd_expression[nid])
+      cname = "cvar_" + qname
+      if op == "%"
+        return "(" + cname + " = sp_imod(" + cname + ", " + val + "))"
+      end
+      return "(" + cname + " = " + cname + " " + op + " " + val + ")"
+    end
+    if t == "ClassVariableOrWriteNode"
+      # Expression-form: `def init; @@x ||= 5; end`. Returns the
+      # current cvar if truthy, else assigns the new value and
+      # returns it. C ternary captures both effects.
+      qname = cvar_qname(@current_class_idx, @nd_name[nid])
+      register_cvar(qname, infer_type(@nd_expression[nid]))
+      val = compile_expr(@nd_expression[nid])
+      cname = "cvar_" + qname
+      return "(" + cname + " ? " + cname + " : (" + cname + " = " + val + "))"
+    end
+    if t == "ClassVariableAndWriteNode"
+      # Expression-form: `def bump; @@x &&= @@x + 1; end`. Returns
+      # the new value if cvar was truthy, else the falsy current
+      # value (no assignment fired).
+      qname = cvar_qname(@current_class_idx, @nd_name[nid])
+      register_cvar(qname, infer_type(@nd_expression[nid]))
+      val = compile_expr(@nd_expression[nid])
+      cname = "cvar_" + qname
+      return "(" + cname + " ? (" + cname + " = " + val + ") : " + cname + ")"
+    end
     if t == "InstanceVariableWriteNode"
       # Issue #130: same poly-slot boxing as the statement-form emit.
       # Expression form (`x = (@y = expr)`) is rarer but reaches the
@@ -22582,6 +22635,67 @@ class Compiler
       emit("  cvar_" + qname + " = " + val + ";")
       return
     end
+    if t == "ClassVariableOperatorWriteNode"
+      # `@@x += val` etc. Mirror of GlobalVariableOperatorWriteNode
+      # (line 21503-area) -- same operator dispatch, different
+      # storage prefix. Supports +, -, *, /, %, <<, >>, &, |, ^.
+      qname = cvar_qname(@current_class_idx, @nd_name[nid])
+      register_cvar(qname, infer_type(@nd_expression[nid]))
+      op = @nd_binop[nid]
+      val = compile_expr(@nd_expression[nid])
+      cname = "cvar_" + qname
+      if op == "+"
+        emit("  " + cname + " += " + val + ";")
+      end
+      if op == "-"
+        emit("  " + cname + " -= " + val + ";")
+      end
+      if op == "*"
+        emit("  " + cname + " *= " + val + ";")
+      end
+      if op == "/"
+        emit("  " + cname + " /= " + val + ";")
+      end
+      if op == "%"
+        emit("  " + cname + " = sp_imod(" + cname + ", " + val + ");")
+      end
+      if op == "<<"
+        emit("  " + cname + " <<= " + val + ";")
+      end
+      if op == ">>"
+        emit("  " + cname + " >>= " + val + ";")
+      end
+      if op == "&"
+        emit("  " + cname + " &= " + val + ";")
+      end
+      if op == "|"
+        emit("  " + cname + " |= " + val + ";")
+      end
+      if op == "^"
+        emit("  " + cname + " ^= " + val + ";")
+      end
+      return
+    end
+    if t == "ClassVariableOrWriteNode"
+      # `@@x ||= val`. Same C-truthy vs Ruby-truthy caveat
+      # documented in test/global_var_or_write.rb -- numeric 0
+      # is C-falsy but Ruby-truthy.
+      qname = cvar_qname(@current_class_idx, @nd_name[nid])
+      register_cvar(qname, infer_type(@nd_expression[nid]))
+      val = compile_expr(@nd_expression[nid])
+      cname = "cvar_" + qname
+      emit("  if (!(" + cname + ")) " + cname + " = " + val + ";")
+      return
+    end
+    if t == "ClassVariableAndWriteNode"
+      # `@@x &&= val`. Mirror of OrWrite, condition inverted.
+      qname = cvar_qname(@current_class_idx, @nd_name[nid])
+      register_cvar(qname, infer_type(@nd_expression[nid]))
+      val = compile_expr(@nd_expression[nid])
+      cname = "cvar_" + qname
+      emit("  if (" + cname + ") " + cname + " = " + val + ";")
+      return
+    end
     if t == "GlobalVariableOperatorWriteNode"
       # `$x += val`, `$x -= val`, etc. Mirrors LocalVariableOperatorWriteNode
       # for the storage path (sanitize_gvar instead of fiber_var_ref).
@@ -23114,6 +23228,14 @@ class Compiler
       # GlobalVariableWriteNode but without an embedded expression --
       # the value is supplied by the caller.
       emit("  " + sanitize_gvar(@nd_name[tid]) + " = " + value_expr + ";")
+    end
+    if @nd_type[tid] == "ClassVariableTargetNode"
+      # Multi-assign LHS: `@@a, @@b = 1, 2`. Routes to the
+      # cvar_<ClassName>_<var> slot via @current_class_idx, same as
+      # ClassVariableWriteNode.
+      qname = cvar_qname(@current_class_idx, @nd_name[tid])
+      register_cvar(qname, value_type)
+      emit("  cvar_" + qname + " = " + value_expr + ";")
     end
   end
 
