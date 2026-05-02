@@ -1015,6 +1015,16 @@ static int flatten(pm_node_t *node) {
     N("LocalVariableReadNode");
     S("name", escape_str((const uint8_t *)"_1", 2));
     break;
+  case PM_INTERPOLATED_SYMBOL_NODE: {
+    /* `:"foo_#{x}"`. Carries `parts` like InterpolatedStringNode;
+       codegen builds the string the same way and uses it directly --
+       Spinel treats dynamic symbols as their assembled string value
+       since it doesn't intern non-literal symbols. */
+    pm_interpolated_symbol_node_t *n = (pm_interpolated_symbol_node_t *)node;
+    N("InterpolatedSymbolNode");
+    A("parts", &n->parts);
+    break;
+  }
   default: {
     /* Fallback: emit unknown node type */
     char buf[64];

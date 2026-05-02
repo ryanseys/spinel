@@ -1789,6 +1789,13 @@ class Compiler
     if t == "InterpolatedStringNode"
       return "string"
     end
+    if t == "InterpolatedSymbolNode"
+      # Spinel doesn't intern dynamic symbols; the runtime value is
+      # the assembled string. Use sites that need symbol-typed
+      # behaviour (sym_int_hash keys, ===) won't work, but puts/==/
+      # string interpolation/regex match all do.
+      return "string"
+    end
     if t == "TrueNode"
       return "bool"
     end
@@ -15521,6 +15528,15 @@ class Compiler
       return compile_symbol_literal(@nd_content[nid])
     end
     if t == "InterpolatedStringNode"
+      return compile_interpolated(nid)
+    end
+    if t == "InterpolatedSymbolNode"
+      # `:"foo_#{x}"` -- assemble via the same parts loop as
+      # InterpolatedStringNode. CRuby returns a Symbol; Spinel returns
+      # the string form because dynamic symbol interning isn't
+      # supported (sp_sym ids are reserved for compile-time literals).
+      # Use sites that accept either string or symbol -- puts, ==,
+      # string interpolation -- behave identically.
       return compile_interpolated(nid)
     end
     if t == "NumberedReferenceReadNode"
