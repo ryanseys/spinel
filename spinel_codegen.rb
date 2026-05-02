@@ -102,6 +102,8 @@ class Compiler
     # for globals).
     @nd_new_name = []
     @nd_old_name = []
+    # UndefNode -- comma-separated child ids for the SymbolNode names.
+    @nd_names = "".split(",")
 
     @nd_count = 0
     @root_id = 0
@@ -214,6 +216,13 @@ class Compiler
     # infer_type so $copy and $orig share storage.
     @galias_new = "".split(",")
     @galias_old = "".split(",")
+
+    # `undef foo` -- per-(class, method-name) registry of removed
+    # methods. Recorded by collect_class_method_undef; compile-time
+    # enforcement of "call after undef fails" is currently a
+    # documented out-of-scope.
+    @undef_class_idx = []
+    @undef_method = "".split(",")
 
     # ---- Scope stack for local variables ----
     @scope_names = "".split(",")
@@ -499,6 +508,7 @@ class Compiler
     @nd_posts.push("")
     @nd_new_name.push(-1)
     @nd_old_name.push(-1)
+    @nd_names.push("")
     @nd_count = @nd_count + 1
     nid
   end
@@ -826,6 +836,10 @@ class Compiler
     end
     if field == "posts"
       @nd_posts[nid] = ids_str
+    end
+    if field == "names"
+      # UndefNode -- list of SymbolNode names to undef.
+      @nd_names[nid] = ids_str
     end
   end
 
@@ -6427,6 +6441,21 @@ class Compiler
           collect_class_method_alias(ci, nn, on)
         end
       end
+      if @nd_type[sid] == "UndefNode"
+        # `undef foo, bar` -- record the removal in @undef_*. Spinel
+        # doesn't currently enforce "calling an undef'd method
+        # fails" at the compile-time dispatch path; the recording
+        # is the foundation for that future check.
+        unames = parse_id_list(@nd_names[sid])
+        uk = 0
+        while uk < unames.length
+          uname = symbol_node_literal(unames[uk])
+          if uname != ""
+            collect_class_method_undef(ci, uname)
+          end
+          uk = uk + 1
+        end
+      end
     }
 
     # Collect ivars. Pin the lexical scope to this class so any
@@ -6457,6 +6486,15 @@ class Compiler
       return v
     end
     ""
+  end
+
+  # `undef foo` -- mark the method as removed in the @undef_*
+  # tracker. Spinel currently doesn't enforce "call after undef
+  # fails to compile" -- the recording is the foundation for that
+  # future check. Documented out of scope in test/undef.rb.
+  def collect_class_method_undef(ci, name)
+    @undef_class_idx.push(ci)
+    @undef_method.push(name)
   end
 
   # `alias new old` -- copy the existing class method's slot to a
@@ -26114,6 +26152,11 @@ class Compiler
       # already registered a duplicate method-table entry under the
       # new name pointing to the same body_id; subsequent dispatch
       # finds it like any other method.
+      return
+    end
+    if t == "UndefNode"
+      # `undef foo` -- compile-time only. The class-collect pass
+      # already recorded the removal in @undef_*; nothing to emit.
       return
     end
     if t == "LocalVariableWriteNode"
