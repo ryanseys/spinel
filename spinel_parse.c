@@ -560,6 +560,17 @@ static int flatten(pm_node_t *node) {
     A("elements", &n->elements);
     break;
   }
+  case PM_ASSOC_SPLAT_NODE: {
+    /* `**other` inside a hash literal or call kwargs. Carries one ref
+       (`value`) to the source hash. The hash literal codegen merges it
+       into the accumulator via sp_*PolyHash_merge; the kwargs call site
+       passes it through to a matching kwrest slot. value can be NULL for
+       the bare `**` form (Ruby 3.2+) -- guard accordingly. */
+    pm_assoc_splat_node_t *n = (pm_assoc_splat_node_t *)node;
+    N("AssocSplatNode");
+    if (n->value) R("value", n->value);
+    break;
+  }
   case PM_RANGE_NODE: {
     pm_range_node_t *n = (pm_range_node_t *)node;
     N("RangeNode");

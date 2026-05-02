@@ -851,6 +851,25 @@ static void sp_SymPolyHash_set(sp_SymPolyHash*h,sp_sym k,sp_RbVal v){if(h->len*2
 static mrb_bool sp_SymPolyHash_has_key(sp_SymPolyHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 static mrb_int sp_SymPolyHash_length(sp_SymPolyHash*h){return h->len;}
 
+/* PolyHash merge helpers -- power AssocSplatNode (`{a: 1, **other}`).
+   src is iterated in insertion order so the rightmost key in a chain
+   wins, matching CRuby Hash#merge semantics. NULL src is a no-op,
+   used by the bare-`**` form. */
+static void sp_SymPolyHash_merge(sp_SymPolyHash *dst, sp_SymPolyHash *src) {
+  if (!src) return;
+  for (mrb_int i = 0; i < src->len; i++) {
+    sp_sym k = src->order[i];
+    sp_SymPolyHash_set(dst, k, sp_SymPolyHash_get(src, k));
+  }
+}
+static void sp_StrPolyHash_merge(sp_StrPolyHash *dst, sp_StrPolyHash *src) {
+  if (!src) return;
+  for (mrb_int i = 0; i < src->len; i++) {
+    const char *k = src->order[i];
+    sp_StrPolyHash_set(dst, k, sp_StrPolyHash_get(src, k));
+  }
+}
+
 #include <setjmp.h>
 #define SP_EXC_STACK_MAX 64
 static jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];

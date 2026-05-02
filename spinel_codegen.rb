@@ -2259,6 +2259,36 @@ class Compiler
 
   def infer_hash_val_type(nid)
     elems = parse_id_list(@nd_elements[nid])
+    # AssocSplatNode forces poly: the splat operand carries an
+    # arbitrary hash whose value types we can't unify with the literal
+    # AssocNode entries at compile time. Default to sym_poly_hash unless
+    # one of the literal AssocNode keys is non-symbol (then str_poly).
+    has_splat = 0
+    el_check = 0
+    while el_check < elems.length
+      if @nd_type[elems[el_check]] == "AssocSplatNode"
+        has_splat = 1
+      end
+      el_check = el_check + 1
+    end
+    if has_splat == 1
+      non_sym = 0
+      el_check = 0
+      while el_check < elems.length
+        eid_check = elems[el_check]
+        if @nd_type[eid_check] == "AssocNode"
+          kid_check = @nd_key[eid_check]
+          if kid_check >= 0 && @nd_type[kid_check] != "SymbolNode"
+            non_sym = 1
+          end
+        end
+        el_check = el_check + 1
+      end
+      if non_sym == 1
+        return "str_poly_hash"
+      end
+      return "sym_poly_hash"
+    end
     if elems.length > 0
       eid = elems[0]
       if @nd_type[eid] == "AssocNode"
@@ -23185,6 +23215,31 @@ class Compiler
       elems.each { |el|
         if @nd_type[el] == "AssocNode"
           emit("  sp_SymPolyHash_set(" + tmp + ", " + compile_expr(@nd_key[el]) + ", " + box_expr_to_poly(@nd_expression[el]) + ");")
+        elsif @nd_type[el] == "AssocSplatNode"
+          # `**other` -- merge entries from another hash into the poly
+          # accumulator. Same-type (sym_poly_hash) calls the merge helper
+          # directly. Statically-typed sources (sym_int_hash/sym_str_hash)
+          # are lifted inline by iterating their order[] and box-setting
+          # each entry. Lifts emit at the call site rather than as runtime
+          # helpers because the source types themselves are codegen-emitted.
+          src_id = @nd_expression[el]
+          if src_id >= 0
+            src_t = infer_type(src_id)
+            src_c = compile_expr(src_id)
+            if src_t == "sym_poly_hash"
+              emit("  sp_SymPolyHash_merge(" + tmp + ", " + src_c + ");")
+            elsif src_t == "sym_int_hash"
+              @needs_sym_int_hash = 1
+              sh = new_temp
+              si = new_temp
+              emit("  { sp_SymIntHash *" + sh + " = " + src_c + "; if (" + sh + ") { for (mrb_int " + si + " = 0; " + si + " < " + sh + "->len; " + si + "++) { sp_sym _k = " + sh + "->order[" + si + "]; sp_SymPolyHash_set(" + tmp + ", _k, sp_box_int(sp_SymIntHash_get(" + sh + ", _k))); } } }")
+            elsif src_t == "sym_str_hash"
+              @needs_sym_str_hash = 1
+              sh = new_temp
+              si = new_temp
+              emit("  { sp_SymStrHash *" + sh + " = " + src_c + "; if (" + sh + ") { for (mrb_int " + si + " = 0; " + si + " < " + sh + "->len; " + si + "++) { sp_sym _k = " + sh + "->order[" + si + "]; sp_SymPolyHash_set(" + tmp + ", _k, sp_box_str(sp_SymStrHash_get(" + sh + ", _k))); } } }")
+            end
+          end
         end
       }
       return tmp
@@ -23196,6 +23251,25 @@ class Compiler
       elems.each { |el|
         if @nd_type[el] == "AssocNode"
           emit("  sp_StrPolyHash_set(" + tmp + ", " + compile_expr_as_string(@nd_key[el]) + ", " + box_expr_to_poly(@nd_expression[el]) + ");")
+        elsif @nd_type[el] == "AssocSplatNode"
+          src_id = @nd_expression[el]
+          if src_id >= 0
+            src_t = infer_type(src_id)
+            src_c = compile_expr(src_id)
+            if src_t == "str_poly_hash"
+              emit("  sp_StrPolyHash_merge(" + tmp + ", " + src_c + ");")
+            elsif src_t == "str_int_hash"
+              @needs_str_int_hash = 1
+              sh = new_temp
+              si = new_temp
+              emit("  { sp_StrIntHash *" + sh + " = " + src_c + "; if (" + sh + ") { for (mrb_int " + si + " = 0; " + si + " < " + sh + "->len; " + si + "++) { const char *_k = " + sh + "->order[" + si + "]; sp_StrPolyHash_set(" + tmp + ", _k, sp_box_int(sp_StrIntHash_get(" + sh + ", _k))); } } }")
+            elsif src_t == "str_str_hash"
+              @needs_str_str_hash = 1
+              sh = new_temp
+              si = new_temp
+              emit("  { sp_StrStrHash *" + sh + " = " + src_c + "; if (" + sh + ") { for (mrb_int " + si + " = 0; " + si + " < " + sh + "->len; " + si + "++) { const char *_k = " + sh + "->order[" + si + "]; sp_StrPolyHash_set(" + tmp + ", _k, sp_box_str(sp_StrStrHash_get(" + sh + ", _k))); } } }")
+            end
+          end
         end
       }
       return tmp
