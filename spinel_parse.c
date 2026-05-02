@@ -350,6 +350,34 @@ static int flatten(pm_node_t *node) {
     NAME("name", n->name);
     break;
   }
+  case PM_CLASS_VARIABLE_TARGET_NODE: {
+    pm_class_variable_target_node_t *n = (pm_class_variable_target_node_t *)node;
+    N("ClassVariableTargetNode");
+    NAME("name", n->name);
+    break;
+  }
+  case PM_CLASS_VARIABLE_OPERATOR_WRITE_NODE: {
+    pm_class_variable_operator_write_node_t *n = (pm_class_variable_operator_write_node_t *)node;
+    N("ClassVariableOperatorWriteNode");
+    NAME("name", n->name);
+    NAME("binary_operator", n->binary_operator);
+    R("value", n->value);
+    break;
+  }
+  case PM_CLASS_VARIABLE_OR_WRITE_NODE: {
+    pm_class_variable_or_write_node_t *n = (pm_class_variable_or_write_node_t *)node;
+    N("ClassVariableOrWriteNode");
+    NAME("name", n->name);
+    R("value", n->value);
+    break;
+  }
+  case PM_CLASS_VARIABLE_AND_WRITE_NODE: {
+    pm_class_variable_and_write_node_t *n = (pm_class_variable_and_write_node_t *)node;
+    N("ClassVariableAndWriteNode");
+    NAME("name", n->name);
+    R("value", n->value);
+    break;
+  }
   case PM_INDEX_OPERATOR_WRITE_NODE: {
     pm_index_operator_write_node_t *n = (pm_index_operator_write_node_t *)node;
     N("IndexOperatorWriteNode");
