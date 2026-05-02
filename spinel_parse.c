@@ -581,6 +581,27 @@ static int flatten(pm_node_t *node) {
     I("flags", n->base.flags);
     break;
   }
+  case PM_RATIONAL_NODE: {
+    /* `1r`, `3.5r`. Prism splits the literal into numerator+denominator
+       at parse time (1.5r -> 3/2). Both are pm_integer_t (bignum-capable);
+       Spinel takes the small-int fast path via pm_int_value -- literals
+       beyond uint32_t fall through to the truncated low word and
+       document that as a known limit. */
+    pm_rational_node_t *n = (pm_rational_node_t *)node;
+    N("RationalNode");
+    I("numerator", pm_int_value(&n->numerator));
+    I("denominator", pm_int_value(&n->denominator));
+    break;
+  }
+  case PM_IMAGINARY_NODE: {
+    /* `1i`, `2.5i`. Carries the underlying numeric (Integer or Float)
+       as a child node; codegen reads infer_type to decide whether to
+       construct via int or float helper. */
+    pm_imaginary_node_t *n = (pm_imaginary_node_t *)node;
+    N("ImaginaryNode");
+    R("numeric", n->numeric);
+    break;
+  }
   case PM_FLIP_FLOP_NODE: {
     /* `if a..b` (or `a...b`) when used in conditional context. Per-call-
        site bistable state: false until `a` evaluates true, then stays true

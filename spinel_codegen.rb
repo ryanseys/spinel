@@ -674,6 +674,15 @@ class Compiler
     if field == "start_line"
       @nd_value[nid] = val
     end
+    # RationalNode -- numerator goes in @nd_value, denominator in @nd_flags.
+    # Reuses existing int slots rather than allocating new ivars; both are
+    # node-local and never collide because RationalNode has no other ints.
+    if field == "numerator"
+      @nd_value[nid] = val
+    end
+    if field == "denominator"
+      @nd_flags[nid] = val
+    end
   end
 
   def set_ref_field(nid, field, ref_id)
@@ -768,6 +777,10 @@ class Compiler
     end
     if field == "old_name"
       @nd_old_name[nid] = ref_id
+    end
+    if field == "numeric"
+      # ImaginaryNode -- the underlying numeric child (Integer or Float).
+      @nd_expression[nid] = ref_id
     end
   end
 
@@ -1901,6 +1914,13 @@ class Compiler
       # the assembled string. Use sites that need symbol-typed
       # behaviour (sym_int_hash keys, ===) won't work, but puts/==/
       # string interpolation/regex match all do.
+      return "string"
+    end
+    if t == "RationalNode" || t == "ImaginaryNode"
+      # Compile-time fold to canonical "num/den" / "0+Ni" string form.
+      # Type is "string" because that's the runtime carrier; arithmetic
+      # on Rational/Complex would need a typed pointer + numeric runtime
+      # (deferred). puts/p/== work because they accept strings.
       return "string"
     end
     if t == "BackReferenceReadNode"
@@ -16187,6 +16207,68 @@ class Compiler
       # Inclusive: when activating, also peek at right so a single-eval
       # range (left and right both fire same tick) closes immediately.
       return "(" + slot + " ? (" + r_expr + " ? (" + slot + " = 0, 1) : 1) : (" + l_expr + " ? ((" + r_expr + ") ? 1 : (" + slot + " = 1, 1)) : 0))"
+    end
+    if t == "RationalNode"
+      # Rational literal `1r` / `3.5r` -- Prism splits into numerator
+       # and denominator at parse time. Spinel emits the canonical
+       # string form ("num/den" reduced by GCD, denominator > 0) so
+       # `puts 1r` matches CRuby's "1/1" and string-context use works.
+       # Arithmetic on Rational is deferred: a future runtime sp_Rational
+       # struct would replace the string with a typed pointer.
+      num = @nd_value[nid]
+      den = @nd_flags[nid]
+      if den == 0
+        den = 1
+      end
+      # GCD reduce
+      a = num
+      if a < 0
+        a = -a
+      end
+      b = den
+      if b < 0
+        b = -b
+      end
+      g = b
+      while a > 0
+        t2 = a
+        a = b % a
+        b = t2
+      end
+      g2 = b
+      if g2 > 0
+        num = num / g2
+        den = den / g2
+      end
+      # Canonicalize sign onto numerator
+      if den < 0
+        num = -num
+        den = -den
+      end
+      return c_string_literal(num.to_s + "/" + den.to_s)
+    end
+    if t == "ImaginaryNode"
+      # Imaginary literal `1i` / `2.5i` -- the numeric child is an
+      # IntegerNode or FloatNode. Emit the canonical "0+<n>i" string
+      # (or "0-<n>i" for negatives). Same string-not-typed trade-off
+      # as RationalNode above. Local name `imag_lit_str` is intentionally
+      # unique within compile_expr so Spinel's local-type inference
+      # doesn't unify with the unrelated `v` at line ~15930.
+      cid = @nd_expression[nid]
+      imag_lit_str = "0"
+      if cid >= 0
+        if @nd_type[cid] == "IntegerNode"
+          imag_lit_str = @nd_value[cid].to_s
+        elsif @nd_type[cid] == "FloatNode"
+          imag_lit_str = @nd_content[cid]
+        end
+      end
+      imag_sign = "+"
+      if imag_lit_str.length > 0 && imag_lit_str[0] == "-"
+        imag_sign = "-"
+        imag_lit_str = imag_lit_str[1, imag_lit_str.length - 1]
+      end
+      return c_string_literal("0" + imag_sign + imag_lit_str + "i")
     end
     if t == "InterpolatedRegularExpressionNode"
       # `/foo_#{x}/` -- pattern is only known at execution time, so we
