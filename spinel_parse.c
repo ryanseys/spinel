@@ -602,6 +602,33 @@ static int flatten(pm_node_t *node) {
     R("numeric", n->numeric);
     break;
   }
+  case PM_PINNED_VARIABLE_NODE: {
+    /* `^v` inside a case/in pattern -- pin a local for equality
+       comparison instead of binding it. The `variable` child is
+       a LocalVariableReadNode (or similar) that codegen compiles
+       and compares against the case predicate. */
+    pm_pinned_variable_node_t *n = (pm_pinned_variable_node_t *)node;
+    N("PinnedVariableNode");
+    R("variable", n->variable);
+    break;
+  }
+  case PM_PINNED_EXPRESSION_NODE: {
+    /* `^(expr)` inside a case/in pattern. */
+    pm_pinned_expression_node_t *n = (pm_pinned_expression_node_t *)node;
+    N("PinnedExpressionNode");
+    R("expression", n->expression);
+    break;
+  }
+  case PM_MATCH_PREDICATE_NODE: {
+    /* `value in pattern` expression form -- returns boolean. The
+       value is the subject, the pattern is what to match against.
+       Spinel reuses compile_in_pattern with the value as the temp. */
+    pm_match_predicate_node_t *n = (pm_match_predicate_node_t *)node;
+    N("MatchPredicateNode");
+    R("value", n->value);
+    R("pattern", n->pattern);
+    break;
+  }
   case PM_FLIP_FLOP_NODE: {
     /* `if a..b` (or `a...b`) when used in conditional context. Per-call-
        site bistable state: false until `a` evaluates true, then stays true

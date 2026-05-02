@@ -782,6 +782,11 @@ class Compiler
       # ImaginaryNode -- the underlying numeric child (Integer or Float).
       @nd_expression[nid] = ref_id
     end
+    if field == "variable"
+      # PinnedVariableNode -- the local being pinned for equality
+      # comparison (`^v`).
+      @nd_expression[nid] = ref_id
+    end
   end
 
   def set_array_field(nid, field, ids_str)
@@ -16208,6 +16213,21 @@ class Compiler
       # range (left and right both fire same tick) closes immediately.
       return "(" + slot + " ? (" + r_expr + " ? (" + slot + " = 0, 1) : 1) : (" + l_expr + " ? ((" + r_expr + ") ? 1 : (" + slot + " = 1, 1)) : 0))"
     end
+    if t == "MatchPredicateNode"
+      # `value in pattern` expression form -- returns boolean. Inline
+      # the subject directly into compile_in_pattern's tmp slot rather
+      # than emit-binding to a C local first. Inlining duplicates the
+      # subject expression in patterns that reference tmp twice (Pinned
+      # against poly), but avoids the `else <decl>` C scoping pitfall
+      # when MatchPredicate appears in elsif chains. Side-effecting
+      # subjects re-evaluate; document this trade-off rather than
+      # introducing a function-scope temp pool.
+      subj_id = @nd_expression[nid]
+      pat_id = @nd_pattern[nid]
+      subj_t = infer_type(subj_id)
+      subj_c = compile_expr(subj_id)
+      return "(" + compile_in_pattern(pat_id, subj_c, subj_t) + ")"
+    end
     if t == "RationalNode"
       # Rational literal `1r` / `3.5r` -- Prism splits into numerator
        # and denominator at parse time. Spinel emits the canonical
@@ -25179,6 +25199,28 @@ class Compiler
       left = compile_in_pattern(@nd_left[pat_id], tmp, pred_type)
       right = compile_in_pattern(@nd_right[pat_id], tmp, pred_type)
       return "(" + left + " || " + right + ")"
+    end
+    if pt == "PinnedVariableNode" || pt == "PinnedExpressionNode"
+      # `^v` / `^(expr)` -- pin a value for equality comparison instead
+      # of binding/destructuring. Compile the inner expression and
+      # compare against the case predicate temp. Type-aware: poly subjects
+      # need tag-then-value comparison; primitive subjects are direct.
+      inner_id = @nd_expression[pat_id]
+      inner_c = compile_expr(inner_id)
+      inner_t = infer_type(inner_id)
+      if pred_type == "poly"
+        if inner_t == "int"
+          return "(" + tmp + ".tag == SP_TAG_INT && " + tmp + ".v.i == " + inner_c + ")"
+        end
+        if inner_t == "string"
+          return "(" + tmp + ".tag == SP_TAG_STR && strcmp(" + tmp + ".v.s, " + inner_c + ") == 0)"
+        end
+        return "0"
+      end
+      if pred_type == "string" || inner_t == "string"
+        return "(strcmp(" + tmp + ", " + inner_c + ") == 0)"
+      end
+      return "(" + tmp + " == " + inner_c + ")"
     end
     "1"
   end
