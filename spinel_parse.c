@@ -309,6 +309,12 @@ static int flatten(pm_node_t *node) {
     R("receiver", n->receiver);
     break;
   }
+  case PM_CONSTANT_TARGET_NODE: {
+    pm_constant_target_node_t *n = (pm_constant_target_node_t *)node;
+    N("ConstantTargetNode");
+    NAME("name", n->name);
+    break;
+  }
   case PM_INSTANCE_VARIABLE_AND_WRITE_NODE: {
     pm_instance_variable_and_write_node_t *n = (pm_instance_variable_and_write_node_t *)node;
     N("InstanceVariableAndWriteNode");
