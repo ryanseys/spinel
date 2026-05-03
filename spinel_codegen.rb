@@ -4806,6 +4806,63 @@ class Compiler
   # a fatal program error: bail with a clear message instead of letting
   # the recursive helpers loop forever. Self-inheritance (`class A < A`)
   # is detected as the trivial 1-step cycle.
+  # Issue #224: copy each inherited class method (def self.<m> on a
+  # parent class) into every subclass's @cls_cmeth_* tables so the
+  # subclass gets its own synthetic copy. Each copy reuses the
+  # parent's AST body id; emit_class_methods then re-compiles the
+  # body under the subclass's @current_class_idx, and a bare `new`
+  # inside the body resolves to the subclass's constructor.
+  #
+  # Run after class collection so all parents are populated, and
+  # before infer_all_returns / call-site widening so the synthetic
+  # entries participate in regular type inference.
+  def propagate_inherited_class_methods
+    ci = 0
+    while ci < @cls_names.length
+      seen = @cls_cmeth_names[ci].split(";")
+      cur_parent = @cls_parents[ci]
+      while cur_parent != ""
+        pi = find_class_idx(cur_parent)
+        if pi < 0
+          cur_parent = ""
+        else
+          p_cmnames = @cls_cmeth_names[pi].split(";")
+          p_cmreturns = @cls_cmeth_returns[pi].split(";")
+          p_cmbodies = @cls_cmeth_bodies[pi].split(";")
+          p_cmparams = @cls_cmeth_params[pi].split("|")
+          p_cmptypes = @cls_cmeth_ptypes[pi].split("|")
+          pj = 0
+          while pj < p_cmnames.length
+            mname = p_cmnames[pj]
+            if mname != "" && not_in(mname, seen) == 1
+              pret = "int"
+              if pj < p_cmreturns.length
+                pret = p_cmreturns[pj]
+              end
+              pbid = -1
+              if pj < p_cmbodies.length
+                pbid = p_cmbodies[pj].to_i
+              end
+              pparams = ""
+              if pj < p_cmparams.length
+                pparams = p_cmparams[pj]
+              end
+              pptypes = ""
+              if pj < p_cmptypes.length
+                pptypes = p_cmptypes[pj]
+              end
+              append_cls_cmeth(ci, mname, pparams, pptypes, pret, pbid)
+              seen.push(mname)
+            end
+            pj = pj + 1
+          end
+          cur_parent = @cls_parents[pi]
+        end
+      end
+      ci = ci + 1
+    end
+  end
+
   def detect_circular_inheritance
     i = 0
     while i < @cls_names.length
@@ -4898,6 +4955,16 @@ class Compiler
     # would loop forever and hang the codegen instead of erroring out
     # like CRuby. Issue #106.
     detect_circular_inheritance
+
+    # Pass 1.6: copy inherited class methods (def self.<m>) into each
+    # subclass's @cls_cmeth_* table so the subclass gets its own
+    # synthetic copy of the parent's body. The copy compiles under
+    # the subclass's @current_class_idx, which means a bare `new`
+    # inside `def self.create; new; end` resolves to the subclass's
+    # constructor (issue #224). Without this, `new` statically binds
+    # to the lexical class — so `Article.create` returns a `Base`
+    # instance instead of an `Article`.
+    propagate_inherited_class_methods
 
     # Pass 2: top-level methods, constants, define_method
     stmts.each { |sid|
@@ -7746,6 +7813,155 @@ class Compiler
     end
   end
 
+  # Issue #224: scan_new_calls' `new` handler only widens an
+  # `initialize`'s ptypes when the call has an explicit class
+  # receiver (`Article.new(attrs)`). The bare form `new(attrs)`
+  # inside a class method body has no receiver, so the ptypes
+  # never propagate — leaving e.g. `sp_Article_new(mrb_int)`
+  # called with `sp_SymStrHash *` and a C-level type mismatch.
+  #
+  # propagate_inherited_class_methods has already given each
+  # subclass its own copy of the inherited cls method, with
+  # @cls_cmeth_ptypes widened from explicit call sites by issue
+  # #207's logic at scan_new_calls' tail. This pass walks each
+  # cls method body for bare `new(args)` and unifies the matching
+  # `find_init_class(ci).initialize` ptypes — args that read a
+  # cls-method local resolve via the cls method's pnames/ptypes
+  # (which carry the call-site type), other args fall through
+  # to infer_type with @current_class_idx pinned so @ivar refs
+  # in the args resolve against the right class.
+  def propagate_bare_new_to_subclass_initialize
+    ci = 0
+    while ci < @cls_names.length
+      cmnames = @cls_cmeth_names[ci].split(";")
+      cm_bodies = @cls_cmeth_bodies[ci].split(";")
+      cm_params = @cls_cmeth_params[ci].split("|")
+      cm_ptypes = @cls_cmeth_ptypes[ci].split("|")
+      j = 0
+      while j < cmnames.length
+        bid = -1
+        if j < cm_bodies.length
+          bs = cm_bodies[j]
+          if bs != ""
+            bid = bs.to_i
+          end
+        end
+        pnames = "".split(",")
+        if j < cm_params.length
+          pnames = cm_params[j].split(",")
+        end
+        ptypes = "".split(",")
+        if j < cm_ptypes.length
+          ptypes = cm_ptypes[j].split(",")
+        end
+        if bid > 0
+          saved_ci = @current_class_idx
+          @current_class_idx = ci
+          walk_bare_new_in_cmeth_body(bid, ci, pnames, ptypes)
+          @current_class_idx = saved_ci
+        end
+        j = j + 1
+      end
+      ci = ci + 1
+    end
+  end
+
+  def walk_bare_new_in_cmeth_body(nid, cls_ci, cm_pnames, cm_ptypes)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "new" && @nd_receiver[nid] < 0
+      args_id = @nd_arguments[nid]
+      if args_id >= 0
+        arg_ids = get_args(args_id)
+        init_ci = find_init_class(cls_ci)
+        if init_ci >= 0
+          init_idx = cls_find_method_direct(init_ci, "initialize")
+          if init_idx >= 0
+            all_ptypes = @cls_meth_ptypes[init_ci].split("|")
+            if init_idx < all_ptypes.length
+              init_ptypes = all_ptypes[init_idx].split(",")
+              kk = 0
+              while kk < arg_ids.length
+                at = ""
+                if @nd_type[arg_ids[kk]] == "LocalVariableReadNode"
+                  vname = @nd_name[arg_ids[kk]]
+                  pi = 0
+                  while pi < cm_pnames.length
+                    if cm_pnames[pi] == vname && pi < cm_ptypes.length
+                      at = cm_ptypes[pi]
+                    end
+                    pi = pi + 1
+                  end
+                end
+                if at == ""
+                  at = infer_type(arg_ids[kk])
+                end
+                if kk < init_ptypes.length && at != "" && at != "int"
+                  init_ptypes[kk] = unify_call_types(init_ptypes[kk], at, arg_ids[kk])
+                end
+                kk = kk + 1
+              end
+              all_ptypes[init_idx] = init_ptypes.join(",")
+              @cls_meth_ptypes[init_ci] = all_ptypes.join("|")
+            end
+          end
+        end
+      end
+    end
+    # Mirror scan_new_calls' recursion shape so a `new(...)` at any
+    # depth in the body is reachable: stmts, body, conditionals,
+    # call args, expressions, etc.
+    if @nd_body[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_body[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    bn_stmts = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < bn_stmts.length
+      walk_bare_new_in_cmeth_body(bn_stmts[k], cls_ci, cm_pnames, cm_ptypes)
+      k = k + 1
+    end
+    if @nd_receiver[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_receiver[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    if @nd_arguments[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_arguments[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    bn_args = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < bn_args.length
+      walk_bare_new_in_cmeth_body(bn_args[k], cls_ci, cm_pnames, cm_ptypes)
+      k = k + 1
+    end
+    if @nd_expression[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_expression[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    if @nd_predicate[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_predicate[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    if @nd_subsequent[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_subsequent[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    if @nd_else_clause[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_else_clause[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    if @nd_left[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_left[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    if @nd_right[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_right[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    if @nd_block[nid] >= 0
+      walk_bare_new_in_cmeth_body(@nd_block[nid], cls_ci, cm_pnames, cm_ptypes)
+    end
+    bn_elems = parse_id_list(@nd_elements[nid])
+    k = 0
+    while k < bn_elems.length
+      walk_bare_new_in_cmeth_body(bn_elems[k], cls_ci, cm_pnames, cm_ptypes)
+      k = k + 1
+    end
+  end
+
   def update_ivar_types_from_params
     # Special case: synthetic struct constructors - ivars match params directly
     i = 0
@@ -9034,6 +9250,14 @@ class Compiler
     infer_cls_meth_param_from_body
     # Pre-pass: scan for .new calls to infer constructor param types
     infer_constructor_types
+    # Issue #224: bare `new(args)` in an inherited class method body
+    # widens the subclass's `initialize` ptypes via the cls method's
+    # already-widened ptypes. Runs after infer_constructor_types so
+    # the cls method ptypes (set by issue #207's logic in
+    # scan_new_calls) are current; runs inside the iterative loop
+    # so subsequent rounds pick up cls method widening from new
+    # call sites.
+    propagate_bare_new_to_subclass_initialize
     # Update ivar types from constructor params
     update_ivar_types_from_params
     # Infer setter param types from ivar types
@@ -13357,11 +13581,122 @@ class Compiler
         if j < cm_ptypes.length
           ptypes = cm_ptypes[j].split(",")
         end
-        emit_class_level_method(i, cmnames[j], pnames, ptypes, rt, bid)
-        j = j + 1
+        # Issue #224: a class's cls method whose body has bare
+        # `new(args)` would emit `sp_<this_class>_new(args)`. If
+        # this class has no resolvable initialize (no own one and
+        # no inherited one), the synthesized constructor is 0-arg —
+        # so the call wouldn't C-compile. This shape only arises
+        # when a *parent* class defines `def self.factory(attrs);
+        # new(attrs); ...; end` to be inherited by subclasses with
+        # an attrs-taking initialize; calling the parent's version
+        # directly is a runtime error in CRuby anyway. Skip emit
+        # rather than producing a non-compiling body.
+        if bid > 0 && find_init_class(i) < 0 && body_has_bare_new_with_args(bid) == 1
+          j = j + 1
+        else
+          emit_class_level_method(i, cmnames[j], pnames, ptypes, rt, bid)
+          j = j + 1
+        end
       end
       i = i + 1
     end
+  end
+
+  # Issue #224: detect bare `new(args)` (recv < 0, args.length > 0)
+  # anywhere in a cls method body. Used by emit_class_methods to
+  # skip emitting a class's version of an inherited method when the
+  # class has no resolvable initialize — emitting would synthesize
+  # `sp_<class>_new(args)` against a 0-arg default constructor and
+  # the C compiler would reject the body. The synthetic copies on
+  # subclasses (with their own initialize) emit normally.
+  def body_has_bare_new_with_args(nid)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "new" && @nd_receiver[nid] < 0
+      args_id = @nd_arguments[nid]
+      if args_id >= 0
+        arg_ids = get_args(args_id)
+        if arg_ids.length > 0
+          return 1
+        end
+      end
+    end
+    if @nd_body[nid] >= 0
+      if body_has_bare_new_with_args(@nd_body[nid]) == 1
+        return 1
+      end
+    end
+    bn_stmts = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < bn_stmts.length
+      if body_has_bare_new_with_args(bn_stmts[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    if @nd_receiver[nid] >= 0
+      if body_has_bare_new_with_args(@nd_receiver[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_arguments[nid] >= 0
+      if body_has_bare_new_with_args(@nd_arguments[nid]) == 1
+        return 1
+      end
+    end
+    bn_args = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < bn_args.length
+      if body_has_bare_new_with_args(bn_args[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    if @nd_expression[nid] >= 0
+      if body_has_bare_new_with_args(@nd_expression[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_predicate[nid] >= 0
+      if body_has_bare_new_with_args(@nd_predicate[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_subsequent[nid] >= 0
+      if body_has_bare_new_with_args(@nd_subsequent[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_else_clause[nid] >= 0
+      if body_has_bare_new_with_args(@nd_else_clause[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_left[nid] >= 0
+      if body_has_bare_new_with_args(@nd_left[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_right[nid] >= 0
+      if body_has_bare_new_with_args(@nd_right[nid]) == 1
+        return 1
+      end
+    end
+    if @nd_block[nid] >= 0
+      if body_has_bare_new_with_args(@nd_block[nid]) == 1
+        return 1
+      end
+    end
+    bn_elems = parse_id_list(@nd_elements[nid])
+    k = 0
+    while k < bn_elems.length
+      if body_has_bare_new_with_args(bn_elems[k]) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    0
   end
 
   def emit_constructor(ci)
