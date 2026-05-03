@@ -21,7 +21,11 @@ jobs:
           - os: macos-latest
             cc: clang
     env:
-      CC: ${{ matrix.cc }}
+      # Wrap the compiler with sccache so per-.o compiles are cached
+      # across runs via the GitHub Actions cache. SCCACHE_GHA_ENABLED
+      # is consumed by sccache itself; the action handles token plumbing.
+      CC: sccache ${{ matrix.cc }}
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +37,13 @@ jobs:
       - name: Expose GNU coreutils on PATH (macOS)
         if: runner.os == 'macOS'
         run: echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
+      # Pin sccache to v0.10.0 — the GHA cache backend requires >=0.10.0,
+      # and pinning insulates CI from upstream breaking changes.
+      - name: Set up sccache
+        uses: Mozilla-Actions/sccache-action@v0.0.10
+        with:
+          version: "v0.10.0"
 
       - name: Fetch libprism sources
         run: make deps
@@ -50,6 +61,10 @@ jobs:
         # -j$(...) overlaps the per-test cc invocations.
         run: make -j$(getconf _NPROCESSORS_ONLN) test OPT=-O0
 
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
   windows-mingw:
     name: windows-mingw
     runs-on: windows-latest
@@ -57,7 +72,11 @@ jobs:
       run:
         shell: msys2 {0}
     env:
-      CC: gcc
+      # Wrap the compiler with sccache so per-.o compiles are cached
+      # across runs via the GitHub Actions cache. SCCACHE_GHA_ENABLED
+      # is consumed by sccache itself; the action handles token plumbing.
+      CC: sccache gcc
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -78,12 +97,29 @@ jobs:
             curl
             tar
 
+      # Must come AFTER setup-msys2 so the action's env exports
+      # (ACTIONS_RUNTIME_TOKEN, ACTIONS_RESULTS_URL, etc.) are visible
+      # to subsequent steps. Pin to v0.10.0; the GHA cache backend
+      # requires >=0.10.0.
+      - name: Set up sccache
+        uses: Mozilla-Actions/sccache-action@v0.0.10
+        with:
+          version: "v0.10.0"
+
+      # The Mozilla action calls core.addPath() with a Windows-style
+      # path, which the msys2 shell wrapper does NOT translate into its
+      # POSIX PATH. Drop a symlink in /usr/bin so `sccache` resolves
+      # inside the msys2 {0} shell.
+      - name: Make sccache visible to MSYS2 shell
+        run: ln -sf "$(cygpath -u "$SCCACHE_PATH")" /usr/bin/sccache
+
       - name: Show toolchain
         run: |
           uname -a
           gcc --version
           ruby --version
           make --version | head -1
+          sccache --version
 
       - name: Fetch libprism sources
         run: make deps
@@ -93,3 +129,7 @@ jobs:
 
       - name: Run tests
         run: make -j$(nproc) test OPT=-O0
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
