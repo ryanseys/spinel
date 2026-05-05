@@ -198,6 +198,7 @@ TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 
 test: clean-test-results
 	@$(MAKE) --no-print-directory test-run
+	@$(MAKE) --no-print-directory test-errors
 
 test-run: $(TEST_TARGETS)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
@@ -217,6 +218,43 @@ test-run: $(TEST_TARGETS)
 	done; \
 	echo "Tests: $$pass pass, $$fail fail, $$err error"; \
 	if [ $$fail -ne 0 ] || [ $$err -ne 0 ]; then exit 1; fi
+
+# ---- Negative tests (parse or codegen must reject with expected stderr) ----
+# Each test/errors/<name>.rb must fail one of the toolchain stages with
+# stderr containing the substring in test/errors/<name>.expected_stderr.
+# Both stages' stderr is concatenated for the substring check, and
+# either stage's non-zero exit counts as a rejection.
+ERROR_TESTS := $(wildcard test/errors/*.rb)
+
+test-errors: spinel_parse$(EXE) spinel_codegen$(EXE)
+	@pass=0; fail=0; \
+	for src in $(ERROR_TESTS); do \
+	  bn=$$(basename "$$src" .rb); \
+	  exp="test/errors/$$bn.expected_stderr"; \
+	  if [ ! -f "$$exp" ]; then \
+	    echo "ERR: $$bn missing $$exp"; fail=$$((fail+1)); continue; \
+	  fi; \
+	  tmpdir=$$(mktemp -d /tmp/spinel-err-test.XXXXXX); \
+	  ast="$$tmpdir/test.ast"; cfile="$$tmpdir/test.c"; \
+	  err1="$$tmpdir/err1"; err2="$$tmpdir/err2"; err="$$tmpdir/err"; \
+	  ./spinel_parse$(EXE) "$$src" "$$ast" 2>"$$err1"; pp=$$?; \
+	  ./spinel_codegen$(EXE) "$$ast" "$$cfile" 2>"$$err2"; cc=$$?; \
+	  cat "$$err1" "$$err2" > "$$err"; \
+	  if [ $$pp -eq 0 ] && [ $$cc -eq 0 ]; then \
+	    echo "FAIL: $$bn — both stages exited 0, expected non-zero"; \
+	    fail=$$((fail+1)); \
+	  elif ! grep -q -F -f "$$exp" "$$err"; then \
+	    echo "FAIL: $$bn — stderr missing expected substring"; \
+	    echo "  expected: $$(cat $$exp)"; \
+	    echo "  actual:   $$(cat $$err)"; \
+	    fail=$$((fail+1)); \
+	  else \
+	    pass=$$((pass+1)); \
+	  fi; \
+	  rm -rf "$$tmpdir"; \
+	done; \
+	echo "Negative tests: $$pass pass, $$fail fail"; \
+	if [ $$fail -ne 0 ]; then exit 1; fi
 
 build/test-results/%.ok: test/%.rb spinel_parse$(EXE) $(SP_RT_LIB) spinel_codegen$(EXE)
 	@mkdir -p build/test-results
