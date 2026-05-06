@@ -1016,7 +1016,23 @@ static const char *sp_exc_cls[SP_EXC_STACK_MAX];
 static volatile const char *sp_last_exc_cls = "";
 static void sp_raise_cls(const char *cls, const char *msg) { if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); } fprintf(stderr, "unhandled exception: %s\n", msg); exit(1); }
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
-static mrb_bool sp_exc_is_a(const char *cls, const char *target) { return strcmp(cls, target) == 0; }
+/* Forward declared; defined in generated code so that user-defined
+   exception classes can extend the built-in ancestry chain (e.g.
+   `class MyErr < StandardError`). The codegen emits the body
+   unconditionally, so an empty source still links. */
+static const char *sp_exc_parent(const char *cls);
+static mrb_bool sp_exc_is_a(const char *cls, const char *target) {
+  while (cls != NULL) {
+    /* Pointer equality short-circuit: exception class names are
+       string literals in the generated code, so the C compiler
+       typically deduplicates them within a TU and the pointers
+       match for the common case (direct rescue of the raised
+       class). Skips the strcmp on the hot path. */
+    if (cls == target || strcmp(cls, target) == 0) return TRUE;
+    cls = sp_exc_parent(cls);
+  }
+  return FALSE;
+}
 
 #define SP_CATCH_STACK_MAX 64
 static jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];

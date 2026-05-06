@@ -1,0 +1,8 @@
+StandardError caught: arg-1
+Exception caught: arg-2
+ZD as Std: zd
+MyError as StandardError: user-1
+SubError as Exception: user-2
+SubError direct: user-3
+MyError catches Sub: user-4
+done

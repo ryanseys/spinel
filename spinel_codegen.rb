@@ -14458,6 +14458,7 @@ class Compiler
     end
     emit_class_structs
     emit_raw("/*TUPLE_INSERT_POINT*/")
+    emit_exc_parent_function
     emit_gc_scan_functions
     scan_toplevel_ivars(@root_id)
     emit_toplevel_ivar_decls
@@ -16337,6 +16338,61 @@ class Compiler
 
   def emit_tuple_structs
     # Tuple structs are now inserted at end of generate_code
+  end
+
+  # Emits the sp_exc_parent function that walks the exception
+  # hierarchy. The runtime header forward-declares this and uses it
+  # inside sp_exc_is_a, so it must always be defined regardless of
+  # whether the user wrote any rescue/raise — otherwise even unused
+  # rescue codepaths trip the linker. Built-in chain follows CRuby's
+  # standard hierarchy. User-defined classes that inherit from a known
+  # exception class extend the chain via cls_parents.
+  def emit_exc_parent_function
+    emit_raw("static const char *sp_exc_parent(const char *cls) {")
+    # User-defined exception classes: emit each one whose superclass
+    # chain (transitively) reaches a known exception class. We iterate
+    # @cls_names and emit if @cls_parents[i] is non-empty. The runtime
+    # walker handles the transitive closure by following the chain.
+    i = 0
+    while i < @cls_names.length
+      pn = ""
+      if i < @cls_parents.length
+        pn = @cls_parents[i]
+      end
+      if pn != "" && pn != "Object"
+        emit_raw("  if (strcmp(cls, \"" + @cls_names[i] + "\") == 0) return \"" + pn + "\";")
+      end
+      i = i + 1
+    end
+    # Built-in CRuby exception hierarchy (subset that spinel recognizes
+    # in is_known_constant_name). Exception is the root.
+    emit_raw("  if (strcmp(cls, \"Exception\") == 0) return NULL;")
+    emit_raw("  if (strcmp(cls, \"StandardError\") == 0) return \"Exception\";")
+    emit_raw("  if (strcmp(cls, \"ScriptError\") == 0) return \"Exception\";")
+    emit_raw("  if (strcmp(cls, \"SystemExit\") == 0) return \"Exception\";")
+    emit_raw("  if (strcmp(cls, \"SignalException\") == 0) return \"Exception\";")
+    emit_raw("  if (strcmp(cls, \"NoMemoryError\") == 0) return \"Exception\";")
+    emit_raw("  if (strcmp(cls, \"SystemCallError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"RuntimeError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"ArgumentError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"TypeError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"NameError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"NoMethodError\") == 0) return \"NameError\";")
+    emit_raw("  if (strcmp(cls, \"IndexError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"KeyError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"ZeroDivisionError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"RangeError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"FloatDomainError\") == 0) return \"RangeError\";")
+    emit_raw("  if (strcmp(cls, \"IOError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"NotImplementedError\") == 0) return \"ScriptError\";")
+    emit_raw("  if (strcmp(cls, \"StopIteration\") == 0) return \"IndexError\";")
+    emit_raw("  if (strcmp(cls, \"RegexpError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"FrozenError\") == 0) return \"RuntimeError\";")
+    emit_raw("  if (strcmp(cls, \"LocalJumpError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"FiberError\") == 0) return \"StandardError\";")
+    emit_raw("  if (strcmp(cls, \"EncodingError\") == 0) return \"StandardError\";")
+    emit_raw("  return NULL;")
+    emit_raw("}")
   end
 
   def emit_class_structs
