@@ -2912,6 +2912,19 @@ class Compiler
         if is_array_type(lt) == 1
           return lt
         end
+        # User class with custom `<<` (e.g. one that returns self for
+        # chaining): return the method's declared return type so a
+        # `Foo.new << 1 << 2 << 3` chain stays typed Foo.
+        if is_obj_type(lt) == 1
+          cls = lt[4, lt.length - 4]
+          ci = find_class_idx(cls)
+          if ci >= 0 && class_has_method(ci, "<<") == 1
+            rt = cls_method_return(ci, "<<")
+            if rt != ""
+              return rt
+            end
+          end
+        end
       end
       return "int"
     end
@@ -21625,12 +21638,29 @@ class Compiler
         @needs_rb_value = 1
         return "sp_poly_shl(" + compile_expr(recv) + ", " + box_expr_to_poly(get_args(@nd_arguments[nid])[0]) + ")"
       end
+      # User-class `<<` (e.g. `Foo.new << 1 << 2 << 3`): dispatch to the
+      # user-defined method instead of emitting a C bit-shift. Falls
+      # through to integer << only when no method is defined on the class.
+      if is_obj_type(lt) == 1
+        cls = lt[4, lt.length - 4]
+        ci = find_class_idx(cls)
+        if ci >= 0 && class_has_method(ci, "<<") == 1
+          return "sp_" + cls + "__lshift(" + compile_expr_gc_rooted(recv) + ", " + compile_arg0(nid) + ")"
+        end
+      end
       return "(" + compile_expr(recv) + " << " + compile_arg0(nid) + ")"
     end
     if mname == ">>"
       if infer_type(recv) == "poly"
         @needs_rb_value = 1
         return "sp_poly_shr(" + compile_expr(recv) + ", " + box_expr_to_poly(get_args(@nd_arguments[nid])[0]) + ")"
+      end
+      if is_obj_type(infer_type(recv)) == 1
+        cls = infer_type(recv)[4, infer_type(recv).length - 4]
+        ci = find_class_idx(cls)
+        if ci >= 0 && class_has_method(ci, ">>") == 1
+          return "sp_" + cls + "__rshift(" + compile_expr_gc_rooted(recv) + ", " + compile_arg0(nid) + ")"
+        end
       end
       return "(" + compile_expr(recv) + " >> " + compile_arg0(nid) + ")"
     end
