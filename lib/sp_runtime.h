@@ -1369,7 +1369,23 @@ static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
    so sp_bigint.c's mrb_raise macro can dispatch into spinel's
    longjmp-based rescue net rather than fprintf+exit. */
 void sp_bigint_raise_zerodiv(const char *msg) { sp_raise_cls("ZeroDivisionError", msg); }
-static mrb_bool sp_exc_is_a(const char *cls, const char *target) { return strcmp(cls, target) == 0; }
+/* Forward declared; defined in generated code so that user-defined
+   exception classes can extend the built-in ancestry chain (e.g.
+   `class MyErr < StandardError`). The codegen emits the body
+   unconditionally, so an empty source still links. */
+static const char *sp_exc_parent(const char *cls);
+static mrb_bool sp_exc_is_a(const char *cls, const char *target) {
+  while (cls != NULL) {
+    /* Pointer equality short-circuit: exception class names are
+       string literals in the generated code, so the C compiler
+       typically deduplicates them within a TU and the pointers
+       match for the common case (direct rescue of the raised
+       class). Skips the strcmp on the hot path. */
+    if (cls == target || strcmp(cls, target) == 0) return TRUE;
+    cls = sp_exc_parent(cls);
+  }
+  return FALSE;
+}
 
 #define SP_CATCH_STACK_MAX 64
 static jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];
