@@ -11310,9 +11310,39 @@ class Compiler
         if ivk < types.length && ivk < obs.length && types[ivk] != "poly"
           distinct = obs[ivk].split(",")
           if distinct.length >= 2
-            types[ivk] = "poly"
-            @needs_rb_value = 1
-            changed = 1
+            # When every observed type is itself an array AND the
+            # current type is already `poly_array` (set by an earlier
+            # `[]=` widening — see scan_writer_calls), keep it as
+            # `poly_array` rather than collapsing to `poly`. The
+            # latter discards element-array semantics: reads on a
+            # `poly` slot dont dispatch through cls_id_to_storage,
+            # they box-and-unbox the entire ivar value. Optcarrot's
+            # `@fetch[a][a]` (heterogeneous IntArray + Method) only
+            # works when @fetch stays `poly_array`. For other
+            # combinations (mix of array and non-array, or arrays
+            # without prior poly_array marker), keep the existing
+            # widen-to-poly behavior.
+            all_arrays = 1
+            di = 0
+            while di < distinct.length
+              if is_array_type(distinct[di]) == 0
+                all_arrays = 0
+              end
+              di = di + 1
+            end
+            if all_arrays == 1 && types[ivk] == "poly_array"
+              # Already poly_array; do nothing — keep it.
+            elsif all_arrays == 1
+              # Compatible array shapes but not yet poly_array; widen.
+              types[ivk] = "poly_array"
+              @needs_rb_value = 1
+              @needs_gc = 1
+              changed = 1
+            else
+              types[ivk] = "poly"
+              @needs_rb_value = 1
+              changed = 1
+            end
           end
         end
         ivk = ivk + 1
@@ -11576,6 +11606,7 @@ class Compiler
       if mname == "[]=" && @current_class_idx >= 0 && recv >= 0 && @nd_type[recv] == "InstanceVariableReadNode"
         iname = @nd_name[recv]
         cur_t = cls_ivar_type(@current_class_idx, iname)
+        promoted = ""
         if cur_t == "int_array"
           args_id = @nd_arguments[nid]
           if args_id >= 0
@@ -11583,26 +11614,49 @@ class Compiler
             if ai.length >= 2
               vt = infer_type(ai[ai.length - 1])
               promoted = empty_array_promotion_for([vt])
-              if promoted != "" && promoted != cur_t
-                replace_ivar_type(@current_class_idx, iname, promoted)
-                if promoted == "str_array"
-                  @needs_str_array = 1
-                elsif promoted == "float_array"
-                  @needs_float_array = 1
-                elsif promoted == "sym_array"
-                  @needs_int_array = 1
-                elsif promoted == "poly_array"
-                  @needs_rb_value = 1
-                  @needs_gc = 1
-                elsif is_ptr_array_type(promoted) == 1
-                  # ptr_array slots hold object pointers, so the
-                  # owning class needs gc_scan emitted; without
-                  # this flag the captured pointers leak and the
-                  # collector misses them. Gemini #241 review.
-                  @needs_gc = 1
-                end
+            end
+          end
+        elsif cur_t == "obj_Method_ptr_array"
+          # Specific case: `<X>_ptr_array<Method>` widened from int_array
+          # by the prior empty_array_promotion_for. A subsequent write
+          # of a different element type (e.g. optcarrots `@fetch[i] =
+          # @ram` where @ram is IntArray) would silently void*-cast
+          # into the typed Method slot. Widen to poly_array so the
+          # cls_id dispatch catches both Method and the other type at
+          # runtime. Restricted to Method here because the other
+          # `<X>_ptr_array` shapes (e.g. obj_IntArray_ptr_array for
+          # `@sp_map = [@sp_map_buffer[0], ...]`) dont need this and
+          # widening them too aggressively breaks downstream
+          # operations (`clear` etc.) that have separate poly_array
+          # codepaths only in stmt context.
+          args_id = @nd_arguments[nid]
+          if args_id >= 0
+            ai = get_args(args_id)
+            if ai.length >= 2
+              vt = infer_type(ai[ai.length - 1])
+              if vt != "nil" && vt != "obj_Method"
+                promoted = "poly_array"
               end
             end
+          end
+        end
+        if promoted != "" && promoted != cur_t
+          replace_ivar_type(@current_class_idx, iname, promoted)
+          if promoted == "str_array"
+            @needs_str_array = 1
+          elsif promoted == "float_array"
+            @needs_float_array = 1
+          elsif promoted == "sym_array"
+            @needs_int_array = 1
+          elsif promoted == "poly_array"
+            @needs_rb_value = 1
+            @needs_gc = 1
+          elsif is_ptr_array_type(promoted) == 1
+            # ptr_array slots hold object pointers, so the
+            # owning class needs gc_scan emitted; without
+            # this flag the captured pointers leak and the
+            # collector misses them. Gemini #241 review.
+            @needs_gc = 1
           end
         end
       end
@@ -26006,6 +26060,35 @@ class Compiler
       polyc = "sp_PolyArray_get((sp_PolyArray *)" + recv_tmp + ".v.p, " + a0 + ")"
       polyrhs = is_poly_ret == 1 ? polyc : "(" + polyc + ").v.i"
       emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_POLY_ARRAY) " + result_tmp + " = " + polyrhs + ";")
+      # Method dispatch — `bm[arg]` / `bm[a1, a2]` on a Method instance
+      # is `bm.call(...)`. When bm came through a heterogeneous
+      # poly_array (e.g. optcarrots `@fetch[i] = method(:peek_X)` mixed
+      # with `@fetch[i] = @ram` where @fetch is widened to poly_array),
+      # the static type at the call site is poly, so the typed
+      # obj_Method path at line 20367 doesnt fire. Generate the
+      # function-pointer cast + indirect call inline, guarded by a
+      # null fn_ptr check (Rubys NoMethodError analogue). Handles up
+      # to N args by reusing the same arg_compiled list and unboxing
+      # any that came in as poly.
+      method_idx = find_class_idx("Method")
+      if method_idx >= 0
+        mp = "((sp_Method *)" + recv_tmp + ".v.p)"
+        sig_args = "void *"
+        call_args = "(void *)" + mp + "->iv_self_obj"
+        mi = 0
+        while mi < arg_compiled.length
+          sig_args = sig_args + ", mrb_int"
+          ai_val = arg_compiled[mi]
+          if mi < arg_types.length && arg_types[mi] == "poly"
+            ai_val = "(" + ai_val + ").v.i"
+          end
+          call_args = call_args + ", " + ai_val
+          mi = mi + 1
+        end
+        mc = "(" + mp + " && " + mp + "->iv_fn_ptr ? ((mrb_int (*)(" + sig_args + "))(uintptr_t)" + mp + "->iv_fn_ptr)(" + call_args + ") : 0)"
+        mrhs = is_poly_ret == 1 ? "sp_box_int(" + mc + ")" : mc
+        emit("    if (" + recv_tmp + ".cls_id == " + method_idx.to_s + ") " + result_tmp + " = " + mrhs + ";")
+      end
     end
     # `length` / `size` — every built-in array exposes its own
     # `_length` helper (sym_array shares IntArray's). PtrArray is
@@ -28844,25 +28927,41 @@ class Compiler
         k = k + 1
       end
     else
-      # RHS is a function call returning int_array
-      @needs_int_array = 1
+      # RHS is a function call returning a typed array. Dispatch by
+      # the RHS's static type — IntArray default, but PolyArray when
+      # the inner is heterogeneous (optcarrots `@io_addr,
+      # @bg_pattern_lut_fetched, _ = @attr_lut[i]` where attr_lut
+      # elements are 3-tuples of mixed types).
+      val_t_local = infer_type(val_id)
       @needs_gc = 1
       tmp = new_temp
-      emit("  sp_IntArray *" + tmp + " = " + compile_expr(val_id) + ";")
+      if val_t_local == "poly_array"
+        @needs_rb_value = 1
+        emit("  sp_PolyArray *" + tmp + " = " + compile_expr(val_id) + ";")
+      else
+        @needs_int_array = 1
+        emit("  sp_IntArray *" + tmp + " = " + compile_expr(val_id) + ";")
+      end
       emit("  SP_GC_ROOT(" + tmp + ");")
       k = 0
       while k < targets.length
         tid = targets[k]
-        rhs = "sp_IntArray_get(" + tmp + ", " + k.to_s + ")"
+        if val_t_local == "poly_array"
+          rhs = "sp_PolyArray_get(" + tmp + ", " + k.to_s + ")"
+          val_t_for_target = "poly"
+        else
+          rhs = "sp_IntArray_get(" + tmp + ", " + k.to_s + ")"
+          val_t_for_target = "int"
+        end
         # Route ivar / local writes through emit_multi_write_target so
         # the box-when-slot-is-poly logic fires. Without boxing, an int
         # RHS into a sp_RbVal slot fails C compile (`@x, @y = arr` where
         # @y is poly because other writers store other types).
         if @nd_type[tid] == "LocalVariableTargetNode"
-          emit_multi_write_target(tid, rhs, "int")
+          emit_multi_write_target(tid, rhs, val_t_for_target)
         end
         if @nd_type[tid] == "InstanceVariableTargetNode"
-          emit_multi_write_target(tid, rhs, "int")
+          emit_multi_write_target(tid, rhs, val_t_for_target)
         end
         if @nd_type[tid] == "ConstantTargetNode"
           if find_const_idx(@nd_name[tid]) >= 0
@@ -32118,10 +32217,16 @@ class Compiler
       # the underlying pointer points at. Optcarrot's `@fetch[a] =
       # method(:peek_X)` lands here when @fetch was widened to poly
       # (rather than poly_array) by the heterogeneous IntArray + Method
-      # writes. Dispatch by cls_id, mirroring sp_PolyArray_set's
-      # interface for the POLY_ARRAY case and using element-typed
-      # setters for the homogeneous storage variants. Extract the
-      # appropriate payload from the boxed value via .v.p / .v.i.
+      # writes. Dispatch by cls_id at runtime.
+      #
+      # When the slot's runtime storage is IntArray but the value
+      # being stored is non-int (a pointer / poly with cls_id != 0),
+      # we'd lose the cls_id by storing as int. Widen the storage at
+      # runtime: allocate a fresh PolyArray, copy the existing int
+      # elements as boxed-int, then store the new value boxed. Update
+      # the slot to hold the new PolyArray. Requires knowing where
+      # the slot is — only fires when recv is an ivar / local / cvar
+      # / gvar that we can reassign in C.
       vbox = val
       vt = "int"
       if arg_ids.length >= 2
@@ -32132,9 +32237,45 @@ class Compiler
       end
       vbox_tmp = new_temp
       emit("  sp_RbVal " + vbox_tmp + " = " + vbox + ";")
-      emit("  if (" + rc + ".cls_id == SP_BUILTIN_POLY_ARRAY) sp_PolyArray_set((sp_PolyArray *)" + rc + ".v.p, " + idx + ", " + vbox_tmp + ");")
-      emit("  else if (" + rc + ".cls_id == SP_BUILTIN_PTR_ARRAY) sp_PtrArray_set((sp_PtrArray *)" + rc + ".v.p, " + idx + ", " + vbox_tmp + ".v.p);")
-      emit("  else if (" + rc + ".cls_id == SP_BUILTIN_INT_ARRAY) sp_IntArray_set((sp_IntArray *)" + rc + ".v.p, " + idx + ", " + vbox_tmp + ".v.i);")
+      # Determine the slot expression — what we'd assign to in order
+      # to replace the storage. Only ivar / local / cvar / gvar are
+      # supported; anything else falls back to no-widen (still
+      # correct for the homogeneous cases, just not heterogeneous).
+      slot_lhs = ""
+      if @nd_type[recv] == "InstanceVariableReadNode"
+        slot_lhs = self_arrow + sanitize_ivar(@nd_name[recv])
+      elsif @nd_type[recv] == "LocalVariableReadNode"
+        slot_lhs = fiber_var_ref(@nd_name[recv])
+      end
+      if slot_lhs != ""
+        @needs_gc = 1
+        @needs_rb_value = 1
+        cur = new_temp
+        new_arr = new_temp
+        old_int = new_temp
+        ii = new_temp
+        emit("  sp_RbVal " + cur + " = " + rc + ";")
+        # Widen path: if storage is IntArray but value can't fit int
+        # (i.e. value carries cls_id != 0 or tag != INT, meaning it's
+        # a typed pointer/box that loses info if cast to int).
+        emit("  if (" + cur + ".cls_id == SP_BUILTIN_INT_ARRAY && (" + vbox_tmp + ".tag != SP_TAG_INT || " + vbox_tmp + ".cls_id != 0)) {")
+        emit("    sp_IntArray *" + old_int + " = (sp_IntArray *)" + cur + ".v.p;")
+        emit("    sp_PolyArray *" + new_arr + " = sp_PolyArray_new();")
+        emit("    for (mrb_int " + ii + " = 0; " + ii + " < sp_IntArray_length(" + old_int + "); " + ii + "++) sp_PolyArray_push(" + new_arr + ", sp_box_int(sp_IntArray_get(" + old_int + ", " + ii + ")));")
+        emit("    sp_PolyArray_set(" + new_arr + ", " + idx + ", " + vbox_tmp + ");")
+        emit("    " + slot_lhs + " = sp_box_poly_array(" + new_arr + ");")
+        emit("  } else if (" + cur + ".cls_id == SP_BUILTIN_POLY_ARRAY) {")
+        emit("    sp_PolyArray_set((sp_PolyArray *)" + cur + ".v.p, " + idx + ", " + vbox_tmp + ");")
+        emit("  } else if (" + cur + ".cls_id == SP_BUILTIN_PTR_ARRAY) {")
+        emit("    sp_PtrArray_set((sp_PtrArray *)" + cur + ".v.p, " + idx + ", " + vbox_tmp + ".v.p);")
+        emit("  } else if (" + cur + ".cls_id == SP_BUILTIN_INT_ARRAY) {")
+        emit("    sp_IntArray_set((sp_IntArray *)" + cur + ".v.p, " + idx + ", " + vbox_tmp + ".v.i);")
+        emit("  }")
+      else
+        emit("  if (" + rc + ".cls_id == SP_BUILTIN_POLY_ARRAY) sp_PolyArray_set((sp_PolyArray *)" + rc + ".v.p, " + idx + ", " + vbox_tmp + ");")
+        emit("  else if (" + rc + ".cls_id == SP_BUILTIN_PTR_ARRAY) sp_PtrArray_set((sp_PtrArray *)" + rc + ".v.p, " + idx + ", " + vbox_tmp + ".v.p);")
+        emit("  else if (" + rc + ".cls_id == SP_BUILTIN_INT_ARRAY) sp_IntArray_set((sp_IntArray *)" + rc + ".v.p, " + idx + ", " + vbox_tmp + ".v.i);")
+      end
       return
     end
     if rt == "str_int_hash"
