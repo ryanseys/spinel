@@ -1236,6 +1236,34 @@ class Compiler
     ""
   end
 
+  # Returns the fully-qualified Ruby class name for a constant
+  # reference used in a rescue clause. Walks ConstantPathNode parents
+  # (Math::DomainError, Errno::ENOENT, Foo::Bar::Baz) joining with
+  # "::". For a bare ConstantReadNode just returns @nd_name. Distinct
+  # from resolve_const_ref_name (which joins with "_" for use in C
+  # identifiers); this one preserves Ruby's "::" separator so the
+  # type-check string in the rescue chain matches what sp_raise_cls
+  # emits and what emit_exc_parent_function lists in the ancestry table.
+  def rescue_class_name(nid)
+    if nid < 0
+      return ""
+    end
+    t = @nd_type[nid]
+    if t == "ConstantPathNode"
+      leaf = @nd_name[nid]
+      parent = @nd_receiver[nid]
+      if parent < 0
+        return leaf
+      end
+      base = rescue_class_name(parent)
+      if base == ""
+        return leaf
+      end
+      return base + "::" + leaf
+    end
+    return @nd_name[nid]
+  end
+
   # ---- Scope management ----
   def push_scope
     @scope_names.push("---")
@@ -16383,6 +16411,7 @@ class Compiler
     emit_raw("  if (strcmp(cls, \"ZeroDivisionError\") == 0) return \"StandardError\";")
     emit_raw("  if (strcmp(cls, \"RangeError\") == 0) return \"StandardError\";")
     emit_raw("  if (strcmp(cls, \"FloatDomainError\") == 0) return \"RangeError\";")
+    emit_raw("  if (strcmp(cls, \"Math::DomainError\") == 0) return \"StandardError\";")
     emit_raw("  if (strcmp(cls, \"IOError\") == 0) return \"StandardError\";")
     emit_raw("  if (strcmp(cls, \"NotImplementedError\") == 0) return \"ScriptError\";")
     emit_raw("  if (strcmp(cls, \"StopIteration\") == 0) return \"IndexError\";")
@@ -25586,8 +25615,18 @@ class Compiler
       end
       # Math
       if rcname == "Math"
+        # Wrapped helpers for the methods with restricted domains
+        # (raise Math::DomainError per CRuby on out-of-domain input).
+        # The unrestricted methods (cos / sin / tan / atan / sinh /
+        # cosh / tanh / asinh / exp / atan2 / hypot) call libc directly.
+        # We do NOT set @needs_setjmp here — sp_raise_cls works even
+        # without setjmp scaffolding (it falls through to fprintf+exit
+        # when sp_exc_top == 0). Forcing @needs_setjmp would
+        # promote locals to volatile across the whole program even
+        # when no rescue is present, tripping -Werror on unrelated
+        # IntArray / obj-pointer code paths.
         if mname == "sqrt"
-          return "sqrt(" + compile_arg0(nid) + ")"
+          return "sp_math_sqrt(" + compile_arg0(nid) + ")"
         end
         if mname == "cos"
           return "cos(" + compile_arg0(nid) + ")"
@@ -25599,10 +25638,10 @@ class Compiler
           return "tan(" + compile_arg0(nid) + ")"
         end
         if mname == "acos"
-          return "acos(" + compile_arg0(nid) + ")"
+          return "sp_math_acos(" + compile_arg0(nid) + ")"
         end
         if mname == "asin"
-          return "asin(" + compile_arg0(nid) + ")"
+          return "sp_math_asin(" + compile_arg0(nid) + ")"
         end
         if mname == "atan"
           return "atan(" + compile_arg0(nid) + ")"
@@ -25620,19 +25659,19 @@ class Compiler
           return "asinh(" + compile_arg0(nid) + ")"
         end
         if mname == "acosh"
-          return "acosh(" + compile_arg0(nid) + ")"
+          return "sp_math_acosh(" + compile_arg0(nid) + ")"
         end
         if mname == "atanh"
-          return "atanh(" + compile_arg0(nid) + ")"
+          return "sp_math_atanh(" + compile_arg0(nid) + ")"
         end
         if mname == "log"
-          return "log(" + compile_arg0(nid) + ")"
+          return "sp_math_log(" + compile_arg0(nid) + ")"
         end
         if mname == "log2"
-          return "log2(" + compile_arg0(nid) + ")"
+          return "sp_math_log2(" + compile_arg0(nid) + ")"
         end
         if mname == "log10"
-          return "log10(" + compile_arg0(nid) + ")"
+          return "sp_math_log10(" + compile_arg0(nid) + ")"
         end
         if mname == "exp"
           return "exp(" + compile_arg0(nid) + ")"
@@ -25664,6 +25703,10 @@ class Compiler
           # exact for the full mrb_int range) instead of casting through
           # double — double has only 53 bits of mantissa so values above
           # ~2^53 round and produce off-by-one results.
+          # sp_int_sqrt raises Math::DomainError on negative input via
+          # sp_raise_cls — no @needs_setjmp set here (would force
+          # volatile locals across the whole program; not warranted by
+          # a per-call site that may or may not be inside a rescue).
           return "sp_int_sqrt(" + compile_arg0(nid) + ")"
         end
       end
@@ -35630,7 +35673,7 @@ class Compiler
         if k > 0
           cond = cond + " || "
         end
-        cond = cond + "sp_exc_is_a((const char*)sp_last_exc_cls, \"" + @nd_name[exc_types[k]] + "\")"
+        cond = cond + "sp_exc_is_a((const char*)sp_last_exc_cls, \"" + rescue_class_name(exc_types[k]) + "\")"
         k = k + 1
       end
       emit("  if (" + cond + ") {")
