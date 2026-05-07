@@ -89,11 +89,37 @@ static mrb_int sp_lcm(mrb_int a,mrb_int b){if(a==0||b==0)return 0;mrb_int g=sp_g
 static mrb_int sp_powmod(mrb_int base,mrb_int exp,mrb_int mod){if(mod==0)sp_raise_cls("ZeroDivisionError","divided by 0");mrb_int r=1;mrb_int m=mod<0?-mod:mod;if(m==1){r=0;}else{base=base%m;if(base<0)base+=m;while(exp>0){if(exp%2==1)r=r*base%m;exp=exp/2;base=base*base%m;}}if(mod<0&&r>0)r-=m;return r;}
 static mrb_int sp_ceildiv(mrb_int a,mrb_int b){if(b==0)sp_raise_cls("ZeroDivisionError","divided by 0");if(b==-1)return -a;mrb_int q=a/b;if(a%b!=0&&((a^b)>=0))q++;return q;}
 static mrb_int sp_int_clamp(mrb_int v,mrb_int lo,mrb_int hi){return v<lo?lo:v>hi?hi:v;}
+/* Forward decl so sp_int_sqrt and the sp_math_* wrappers below can
+   call sp_raise_cls. */
+static void sp_raise_cls(const char *cls, const char *msg);
+
 /* Integer square root via Newton's method — exact for the full mrb_int
    range (no double-precision rounding loss for n > 2^53). CRuby raises
-   on negative input; we mirror Spinel's other arithmetic helpers and
-   return 0 to avoid an exception path. */
-static mrb_int sp_int_sqrt(mrb_int n){if(n<0)return 0;if(n<2)return n;mrb_int x=n,y=(x+1)/2;while(y<x){x=y;y=(x+n/x)/2;}return x;}
+   Math::DomainError on negative input; we now match. */
+static mrb_int sp_int_sqrt(mrb_int n){
+  if(n<0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"isqrt\"");
+  if(n<2)return n;
+  mrb_int x=n,y=(x+1)/2;
+  while(y<x){x=y;y=(x+n/x)/2;}
+  return x;
+}
+
+/* Math.* wrappers that raise Math::DomainError on out-of-domain input
+   per CRuby. Only the methods with restricted domains get wrappers;
+   Math.cos / sin / tan / atan / sinh / cosh / tanh / asinh / exp /
+   atan2 / hypot accept all real inputs and call libc directly via
+   the codegen. log(0) returns -Infinity in CRuby (no raise); only
+   negative inputs raise. atanh's endpoints are excluded (atanh(1)
+   would be +Infinity but CRuby raises). */
+static mrb_float sp_math_sqrt(mrb_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"sqrt\"");return sqrt(x);}
+static mrb_float sp_math_log(mrb_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"log\"");return log(x);}
+static mrb_float sp_math_log2(mrb_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"log2\"");return log2(x);}
+static mrb_float sp_math_log10(mrb_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"log10\"");return log10(x);}
+static mrb_float sp_math_acos(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"acos\"");return acos(x);}
+static mrb_float sp_math_asin(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"asin\"");return asin(x);}
+static mrb_float sp_math_acosh(mrb_float x){if(x<1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"acosh\"");return acosh(x);}
+static mrb_float sp_math_atanh(mrb_float x){if(x<=-1.0||x>=1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"atanh\"");return atanh(x);}
+
 static inline char *sp_str_alloc_raw(size_t total_with_null);  /* fwd decl */
 static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;return s;}
 typedef struct{mrb_int first;mrb_int last;}sp_Range;
