@@ -13249,8 +13249,19 @@ class Compiler
       end
       if mname == "to_sym" || mname == "intern"
         if @nd_receiver[nid] >= 0
+          # Issue #314 follow-up: also fire for poly receivers and
+          # un-yet-typed locals (default `int` from
+          # LocalVariableReadNode against an empty scope). Block-
+          # param receivers in shapes like
+          # `attrs.each { |k, v| row[k.to_sym] = v }` only resolve
+          # to "string" through later yield-arg unification, but
+          # scan_features runs once on @root_id before that
+          # fixpoint completes — and compile_int_method_expr later
+          # emits `sp_sym_intern(...)` regardless. Without this
+          # flag, the call site references a function whose
+          # definition was conditionally skipped, linker error.
           rt = infer_type(@nd_receiver[nid])
-          if rt == "string"
+          if rt == "string" || rt == "poly" || rt == "int"
             @needs_sym_intern = 1
           end
         end
@@ -17659,7 +17670,22 @@ class Compiler
           is_super = (@nd_type[sid] == "SuperNode" || @nd_type[sid] == "ForwardingSuperNode")
           if is_super
             if @cls_parents[ci] != ""
-              pi = find_class_idx(@cls_parents[ci])
+              # Issue #314 follow-up: when the immediate parent is
+              # an "abstract" class (no own `initialize`, e.g.
+              # `class ApplicationRecord < ActiveRecord::Base`),
+              # the void `_initialize` wrapper is never emitted for
+              # it — so a literal `sp_<parent>_initialize(...)` call
+              # here would be an undefined reference at link time.
+              # Walk up to find_init_class to skip over abstract
+              # ancestors and call the nearest emitted wrapper.
+              pi_imm = find_class_idx(@cls_parents[ci])
+              pi = pi_imm
+              if pi_imm >= 0
+                pi = find_init_class(pi_imm)
+                if pi < 0
+                  pi = pi_imm
+                end
+              end
               if pi >= 0
                 # Look up the parent's init signature so we can cast
                 # each forwarded arg to the parent's declared type
@@ -17697,9 +17723,9 @@ class Compiler
                   end
                 else
                   args_id = @nd_arguments[sid]
+                  ak = 0
                   if args_id >= 0
                     arg_ids = get_args(args_id)
-                    ak = 0
                     while ak < arg_ids.length
                       if ak > 0
                         super_args = super_args + ", "
@@ -17715,8 +17741,23 @@ class Compiler
                       ak = ak + 1
                     end
                   end
+                  # Issue #314 follow-up: explicit `super(...)` with
+                  # fewer args than the parent expects (e.g. `super()`
+                  # against `def initialize(_attrs = {})`). Ruby fills
+                  # missing trailing slots from the parent's defaults;
+                  # the C signature has no defaults, so pad with
+                  # c_default_val per param type. Without this, gcc
+                  # errors `too few arguments to function`.
+                  while ak < p_ptypes.length
+                    if super_args != ""
+                      super_args = super_args + ", "
+                    end
+                    super_args = super_args + c_default_val(p_ptypes[ak])
+                    ak = ak + 1
+                  end
                 end
-                emit_raw("  sp_" + @cls_parents[ci] + "_initialize((sp_" + @cls_parents[ci] + " *)self" + (super_args != "" ? ", " + super_args : "") + ");")
+                target_parent_name = @cls_names[pi]
+                emit_raw("  sp_" + target_parent_name + "_initialize((sp_" + target_parent_name + " *)self" + (super_args != "" ? ", " + super_args : "") + ");")
               end
             end
           end
