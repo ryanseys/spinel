@@ -40,7 +40,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #endif
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(_WIN32) && !defined(__FreeBSD__)
 #include <malloc.h>
 #else
 /* Darwin's libc has no malloc_trim; make it a no-op so call sites stay portable. */
@@ -628,6 +628,14 @@ static const char*sp_IntArrayPtrArray_inspect(sp_PtrArray*a){sp_String*s=sp_Stri
 static const char*sp_FloatArrayPtrArray_inspect(sp_PtrArray*a){sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_FloatArray_inspect((sp_FloatArray*)a->data[i]));}sp_String_append(s,"]");return s->data;}
 static const char*sp_StrArrayPtrArray_inspect(sp_PtrArray*a){sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_StrArray_inspect((sp_StrArray*)a->data[i]));}sp_String_append(s,"]");return s->data;}
 static const char*sp_SymArrayPtrArray_inspect(sp_PtrArray*a){sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_SymArray_inspect((sp_IntArray*)a->data[i]));}sp_String_append(s,"]");return s->data;}
+
+#ifdef __FreeBSD__
+
+#define re_exec spinel_re_exec
+
+#define MAP_NORESERVE 0
+
+#endif
 
 /* Regexp engine (link with libspre.a from lib/regexp/) */
 typedef struct mrb_regexp_pattern mrb_regexp_pattern;
