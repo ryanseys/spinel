@@ -3739,12 +3739,48 @@ class Compiler
     ""
   end
 
- # `iv_<name>` at toplevel (no self), `self->iv_<name>` inside a class.
+ # Resolves an ivar lhs / rhs C expression. Three cases:
+ #   - inside a module class method (def self.X on a module),
+ #     `@x` lowers to the module's `cst_<Mod>_<x>` static --
+ #     module class methods have no instance, so `self->iv_x`
+ #     would dangle.
+ #   - at script-toplevel script scope where the ivar was
+ #     registered as a toplevel slot, `iv_<name>` (no self).
+ #   - otherwise, `self->iv_<name>` (or `self.iv_<name>` for
+ #     value-typed self).
   def ivar_lhs(name)
+    mod_slot = module_ivar_const_lhs(name)
+    if mod_slot != ""
+      return mod_slot
+    end
     if @current_class_idx < 0 && toplevel_ivar_type(name) != ""
       return sanitize_ivar(name)
     end
     self_arrow + sanitize_ivar(name)
+  end
+
+ # When the current emit scope is a module class method
+ # (`def self.X` on a module), the bare `@count` ivar maps to
+ # the module's `cst_<Mod>_<name>` static slot rather than a
+ # nonexistent `self->iv_count`. Returns the C expression or ""
+ # when the current scope isn't a module class method or no
+ # matching const is registered.
+  def module_ivar_const_lhs(name)
+    if @current_method_name == ""
+      return ""
+    end
+    mi = 0
+    while mi < @module_names.length
+      mmod = @module_names[mi]
+      if mmod != "" && @current_method_name.start_with?(mmod + "_cls_")
+        cname = mmod + "_" + name[1, name.length - 1]
+        if find_const_idx(cname) >= 0
+          return "cst_" + cname
+        end
+      end
+      mi = mi + 1
+    end
+    ""
   end
 
 
@@ -9920,22 +9956,6 @@ class Compiler
       return fiber_var_ref(@nd_name[nid])
     end
     if t == "InstanceVariableReadNode"
- # Check if we're in a module class method
-      mi3 = 0
-      while mi3 < @module_names.length
-        mmod = @module_names[mi3]
-        if mmod != ""
-          if @current_method_name.start_with?(mmod + "_cls_")
-            iname = @nd_name[nid]
-            cname3 = mmod + "_" + iname[1, iname.length - 1]
-            ci3 = find_const_idx(cname3)
-            if ci3 >= 0
-              return "cst_" + cname3
-            end
-          end
-        end
-        mi3 = mi3 + 1
-      end
       return ivar_lhs(@nd_name[nid])
     end
     if t == "ClassVariableReadNode"
