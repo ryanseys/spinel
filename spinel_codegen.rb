@@ -8369,6 +8369,12 @@ class Compiler
       emit_raw("  sp_" + cname + " self = {0};")
       @in_gc_scope = 0
     else
+ # Per-class free-list pool. Unmarked instances are pushed onto a
+ # bounded pool by sp_gc_collect (via the recycle hook in sp_gc_hdr)
+ # instead of free()d, and re-used by future sp_<Class>_new calls.
+ # Cap is uniform across classes (SP_POOL_MAX envvar, default 1M);
+ # SP_POOL_REPORT=1 dumps per-class stats at exit.
+      emit_raw("SP_POOL_DEFINE(" + cname + ")")
       emit_raw("static inline sp_" + cname + " *sp_" + cname + "_new(" + constructor_params_decl(ci) + ") {")
       emit_raw("  SP_GC_SAVE();")
       @in_gc_scope = 1
@@ -8376,7 +8382,7 @@ class Compiler
       if class_has_ptr_ivars(ci) == 1
         scan_fn = "sp_" + cname + "_gc_scan"
       end
-      emit_raw("  sp_" + cname + " *self = (sp_" + cname + " *)sp_gc_alloc(sizeof(sp_" + cname + "), NULL, " + scan_fn + ");")
+      emit_raw("  sp_" + cname + " *self = SP_POOL_NEW(" + cname + ", " + scan_fn + ");")
  # tag the freshly-allocated instance with its
  # concrete class id so a parent-method's `self.class.<cmeth>`
  # path can read self->cls_id at runtime and switch to the

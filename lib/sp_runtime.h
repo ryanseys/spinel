@@ -153,7 +153,11 @@ static inline sp_Time sp_time_at_float(mrb_float epoch) {
 }
 
 
-typedef struct sp_gc_hdr { struct sp_gc_hdr *next; void (*finalize)(void *); void (*scan)(void *); size_t size; unsigned marked : 1; } sp_gc_hdr;
+/* `recycle`: optional sweep hook. If non-NULL, sp_gc_collect calls
+   recycle(h) on the unmarked object instead of finalize+free. The
+   hook is responsible for deciding whether to keep the storage
+   (pool push) or free it. Used by class-instance free-list pools. */
+typedef struct sp_gc_hdr { struct sp_gc_hdr *next; void (*finalize)(void *); void (*scan)(void *); size_t size; unsigned marked : 1; void (*recycle)(struct sp_gc_hdr *); } sp_gc_hdr;
 static sp_gc_hdr *sp_gc_heap = NULL; static size_t sp_gc_bytes = 0; static size_t sp_gc_threshold = 256*1024;
 
 /* ---- String GC ---- */
@@ -358,10 +362,84 @@ static inline int sp_gc_bucket(size_t sz){int b=(int)(sz/16);return b<SP_GC_NBUC
 static int sp_gc_cycle=0;
 static sp_gc_hdr*sp_gc_old_heap=NULL;static size_t sp_gc_old_bytes=0;
 #define SP_GC_FULL_INTERVAL 8
-static void sp_gc_collect(void){int full=(sp_gc_cycle%SP_GC_FULL_INTERVAL==0);sp_gc_cycle++;sp_gc_hdr*hh=sp_gc_old_heap;while(hh){hh->marked=0;hh=hh->next;}sp_gc_mark_all();if(full){sp_gc_hdr**pp=&sp_gc_old_heap;sp_gc_old_bytes=0;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}else{h->marked=1;sp_gc_old_bytes+=h->size;pp=&h->next;}}}else{hh=sp_gc_old_heap;while(hh){hh->marked=1;hh=hh->next;}}sp_gc_hdr**pp=&sp_gc_heap;sp_gc_bytes=sp_gc_old_bytes;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}else{h->marked=1;*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;}}sp_str_sweep();if(full)malloc_trim(0);}
+static void sp_gc_collect(void){int full=(sp_gc_cycle%SP_GC_FULL_INTERVAL==0);sp_gc_cycle++;sp_gc_hdr*hh=sp_gc_old_heap;while(hh){hh->marked=0;hh=hh->next;}sp_gc_mark_all();if(full){sp_gc_hdr**pp=&sp_gc_old_heap;sp_gc_old_bytes=0;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{h->marked=1;sp_gc_old_bytes+=h->size;pp=&h->next;}}}else{hh=sp_gc_old_heap;while(hh){hh->marked=1;hh=hh->next;}}sp_gc_hdr**pp=&sp_gc_heap;sp_gc_bytes=sp_gc_old_bytes;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{h->marked=1;*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;}}sp_str_sweep();if(full)malloc_trim(0);}
 static size_t sp_gc_threshold_init=256*1024;
 void*sp_gc_alloc(size_t sz,void(*fin)(void*),void(*scn)(void*)){if(sp_gc_bytes>sp_gc_threshold){size_t before=sp_gc_bytes;sp_gc_collect();size_t freed=before-sp_gc_bytes;if(freed<before/4){sp_gc_threshold=before*2;}else if(sp_gc_bytes>0){sp_gc_threshold=sp_gc_bytes*4;if(sp_gc_threshold<sp_gc_threshold_init)sp_gc_threshold=sp_gc_threshold_init;}else{sp_gc_threshold=sp_gc_threshold_init;}}size_t need=sizeof(sp_gc_hdr)+sz;sp_gc_hdr*h=(sp_gc_hdr*)calloc(1,need);h->finalize=fin;h->scan=scn;h->size=need;h->marked=0;h->next=sp_gc_heap;sp_gc_heap=h;sp_gc_bytes+=need;return(char*)h+sizeof(sp_gc_hdr);}
 void*sp_gc_alloc_nogc(size_t sz,void(*fin)(void*),void(*scn)(void*)){size_t need=sizeof(sp_gc_hdr)+sz;sp_gc_hdr*h=(sp_gc_hdr*)calloc(1,need);h->finalize=fin;h->scan=scn;h->size=need;h->marked=0;h->next=sp_gc_heap;sp_gc_heap=h;sp_gc_bytes+=need;return(char*)h+sizeof(sp_gc_hdr);}
+/* Pool-aware alloc. The recycle hook is stored in the gc_hdr; sweep
+   calls it on unmarked objects instead of finalize+free. The hook
+   decides whether to push the storage onto a per-class free-list or
+   actually free it. */
+static void *sp_gc_alloc_pool(size_t sz, void(*scn)(void*), void(*recycle)(sp_gc_hdr*)) {
+  void *p = sp_gc_alloc(sz, NULL, scn);
+  sp_gc_hdr *h = (sp_gc_hdr *)((char *)p - sizeof(sp_gc_hdr));
+  h->recycle = recycle;
+  return p;
+}
+/* Re-link a previously-pooled slot back into sp_gc_heap so the next
+   GC cycle visits it. Called by class _new functions when reusing
+   a pooled instance. The storage was kept alive by the pool
+   free-list since the last sweep unlinked it from sp_gc_heap. */
+static void sp_gc_pool_relink(sp_gc_hdr *h) {
+  h->marked = 0;
+  h->next = sp_gc_heap;
+  sp_gc_heap = h;
+  sp_gc_bytes += h->size;
+}
+
+/* Per-class free-list pool boilerplate. SP_POOL_DEFINE(CLS) goes at
+   file scope, near the class _new function. SP_POOL_NEW(CLS, scan)
+   replaces the body of an `sp_gc_alloc(sizeof(sp_CLS), NULL, scan)`
+   call, popping from the per-class free-list if non-empty.
+   Default cap can be overridden at runtime via SP_POOL_MAX envvar
+   (uniform across classes). SP_POOL_REPORT=1 dumps per-class stats
+   at exit. */
+#define SP_POOL_DEFAULT_MAX 1048576L
+#define SP_POOL_DEFINE(CLS) \
+  static sp_gc_hdr *sp_##CLS##_pool_head = NULL; \
+  static long sp_##CLS##_pool_count = 0; \
+  static long sp_##CLS##_pool_max = SP_POOL_DEFAULT_MAX; \
+  static long sp_##CLS##_pool_pushes = 0; \
+  static long sp_##CLS##_pool_pops = 0; \
+  static long sp_##CLS##_pool_freed = 0; \
+  static long sp_##CLS##_pool_hwm = 0; \
+  __attribute__((constructor)) static void sp_##CLS##_pool_init(void) { \
+    const char *m = getenv("SP_POOL_MAX"); \
+    if (m && *m) { long v = atol(m); if (v >= 0) sp_##CLS##_pool_max = v; } \
+  } \
+  static void sp_##CLS##_pool_recycle(sp_gc_hdr *h) { \
+    if (sp_##CLS##_pool_count >= sp_##CLS##_pool_max) { \
+      free(h); sp_##CLS##_pool_freed++; return; \
+    } \
+    h->next = sp_##CLS##_pool_head; \
+    sp_##CLS##_pool_head = h; \
+    sp_##CLS##_pool_count++; \
+    sp_##CLS##_pool_pushes++; \
+    if (sp_##CLS##_pool_count > sp_##CLS##_pool_hwm) sp_##CLS##_pool_hwm = sp_##CLS##_pool_count; \
+  } \
+  __attribute__((destructor)) static void sp_##CLS##_pool_report(void) { \
+    const char *e = getenv("SP_POOL_REPORT"); \
+    if (!e || !e[0] || e[0] == '0') return; \
+    fprintf(stderr, #CLS " pool: pops=%ld pushes=%ld over_cap_freed=%ld hwm=%ld retained=%ld cap=%ld\n", \
+      sp_##CLS##_pool_pops, sp_##CLS##_pool_pushes, sp_##CLS##_pool_freed, \
+      sp_##CLS##_pool_hwm, sp_##CLS##_pool_count, sp_##CLS##_pool_max); \
+  }
+
+#define SP_POOL_NEW(CLS, SCAN) (__extension__ ({ \
+  sp_##CLS *_p; \
+  if (sp_##CLS##_pool_head) { \
+    sp_gc_hdr *_h = sp_##CLS##_pool_head; \
+    sp_##CLS##_pool_head = _h->next; \
+    sp_##CLS##_pool_count--; \
+    sp_##CLS##_pool_pops++; \
+    sp_gc_pool_relink(_h); \
+    _h->recycle = sp_##CLS##_pool_recycle; \
+    _p = (sp_##CLS *)((char *)_h + sizeof(sp_gc_hdr)); \
+  } else { \
+    _p = (sp_##CLS *)sp_gc_alloc_pool(sizeof(sp_##CLS), SCAN, sp_##CLS##_pool_recycle); \
+  } \
+  _p; \
+}))
 
 /* `Object.new` — a sentinel object whose only meaningful property is
    identity. Each call returns a fresh GC-managed allocation, so two
