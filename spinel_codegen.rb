@@ -19807,14 +19807,24 @@ class Compiler
   def compile_unless_expr(nid)
     cond = compile_cond_expr(@nd_predicate[nid])
     then_val = "0"
+    then_t = "nil"
     body = @nd_body[nid]
     if body >= 0
       stmts = get_stmts(body)
       if stmts.length > 0
+        then_t = infer_type(stmts.last)
         then_val = compile_expr(stmts.last)
       end
     end
-    "(!" + cond + " ? " + then_val + " : 0)"
+    unified_t = infer_type(nid)
+    else_val = c_return_default(then_t)
+    if unified_t == "poly"
+      if then_t != "poly"
+        then_val = box_value_to_poly(then_t, then_val)
+      end
+      else_val = box_value_to_poly("nil", "0")
+    end
+    "(!" + cond + " ? " + then_val + " : " + else_val + ")"
   end
 
  # Compile an `ArrayNode` literal as `sp_PolyArray *`, regardless
@@ -29501,6 +29511,10 @@ class Compiler
       compile_if_return(last, return_type)
       return
     end
+    if @nd_type[last] == "UnlessNode"
+      compile_unless_return(last, return_type)
+      return
+    end
     if @nd_type[last] == "CaseNode"
       compile_case_return(last, return_type)
       return
@@ -29754,6 +29768,41 @@ class Compiler
       compile_stmt(last)
     end
     return
+  end
+
+  def compile_unless_return(nid, rt)
+    cond = compile_cond_expr(@nd_predicate[nid])
+    emit("  if (!(" + cond + ")) {")
+    @indent = @indent + 1
+    body = @nd_body[nid]
+    if body >= 0
+      compile_body_return(body, rt)
+    else
+      if rt != "void"
+        emit("  return " + c_return_default(rt) + ";")
+      end
+    end
+    @indent = @indent - 1
+    ec = @nd_else_clause[nid]
+    if ec >= 0
+      emit("  } else {")
+      @indent = @indent + 1
+      eb = @nd_body[ec]
+      if eb >= 0
+        compile_body_return(eb, rt)
+      else
+        if rt != "void"
+          emit("  return " + c_return_default(rt) + ";")
+        end
+      end
+      @indent = @indent - 1
+    else
+      if rt != "void"
+        emit("  } else {")
+        emit("    return " + c_return_default(rt) + ";")
+      end
+    end
+    emit("  }")
   end
 
   def compile_if_return(nid, rt)

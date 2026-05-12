@@ -2173,6 +2173,31 @@ class Compiler
       types.push(else_type)
       return unify_return_type(types)
     end
+    if t == "UnlessNode"
+      then_type = "nil"
+      body = @nd_body[nid]
+      if body >= 0
+        stmts = get_stmts(body)
+        if stmts.length > 0
+          then_type = infer_type(stmts.last)
+        end
+      end
+      else_type = "nil"
+      ec = @nd_else_clause[nid]
+      if ec >= 0
+        ebody = @nd_body[ec]
+        if ebody >= 0
+          es = get_stmts(ebody)
+          if es.length > 0
+            else_type = infer_type(es.last)
+          end
+        end
+      end
+      types = "".split(",")
+      types.push(then_type)
+      types.push(else_type)
+      return unify_return_type(types)
+    end
     if t == "CaseMatchNode"
       types = "".split(",")
       conds = parse_id_list(@nd_conditions[nid])
