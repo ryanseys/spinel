@@ -2433,6 +2433,18 @@ class Compiler
         @needs_rb_value = 1
         return "poly_array"
       end
+ # Proc / lambda literals as elements (`[proc { ... }, proc { ... }]`):
+ # each element is a heap-allocated sp_Proc pointer. Spinel has no
+ # typed `proc_ptr_array` slot, so box via poly_array — sp_box_proc
+ # is called on each push, and the poly-builtin dispatch on `arr[i]`
+ # recovers the proc. Without this arm, the array's inferred type
+ # fell back to `int_array`, and `sp_IntArray_push` was called with
+ # a sp_Proc pointer — int-from-pointer C-compile error.
+      if et == "proc" || et == "lambda"
+        @needs_gc = 1
+        @needs_rb_value = 1
+        return "poly_array"
+      end
  # Check if elements have mixed types
       k = 1
       while k < elems.length

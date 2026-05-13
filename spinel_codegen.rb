@@ -2810,6 +2810,15 @@ class Compiler
         @needs_rb_value = 1
         return "poly_array"
       end
+ # Proc / lambda literals as elements (`[proc { ... }, proc { ... }]`):
+ # see the analyzer's mirror branch. Spinel has no typed
+ # `proc_ptr_array` slot, so box via poly_array — sp_box_proc on
+ # each push.
+      if et == "proc" || et == "lambda"
+        @needs_gc = 1
+        @needs_rb_value = 1
+        return "poly_array"
+      end
  # Check if elements have mixed types
       k = 1
       while k < elems.length
@@ -12354,6 +12363,18 @@ class Compiler
   end
 
   def compile_no_recv_call_expr(nid, mname)
+ # No-recv IO methods that exist in compile_io_call_stmt (puts/print/
+ # printf) all return nil in MRI. When reached in expression context
+ # — proc-body last stmt, consumed `if`-arm, ternary — emit the
+ # side-effect through the statement handler and pass "0" (nil in C)
+ # up as the expression value. Without this, the call falls through
+ # to warn_unresolved_call and the IO is silently dropped.
+    if mname == "puts" || mname == "print" || mname == "printf"
+      if compile_io_call_stmt(nid, mname, -1) == 1
+        return "0"
+      end
+    end
+
  # Bare `new` inside a `def self.<m>` body resolves to
  # <CurrentClass>.new. Dispatched here rather than via the
  # later `mname == "new"` branch in compile_call_expr because
@@ -18399,6 +18420,29 @@ class Compiler
         end
       end
     end
+ # `<poly>.call(...)` arm for the SP_BUILTIN_PROC tag. When a
+ # poly_array of procs is iterated (`[proc, ...].each { |p| p.call }`),
+ # the per-element block param is typed `poly`, so `p.call` lands
+ # here. Pack the call args into the same mrb_int[] convention used
+ # by sp_proc_call elsewhere; pad with 0 when there are no args
+ # (sp_proc_new's `_unused` slot expects args[0] to be addressable).
+    if mname == "call"
+      ca = ""
+      ck = 0
+      while ck < arg_compiled.length
+        if ck > 0
+          ca = ca + ", "
+        end
+        ca = ca + arg_compiled[ck]
+        ck = ck + 1
+      end
+      if ca == ""
+        ca = "0"
+      end
+      proc_c = "sp_proc_call((sp_Proc *)" + recv_tmp + ".v.p, (mrb_int[]){" + ca + "})"
+      proc_rhs = is_poly_ret == 1 ? "sp_box_int(" + proc_c + ")" : proc_c
+      emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_PROC) " + result_tmp + " = " + proc_rhs + ";")
+    end
     if mname == "[]" && arg_compiled.length >= 1 && a0_is_int
       ic = "sp_IntArray_get((sp_IntArray *)" + recv_tmp + ".v.p, " + a0 + ")"
       irhs = is_poly_ret == 1 ? "sp_box_int(" + ic + ")" : ic
@@ -23003,27 +23047,8 @@ class Compiler
     end
     if mname == "printf"
       if recv < 0
-        args_id = @nd_arguments[nid]
-        if args_id >= 0
-          arg_ids = get_args(args_id)
-          if arg_ids.length >= 1
- # First arg is format string
-            fmt_expr = compile_expr(arg_ids[0])
-            rest_args = ""
-            k = 1
-            while k < arg_ids.length
-              at = infer_type(arg_ids[k])
-              if at == "int"
-                rest_args = rest_args + ", (int)" + compile_expr(arg_ids[k])
-              else
-                rest_args = rest_args + ", " + compile_expr(arg_ids[k])
-              end
-              k = k + 1
-            end
-            emit("  printf(" + fmt_expr + rest_args + ");")
-            return 1
-          end
-        end
+        compile_printf(nid)
+        return 1
       end
     end
     0
@@ -26378,6 +26403,30 @@ class Compiler
       end
       k = k + 1
     end
+  end
+
+  def compile_printf(nid)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return
+    end
+    arg_ids = get_args(args_id)
+    if arg_ids.length < 1
+      return
+    end
+    fmt_expr = compile_expr(arg_ids[0])
+    rest_args = ""
+    k = 1
+    while k < arg_ids.length
+      at = infer_type(arg_ids[k])
+      if at == "int"
+        rest_args = rest_args + ", (int)" + compile_expr(arg_ids[k])
+      else
+        rest_args = rest_args + ", " + compile_expr(arg_ids[k])
+      end
+      k = k + 1
+    end
+    emit("  printf(" + fmt_expr + rest_args + ");")
   end
 
   def compile_print(nid)
