@@ -10625,12 +10625,11 @@ class Compiler
         if pred_type == "string"
           emit("  const char *" + ptmp + " = " + pred_val + ";")
         elsif is_obj_type(pred_type) == 1
- # See compile_case_stmt — the temp must be the right pointer
- # type so compile_when_conds can resolve `when ClassName` to
- # a static match. .
-          bt = base_type(pred_type)
-          obj_cname = bt[4, bt.length - 4]
-          emit("  sp_" + obj_cname + " *" + ptmp + " = " + pred_val + ";")
+ # See compile_case_stmt — route the temp declaration through
+ # c_type so value-type classes get `sp_<X>` (no pointer) and
+ # standard heap classes get `sp_<X> *`. compile_when_conds then
+ # resolves `when ClassName` against the right shape.
+          emit("  " + c_type(pred_type) + " " + ptmp + " = " + pred_val + ";")
         else
           emit("  mrb_int " + ptmp + " = " + pred_val + ";")
         end
@@ -22423,13 +22422,12 @@ class Compiler
     if pred_type == "string"
       emit("  const char *" + tmp + " = " + pred_val + ";")
     elsif is_obj_type(pred_type) == 1
- # `case obj when ClassName` — keep the temp as the right pointer
- # type so the when arms can read its NULLability and the static
- # class match in compile_when_conds picks the matching cls_id
- # path. .
-      bt = base_type(pred_type)
-      obj_cname = bt[4, bt.length - 4]
-      emit("  sp_" + obj_cname + " *" + tmp + " = " + pred_val + ";")
+ # `case obj when ClassName` — declare the temp at the C type
+ # c_type uses for this obj kind. That picks `sp_<X>` for
+ # value-type classes (per-class free-list pool) and `sp_<X> *`
+ # for the standard pointer representation, so the assignment
+ # matches the predicate's actual storage shape.
+      emit("  " + c_type(pred_type) + " " + tmp + " = " + pred_val + ";")
     elsif pred_type == "poly"
  # `case <poly_value> when ...` — keep the receiver tagged so
  # each when-arm can do tag-check + value-compare. .
@@ -22510,19 +22508,18 @@ class Compiler
         right = compile_expr(@nd_right[cid])
         cmp = range_excl_end(cid) == 1 ? "<" : "<="
         result = result + "(" + tmp + " >= " + left + " && " + tmp + " " + cmp + " " + right + ")"
-      elsif is_obj_type(pred_type) == 1 && @nd_type[cid] == "ConstantReadNode"
+      elsif is_obj_type(pred_type) == 1 && (@nd_type[cid] == "ConstantReadNode" || @nd_type[cid] == "ConstantPathNode")
  # `case obj when ClassName` — resolve statically against the
- # predicate's known class. Predicate type `obj_X`:
+ # predicate's known class. ConstantPathNode (`Mod::Klass`) is
+ # routed through resolve_const_ref_name so the walked name
+ # matches the class registry. Predicate type `obj_X`:
  # when X (or any ancestor of X) → match (with a NULL guard
- # when the predicate is
- # nullable, since `nil` is
- # not a class instance)
- # when anything else → no match
- # Subclass matching across an `obj_<Parent>` predicate that
- # actually carries an `obj_<Child>` instance needs a runtime
- # cls_id check; that's a separate enhancement only
- # covers the static-class form of the bug).
-        cname = @nd_name[cid]
+ # when the predicate is nullable, since `nil` is not a class
+ # instance); anything else → no match. Subclass matching
+ # across an `obj_<Parent>` predicate that actually carries an
+ # `obj_<Child>` instance needs a runtime cls_id check; covered
+ # by the descendant runtime branch in is_a?, separate concern.
+        cname = @nd_type[cid] == "ConstantPathNode" ? resolve_const_ref_name(cid) : @nd_name[cid]
         if find_class_idx(cname) >= 0
           bt = base_type(pred_type)
           pred_cname = bt[4, bt.length - 4]
