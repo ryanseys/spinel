@@ -11118,6 +11118,14 @@ class Compiler
     if nid < 0
       return cur_t
     end
+ # Nested DefNode / ClassNode / ModuleNode bodies introduce
+ # new bindings that may shadow `pname`. Don't cross.
+    if @nd_type[nid] == "DefNode"
+      return cur_t
+    end
+    if @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
+      return cur_t
+    end
     nt = @nd_type[nid]
     if nt == "LocalVariableWriteNode"
       if @nd_name[nid] == pname
@@ -11264,6 +11272,17 @@ class Compiler
     if nid < 0
       return
     end
+ # Don't cross nested DefNode / ClassNode / ModuleNode bodies —
+ # their locals introduce new bindings that may shadow `pname`.
+ # An inner method's `pname` local would falsely contribute its
+ # called methods to the outer param's observation set
+ # (#450 cascade 1's family of boundary bugs).
+    if @nd_type[nid] == "DefNode"
+      return
+    end
+    if @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
+      return
+    end
     if @nd_type[nid] == "CallNode"
       recv = @nd_receiver[nid]
       if recv >= 0
@@ -11356,6 +11375,14 @@ class Compiler
  # `[]` literals.
   def collect_param_push_elem_types(nid, pname, acc)
     if nid < 0
+      return
+    end
+ # Nested DefNode / ClassNode / ModuleNode bodies introduce
+ # new bindings that may shadow `pname`. Don't cross.
+    if @nd_type[nid] == "DefNode"
+      return
+    end
+    if @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
       return
     end
     if @nd_type[nid] == "CallNode"
@@ -14938,6 +14965,17 @@ class Compiler
     if nid < 0
       return
     end
+ # Nested DefNode / ClassNode / ModuleNode bodies are separate
+ # scopes (see #450 cascade 1 / scan_locals fix). Without these
+ # guards, nested-def locals inside a module body leak into
+ # main's poly-detection bucket and falsely tag main-level
+ # locals as poly.
+    if @nd_type[nid] == "DefNode"
+      return
+    end
+    if @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
+      return
+    end
     if @nd_type[nid] == "LocalVariableWriteNode"
       lname = @nd_name[nid]
       at = infer_type(@nd_expression[nid])
@@ -15040,6 +15078,16 @@ class Compiler
   def scan_locals_first_type(nid, names, types, params)
  # Like scan_locals but never marks poly - just keeps first type seen
     if nid < 0
+      return
+    end
+ # Nested DefNode / ClassNode / ModuleNode bodies are separate
+ # scopes — their locals belong to the enclosed unit and must
+ # not leak into the parent. Mirrors the scan_locals boundary
+ # guard (see #450 cascade 1).
+    if @nd_type[nid] == "DefNode"
+      return
+    end
+    if @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
       return
     end
     if @nd_type[nid] == "LocalVariableWriteNode"
