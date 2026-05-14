@@ -62,6 +62,7 @@ static char *cstr(pm_constant_id_t id) {
 /* ---- String escaping ---- */
 static char *escape_str(const uint8_t *src, size_t len) {
   /* Worst case: every char becomes %XX = 3x */
+  static const char hex_digits[] = "0123456789ABCDEF";
   char *out = malloc(len * 3 + 1);
   size_t j = 0;
   for (size_t i = 0; i < len; i++) {
@@ -76,6 +77,14 @@ static char *escape_str(const uint8_t *src, size_t len) {
        on '\n' and the loader uses strlen on fields). Encode as %00
        so the byte survives the round-trip. */
     else if (c == 0)    { out[j++]='%'; out[j++]='0'; out[j++]='0'; }
+    /* Non-ASCII high bytes (>= 0x80) must be encoded: dropped raw into
+       the AST they break UTF-8 line-splitting in the Ruby analyzer
+       (e.g. PNG magic "\x89PNG..."). */
+    else if (c >= 0x80) {
+      out[j++] = '%';
+      out[j++] = hex_digits[(c >> 4) & 0xF];
+      out[j++] = hex_digits[c & 0xF];
+    }
     else out[j++] = c;
   }
   out[j] = '\0';

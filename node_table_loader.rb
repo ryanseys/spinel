@@ -105,28 +105,14 @@ class NodeTableLoader
   def unescape_str(s)
     result = ""
     i = 0
-    while i < s.length
+    n = s.length
+    while i < n
       ch = s[i]
-      if ch == "%"
-        if i + 2 < s.length
-          hex = s[i + 1] + s[i + 2]
-          case hex
-          when "0A"
-            result = result + 10.chr
-          when "0D"
-            result = result + 13.chr
-          when "09"
-            result = result + 9.chr
-          when "20"
-            result = result + " "
-          when "25"
-            result = result + "%"
-          when "00"
- # Issue #722: NUL byte (literal embedded in a Ruby string).
-            result = result + 0.chr
-          else
-            result = result + "%" + hex
-          end
+      if ch == "%" && i + 2 < n
+        hi = hex_digit(s[i + 1])
+        lo = hex_digit(s[i + 2])
+        if hi >= 0 && lo >= 0
+          result = result + (hi * 16 + lo).chr
           i = i + 3
         else
           result = result + ch
@@ -138,5 +124,23 @@ class NodeTableLoader
       end
     end
     result
+  end
+
+ # Returns 0..15 for a hex digit char ("0".."9","A".."F","a".."f"), -1
+ # otherwise. Used by unescape_str to decode arbitrary %HH bytes — high
+ # bytes (>= 0x80) from string literals like the PNG magic must round-
+ # trip; the previous case-list approach passed them through as literal
+ # "%89", corrupting binary string contents in the AST.
+  def hex_digit(ch)
+    code = ch.bytes[0]
+    if code >= 48 && code <= 57
+      code - 48
+    elsif code >= 65 && code <= 70
+      code - 55
+    elsif code >= 97 && code <= 102
+      code - 87
+    else
+      -1
+    end
   end
 end
