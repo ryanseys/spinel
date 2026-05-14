@@ -24,6 +24,8 @@
 #include <stdarg.h>
 #include <time.h>
 #include <setjmp.h>
+#include <errno.h>
+#include <limits.h>
 #ifdef _WIN32
 #include <windows.h>
 /* POSIX compat shims for MinGW */
@@ -101,24 +103,163 @@ static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;
 static void sp_raise_cls(const char *cls, const char *msg);
 static const char *sp_sprintf(const char *fmt, ...);
 
-/* CRuby's `Integer(s)` raises ArgumentError for unparseable input
-   (empty string, leading/trailing junk, all-whitespace). The bare
-   `(mrb_int)strtoll(s, NULL, 10)` spinel previously emitted silently
-   returned 0 instead, which made `Integer(s) rescue 0` always take
-   the main branch. This helper matches CRuby semantics: skips
-   leading/trailing whitespace, requires at least one valid digit,
-   rejects trailing junk. Accepts an optional leading `+` / `-`. */
-static mrb_int sp_str_to_i_strict(const char *s) {
+/* Shared parser for Integer(s) and Integer(s, base). CRuby 4.0.4
+   parity probed live. Raises ArgumentError on parse failure; returns
+   SP_INT_PARSE_OVERFLOW for values outside mrb_int (caller decides). */
+#define SP_INT_PARSE_OK         0
+#define SP_INT_PARSE_OVERFLOW  -1
+
+static int sp_int_parse_with_base(const char *s, int base, long long *out_v, int *out_base) {
   if (!s) sp_raise_cls("ArgumentError", "invalid value for Integer(): nil");
+  if (base != 0 && (base < 2 || base > 36)) {
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid radix %d", base));
+  }
   const char *p = s;
   while (isspace((unsigned char)*p)) p++;
   if (*p == '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+  int sign = 1;
+  if (*p == '+' || *p == '-') {
+    if (*p == '-') sign = -1;
+    p++;
+  }
+  /* No whitespace, sign, or anything between sign and digits/prefix. */
+  if (*p == '\0' || *p == '_' || isspace((unsigned char)*p)) {
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+  }
+  /* Detect prefix. */
+  int detected_base = 0;
+  const char *digits = p;
+  if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) { detected_base = 16; digits = p + 2; }
+  else if (*p == '0' && (p[1] == 'b' || p[1] == 'B')) { detected_base = 2; digits = p + 2; }
+  else if (*p == '0' && (p[1] == 'o' || p[1] == 'O')) { detected_base = 8; digits = p + 2; }
+  else if (*p == '0' && (p[1] == 'd' || p[1] == 'D')) { detected_base = 10; digits = p + 2; }
+  else if (*p == '0' && p[1] >= '0' && p[1] <= '9') {
+    /* Legacy octal: leading 0 + digits. Only honored when base == 0 or 8. */
+    if (base == 0 || base == 8) { detected_base = 8; digits = p + 1; }
+  }
+  int effective_base;
+  if (base == 0) {
+    effective_base = detected_base ? detected_base : 10;
+  } else if (detected_base != 0) {
+    if (detected_base != base) {
+      sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+    }
+    effective_base = base;
+  } else {
+    effective_base = base;
+  }
+  /* Reject underscore directly after prefix or sign. */
+  if (*digits == '_') {
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+  }
+  /* Validate digit string: digits-in-base separated only by single
+     underscores between digits. Need at least one digit. */
+  const char *q = digits;
+  int last_was_digit = 0;
+  int digit_count = 0;
+  while (*q && !isspace((unsigned char)*q)) {
+    char c = *q;
+    if (c == '_') {
+      if (!last_was_digit) {
+        sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+      }
+      last_was_digit = 0;
+    } else {
+      int dv;
+      if (c >= '0' && c <= '9') dv = c - '0';
+      else if (c >= 'a' && c <= 'z') dv = c - 'a' + 10;
+      else if (c >= 'A' && c <= 'Z') dv = c - 'A' + 10;
+      else { sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s)); dv = -1; }
+      if (dv >= effective_base) {
+        sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+      }
+      last_was_digit = 1;
+      digit_count++;
+    }
+    q++;
+  }
+  if (digit_count == 0 || !last_was_digit) {
+    /* No digits at all, or trailing underscore. */
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+  }
+  /* Trailing whitespace ok; anything else after digits is junk. */
+  while (isspace((unsigned char)*q)) q++;
+  if (*q != '\0') {
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+  }
+  /* Build a scrubbed buffer (without underscores) for strtoll. 80
+     bytes covers worst case: optional sign + 64 digits + null for
+     base-2 LLONG_MIN ("-1" followed by 63 zeros). */
+  char tmp[80];
+  size_t tlen = 0;
+  if (sign < 0) tmp[tlen++] = '-';
+  int overflow_via_scrub = 0;
+  for (const char *r = digits; *r && !isspace((unsigned char)*r); r++) {
+    if (*r == '_') continue;
+    if (tlen + 1 >= sizeof(tmp)) { overflow_via_scrub = 1; break; }
+    tmp[tlen++] = *r;
+  }
+  tmp[tlen] = '\0';
+  *out_base = effective_base;
+  if (overflow_via_scrub) {
+    /* Too many digits to fit our scratch buffer — definitely outside
+       mrb_int range. Caller handles. */
+    *out_v = sign < 0 ? LLONG_MIN : LLONG_MAX;
+    return SP_INT_PARSE_OVERFLOW;
+  }
+  errno = 0;
   char *endptr;
-  long long v = strtoll(p, &endptr, 10);
-  if (endptr == p) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  while (isspace((unsigned char)*endptr)) endptr++;
-  if (*endptr != '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+  long long v = strtoll(tmp, &endptr, effective_base);
+  if (errno == ERANGE) {
+    *out_v = sign < 0 ? LLONG_MIN : LLONG_MAX;
+    return SP_INT_PARSE_OVERFLOW;
+  }
+  *out_v = v;
+  return SP_INT_PARSE_OK;
+}
+
+/* 1-arg Integer(s). base=0 auto-detects 0x/0b/0o/0d/legacy-0 prefix.
+   ERANGE raises ArgumentError (loud beats silent saturation). */
+static mrb_int sp_str_to_i_strict(const char *s) {
+  long long v;
+  int eb;
+  int rc = sp_int_parse_with_base(s, 0, &v, &eb);
+  if (rc == SP_INT_PARSE_OVERFLOW) {
+    sp_raise_cls("ArgumentError", sp_sprintf("Integer value out of range: \"%s\"", s ? s : ""));
+  }
   return (mrb_int)v;
+}
+
+/* 2-arg form: Integer(s, base). Base must be 0 or in [2,36].
+   Prefix in `s` must match `base` (or `base == 0` to auto-detect). */
+static mrb_int sp_str_to_i_with_base(const char *s, mrb_int base) {
+  long long v;
+  int eb;
+  int rc = sp_int_parse_with_base(s, (int)base, &v, &eb);
+  if (rc == SP_INT_PARSE_OVERFLOW) {
+    sp_raise_cls("ArgumentError", sp_sprintf("Integer value out of range: \"%s\"", s ? s : ""));
+  }
+  return (mrb_int)v;
+}
+
+/* Integer(nil) → TypeError per CRuby. */
+static mrb_int sp_int_from_nil(void) {
+  sp_raise_cls("TypeError", "can't convert nil into Integer");
+  return 0;  /* unreached */
+}
+
+/* Integer(f): truncates toward zero. NaN/Inf raise FloatDomainError;
+   finite-but-out-of-int64-range raise RangeError (matching CRuby's
+   behavior, and dodging UB from the float-to-int cast on overflow).
+   The 9.2233720368547758e18 literal is the double-precision value of
+   2^63, which is the first double strictly above INT64_MAX. */
+static mrb_int sp_int_from_float(mrb_float f) {
+  if (isnan(f)) sp_raise_cls("FloatDomainError", "NaN");
+  if (isinf(f)) sp_raise_cls("FloatDomainError", f > 0 ? "Infinity" : "-Infinity");
+  if (f >= 9.2233720368547758e18 || f < -9.2233720368547758e18) {
+    sp_raise_cls("RangeError", sp_sprintf("float %g out of range of integer", (double)f));
+  }
+  return (mrb_int)f;
 }
 typedef struct{mrb_int first;mrb_int last;}sp_Range;
 static sp_Range sp_range_new(mrb_int f,mrb_int l){sp_Range r;r.first=f;r.last=l;return r;}
