@@ -9,6 +9,7 @@
 # Node fields stored as parallel arrays indexed by integer node ID.
 
 require_relative "node_table_loader"
+require_relative "integer_literal"
 
 class Compiler
   attr_accessor :out
@@ -911,6 +912,9 @@ class Compiler
     result.push(nid)
     result
   end
+
+ # Integer-literal classification lives in IntegerLiteral.parse
+ # (integer_literal.rb), shared with spinel_codegen.rb.
 
  # Returns 1 if @nd_block[nid] is a literal BlockNode (do/end body),
  # 0 otherwise. Pairs with find_block_arg to dispatch correctly at
@@ -3513,10 +3517,20 @@ class Compiler
       end
     end
  # Kernel coercion methods: Integer(x) / Float(x) return their class.
- # Only treat as a Kernel call when there's no explicit receiver — with
- # a receiver, "Integer" / "Float" would be ConstantReadNode lookups,
- # not method calls, and wouldn't reach this name dispatch anyway.
+ # For `Integer("<literal>")` whose magnitude exceeds int64, return
+ # "bigint" so codegen routes to sp_bigint_new_str. Dynamic strings
+ # still raise ArgumentError on ERANGE (full polymorphic deferred).
     if recv < 0 && mname == "Integer"
+      args_id = @nd_arguments[nid]
+      if args_id >= 0
+        arg_ids = get_args(args_id)
+        if arg_ids.length >= 1
+          a0 = arg_ids[0]
+          if @nd_type[a0] == "StringNode" && IntegerLiteral.classify(@nd_content[a0]) == "bigint"
+            return "bigint"
+          end
+        end
+      end
       return "int"
     end
     if recv < 0 && mname == "Float"

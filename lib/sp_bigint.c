@@ -5377,8 +5377,31 @@ int64_t sp_bigint_to_int(sp_Bigint *b) {
 const char *sp_bigint_to_s(sp_Bigint *b) {
   sp_bigint_init_ctx();
   mpz_t *z = &b->mpz;
-  /* Small number fast path */
-  if (z->sz <= 2) {
+  /* Fast path only when the value fits int64. With DIG_SIZE=32, sz<=1
+     always fits; sz==2 needs the high limb's top bit clear (else the
+     `(int64_t)v` cast in sp_bigint_to_int wraps the sign), with the
+     LLONG_MIN exact-magnitude case as the sole sz==2 negative exception
+     (high limb 0x80000000 + low limb 0). */
+  if (z->sz == 0) {
+    char *s = (char*)malloc(2);
+    s[0] = '0'; s[1] = 0;
+    return s;
+  }
+  int fits_int64 = 0;
+  if (z->sz == 1) {
+    fits_int64 = 1;
+  } else if (z->sz == 2) {
+    /* For positive values: top limb must have top bit clear (value <= INT64_MAX).
+       For negative values: magnitude must be <= INT64_MAX + 1 = 2^63 = top
+       limb 0x80000000 with low limb 0 (= LLONG_MIN exactly). */
+    if (z->sn >= 0) {
+      fits_int64 = (z->p[1] & 0x80000000u) == 0;
+    } else {
+      fits_int64 = (z->p[1] & 0x80000000u) == 0 ||
+                   (z->p[1] == 0x80000000u && z->p[0] == 0);
+    }
+  }
+  if (fits_int64) {
     int64_t v = sp_bigint_to_int(b);
     char *s = (char*)malloc(24);
     snprintf(s, 24, "%lld", (long long)v);
