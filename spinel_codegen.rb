@@ -10,6 +10,7 @@
 
 require_relative "node_table_loader"
 require_relative "compiler_helpers"
+require_relative "integer_literal"
 
 class Compiler
   attr_accessor :out
@@ -724,6 +725,11 @@ class Compiler
     result.push(nid)
     result
   end
+
+ # Integer-literal classification and bigint-emit live in
+ # IntegerLiteral.parse (integer_literal.rb), shared with
+ # spinel_analyze.rb.
+
 
  # Returns 1 if @nd_block[nid] is a literal BlockNode (do/end body),
  # 0 otherwise. Pairs with find_block_arg to dispatch correctly at
@@ -15323,6 +15329,66 @@ class Compiler
       end
     end
     "0"
+  end
+
+ # Emit Integer(arg) / Integer(arg, base). Dispatches on the static
+ # type of arg; matches CRuby 4.0.4 semantics (probed live).
+  def compile_integer_call(nid)
+    args_id = @nd_arguments[nid]
+    return "(mrb_int)0" if args_id < 0
+    arg_ids = get_args(args_id)
+    return "(mrb_int)0" if arg_ids.length == 0
+    if arg_ids.length >= 2
+      return "sp_str_to_i_with_base(" + compile_expr(arg_ids[0]) + ", " + compile_expr(arg_ids[1]) + ")"
+    end
+    a0 = arg_ids[0]
+    if @nd_type[a0] == "NilNode"
+      return "sp_int_from_nil()"
+    end
+    if @nd_type[a0] == "OrNode"
+      r = compile_integer_or_node(a0)
+      return r if r != ""
+    end
+    at = infer_type(a0)
+    if at == "string"
+ # Static literal-magnitude analysis: literals outside int64 range
+ # route to sp_bigint_new_str at the detected base (10 by default,
+ # 16/8/2 when the source string carried a 0x/0b/0o prefix). The
+ # existing bigint type then carries the value through arithmetic
+ # and stringification. Dynamic strings still go through the strict
+ # int parser; an int_or_bigint polymorphic type would be needed to
+ # handle them and is deferred.
+      if @nd_type[a0] == "StringNode" && IntegerLiteral.classify(@nd_content[a0]) == "bigint"
+        @needs_bigint = 1
+        return IntegerLiteral.bigint_call(@nd_content[a0])
+      end
+      return "sp_str_to_i_strict(" + compile_expr(a0) + ")"
+    end
+    if at == "argv"
+      return "sp_str_to_i_strict(" + compile_expr(a0) + ")"
+    end
+    if at == "float"
+      return "sp_int_from_float(" + compile_expr(a0) + ")"
+    end
+    if at == "nil"
+      return "sp_int_from_nil()"
+    end
+    "(mrb_int)(" + compile_arg0(nid) + ")"
+  end
+
+ # Peephole for `Integer(ARGV[0] || default)`: single-eval the LHS,
+ # nil-safe default. Returns "" if not the expected shape.
+  def compile_integer_or_node(nid)
+    lt = infer_type(@nd_left[nid])
+    return "" if lt != "string" && lt != "argv"
+    rt = infer_type(@nd_right[nid])
+    lc = compile_expr(@nd_left[nid])
+    rc2 = compile_expr(@nd_right[nid])
+    tmp = new_temp
+    if rt == "int"
+      return "({ const char *" + tmp + " = " + lc + "; " + tmp + " ? sp_str_to_i_strict(" + tmp + ") : " + rc2 + "; })"
+    end
+    "({ const char *" + tmp + " = " + lc + "; " + tmp + " ? sp_str_to_i_strict(" + tmp + ") : sp_str_to_i_strict(" + rc2 + "); })"
   end
 
 

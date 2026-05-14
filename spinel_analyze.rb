@@ -10,6 +10,7 @@
 
 require_relative "node_table_loader"
 require_relative "compiler_helpers"
+require_relative "integer_literal"
 
 class Compiler
   attr_accessor :out
@@ -736,6 +737,10 @@ class Compiler
     result.push(nid)
     result
   end
+
+ # Integer-literal classification lives in IntegerLiteral.parse
+ # (integer_literal.rb), shared with spinel_codegen.rb.
+
 
  # Returns 1 if @nd_block[nid] is a literal BlockNode (do/end body),
  # 0 otherwise. Pairs with find_block_arg to dispatch correctly at
@@ -4340,6 +4345,16 @@ class Compiler
  # a receiver, "Integer" / "Float" would be ConstantReadNode lookups,
  # not method calls, and wouldn't reach this name dispatch anyway.
     if recv < 0 && mname == "Integer"
+      args_id = @nd_arguments[nid]
+      if args_id >= 0
+        arg_ids = get_args(args_id)
+        if arg_ids.length >= 1
+          a0 = arg_ids[0]
+          if @nd_type[a0] == "StringNode" && IntegerLiteral.classify(@nd_content[a0]) == "bigint"
+            return "bigint"
+          end
+        end
+      end
       return "int"
     end
     if recv < 0 && mname == "Float"
