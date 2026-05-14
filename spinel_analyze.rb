@@ -8509,70 +8509,16 @@ class Compiler
     mname = @nd_name[nid]
     body_id = @nd_body[nid]
     params_str = collect_params_str(nid)
-    ptypes_str = ""
+ # Use the shared ptypes builder so kwrest (`**kw`) and post-rest
+ # required params (`def f(*r, x, y)`) get slots that match the
+ # names emitted by collect_params_str above. An earlier inline
+ # build here omitted both, leaving param_names.length one (or
+ # more) ahead of param_types.length — the per-method scope build
+ # in infer_function_body_call_types then pushed nil into the
+ # scope_types array for any missing slot, which later tripped
+ # base_type / unify_call_types when a body referenced that local.
+    ptypes_str = collect_ptypes_str(nid, -1)
     defaults_str = collect_defaults_str(nid)
-
- # Infer param types from defaults
-    params = @nd_parameters[nid]
-    if params >= 0
-      reqs = parse_id_list(@nd_requireds[params])
-      opts = parse_id_list(@nd_optionals[params])
-      kws = parse_id_list(@nd_keywords[params])
-      k = 0
-      while k < reqs.length
-        if ptypes_str != ""
-          ptypes_str = ptypes_str + ","
-        end
-        ptypes_str = ptypes_str + "int"
-        k = k + 1
-      end
-      k = 0
-      while k < opts.length
-        if ptypes_str != ""
-          ptypes_str = ptypes_str + ","
-        end
-        def_id = @nd_expression[opts[k]]
-        if def_id >= 0
-          ptypes_str = ptypes_str + infer_type(def_id)
-        else
-          ptypes_str = ptypes_str + "int"
-        end
-        k = k + 1
-      end
-      k = 0
-      while k < kws.length
-        if ptypes_str != ""
-          ptypes_str = ptypes_str + ","
-        end
-        def_id = @nd_expression[kws[k]]
-        if def_id >= 0
-          ptypes_str = ptypes_str + infer_type(def_id)
-        else
-          ptypes_str = ptypes_str + "int"
-        end
-        k = k + 1
-      end
- # Rest param (splat)
-      rest = @nd_rest[params]
-      if rest >= 0
-        if @nd_type[rest] == "RestParameterNode"
-          if ptypes_str != ""
-            ptypes_str = ptypes_str + ","
-          end
-          ptypes_str = ptypes_str + "int_array"
-        end
-      end
- # Block param (&block)
-      blk = @nd_block[params]
-      if blk >= 0
-        if @nd_type[blk] == "BlockParameterNode"
-          if ptypes_str != ""
-            ptypes_str = ptypes_str + ","
-          end
-          ptypes_str = ptypes_str + "proc"
-        end
-      end
-    end
 
     @meth_names.push(mname)
     @meth_param_names.push(params_str)
