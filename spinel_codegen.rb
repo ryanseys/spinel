@@ -10927,43 +10927,130 @@ class Compiler
  # Input `s` is the runtime Ruby string content (already-cooked: any
  # backslash in `s` is a literal backslash, NOT an escape introducer).
  # We C-escape the small set that needs it: backslash, double-quote,
- # newline, carriage return, tab. Everything else copies through.
+ # newline, carriage return, tab. Non-UTF-8 high bytes (an `\x80+` byte
+ # with no valid UTF-8 continuation, e.g. PNG magic "\x89PNG...") and
+ # non-printable controls (< 0x20 except CR/LF/TAB) are emitted as
+ # `\xHH` so the output is valid C source under
+ # -Winvalid-source-encoding. Well-formed UTF-8 byte sequences pass
+ # through raw — they're valid C source bytes and the clang front-end
+ # accepts them. To stop `\xHH` from greedily consuming a following
+ # hex digit (C allows arbitrary-length hex escapes), the literal is
+ # split with `" "` before any 0-9/A-F/a-f byte that follows a `\xHH`
+ # byte.
  # The previous version treated `s` as if it still carried Ruby
  # escapes, so a 2-char input "\\n" (backslash + n) wrongly collapsed
  # to a C newline; that bug is what made `"hello\\nworld\\n".lines`
  # emit invalid C with a literal newline inside a string literal.
+    hex_digits = "0123456789ABCDEF"
+    bytes = s.bytes
     result = "\""
+    just_hex = 0
     i = 0
-    while i < s.length
-      ch = s[i]
-      if ch == bsl
+    n = bytes.length
+    while i < n
+      b = bytes[i]
+      consumed = 1
+      if b == 92        # backslash
         result = result + bsl + bsl
-      else
-        if ch == "\""
-          result = result + bsl + "\""
-        else
-          if ch == 10.chr
-            result = result + bsl_n
-          else
-            if ch == 13.chr
-              result = result + bsl + "r"
-            else
-              if ch == 9.chr
-                result = result + bsl + "t"
-              else
-                result = result + ch
-              end
-            end
+        just_hex = 0
+      elsif b == 34     # double quote
+        result = result + bsl + "\""
+        just_hex = 0
+      elsif b == 10
+        result = result + bsl_n
+        just_hex = 0
+      elsif b == 13
+        result = result + bsl + "r"
+        just_hex = 0
+      elsif b == 9
+        result = result + bsl + "t"
+        just_hex = 0
+      elsif b < 32 || b == 127
+        result = result + bsl + "x" + hex_digits[b / 16] + hex_digits[b % 16]
+        just_hex = 1
+      elsif b >= 128
+ # Try to pass through a well-formed UTF-8 sequence as raw bytes.
+ # Fall back to `\xHH` if the lead byte is invalid or any
+ # continuation is missing / malformed (e.g. lone `\x89`).
+        seq_len = utf8_seq_length(b, bytes, i)
+        if seq_len > 0
+          if just_hex == 1
+            result = result + "\" \""
           end
+          j = 0
+          while j < seq_len
+            result = result + bytes[i + j].chr
+            j = j + 1
+          end
+          consumed = seq_len
+          just_hex = 0
+        else
+          result = result + bsl + "x" + hex_digits[b / 16] + hex_digits[b % 16]
+          just_hex = 1
         end
+      else
+        if just_hex == 1 && is_c_hex_continuation(b) == 1
+          result = result + "\" \""
+        end
+        result = result + b.chr
+        just_hex = 0
       end
-      i = i + 1
+      i = i + consumed
     end
  # Prepend 0xff marker byte so GC can identify static literals.
  # Return form: (&("\xff" "content")[1]) — same pointer value as the
  # legacy ("\xff" "content" + 1) idiom, but uses array indexing so
  # clang doesn't flag it under -Wstring-plus-int.
     "(&(\"\\xff\" " + result + "\")[1])"
+  end
+
+ # If `bytes[i]` is the lead byte of a well-formed UTF-8 sequence,
+ # return its length (2-4). Returns 0 for any malformed sequence:
+ # invalid lead byte (0xC0/0xC1/>=0xF5), missing continuation, or a
+ # continuation byte that doesn't match the 10xxxxxx pattern. Used by
+ # c_string_literal to keep UTF-8 strings (like "abc\xE2\x82\x81def")
+ # emitting raw in the C source while still escaping isolated high
+ # bytes (like the PNG signature's `\x89`).
+  def utf8_seq_length(lead, bytes, i)
+    if lead < 0xC2
+      return 0
+    end
+    if lead < 0xE0
+      need = 2
+    elsif lead < 0xF0
+      need = 3
+    elsif lead < 0xF5
+      need = 4
+    else
+      return 0
+    end
+    if i + need > bytes.length
+      return 0
+    end
+    k = 1
+    while k < need
+      c = bytes[i + k]
+      if c < 0x80 || c >= 0xC0
+        return 0
+      end
+      k = k + 1
+    end
+    need
+  end
+
+ # A byte that would be greedily consumed as part of a preceding `\xHH`
+ # hex escape by the C compiler: 0-9, A-F, a-f.
+  def is_c_hex_continuation(code)
+    if code >= 48 && code <= 57
+      return 1
+    end
+    if code >= 65 && code <= 70
+      return 1
+    end
+    if code >= 97 && code <= 102
+      return 1
+    end
+    0
   end
 
   def compile_interpolated(nid)
@@ -11033,32 +11120,64 @@ class Compiler
   end
 
   def escape_c_format(s)
+ # Mirrors c_string_literal but additionally doubles `%` (printf format
+ # escape). Walks the byte array so multi-byte UTF-8 sequences pass
+ # through raw, and isolated high bytes / control bytes get `\xHH`.
+    hex_digits = "0123456789ABCDEF"
+    bytes = s.bytes
     result = ""
+    just_hex = 0
     i = 0
-    while i < s.length
-      ch = s[i]
-      if ch == "%"
+    n = bytes.length
+    while i < n
+      b = bytes[i]
+      consumed = 1
+      if b == 37        # percent
         result = result + "%%"
-      else
-        if ch == bsl
-          result = result + bsl + bsl
-        else
-          if ch == "\""
-            result = result + bsl + "\""
-          else
-            if ch == 10.chr
-              result = result + bsl_n
-            else
-              if ch == 9.chr
-                result = result + bsl + "t"
-              else
-                result = result + ch
-              end
-            end
+        just_hex = 0
+      elsif b == 92
+        result = result + bsl + bsl
+        just_hex = 0
+      elsif b == 34
+        result = result + bsl + "\""
+        just_hex = 0
+      elsif b == 10
+        result = result + bsl_n
+        just_hex = 0
+      elsif b == 13
+        result = result + bsl + "r"
+        just_hex = 0
+      elsif b == 9
+        result = result + bsl + "t"
+        just_hex = 0
+      elsif b < 32 || b == 127
+        result = result + bsl + "x" + hex_digits[b / 16] + hex_digits[b % 16]
+        just_hex = 1
+      elsif b >= 128
+        seq_len = utf8_seq_length(b, bytes, i)
+        if seq_len > 0
+          if just_hex == 1
+            result = result + "\" \""
           end
+          j = 0
+          while j < seq_len
+            result = result + bytes[i + j].chr
+            j = j + 1
+          end
+          consumed = seq_len
+          just_hex = 0
+        else
+          result = result + bsl + "x" + hex_digits[b / 16] + hex_digits[b % 16]
+          just_hex = 1
         end
+      else
+        if just_hex == 1 && is_c_hex_continuation(b) == 1
+          result = result + "\" \""
+        end
+        result = result + b.chr
+        just_hex = 0
       end
-      i = i + 1
+      i = i + consumed
     end
     result
   end
