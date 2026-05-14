@@ -17193,15 +17193,6 @@ class Compiler
         owner_ci = cls_method_owner_for(ci3, mname, "cmeth")
         if owner_ci >= 0
           owner_name = @cls_names[owner_ci]
-          ca = compile_call_args(nid)
- # Fill in defaults for trailing params the caller
- # omitted. `def self.greet(name, msg = nil)` with call
- # site `C.greet("a")` would otherwise emit
- # `sp_C_cls_greet("a")` against the 2-arg signature and
- # the C compiler rejects with `too few arguments`. Look
- # up the cls method's recorded defaults (parallel to
- # @cls_meth_defaults for instance methods) and append
- # the missing trailing exprs.
           owner_cmnames = @cls_cmeth_names[owner_ci].split(";")
           owner_cmptypes = @cls_cmeth_ptypes[owner_ci].split("|")
           owner_cmdefaults = @cls_cmeth_defaults[owner_ci].split("|")
@@ -17212,35 +17203,91 @@ class Compiler
             end
             cmidx = cmidx + 1
           end
+          ca = ""
           if cmidx < owner_cmnames.length && cmidx < owner_cmptypes.length
+            owner_pn = cls_cmeth_pnames_get(owner_ci, cmidx)
             owner_pt = owner_cmptypes[cmidx].split(",")
             owner_df = "".split(",")
             if cmidx < owner_cmdefaults.length
               owner_df = owner_cmdefaults[cmidx].split(",")
             end
-            args_id = @nd_arguments[nid]
-            arg_count = 0
-            if args_id >= 0
-              arg_count = get_args(args_id).length
+ # Extract positional + kwarg pairs from the call site, so
+ # `W.write(200, set_cookies: cookies)` against
+ # `def self.write(status, set_cookies: {})` routes `cookies`
+ # into the set_cookies slot (instead of compiling the
+ # KeywordHashNode as a generic literal that lowers to 0).
+ # Sibling to the kwarg-fallback path in
+ # compile_call_args_with_defaults' instance-method handler.
+            args_id_cm2 = @nd_arguments[nid]
+            arg_ids_cm2 = []
+            if args_id_cm2 >= 0
+              arg_ids_cm2 = get_args(args_id_cm2)
             end
-            kk = arg_count
-            while kk < owner_pt.length
-              if kk < owner_df.length
-                def_id = owner_df[kk].to_i
-                if def_id >= 0
- # Coerce an empty `{}` default to the param's declared
- # hash variant (sp_SymStrHash_new vs the generic
- # sp_StrIntHash_new). Same shape as the positional-arg
- # branch in compile_call_args_with_defaults.
-                  def_expr = empty_hash_coerce(def_id, owner_pt[kk])
-                  if def_expr == ""
-                    def_expr = compile_expr(def_id)
+            kw_names_cm = "".split(",")
+            kw_vals_cm = "".split(",")
+            positional_cm = []
+            ak_cm = 0
+            while ak_cm < arg_ids_cm2.length
+              if @nd_type[arg_ids_cm2[ak_cm]] == "KeywordHashNode"
+                elems_cm = parse_id_list(@nd_elements[arg_ids_cm2[ak_cm]])
+                ek_cm = 0
+                while ek_cm < elems_cm.length
+                  if @nd_type[elems_cm[ek_cm]] == "AssocNode"
+                    key_id_cm = @nd_key[elems_cm[ek_cm]]
+                    if key_id_cm >= 0 && @nd_type[key_id_cm] == "SymbolNode"
+                      kw_names_cm.push(@nd_content[key_id_cm])
+                      kw_vals_cm.push(compile_expr(@nd_expression[elems_cm[ek_cm]]))
+                    end
                   end
-                  if ca == ""
-                    ca = def_expr
+                  ek_cm = ek_cm + 1
+                end
+              else
+                positional_cm.push(arg_ids_cm2[ak_cm])
+              end
+              ak_cm = ak_cm + 1
+            end
+            pos_idx_cm = 0
+            kk = 0
+            while kk < owner_pn.length
+              slot_expr_cm = ""
+              if pos_idx_cm < positional_cm.length
+                slot_expr_cm = cast_away_volatile_arg(positional_cm[pos_idx_cm], compile_expr(positional_cm[pos_idx_cm]))
+                pos_idx_cm = pos_idx_cm + 1
+              else
+ # Try kwarg by name.
+                pname_cm = owner_pn[kk]
+                ki_cm = 0
+                while ki_cm < kw_names_cm.length
+                  if kw_names_cm[ki_cm] == pname_cm
+                    slot_expr_cm = kw_vals_cm[ki_cm]
+                    ki_cm = kw_names_cm.length
                   else
-                    ca = ca + ", " + def_expr
+                    ki_cm = ki_cm + 1
                   end
+                end
+                if slot_expr_cm == ""
+                  if kk < owner_df.length
+                    def_id_cm = owner_df[kk].to_i
+                    if def_id_cm >= 0
+                      def_pt_cm = ""
+                      if kk < owner_pt.length
+                        def_pt_cm = owner_pt[kk]
+                      end
+                      coerced_cm = empty_hash_coerce(def_id_cm, def_pt_cm)
+                      if coerced_cm != ""
+                        slot_expr_cm = coerced_cm
+                      else
+                        slot_expr_cm = compile_expr(def_id_cm)
+                      end
+                    end
+                  end
+                end
+              end
+              if slot_expr_cm != ""
+                if ca == ""
+                  ca = slot_expr_cm
+                else
+                  ca = ca + ", " + slot_expr_cm
                 end
               end
               kk = kk + 1
