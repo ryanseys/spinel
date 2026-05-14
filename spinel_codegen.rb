@@ -937,6 +937,92 @@ class Compiler
     result
   end
 
+ # Keep in sync with integer_literal_classify in spinel_analyze.rb.
+ # Duplicated rather than required-via-load to stay bootstrap-safe
+ # inside the self-hosted analyzer (which loads codegen as a sibling,
+ # not via Ruby's require_relative chain). The two copies must give
+ # identical answers — if you touch one, touch both.
+  def integer_literal_classify(lit)
+    return "int" if lit.nil? || lit.empty?
+    s = lit.strip
+    return "int" if s.empty?
+    negative = false
+    if s.start_with?("-")
+      negative = true
+      s = s[1, s.length - 1]
+      return "int" if s.nil? || s.empty?
+    elsif s.start_with?("+")
+      s = s[1, s.length - 1]
+      return "int" if s.nil? || s.empty?
+    end
+    base = 10
+    digits = s
+    if s.start_with?("0x") || s.start_with?("0X")
+      base = 16; digits = s[2, s.length - 2]
+    elsif s.start_with?("0b") || s.start_with?("0B")
+      base = 2; digits = s[2, s.length - 2]
+    elsif s.start_with?("0o") || s.start_with?("0O")
+      base = 8; digits = s[2, s.length - 2]
+    elsif s.start_with?("0d") || s.start_with?("0D")
+      base = 10; digits = s[2, s.length - 2]
+    elsif s.length >= 2 && s.start_with?("0")
+      base = 8; digits = s[1, s.length - 1]
+    end
+    return "int" if digits.nil? || digits.empty?
+    raw = digits.gsub("_", "")
+    return "int" if raw.empty?
+    if base == 10
+      return "bigint" if raw.length >= 20
+      if raw.length == 19
+        limit = negative ? "9223372036854775808" : "9223372036854775807"
+        return "bigint" if raw > limit
+      end
+    elsif base == 16
+      return "bigint" if raw.length >= 17
+      if raw.length == 16
+        limit = negative ? "8000000000000000" : "7FFFFFFFFFFFFFFF"
+        return "bigint" if raw.upcase > limit
+      end
+    elsif base == 8
+      return "bigint" if raw.length >= 22
+    elsif base == 2
+      return "bigint" if raw.length >= 64
+    end
+    return "int"
+  end
+
+ # For a literal that integer_literal_classify returned "bigint" for,
+ # emit the matching sp_bigint_new_str call. mini-gmp's
+ # mpz_init_set_str handles underscores and a leading sign at every
+ # base but does NOT understand the 0x / 0b / 0o / 0d prefix — so we
+ # strip the prefix at codegen time and pass the digit body alongside
+ # the detected base. Legacy octal ("0" + digits) keeps the leading
+ # zero because base 8 reads it as a no-op digit. Integer-literal
+ # strings contain only [0-9A-Za-z+\-_], so wrapping in "..." needs
+ # no escaping.
+  def integer_literal_bigint_call(lit)
+    s = lit.strip
+    sign = ""
+    if s.start_with?("-") || s.start_with?("+")
+      sign = s[0, 1]
+      s = s[1, s.length - 1]
+    end
+    base = 10
+    body = s
+    if s.start_with?("0x") || s.start_with?("0X")
+      base = 16; body = s[2, s.length - 2]
+    elsif s.start_with?("0b") || s.start_with?("0B")
+      base = 2; body = s[2, s.length - 2]
+    elsif s.start_with?("0o") || s.start_with?("0O")
+      base = 8; body = s[2, s.length - 2]
+    elsif s.start_with?("0d") || s.start_with?("0D")
+      base = 10; body = s[2, s.length - 2]
+    elsif s.length >= 2 && s.start_with?("0") && s[1] >= "0" && s[1] <= "9"
+      base = 8
+    end
+    "sp_bigint_new_str(\"" + sign + body + "\", " + base.to_s + ")"
+  end
+
  # Returns 1 if @nd_block[nid] is a literal BlockNode (do/end body),
  # 0 otherwise. Pairs with find_block_arg to dispatch correctly at
  # &block-forwarding call sites (literal block vs. `&proc_var`).
@@ -11184,6 +11270,17 @@ class Compiler
     end
     at = infer_type(a0)
     if at == "string"
+ # Static literal-magnitude analysis: literals outside int64 range
+ # route to sp_bigint_new_str at the detected base (10 by default,
+ # 16/8/2 when the source string carried a 0x/0b/0o prefix). The
+ # existing bigint type then carries the value through arithmetic
+ # and stringification. Dynamic strings still go through the strict
+ # int parser; an int_or_bigint polymorphic type would be needed to
+ # handle them and is deferred.
+      if @nd_type[a0] == "StringNode" && integer_literal_classify(@nd_content[a0]) == "bigint"
+        @needs_bigint = 1
+        return integer_literal_bigint_call(@nd_content[a0])
+      end
       return "sp_str_to_i_strict(" + compile_expr(a0) + ")"
     end
     if at == "argv"
