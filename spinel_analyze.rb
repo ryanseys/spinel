@@ -9,6 +9,7 @@
 # Node fields stored as parallel arrays indexed by integer node ID.
 
 require_relative "node_table_loader"
+require_relative "integer_literal"
 
 class Compiler
   attr_accessor :out
@@ -912,70 +913,8 @@ class Compiler
     result
   end
 
- # Classify the source-literal string passed to `Integer(...)` as fitting
- # in mrb_int ("int") or requiring Bignum ("bigint"). Conservative heuristic
- # that doesn't touch raise/rescue (avoids bootstrap complications where
- # the helper runs inside the self-hosted analyzer): count digits in the
- # detected base and compare against the per-base capacity of INT64.
- # Returns "int" for any string the heuristic can't classify confidently,
- # so the runtime path takes over (and raises ArgumentError uniformly).
-  def integer_literal_classify(lit)
-    return "int" if lit.nil? || lit.empty?
-    s = lit.strip
-    return "int" if s.empty?
-    negative = false
-    if s.start_with?("-")
-      negative = true
-      s = s[1, s.length - 1]
-      return "int" if s.nil? || s.empty?
-    elsif s.start_with?("+")
-      s = s[1, s.length - 1]
-      return "int" if s.nil? || s.empty?
-    end
-    base = 10
-    digits = s
-    if s.start_with?("0x") || s.start_with?("0X")
-      base = 16; digits = s[2, s.length - 2]
-    elsif s.start_with?("0b") || s.start_with?("0B")
-      base = 2; digits = s[2, s.length - 2]
-    elsif s.start_with?("0o") || s.start_with?("0O")
-      base = 8; digits = s[2, s.length - 2]
-    elsif s.start_with?("0d") || s.start_with?("0D")
-      base = 10; digits = s[2, s.length - 2]
-    elsif s.length >= 2 && s.start_with?("0")
- # legacy octal "0" followed by digits
-      base = 8; digits = s[1, s.length - 1]
-    end
-    return "int" if digits.nil? || digits.empty?
-    raw = digits.gsub("_", "")
-    return "int" if raw.empty?
- # Digit-count thresholds beyond which the value exceeds the INT64
- # range. For decimal the negative range allows magnitude up to
- # 9223372036854775808 (LLONG_MIN absolute); positive caps at
- # 9223372036854775807. Thresholds by base:
- # decimal: 20+ digits → bigint; 19 digits → compare; pos>MAX, neg>MIN_ABS
- # hex:     17+ digits → bigint; 16 digits → compare
- # octal:   22+ digits → bigint
- # binary:  64+ digits → bigint
-    if base == 10
-      return "bigint" if raw.length >= 20
-      if raw.length == 19
-        limit = negative ? "9223372036854775808" : "9223372036854775807"
-        return "bigint" if raw > limit
-      end
-    elsif base == 16
-      return "bigint" if raw.length >= 17
-      if raw.length == 16
-        limit = negative ? "8000000000000000" : "7FFFFFFFFFFFFFFF"
-        return "bigint" if raw.upcase > limit
-      end
-    elsif base == 8
-      return "bigint" if raw.length >= 22
-    elsif base == 2
-      return "bigint" if raw.length >= 64
-    end
-    return "int"
-  end
+ # Integer-literal classification lives in IntegerLiteral.parse
+ # (integer_literal.rb), shared with spinel_codegen.rb.
 
  # Returns 1 if @nd_block[nid] is a literal BlockNode (do/end body),
  # 0 otherwise. Pairs with find_block_arg to dispatch correctly at
@@ -3587,7 +3526,7 @@ class Compiler
         arg_ids = get_args(args_id)
         if arg_ids.length >= 1
           a0 = arg_ids[0]
-          if @nd_type[a0] == "StringNode" && integer_literal_classify(@nd_content[a0]) == "bigint"
+          if @nd_type[a0] == "StringNode" && IntegerLiteral.classify(@nd_content[a0]) == "bigint"
             return "bigint"
           end
         end
