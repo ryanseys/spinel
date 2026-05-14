@@ -21022,7 +21022,32 @@ class Compiler
       @needs_int_array = 1
       return "sp_IntArray_new()"
     end
-    compile_array_literal_from_ids(elems, infer_array_elem_type(nid))
+    compile_array_literal_from_ids(elems, array_literal_arr_type(elems))
+  end
+
+ # Pick the array type for a non-empty `[e0, e1, ...]` literal. Spinel's
+ # general infer_array_elem_type returns `int_array` when no other arm
+ # claims the shape, which silently swallows raw-pointer elements
+ # (FFI `:ptr` returns) into an IntArray slot — every push then fires
+ # `-Wint-conversion` because mrb_int isn't void*. Check that case up
+ # front: if every element infers as `ptr`, lower the literal directly
+ # to `ptr_ptr_array` so codegen picks sp_PtrArray + noscan. Otherwise
+ # defer to the existing inference cascade.
+  def array_literal_arr_type(elems)
+    if elems.length > 0 && infer_type(elems[0]) == "ptr"
+      all_ptr = 1
+      k = 1
+      while k < elems.length
+        if infer_type(elems[k]) != "ptr"
+          all_ptr = 0
+        end
+        k = k + 1
+      end
+      if all_ptr == 1
+        return "ptr_ptr_array"
+      end
+    end
+    infer_array_elem_type_from_ids(elems)
   end
 
  # Body of compile_array_literal, parameterised on the list of value
@@ -21111,7 +21136,16 @@ class Compiler
     end
     if is_ptr_array_type(arr_type) == 1
       tmp = new_temp
-      emit("  sp_PtrArray *" + tmp + " = sp_PtrArray_new();")
+ # Raw `:ptr` elements (FFI returns, dlopen handles, ...) don't
+ # carry sp_gc_hdr, so the default GC-scanning PtrArray would crash
+ # when the collector tried to walk element headers. Pick the
+ # noscan constructor — the array header is still GC-tracked but
+ # element slots are treated as opaque pointer-sized values.
+      if ptr_array_elem_type(arr_type) == "ptr"
+        emit("  sp_PtrArray *" + tmp + " = sp_PtrArray_new_noscan();")
+      else
+        emit("  sp_PtrArray *" + tmp + " = sp_PtrArray_new();")
+      end
  # Root the freshly-allocated PtrArray before compiling element
  # expressions. Each element is typically Klass.new(...), and that
  # call allocates → may trigger GC. Without this, GC sees `tmp` as

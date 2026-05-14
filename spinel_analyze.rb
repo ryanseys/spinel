@@ -2335,6 +2335,21 @@ class Compiler
         end
         return "poly_array"
       end
+      if et == "ptr"
+        all_same = 1
+        k = 1
+        while k < elems.length
+          if infer_type(elems[k]) != "ptr"
+            all_same = 0
+          end
+          k = k + 1
+        end
+        if all_same == 1
+          @needs_gc = 1
+          return "ptr_ptr_array"
+        end
+        return "poly_array"
+      end
  # Check if all elements are the same array type → array of arrays
       if et == "int_array" || et == "str_array" || et == "float_array" || et == "sym_array"
         all_same = 1
