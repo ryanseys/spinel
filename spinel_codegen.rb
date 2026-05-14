@@ -4082,15 +4082,49 @@ class Compiler
     0
   end
 
+ # Identifies the method body we're currently emitting, formatted for
+ # diagnostic messages. Library-style methods with no concrete caller
+ # default their params to `mrb_int` and surface as a flood of
+ # "cannot resolve call to ... on int" lines; without context the
+ # user can't tell which def the warning came from. Returns
+ # "Foo#bar" for an instance method, "Foo.bar" for a class method
+ # (incl. module class methods stored as @meth_names with a
+ # `<Mod>_cls_<m>` form), or "(top level)" outside any def.
+  def current_method_context_str
+    if @current_class_idx >= 0 && @current_class_idx < @cls_names.length
+      sep = "."
+      if @current_method_has_self == 1
+        sep = "#"
+      end
+      return @cls_names[@current_class_idx] + sep + @current_method_name
+    end
+    if @current_method_name != ""
+      ix_cls = @current_method_name.index("_cls_")
+ # CRuby returns nil when not found; spinel runtime returns -1.
+      if ix_cls != nil && ix_cls > 0
+        return @current_method_name[0, ix_cls] + "." +
+               @current_method_name[ix_cls + 5, @current_method_name.length - (ix_cls + 5)]
+      end
+      return @current_method_name
+    end
+    "(top level)"
+  end
+
  # Print a stderr warning the first time we see an unresolved call to
- # `mname` with the given receiver-type tag. Subsequent identical
- # warnings are suppressed so a silent-fallthrough call inside a hot
- # loop emits one line, not a torrent. The warning is informational
- # only — codegen continues and emits `0` for the call's C expression
- # (the historical silent-no-op behaviour) so existing tests/benches
- # whose outputs happen to coincide with `0` keep compiling.
+ # `mname` with the given receiver-type tag in the current method
+ # context. Subsequent identical warnings are suppressed so a
+ # silent-fallthrough call inside a hot loop emits one line, not a
+ # torrent. Dedupe key includes the method context so the same shape
+ # of unresolved call in two different defs each produces its own
+ # line — the prior key (`mname:recv_tag`) collapsed them and made
+ # library-method-with-no-caller diagnostics opaque. The warning is
+ # informational only — codegen continues and emits `0` for the
+ # call's C expression (the historical silent-no-op behaviour) so
+ # existing tests/benches whose outputs happen to coincide with `0`
+ # keep compiling.
   def warn_unresolved_call(mname, recv_tag)
-    key = mname + ":" + recv_tag
+    ctx = current_method_context_str
+    key = mname + ":" + recv_tag + ":" + ctx
     i = 0
     while i < @unresolved_call_warnings.length
       if @unresolved_call_warnings[i] == key
@@ -4099,7 +4133,7 @@ class Compiler
       i = i + 1
     end
     @unresolved_call_warnings.push(key)
-    $stderr.puts "warning: cannot resolve call to '" + mname + "' on " + recv_tag + " (emitting 0)"
+    $stderr.puts "warning: in " + ctx + ": cannot resolve call to '" + mname + "' on " + recv_tag + " (emitting 0)"
   end
 
  # Same dedupe pattern as warn_unresolved_call but for unknown
@@ -4107,7 +4141,8 @@ class Compiler
  # single program with both an undefined method and an undefined
  # constant produces two distinct warnings, not interleaved noise.
   def warn_unresolved_const(rname)
-    key = "_const_:" + rname
+    ctx = current_method_context_str
+    key = "_const_:" + rname + ":" + ctx
     i = 0
     while i < @unresolved_call_warnings.length
       if @unresolved_call_warnings[i] == key
@@ -4116,7 +4151,7 @@ class Compiler
       i = i + 1
     end
     @unresolved_call_warnings.push(key)
-    $stderr.puts "warning: uninitialized constant '" + rname + "' (emitting 0)"
+    $stderr.puts "warning: in " + ctx + ": uninitialized constant '" + rname + "' (emitting 0)"
   end
 
  # Walk every class's parent chain. A cycle anywhere on the chain is
