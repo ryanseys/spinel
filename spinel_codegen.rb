@@ -4034,6 +4034,26 @@ class Compiler
     if mod_slot != ""
       return mod_slot
     end
+ # Rebound self (instance_eval / instance_exec splice): route ivar
+ # access through the receiver's struct via self_arrow(), not the
+ # toplevel static-global slot. Without this, a block body that
+ # writes `@x = ...` at a toplevel call site (where
+ # @current_class_idx == -1) falls into the toplevel-ivar fallback
+ # below and emits a bare global write -- never touching the
+ # receiver's iv_x. Detected by the section-4 regression added to
+ # test/instance_eval_trampoline.rb.
+ #
+ # Gate on @instance_eval_self_var (the rebind signal from
+ # splice_block_with_self_rebound), NOT @self_override --
+ # @self_override is also set by compile_yield_method_call_stmt
+ # for inlined-method-body locals + default-arg substitution, where
+ # ivars must still resolve against the enclosing class's struct,
+ # not the override expression. Conflating them silently mis-routes
+ # ivar reads everywhere yield methods are inlined (including
+ # spinel_codegen.rb's own methods during bootstrap).
+    if @instance_eval_self_var != nil && @instance_eval_self_var != ""
+      return self_arrow + sanitize_ivar(name)
+    end
     if @current_class_idx < 0 && toplevel_ivar_type(name) != ""
       return sanitize_ivar(name)
     end
@@ -7530,6 +7550,19 @@ class Compiler
     end
     "self"
   end
+
+ # TODO(rs-instance-exec, Foundation C): a `current_self_class()`
+ # accessor would centralize "which class hosts method lookup for
+ # bare calls in the current emit scope" so v2's runtime
+ # self-rebinding can swap the source without touching every
+ # dispatch site. A standalone unused accessor caused bootstrap IR
+ # divergence (round-1 keeps it live, round-2's DCE drops it,
+ # @cls_meth_live diverges). Defer until Foundation A's dispatch
+ # path actually consumes it -- a referenced method is round-trip
+ # stable. Plan: when Foundation A registers BasicObject and routes
+ # instance_eval/exec through resolved-method lookup, that lookup
+ # site will be the sole consumer, making the accessor live in
+ # both rounds.
 
 
 
@@ -31239,11 +31272,32 @@ class Compiler
     end
     rc = compile_expr_gc_rooted(recv)
     self_var = new_temp
+ # TODO(rs-instance-exec): value-typed receivers crash here.
+ # `@cls_is_value_type[ci] == 1` classes are returned by-value from
+ # `sp_<C>_new()`, so `(sp_<C> *)<rc>` is an invalid cast of a struct
+ # value. The fix mirrors emit_ieval_func's value-vs-pointer branch:
+ # for value types, emit `sp_<C> self_var = <rc>;`, set
+ # @self_override = "(&" + self_var + ")", and the self_arrow path
+ # below resolves correctly. Also: @current_class_idx must be saved
+ # and set to `ci` during the splice so self_arrow()'s value-type
+ # branch fires correctly. Deferred from Step 1 retrofit because it
+ # touches more surface area than the @self_override fix; tracked
+ # separately because existing instance_eval tests dodge this case
+ # by using multi-instance classes that don't value-promote.
     emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
     if @in_gc_scope == 1
       emit("  SP_GC_ROOT(" + self_var + ");")
     end
+ # Route bare `@ivar` reads/writes inside the spliced block to the
+ # rebound receiver. Without this, ivar_lhs's toplevel-fallback
+ # branch returns the bare static-global slot when the splice
+ # happens at toplevel scope — broken silently because no prior
+ # trampoline test exercised direct ivar access inside the spliced
+ # block (existing tests only call methods like `add` / `bump`).
+    saved_self_override = @self_override
+    @self_override = self_var
     splice_block_with_self_rebound(@nd_body[blk], self_var, cname)
+    @self_override = saved_self_override
   end
 
   def compile_yield_method_call_stmt(nid, cci, midx, mname)
