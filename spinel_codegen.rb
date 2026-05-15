@@ -1029,6 +1029,47 @@ class Compiler
     pnames[0]
   end
 
+ # Returns the &block param's name on (ci, midx), or "" if the
+ # method's last param isn't proc-typed. Sibling of
+ # cls_method_sole_proc_param_name, but allows the method to have
+ # other (required) params before the &block. Used by the
+ # instance_exec trampoline detector, where the trampoline forwards
+ # N required params and the block:
+ #   def m(a, b, ..., &blk); instance_exec(a, b, ..., &blk); end
+ # cls_method_sole_proc_param_name requires the method to have
+ # exactly one param; this lifts that restriction by checking only
+ # the last position.
+  def cls_method_trailing_proc_param_name(ci, midx)
+    pnames = cls_meth_pnames_get(ci, midx)
+    ptypes = cls_meth_ptypes_get(ci, midx)
+    if pnames.length == 0 || pnames.length != ptypes.length
+      return ""
+    end
+    last = pnames.length - 1
+    if ptypes[last] != "proc"
+      return ""
+    end
+ # Earlier params must be ordinary (no rest, no keyword). v1
+ # supports fixed-arity forwarding only; splat / mixed-args
+ # extensions land later under the rs-instance-exec plan.
+    k = 0
+    while k < last
+      pt = ptypes[k]
+ # The required-arg ptypes include type names (int, str_array,
+ # obj_<C>, etc.), never "rest" / "kwrest" / "block" markers. If
+ # a non-required-arg slot appears here, abort the detection so
+ # we don't conflate splat trampolines with the v1 fixed-arity
+ # shape. TODO(rs-instance-exec splat phase): relax this to
+ # accept "rest"-typed final-required-param when we wire up the
+ # splat trampoline path.
+      if pt == "" || pt == "proc"
+        return ""
+      end
+      k = k + 1
+    end
+    pnames[last]
+  end
+
  # Detects the exact arity-0 instance_eval trampoline shape:
  # `def m(&b); instance_eval(&b); end`. Returns 1 when the
  # (ci, midx) method body is a single CallNode of `instance_eval`
@@ -1072,6 +1113,105 @@ class Compiler
     end
     if @nd_name[inner] != pname
       return 0
+    end
+    1
+  end
+
+ # Detects the v1 fixed-arity instance_exec trampoline shape:
+ #   def m(a1, ..., aN, &b); instance_exec(a1, ..., aN, &b); end
+ # for N >= 0 with strict 1:1 forwarding -- positional method
+ # params become positional instance_exec args, in order, and
+ # the &b proc param is forwarded as the &-block. Returns 1 on
+ # match, 0 otherwise.
+ #
+ # Unlike instance_eval (arity-0 only, no block params), this
+ # detector accepts methods that take required positional params
+ # alongside the &block, because instance_exec's args become the
+ # block's params at the call site. The user-visible call shape is
+ # `recv.m(arg1, ..., argN) { |p1, ..., pN| body }`; codegen
+ # inlines body with self rebound to recv and block params bound
+ # to the call-site args.
+ #
+ # v1 boundaries (rejected by returning 0 -> falls through to
+ # ordinary dispatch which will error at codegen with the usual
+ # warn-and-emit-0):
+ #  - No mixed-args (literals, ivars in trampoline body)
+ #  - No splat (def m(*args, &b))
+ #  - No keyword args
+ # TODO(rs-instance-exec phases 2-3): relax these once the
+ # baseline path is solid.
+  def is_instance_exec_trampoline(ci, midx)
+    bid = cls_method_body_id(ci, midx)
+    if bid < 0
+      return 0
+    end
+    stmts = get_stmts(bid)
+    if stmts.length != 1
+      return 0
+    end
+    s = stmts[0]
+    if @nd_type[s] != "CallNode"
+      return 0
+    end
+    if @nd_name[s] != "instance_exec"
+      return 0
+    end
+    if @nd_receiver[s] >= 0
+      return 0
+    end
+ # The block-arg must be a bare local-var ref matching the method's
+ # trailing &block param. Same gate as is_instance_eval_trampoline.
+    inner = find_block_arg(s)
+    if inner < 0
+      return 0
+    end
+    if @nd_type[inner] != "LocalVariableReadNode"
+      return 0
+    end
+    bp_name = cls_method_trailing_proc_param_name(ci, midx)
+    if bp_name == ""
+      return 0
+    end
+    if @nd_name[inner] != bp_name
+      return 0
+    end
+ # Walk the trampoline body's positional args. v1 requires each
+ # arg to be a LocalVariableReadNode matching the method's
+ # required param at the same index, in order. Mixed-args (literals,
+ # ivars, splat) reject for now; the strict-enumerable extension
+ # lands in a later phase.
+    pnames = cls_meth_pnames_get(ci, midx)
+    req_n = pnames.length - 1   # last is the &block, already checked
+    args_id = @nd_arguments[s]
+    arg_ids = []
+    if args_id >= 0
+      arg_ids = get_args(args_id)
+    end
+ # The block-arg shows up in get_args too (as BlockArgumentNode).
+ # Filter to positional args only; CallNode args = positional +
+ # block-arg, in that order.
+    positional = []
+    k = 0
+    while k < arg_ids.length
+      aid = arg_ids[k]
+      if @nd_type[aid] != "BlockArgumentNode"
+        positional.push(aid)
+      end
+      k = k + 1
+    end
+    if positional.length != req_n
+      return 0
+    end
+    k = 0
+    while k < req_n
+      aid = positional[k]
+      if @nd_type[aid] != "LocalVariableReadNode"
+        return 0
+      end
+      if @nd_name[aid] != pnames[k]
+        return 0
+      end
+      k = k + 1
     end
     1
   end
@@ -9387,6 +9527,13 @@ class Compiler
     is_tramp = 0
     if midx >= 0
       if is_instance_eval_trampoline(ci, midx) == 1
+        is_tramp = 1
+      end
+ # instance_exec trampoline: same dead-body rationale -- every
+ # call site is splice-rewritten by try_yield_or_trampoline_dispatch,
+ # so the body's `instance_exec(a, ..., &b)` call would otherwise
+ # warn-and-emit-0 once per trampoline definition.
+      if is_instance_exec_trampoline(ci, midx) == 1
         is_tramp = 1
       end
     end
@@ -31223,6 +31370,10 @@ class Compiler
       compile_instance_eval_inlined_stmt(nid, recv)
       return 1
     end
+    if is_instance_exec_trampoline(cls_idx, midx) == 1
+      compile_instance_exec_inlined_stmt(nid, recv, cls_idx, midx)
+      return 1
+    end
     0
   end
 
@@ -31297,6 +31448,138 @@ class Compiler
     saved_self_override = @self_override
     @self_override = self_var
     splice_block_with_self_rebound(@nd_body[blk], self_var, cname)
+    @self_override = saved_self_override
+  end
+
+ # Inlines a `recv.m(args) { |params| body }` call when `m` is a
+ # v1 fixed-arity instance_exec trampoline:
+ #   def m(a1, ..., aN, &b); instance_exec(a1, ..., aN, &b); end
+ #
+ # Hybrid of compile_instance_eval_inlined_stmt (self rebind via
+ # splice_block_with_self_rebound) and compile_yield_method_call_stmt
+ # (block-param rename machinery via @inline_rename_map_from / _to).
+ # The block params become fresh suffixed C locals containing the
+ # call-site args; the block body is then spliced at the call site
+ # with @self_override / @instance_eval_self_var / _type set so
+ # bare method calls and @ivar reads dispatch through the receiver.
+ #
+ # TODO(rs-instance-exec): value-typed receivers crash on the
+ # pointer cast emitted for self_var, same shape as the
+ # corresponding TODO in compile_instance_eval_inlined_stmt.
+ # Expression-position support (return value of the call usable
+ # in `total = recv.compute(...) { ... }`) is a follow-up; v1
+ # ships statement-form only.
+  def compile_instance_exec_inlined_stmt(nid, recv, cci, midx)
+    blk = @nd_block[nid]
+    if blk < 0
+      return
+    end
+    rtype = infer_type(recv)
+    cname = ""
+    if is_obj_type(rtype) == 1
+      cname = rtype[4, rtype.length - 4]
+    end
+    if cname == ""
+      return
+    end
+
+ # Block-param names from the user's `{ |p1, p2, ...| body }` at
+ # the call site. Same shape as compile_yield_method_call_stmt's
+ # extract at line ~30929 (post-rebase line numbers shift, but the
+ # AST traversal is identical).
+    bp_names = "".split(",")
+    bp = @nd_parameters[blk]
+    if bp >= 0
+      inner = @nd_parameters[bp]
+      if inner >= 0
+        reqs = parse_id_list(@nd_requireds[inner])
+        k = 0
+        while k < reqs.length
+          bp_names.push(@nd_name[reqs[k]])
+          k = k + 1
+        end
+      end
+    end
+
+ # Trampoline-method param types: forward through @cls_meth_ptypes
+ # so each call-site arg gets a typed local. The trampoline's
+ # ptypes[k] for k < N (the required params) are the types the
+ # block body should see for its block params.
+    ptypes_full = cls_meth_ptypes_get(cci, midx)
+    req_n = ptypes_full.length - 1   # last is &block
+
+ # Arity check: the user's block at the call site must declare the
+ # same number of required params as the trampoline forwards. Falls
+ # through to ordinary dispatch on mismatch (which will error with
+ # the existing warn-and-emit-0 path). TODO(rs-instance-exec
+ # diagnostics): replace with a hard analyze-time error per Step 6
+ # of the plan once the iexec_reject helper exists.
+    if bp_names.length != req_n
+      return
+    end
+
+ # Evaluate call-site args BEFORE rebinding self -- the args are
+ # in the outer scope, not the splice context. Mirrors the order
+ # in compile_yield_method_call_stmt (line ~30985+).
+    args_id = @nd_arguments[nid]
+    arg_ids = []
+    if args_id >= 0
+      arg_ids = get_args(args_id)
+    end
+
+    rc = compile_expr_gc_rooted(recv)
+    self_var = new_temp
+    emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
+    if @in_gc_scope == 1
+      emit("  SP_GC_ROOT(" + self_var + ");")
+    end
+
+ # Per-call-site suffix for block-param locals so nested splices
+ # / same-trampoline-different-call-sites don't shadow. Reuses
+ # @block_counter (also used by compile_yield_method_call_stmt's
+ # `_y<N>` suffix); the prefix is `_ix<N>` to distinguish.
+    @block_counter = @block_counter + 1
+    suffix = "_ix" + @block_counter.to_s
+
+    map_from = "".split(",")
+    map_to = "".split(",")
+
+    k = 0
+    while k < req_n
+      pt = "int"
+      if k < ptypes_full.length
+        pt = ptypes_full[k]
+      end
+      tname = bp_names[k] + suffix
+      val = "0"
+      if k < arg_ids.length
+        val = compile_expr(arg_ids[k])
+      end
+      emit("  " + c_type(pt) + " lv_" + tname + " = " + val + ";")
+      if type_is_pointer(pt) == 1 && @in_gc_scope == 1
+        emit("  SP_GC_ROOT(lv_" + tname + ");")
+      end
+      map_from.push(bp_names[k])
+      map_to.push(tname)
+      declare_var(tname, pt)
+      k = k + 1
+    end
+
+ # Route bare @ivar reads/writes inside the spliced block to the
+ # rebound receiver (same Step 1 retrofit as
+ # compile_instance_eval_inlined_stmt). Save/restore for nested
+ # rebinds.
+    saved_self_override = @self_override
+    @self_override = self_var
+    saved_in_rmf = @inline_rename_map_from
+    saved_in_rmt = @inline_rename_map_to
+    @inline_rename_map_from = map_from
+    @inline_rename_map_to = map_to
+
+    splice_block_with_self_rebound(@nd_body[blk], self_var, cname)
+
+    @inline_rename_map_from = saved_in_rmf
+    @inline_rename_map_to = saved_in_rmt
     @self_override = saved_self_override
   end
 
