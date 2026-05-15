@@ -3515,17 +3515,20 @@ class Compiler
       end
     end
  # iexec direct-path lift: synthetic name `__sp_iexec_<N>` maps to
- # the lifted block's return type. v1 baseline locks return type
- # to "void" in iexec_rewrite_call so the call's expression form
- # is currently unused (callers receive 0 / nil-equivalent); when
- # the expression-position follow-up wires up
- # infer_iexec_body_return_types, this branch surfaces the real
- # last-expression type.
+ # the lifted block's return type. v1 baseline emits a comma-
+ # expression `(sp_iexec_<N>(...), recv)` for the expression form
+ # (compile_iexec_call_expr in codegen), so the call's value is
+ # the receiver -- match that here by returning obj_<C>. Mirrors
+ # the ieval branch above (same comma-expression -> recv-type
+ # rationale). When @iexec_return_types stops being void in the
+ # expression-position follow-up, this branch will surface the
+ # block's real last-expression type and compile_iexec_call_expr
+ # will return the function's typed return instead of recv.
     if is_iexec_call_name(mname) == 1
       suffix = mname[11, mname.length - 11]
       n = suffix.to_i
-      if n >= 0 && n < @iexec_return_types.length
-        return @iexec_return_types[n]
+      if n >= 0 && n < @iexec_class_idxs.length
+        return "obj_" + @cls_names[@iexec_class_idxs[n]]
       end
     end
 
@@ -8802,6 +8805,25 @@ class Compiler
  # why we don't just call scan_new_calls here.
     propagate_recv_method_arg_types_for_ieval
     local_class = {}
+ # iexec_rewrite_call needs to resolve toplevel locals via
+ # find_var_type so the lifted function's block-param types can be
+ # inferred from `recv.instance_exec(some_local) { |p| ... }` at
+ # the toplevel. Push a scope and declare the toplevel locals before
+ # walking so find_var_type returns the actual type instead of "".
+ # ieval_rewrite_call doesn't need this (it only types the receiver,
+ # which goes through local_class), but the scope push is harmless
+ # for that path. Pop on the way out so subsequent passes start
+ # with a fresh scope state.
+    push_scope
+    tl_names = "".split(",")
+    tl_types = "".split(",")
+    empty_params = "".split(",")
+    scan_locals_first_type(@root_id, tl_names, tl_types, empty_params)
+    tk = 0
+    while tk < tl_names.length
+      declare_var(tl_names[tk], tl_types[tk])
+      tk = tk + 1
+    end
  # Walk the AST recursively from the root, respecting scope boundaries.
  # `local_class` maps `name -> class_idx` for the current scope only.
  # Method/lambda/module/block bodies are NOT entered for local tracking:
@@ -8815,6 +8837,7 @@ class Compiler
  # ivar-only extension does not (yet) try to type method-local copies
  # of class instances.
     ieval_walk(@root_id, local_class)
+    pop_scope
     ieval_walk_class_methods
   end
 
@@ -9295,9 +9318,9 @@ class Compiler
       elsif at == "FloatNode"
         t = "float"
       elsif at == "StringNode"
-        t = "str"
+        t = "string"
       elsif at == "SymbolNode"
-        t = "sym"
+        t = "symbol"
       elsif at == "TrueNode" || at == "FalseNode"
         t = "bool"
       elsif at == "NilNode"
