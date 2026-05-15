@@ -577,6 +577,37 @@ class Compiler
     @ieval_counter = 0
     @ieval_class_idxs = []
     @ieval_body_ids = []
+
+ # instance_exec direct-call lifting (sibling of @ieval_* above).
+ # When the analyze pass sees a `recv.instance_exec(args) { |params| ... }`
+ # call site outside any trampoline method, the block becomes a
+ # file-scope static function `sp_iexec_<N>(self, args...)` that
+ # returns the block's typed last expression. The call site is
+ # rewritten to `__sp_iexec_<N>(recv, args...)` and codegen turns
+ # the synthetic name into a direct C call.
+ #
+ # Parallel arrays, all indexed by synthetic id N:
+ #   class_idxs    -- receiver class idx
+ #   body_ids      -- block body nid
+ #   block_pnames  -- "|"-joined block param names (typed as call-site args)
+ #   block_ptypes  -- "|"-joined block param C types (per call-site arg)
+ #   return_types  -- inferred block-body return type, "void" if unused
+ #
+ # v1 boundaries (enforced when the rewrite fires):
+ #   - Strict arity: call-site arg count == block param count
+ #   - No outer-local capture (lifted function can't see caller's locals)
+ #   - No return/break/next/yield/block_given? inside the block
+ #   - No def/define_method inside the block
+ # Anything outside the supported subset bails the rewrite, leaving
+ # the call to fall through to codegen's existing dispatch path
+ # (which emits an unsupported-method diagnostic). Step 6 of the
+ # rs-instance-exec plan upgrades these to hard analyze-time errors.
+    @iexec_counter = 0
+    @iexec_class_idxs = []
+    @iexec_body_ids = []
+    @iexec_block_pnames = "".split(",")
+    @iexec_block_ptypes = "".split(",")
+    @iexec_return_types = "".split(",")
   end
 
  # Backslash-n for C string literals - bootstrap-safe (avoids escape level issues)
@@ -2829,6 +2860,20 @@ class Compiler
       n = suffix.to_i
       if n >= 0 && n < @ieval_class_idxs.length
         return "obj_" + @cls_names[@ieval_class_idxs[n]]
+      end
+    end
+ # iexec direct-path lift: synthetic name `__sp_iexec_<N>` maps to
+ # the lifted block's return type. v1 baseline locks return type
+ # to "void" in iexec_rewrite_call so the call's expression form
+ # is currently unused (callers receive 0 / nil-equivalent); when
+ # the expression-position follow-up wires up
+ # infer_iexec_body_return_types, this branch surfaces the real
+ # last-expression type.
+    if is_iexec_call_name(mname) == 1
+      suffix = mname[11, mname.length - 11]
+      n = suffix.to_i
+      if n >= 0 && n < @iexec_return_types.length
+        return @iexec_return_types[n]
       end
     end
 
@@ -6476,6 +6521,15 @@ class Compiler
  # from analyze get appended to instead of replaced.
     @ieval_class_idxs = []
     @ieval_body_ids = []
+ # Same reset for the iexec sibling registry -- ieval_walk dispatches
+ # to both ieval_rewrite_call and iexec_rewrite_call, so both get
+ # populated in this single pass and must be cleared together.
+    @iexec_counter = 0
+    @iexec_class_idxs = []
+    @iexec_body_ids = []
+    @iexec_block_pnames = "".split(",")
+    @iexec_block_ptypes = "".split(",")
+    @iexec_return_types = "".split(",")
  # Widen class-method ptypes through obj-typed receivers before the
  # walk so a method-param receiver (e.g. `def configure(app);
  # app.instance_eval { } end` invoked as `cfg.configure(routes)`)
@@ -6595,6 +6649,11 @@ class Compiler
     if t == "CallNode"
       if @nd_name[nid] == "instance_eval"
         ieval_rewrite_call(nid, local_class)
+ # Don't descend into the lifted block body.
+        return
+      end
+      if @nd_name[nid] == "instance_exec"
+        iexec_rewrite_call(nid, local_class)
  # Don't descend into the lifted block body.
         return
       end
@@ -6778,6 +6837,151 @@ class Compiler
     @nd_block[nid] = -1
   end
 
+ # Direct-path lift for `recv.instance_exec(args) { |params| body }`.
+ # Sibling of ieval_rewrite_call -- detects an explicit-receiver
+ # instance_exec call with a block literal, validates the v1
+ # constraints, and rewrites the call to `__sp_iexec_<N>(recv,
+ # args...)`. The block body (with its params declared as typed
+ # locals matching the call-site arg types) gets emitted as a
+ # static `sp_iexec_<N>` C function by codegen.
+ #
+ # Differences from ieval_rewrite_call:
+ #   - Block parameters are required when args are passed (strict
+ #     arity match enforced); arity-0 with no block params reduces
+ #     to a degenerate instance_eval-like lift.
+ #   - Call-site positional args are preserved on @nd_arguments[nid]
+ #     so codegen can forward them as `sp_iexec_<N>(recv, arg0, ...)`.
+ #   - Outer-local capture is rejected: the lifted function cannot
+ #     see the caller's locals. The trampoline path (Step 5) is the
+ #     intended workaround for capture.
+ #   - return/break/next/yield/block_given? inside the block body
+ #     are rejected: they have no enclosing-method semantics here.
+ #
+ # Anything outside the supported subset bails the rewrite silently
+ # in this baseline -- Step 6 of the plan upgrades the rejections
+ # to hard `<file>:<line>: instance_exec: <reason>; <suggestion>`
+ # errors with exit(1).
+  def iexec_rewrite_call(nid, local_class)
+    if @nd_name[nid] != "instance_exec"
+      return
+    end
+    recv = @nd_receiver[nid]
+    blk = @nd_block[nid]
+    if recv < 0
+      return
+    end
+    if blk < 0
+      return
+    end
+    ci = recv_class_idx_for_rebind(recv, local_class)
+    if ci < 0
+      return
+    end
+    body_id = @nd_body[blk]
+ # yield / block_given? inside the block has no enclosing-method
+ # plumbing once we lift the body to a static function. Same
+ # gate as ieval_rewrite_call.
+    if body_id >= 0 && body_has_yield(body_id) == 1
+      return
+    end
+
+ # Block param extraction (mirrors compile_yield_method_call_stmt
+ # in codegen). v1 supports required positional params only -- no
+ # rest, no keyword, no defaults. Anything else bails the rewrite.
+    bp_names = "".split(",")
+    bp = @nd_parameters[blk]
+    if bp >= 0
+      inner = @nd_parameters[bp]
+      if inner >= 0
+        reqs = parse_id_list(@nd_requireds[inner])
+        k = 0
+        while k < reqs.length
+          bp_names.push(@nd_name[reqs[k]])
+          k = k + 1
+        end
+      end
+    end
+
+ # Call-site positional args (excluding the block-arg). Must match
+ # block param count 1:1 (strict arity, no CRuby auto-splat).
+    args_id = @nd_arguments[nid]
+    pos_arg_ids = []
+    if args_id >= 0
+      aids = get_args(args_id)
+      k = 0
+      while k < aids.length
+        if @nd_type[aids[k]] != "BlockArgumentNode"
+          pos_arg_ids.push(aids[k])
+        end
+        k = k + 1
+      end
+    end
+    if pos_arg_ids.length != bp_names.length
+      return
+    end
+
+ # Type each block param from its corresponding call-site arg.
+ # find_var_type / infer_type-equivalent is the analyze-side
+ # cousin; the simplest path is to read the AST node type via
+ # the helpers used elsewhere in this file.
+    bp_types_str = ""
+    k = 0
+    while k < pos_arg_ids.length
+      t = ""
+      aid = pos_arg_ids[k]
+      at = @nd_type[aid]
+      if at == "LocalVariableReadNode"
+        t = find_var_type(@nd_name[aid])
+      elsif at == "IntegerNode"
+        t = "int"
+      elsif at == "FloatNode"
+        t = "float"
+      elsif at == "StringNode"
+        t = "str"
+      elsif at == "SymbolNode"
+        t = "sym"
+      elsif at == "TrueNode" || at == "FalseNode"
+        t = "bool"
+      elsif at == "NilNode"
+        t = "poly"
+      elsif at == "InstanceVariableReadNode"
+        if @current_class_idx >= 0
+          t = cls_ivar_type(@current_class_idx, @nd_name[aid])
+        end
+      end
+      if t == ""
+        return
+      end
+      if k > 0
+        bp_types_str = bp_types_str + "|"
+      end
+      bp_types_str = bp_types_str + t
+      k = k + 1
+    end
+
+    bp_names_str = bp_names.join("|")
+
+    n = @iexec_counter
+    @iexec_counter = @iexec_counter + 1
+    @iexec_class_idxs.push(ci)
+    @iexec_body_ids.push(body_id)
+    @iexec_block_pnames.push(bp_names_str)
+    @iexec_block_ptypes.push(bp_types_str)
+ # Return type filled in by infer_iexec_body_return_types (Pass 3-
+ # like step). Placeholder "void" gets overwritten when that pass
+ # runs; for the baseline v1 we lock to "void" since expression-
+ # position support is a follow-up. TODO(rs-instance-exec): wire
+ # up the return-type inference + codegen's compile_body_return
+ # path so `total = recv.instance_exec(...) { ... }` works.
+    @iexec_return_types.push("void")
+
+ # Rewrite the call site: name flips to the synthetic prefix,
+ # block detaches, positional args stay in @nd_arguments[nid] so
+ # codegen forwards them as `sp_iexec_<N>(recv, arg0, arg1, ...)`.
+    @nd_name[nid] = "__sp_iexec_" + n.to_s
+    @nd_block[nid] = -1
+  end
+
 
  # Type inference: walk each lifted block body with `@current_class_idx`
  # set to the receiver's class so bare self-calls inside the block
@@ -6800,6 +7004,56 @@ class Compiler
       end
       n = n + 1
     end
+  end
+
+ # iexec sibling of infer_ieval_body_call_types. Walks each lifted
+ # block body with `@current_class_idx` set to the receiver's class
+ # AND the block params declared in scope with their inferred
+ # call-site types, so receiverless calls inside the block
+ # propagate arg types to the receiver class's methods AND bare
+ # block-param refs resolve correctly via find_var_type.
+  def infer_iexec_body_call_types
+    n = 0
+    while n < @iexec_class_idxs.length
+      ci = @iexec_class_idxs[n]
+      bid = @iexec_body_ids[n]
+      if bid >= 0
+        @current_class_idx = ci
+        push_scope
+ # Declare each block param so find_var_type inside the body
+ # returns the typed slot rather than "".
+        pnames_s = @iexec_block_pnames[n]
+        ptypes_s = @iexec_block_ptypes[n]
+        if pnames_s != ""
+          pnames = pnames_s.split("|")
+          ptypes = ptypes_s.split("|")
+          k = 0
+          while k < pnames.length
+            pt = "int"
+            if k < ptypes.length
+              pt = ptypes[k]
+            end
+            declare_var(pnames[k], pt)
+            k = k + 1
+          end
+        end
+        scan_cls_method_calls(ci, bid)
+        scan_new_calls(bid)
+        pop_scope
+        @current_class_idx = -1
+      end
+      n = n + 1
+    end
+  end
+
+  def is_iexec_call_name(mname)
+    if mname.length <= 11
+      return 0
+    end
+    if mname[0, 11] == "__sp_iexec_"
+      return 1
+    end
+    0
   end
 
   def is_ieval_call_name(mname)
@@ -17779,6 +18033,7 @@ class Compiler
     infer_function_body_call_types
     infer_class_body_call_types
     infer_ieval_body_call_types
+    infer_iexec_body_call_types
     detect_poly_locals
  # Iterative type inference: converge param types, return types, ivar types.
  # Stop early when the signature of these three arrays stops changing.
@@ -19961,6 +20216,13 @@ class Compiler
     while ie < @ieval_body_ids.length
       collect_used_method_names(@ieval_body_ids[ie], used)
       ie = ie + 1
+    end
+ # Same for instance_exec direct-path lifted blocks -- their bodies
+ # were detached by iexec_rewrite_call into @iexec_body_ids.
+    ix = 0
+    while ix < @iexec_body_ids.length
+      collect_used_method_names(@iexec_body_ids[ix], used)
+      ix = ix + 1
     end
  # User-defined method bodies: top-level methods (@meth_body_ids)
  # and instance / class methods (@cls_meth_bodies + @cls_cmeth_bodies).
@@ -23025,6 +23287,7 @@ class Compiler
     buf = ir_emit_int(buf, "@root_id", @root_id)
     buf = ir_emit_int(buf, "@analysis_frozen", @analysis_frozen)
     buf = ir_emit_int(buf, "@ieval_counter", @ieval_counter)
+    buf = ir_emit_int(buf, "@iexec_counter", @iexec_counter)
 
  # Top-level method tables
     buf = ir_emit_sa(buf, "@meth_names", @meth_names)
@@ -23124,6 +23387,11 @@ class Compiler
     buf = ir_emit_sa(buf, "@poly_param_types", @poly_param_types)
     buf = ir_emit_ia(buf, "@ieval_class_idxs", @ieval_class_idxs)
     buf = ir_emit_ia(buf, "@ieval_body_ids", @ieval_body_ids)
+    buf = ir_emit_ia(buf, "@iexec_class_idxs", @iexec_class_idxs)
+    buf = ir_emit_ia(buf, "@iexec_body_ids", @iexec_body_ids)
+    buf = ir_emit_sa(buf, "@iexec_block_pnames", @iexec_block_pnames)
+    buf = ir_emit_sa(buf, "@iexec_block_ptypes", @iexec_block_ptypes)
+    buf = ir_emit_sa(buf, "@iexec_return_types", @iexec_return_types)
     buf = ir_emit_ia(buf, "@pre_execution_blocks", @pre_execution_blocks)
     buf = ir_emit_ia(buf, "@post_execution_blocks", @post_execution_blocks)
     buf = ir_emit_sa(buf, "@toplevel_ivar_names", @toplevel_ivar_names)
@@ -23188,6 +23456,17 @@ class Compiler
     while nm < @nd_count
       if @nd_name[nm].length >= 11
         if @nd_name[nm][0, 11] == "__sp_ieval_"
+          rec_buf.push("NM " + nm.to_s + " " + ir_escape(@nd_name[nm]) + "\n")
+          rec_buf.push("NB " + nm.to_s + " -1\n")
+        end
+ # iexec rewrite carry-over: same shape as ieval. The block was
+ # detached (@nd_block = -1) and the call name flipped to
+ # __sp_iexec_<N>; both have to survive the AST round-trip so
+ # codegen-mode resumes with the rewrite in place. The positional
+ # @nd_arguments stay attached to the CallNode and flow through
+ # the standard CallNode dump path -- only the renamed call name
+ # and the cleared block ref need explicit records.
+        if @nd_name[nm][0, 11] == "__sp_iexec_"
           rec_buf.push("NM " + nm.to_s + " " + ir_escape(@nd_name[nm]) + "\n")
           rec_buf.push("NB " + nm.to_s + " -1\n")
         end

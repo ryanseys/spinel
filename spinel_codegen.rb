@@ -584,6 +584,18 @@ class Compiler
     @ieval_counter = 0
     @ieval_class_idxs = []
     @ieval_body_ids = []
+
+ # instance_exec direct-path lift state, mirror of @ieval_* above.
+ # Loaded from analyze's dump_analysis_buf; consumed by
+ # emit_iexec_funcs / compile_iexec_call. v1 baseline locks
+ # @iexec_return_types entries to "void"; expression-position
+ # support is a follow-up.
+    @iexec_counter = 0
+    @iexec_class_idxs = []
+    @iexec_body_ids = []
+    @iexec_block_pnames = "".split(",")
+    @iexec_block_ptypes = "".split(",")
+    @iexec_return_types = "".split(",")
   end
 
  # Backslash-n for C string literals - bootstrap-safe (avoids escape level issues)
@@ -4737,6 +4749,146 @@ class Compiler
     emit_raw("")
   end
 
+ # ---- instance_exec direct-path lift (sibling of emit_ieval_*) ----
+ # Each `__sp_iexec_<N>` registered by analyze's iexec_rewrite_call
+ # becomes a static C function:
+ #   static <ret> sp_iexec_<N>(sp_<C> *self, <T0> lv_<p0>, ...)
+ # called from the rewritten `recv.__sp_iexec_<N>(arg0, ...)` site.
+ # v1 baseline locks return to "void"; expression-position support
+ # ships when @iexec_return_types stops being void.
+  def emit_iexec_funcs
+    n = 0
+    while n < @iexec_class_idxs.length
+      emit_iexec_func(n, @iexec_class_idxs[n], @iexec_body_ids[n])
+      n = n + 1
+    end
+  end
+
+  def is_iexec_call_name(mname)
+    if mname.length <= 11
+      return 0
+    end
+    if mname[0, 11] == "__sp_iexec_"
+      return 1
+    end
+    0
+  end
+
+ # Emit the C function call: `sp_iexec_<N>(<recv>, <arg0>, <arg1>, ...)`.
+ # @nd_arguments[nid] still carries the positional args from
+ # iexec_rewrite_call (block-arg was detached at the same time the
+ # call name was renamed).
+  def compile_iexec_call(nid)
+    mname = @nd_name[nid]
+    suffix = mname[11, mname.length - 11]
+    parts = compile_expr(@nd_receiver[nid])
+    args_id = @nd_arguments[nid]
+    if args_id >= 0
+      aids = get_args(args_id)
+      k = 0
+      while k < aids.length
+        parts = parts + ", " + compile_expr(aids[k])
+        k = k + 1
+      end
+    end
+    "sp_iexec_" + suffix + "(" + parts + ")"
+  end
+
+ # v1 lifts to void-returning functions, so the expression form has
+ # no real value. Same comma-expression trick as ieval to keep
+ # type-checking happy when callers write `x = obj.instance_exec(...) { ... }`
+ # or use it in a conditional; the receiver flows through.
+ # TODO(rs-instance-exec): emit a real return value once
+ # @iexec_return_types is populated by infer_iexec_body_return_types.
+  def compile_iexec_call_expr(nid)
+    "(" + compile_iexec_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
+  end
+
+  def emit_iexec_func(n, ci, bid)
+    cname = @cls_names[ci]
+    @current_class_idx = ci
+    @current_method_name = "__sp_iexec_" + n.to_s
+    @current_method_return = "void"
+    @indent = 1
+    @in_gc_scope = 0
+    @in_yield_method = 0
+
+ # Block params reach the function as ordinary C parameters; their
+ # names mirror what the block body wrote (e.g. `|n|` -> `lv_n`).
+ # Types come from @iexec_block_ptypes (per-call-site arg type
+ # inferred in analyze).
+    pnames = "".split(",")
+    ptypes = "".split(",")
+    pnames_s = @iexec_block_pnames[n]
+    ptypes_s = @iexec_block_ptypes[n]
+    if pnames_s != ""
+      pnames = pnames_s.split("|")
+      ptypes = ptypes_s.split("|")
+    end
+
+    sig = ""
+    if @cls_is_value_type[ci] == 1
+      sig = "static void sp_iexec_" + n.to_s + "(sp_" + cname + " self"
+    else
+      sig = "static void sp_iexec_" + n.to_s + "(sp_" + cname + " *self"
+    end
+    k = 0
+    while k < pnames.length
+      pt = "int"
+      if k < ptypes.length
+        pt = ptypes[k]
+      end
+      sig = sig + ", " + c_type(pt) + " lv_" + pnames[k]
+      k = k + 1
+    end
+    sig = sig + ") {"
+    emit_raw(sig)
+
+    push_scope
+ # Declare block params in the analyzer-equivalent scope so any
+ # find_var_type calls during body emission resolve correctly.
+    k = 0
+    while k < pnames.length
+      pt = "int"
+      if k < ptypes.length
+        pt = ptypes[k]
+      end
+      declare_var(pnames[k], pt)
+      k = k + 1
+    end
+    if bid >= 0
+      declare_method_locals(bid, pnames)
+      if @needs_gc == 1
+        emit("  SP_GC_SAVE();")
+        @in_gc_scope = 1
+        if @cls_is_value_type[ci] == 0
+          emit("  SP_GC_ROOT(self);")
+        end
+ # GC root pointer-typed block params so the body can safely
+ # allocate.
+        k = 0
+        while k < pnames.length
+          pt = "int"
+          if k < ptypes.length
+            pt = ptypes[k]
+          end
+          if type_is_pointer(pt) == 1
+            emit("  SP_GC_ROOT(lv_" + pnames[k] + ");")
+          end
+          k = k + 1
+        end
+      end
+      compile_body_return(bid, "void")
+    end
+    pop_scope
+
+    @current_class_idx = -1
+    @current_method_name = ""
+    @indent = 0
+    emit_raw("}")
+    emit_raw("")
+  end
+
 
 
  # Walk class bodies, module bodies, and the top-level statement
@@ -6800,6 +6952,7 @@ class Compiler
  # which a `<sp_Class>.new` site lowers to.
     emit_class_new_dispatch
     emit_ieval_funcs
+    emit_iexec_funcs
     emit_toplevel_methods
  # `END { ... }` -- emit one zero-arg static C function per
  # PostExecutionNode body. main() startup will atexit()-register
@@ -8282,6 +8435,37 @@ class Compiler
       else
         emit_raw("static void sp_ieval_" + n.to_s + "(sp_" + icn + " *self);")
       end
+      n = n + 1
+    end
+ # Same forward-declares for instance_exec lifted functions. The
+ # signature includes block params after self, typed per-call-site
+ # via @iexec_block_ptypes.
+    n = 0
+    while n < @iexec_class_idxs.length
+      icn = @cls_names[@iexec_class_idxs[n]]
+      sig = ""
+      if @cls_is_value_type[@iexec_class_idxs[n]] == 1
+        sig = "static void sp_iexec_" + n.to_s + "(sp_" + icn + " self"
+      else
+        sig = "static void sp_iexec_" + n.to_s + "(sp_" + icn + " *self"
+      end
+      pnames_s = @iexec_block_pnames[n]
+      ptypes_s = @iexec_block_ptypes[n]
+      if pnames_s != ""
+        pnames = pnames_s.split("|")
+        ptypes = ptypes_s.split("|")
+        k = 0
+        while k < pnames.length
+          pt = "int"
+          if k < ptypes.length
+            pt = ptypes[k]
+          end
+          sig = sig + ", " + c_type(pt) + " lv_" + pnames[k]
+          k = k + 1
+        end
+      end
+      sig = sig + ");"
+      emit_raw(sig)
       n = n + 1
     end
     emit_raw("")
@@ -12543,6 +12727,12 @@ class Compiler
  # typed `self` argument.
     if is_ieval_call_name(mname) == 1
       return compile_ieval_call_expr(nid)
+    end
+ # Hoisted instance_exec block (expression context). Same comma-
+ # expression wrap as ieval until the void-return baseline is
+ # upgraded to a real return value.
+    if is_iexec_call_name(mname) == 1
+      return compile_iexec_call_expr(nid)
     end
 
  # Fiber.new { block }
@@ -24578,6 +24768,13 @@ class Compiler
       emit("  " + compile_ieval_call(nid) + ";")
       return
     end
+ # Hoisted instance_exec block (statement context). The lifted
+ # function returns void in v1 baseline; statement form is just
+ # `sp_iexec_<N>(...);`.
+    if is_iexec_call_name(mname) == 1
+      emit("  " + compile_iexec_call(nid) + ";")
+      return
+    end
 
  # IO: puts, print, printf
     if compile_io_call_stmt(nid, mname, recv) == 1
@@ -32874,6 +33071,8 @@ class Compiler
       @analysis_frozen = val
     elsif name == "@ieval_counter"
       @ieval_counter = val
+    elsif name == "@iexec_counter"
+      @iexec_counter = val
     elsif name == "@needs_gc"
       @needs_gc = val
     elsif name == "@needs_system"
@@ -33094,6 +33293,12 @@ class Compiler
       @lambda_var_ret_types = val
     elsif name == "@multi_const_inits"
       @multi_const_inits = val
+    elsif name == "@iexec_block_pnames"
+      @iexec_block_pnames = val
+    elsif name == "@iexec_block_ptypes"
+      @iexec_block_ptypes = val
+    elsif name == "@iexec_return_types"
+      @iexec_return_types = val
     end
   end
 
@@ -33126,6 +33331,10 @@ class Compiler
       @ieval_class_idxs = val
     elsif name == "@ieval_body_ids"
       @ieval_body_ids = val
+    elsif name == "@iexec_class_idxs"
+      @iexec_class_idxs = val
+    elsif name == "@iexec_body_ids"
+      @iexec_body_ids = val
     elsif name == "@pre_execution_blocks"
       @pre_execution_blocks = val
     elsif name == "@post_execution_blocks"
