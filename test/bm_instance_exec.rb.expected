@@ -1,0 +1,18 @@
+12
+22
+GET /x
+POST /y json
+6
+3
+2
+GET /p
+POST /q html
+2
+GET /from-ivar
+POST /with-kind json
+1
+GET /from-param
+2
+GET /local-a
+POST /local-b html
+done
