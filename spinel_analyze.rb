@@ -9027,21 +9027,41 @@ class Compiler
         end
         if is_self_def == 1 || (in_module_function == 1 && @nd_receiver[sid] < 0)
           dmname = @nd_name[sid]
+          full_dn = mname + "_cls_" + dmname
+ # CRuby's module re-open: last definition wins. If the same
+ # `module M; def self.X` is declared a second time (whether
+ # in a re-opened block in the same file or via two
+ # `require_relative`'d files), spinel previously appended a
+ # second @meth_* row and emitted two same-name C functions
+ # with possibly-disagreeing return types. Replace the row in
+ # place instead. Issue #517.
+          existing_dn = find_method_idx(full_dn)
+          if existing_dn >= 0
+            @meth_param_names[existing_dn] = collect_params_str(sid)
+            @meth_param_types[existing_dn] = collect_ptypes_str(sid, -1)
+            @meth_param_empty[existing_dn] = ""
+            @meth_return_types[existing_dn] = "int"
+            @meth_body_ids[existing_dn] = @nd_body[sid]
+            @meth_has_yield[existing_dn] = 0
+            @meth_has_defaults[existing_dn] = collect_defaults_str(sid)
+            @meth_rest_index[existing_dn] = collect_rest_index(sid)
+          else
  # Create as top-level method with module prefix for dispatch
-          @meth_names.push(mname + "_cls_" + dmname)
-          @meth_param_names.push(collect_params_str(sid))
-          @meth_param_types.push(collect_ptypes_str(sid, -1))
-          @meth_param_empty.push("")
-          @meth_return_types.push("int")
-          @meth_body_ids.push(@nd_body[sid])
-          @meth_has_yield.push(0)
+            @meth_names.push(full_dn)
+            @meth_param_names.push(collect_params_str(sid))
+            @meth_param_types.push(collect_ptypes_str(sid, -1))
+            @meth_param_empty.push("")
+            @meth_return_types.push("int")
+            @meth_body_ids.push(@nd_body[sid])
+            @meth_has_yield.push(0)
  # Capture default-arg expressions so call sites that
  # omit trailing args get them filled in by
  # compile_call_args_with_defaults — the actual default
  # value is required (not just literal 0) for string
  # default args etc.
-          @meth_has_defaults.push(collect_defaults_str(sid))
-          @meth_rest_index.push(collect_rest_index(sid))
+            @meth_has_defaults.push(collect_defaults_str(sid))
+            @meth_rest_index.push(collect_rest_index(sid))
+          end
         end
       end
  # Collect module-level ivar writes as global statics
