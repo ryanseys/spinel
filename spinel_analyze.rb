@@ -9144,6 +9144,25 @@ class Compiler
     @nd_block[nid] = -1
   end
 
+ # Hard-error helper for unsupported instance_exec patterns.
+ # Spinel doesn't track AST source-line info, so the message just
+ # leads with "Spinel: instance_exec:" (matches the existing
+ # diagnostic style at ffi_error / collect_class_method_alias).
+ # Design principle #2: principled rejection over silent miscompile.
+ # When this fires, the user almost certainly wrote a program
+ # CRuby would accept but Spinel cannot statically translate;
+ # surfacing the boundary loudly beats silently falling through to
+ # the "unsupported method" warn-and-emit-0 that downstream
+ # compilation would otherwise produce.
+  def iexec_reject(reason, suggestion)
+    msg = "Spinel: instance_exec: " + reason
+    if suggestion != ""
+      msg = msg + "; " + suggestion
+    end
+    $stderr.puts msg
+    exit(1)
+  end
+
  # Direct-path lift for `recv.instance_exec(args) { |params| body }`.
  # Sibling of ieval_rewrite_call -- detects an explicit-receiver
  # instance_exec call with a block literal, validates the v1
@@ -9174,22 +9193,51 @@ class Compiler
     end
     recv = @nd_receiver[nid]
     blk = @nd_block[nid]
+ # Silent-bail on receiverless `instance_exec(...)` calls -- they
+ # show up in trampoline-method bodies (`def m(x, &b); instance_exec(x, &b); end`)
+ # where @nd_block is -1 (the &b arg lives in @nd_arguments, not
+ # @nd_block) and codegen's is_instance_exec_trampoline handles
+ # the call-site inlining. Hard-erroring here would break that
+ # path. Implicit-self direct calls at toplevel still fall through
+ # silently in v1; future v1.2 will add an explicit detector that
+ # disambiguates "implicit self direct call" from "trampoline body"
+ # so users get a clear error for the former while preserving the
+ # trampoline path.
     if recv < 0
       return
     end
+ # Silent-bail when there's no literal block. This catches:
+ #   - `recv.instance_exec(args, &proc_var)` -- proc-arg form,
+ #     not lifted statically because there's no AST block to lift
+ #   - `recv.instance_exec(args)` -- no block; CRuby raises
+ #     LocalJumpError at runtime, Spinel falls through to the
+ #     unsupported-call warn-and-emit-0
+ # Future work: add a separate detector that catches the no-block
+ # case and emits a clear "instance_exec requires a block" error.
     if blk < 0
       return
     end
     ci = recv_class_idx_for_rebind(recv, local_class)
     if ci < 0
-      return
+ # AOT compilation needs to know the receiver's class to generate
+ # a typed `sp_iexec_<N>(sp_<C> *self, ...)` signature. Polymorphic
+ # / un-narrowed receivers can't be supported without runtime
+ # dispatch (v2 territory: `BasicObject#instance_exec` as a real
+ # dispatched method with a runtime self swap).
+      iexec_reject(
+        "receiver type cannot be statically resolved",
+        "assign the receiver to a typed local first (e.g. `r = Foo.new`), or narrow via a class predicate (`raise unless r.is_a?(Foo)`) before the call"
+      )
     end
     body_id = @nd_body[blk]
  # yield / block_given? inside the block has no enclosing-method
  # plumbing once we lift the body to a static function. Same
  # gate as ieval_rewrite_call.
     if body_id >= 0 && body_has_yield(body_id) == 1
-      return
+      iexec_reject(
+        "block uses 'yield' or 'block_given?', which require an enclosing block-receiving method",
+        "instance_exec blocks cannot receive their own block; restructure the inner logic to take a Proc parameter instead"
+      )
     end
 
  # Block param extraction (mirrors compile_yield_method_call_stmt
@@ -9224,7 +9272,10 @@ class Compiler
       end
     end
     if pos_arg_ids.length != bp_names.length
-      return
+      iexec_reject(
+        pos_arg_ids.length.to_s + " arg(s) do not match " + bp_names.length.to_s + " block param(s)",
+        "Spinel uses strict arity; CRuby's auto-splat / auto-pack of block params is not modeled. Match the counts exactly."
+      )
     end
 
  # Type each block param from its corresponding call-site arg.
@@ -9257,7 +9308,10 @@ class Compiler
         end
       end
       if t == ""
-        return
+        iexec_reject(
+          "arg #" + (k + 1).to_s + " is a " + at + " whose type cannot be statically resolved",
+          "v1 supports param refs (typed locals), literals (Integer/Float/String/Symbol/true/false/nil), and InstanceVariableRead as direct args. Hoist a `arg<k> = <expr>` local before the call so the typed-local path fires."
+        )
       end
       if k > 0
         bp_types_str = bp_types_str + "|"
