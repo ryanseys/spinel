@@ -6527,7 +6527,22 @@ class Compiler
     mname = @nd_name[nid]
  # Synthetic id is the suffix after the 11-char "__sp_ieval_" prefix.
     suffix = mname[11, mname.length - 11]
-    "sp_ieval_" + suffix + "(" + compile_expr(@nd_receiver[nid]) + ")"
+    n = suffix.to_i
+    recv = @nd_receiver[nid]
+    is_value = n >= 0 && n < @ieval_class_idxs.length && @cls_is_value_type[@ieval_class_idxs[n]] == 1
+    if recv < 0
+ # Implicit-self direct call (analyze rewrote it with no receiver,
+ # using @current_class_idx). The caller's `self` is the receiver.
+ # Value-type-aware: if we're emitting from a value-typed method,
+ # `self` is already an sp_<C> value -- take its address.
+      recv_c = is_value == 1 ? "(&self)" : self_expr
+    else
+      recv_c = compile_expr(recv)
+      if is_value == 1
+        recv_c = "(&(" + recv_c + "))"
+      end
+    end
+    "sp_ieval_" + suffix + "(" + recv_c + ")"
   end
 
  # Non-void lifted body: the function returns the block's last
@@ -6549,7 +6564,9 @@ class Compiler
     if is_void == 0
       return compile_ieval_call(nid)
     end
-    "(" + compile_ieval_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
+    recv = @nd_receiver[nid]
+    recv_c = recv < 0 ? self_expr : compile_expr(recv)
+    "(" + compile_ieval_call(nid) + ", " + recv_c + ")"
   end
 
  # Map a lifted body's inferred return type to its C signature
@@ -6683,7 +6700,19 @@ class Compiler
   def compile_iexec_call(nid)
     mname = @nd_name[nid]
     suffix = mname[11, mname.length - 11]
-    parts = compile_expr(@nd_receiver[nid])
+    n = suffix.to_i
+    recv = @nd_receiver[nid]
+    is_value = n >= 0 && n < @iexec_class_idxs.length && @cls_is_value_type[@iexec_class_idxs[n]] == 1
+    if recv < 0
+ # Implicit-self direct call: receiver is the enclosing `self`.
+      recv_c = is_value == 1 ? "(&self)" : self_expr
+    else
+      recv_c = compile_expr(recv)
+      if is_value == 1
+        recv_c = "(&(" + recv_c + "))"
+      end
+    end
+    parts = recv_c
     args_id = @nd_arguments[nid]
     if args_id >= 0
       aids = get_args(args_id)
@@ -6704,7 +6733,9 @@ class Compiler
  # value once @iexec_return_types is populated by
  # infer_iexec_body_return_types.
   def compile_iexec_call_expr(nid)
-    "(" + compile_iexec_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
+    recv = @nd_receiver[nid]
+    recv_c = recv < 0 ? self_expr : compile_expr(recv)
+    "(" + compile_iexec_call(nid) + ", " + recv_c + ")"
   end
 
   def emit_iexec_func(n, ci, bid)
