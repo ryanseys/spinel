@@ -9145,6 +9145,17 @@ class Compiler
     if body_id >= 0 && body_has_yield(body_id) == 1
       return
     end
+ # Reject other non-local / runtime-definition constructs with a
+ # clear Spinel diagnostic. Return / break / next inside the block
+ # are non-local control flow that Spinel cannot statically
+ # translate; def / define_method are runtime method definitions
+ # that Spinel does not support anywhere.
+    if body_id >= 0
+      kind = body_iexec_unsupported_kind(body_id)
+      if kind != ""
+        iexec_reject_kind("instance_eval", kind)
+      end
+    end
     n = @ieval_counter
     @ieval_counter = @ieval_counter + 1
     @ieval_class_idxs.push(ci)
@@ -9181,6 +9192,35 @@ class Compiler
       msg = msg + "; " + suggestion
     end
     $stderr.puts msg
+    exit(1)
+  end
+
+ # Rejection helper for the body_iexec_unsupported_kind enum.
+ # `intrinsic` is "instance_eval" or "instance_exec" (the user-facing
+ # method name) so the diagnostic points at the correct call.
+  def iexec_reject_kind(intrinsic, kind)
+    reason = ""
+    suggestion = ""
+    if kind == "return"
+      reason = "block uses 'return' which would return from the enclosing method"
+      suggestion = "remove the 'return' (the block's last expression is its value), or restructure so the non-local exit happens outside the " + intrinsic + " block"
+    elsif kind == "break"
+      reason = "block uses 'break' which has no enclosing-iterator semantics under " + intrinsic
+      suggestion = "restructure to avoid non-local control flow"
+    elsif kind == "next"
+      reason = "block uses 'next' which has no enclosing-iterator semantics under " + intrinsic
+      suggestion = "restructure to avoid non-local control flow"
+    elsif kind == "def"
+      reason = "block contains a 'def', defining a method at runtime"
+      suggestion = "Spinel does not support runtime method definition; define the method statically on the receiver's class"
+    elsif kind == "define_method"
+      reason = "block calls 'define_method', defining a method at runtime"
+      suggestion = "Spinel does not support runtime method definition; define the method statically on the receiver's class"
+    else
+      reason = "block uses unsupported construct '" + kind + "'"
+      suggestion = "remove the construct or restructure the block body"
+    end
+    $stderr.puts "Spinel: " + intrinsic + ": " + reason + "; " + suggestion
     exit(1)
   end
 
@@ -9256,6 +9296,13 @@ class Compiler
         "block uses 'yield' or 'block_given?', which require an enclosing block-receiving method",
         "instance_exec blocks cannot receive their own block; restructure the inner logic to take a Proc parameter instead"
       )
+    end
+ # Reject other non-local / runtime-definition constructs.
+    if body_id >= 0
+      kind = body_iexec_unsupported_kind(body_id)
+      if kind != ""
+        iexec_reject_kind("instance_exec", kind)
+      end
     end
 
  # Block param extraction (mirrors compile_yield_method_call_stmt
@@ -14882,6 +14929,59 @@ class Compiler
       k = k + 1
     end
     0
+  end
+
+ # Walks an instance_eval / instance_exec block body and returns the
+ # name of the first unsupported construct found:
+ #   - "return": non-local return from the enclosing method
+ #   - "break": non-local control flow (LocalJumpError without an
+ #             enclosing iterator)
+ #   - "next":  non-local control flow
+ #   - "def":   defining a method at runtime
+ #   - "define_method": same
+ # Returns "" when the body uses only constructs the lift can model.
+ # Recursion stops at nested DefNode boundaries (their bodies belong
+ # to a different scope; constructs inside are checked when those
+ # methods compile). Other nested scopes (LambdaNode, BlockNode)
+ # don't stop the walk: a `return` inside a lambda nested inside the
+ # instance_exec block STILL has surprising non-local semantics if
+ # the lambda body itself stays in scope, but for now the walk's
+ # primary goal is the top-level case; the broader nested-scope
+ # check can layer on later.
+  def body_iexec_unsupported_kind(nid)
+    if nid < 0
+      return ""
+    end
+    t = @nd_type[nid]
+    if t == "ReturnNode"
+      return "return"
+    end
+    if t == "BreakNode"
+      return "break"
+    end
+    if t == "NextNode"
+      return "next"
+    end
+    if t == "DefNode"
+      return "def"
+    end
+    if t == "CallNode" && @nd_name[nid] == "define_method"
+      return "define_method"
+    end
+ # Don't descend into other nested DefNodes -- belongs to a
+ # different scope. (We already returned above for the outermost
+ # DefNode case.)
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      r = body_iexec_unsupported_kind(cs[k])
+      if r != ""
+        return r
+      end
+      k = k + 1
+    end
+    ""
   end
 
  # Walks `nid` for YieldNodes and returns max(`current`, max_args_of_yields).
