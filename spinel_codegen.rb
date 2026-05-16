@@ -14983,9 +14983,33 @@ class Compiler
  # length first. Issue #496: the prior `right - left + 1`
  # formula silently produced a negative length for `s[1..-2]`
  # and returned "".
-            left = compile_expr(@nd_left[a[0]])
-            right = compile_expr(@nd_right[a[0]])
-            return (use_len ? "sp_str_sub_range_len_r" : "sp_str_sub_range_r") + "(" + lprefix + ", " + left + ", " + right + ", " + (range_excl_end(a[0]) == 1 ? "1" : "0") + ")"
+ #
+ # Endless / beginless range support (Ruby 2.6+). `s[1..]`
+ # parses as RangeNode { left: 1, right: -1 (nil) }; CRuby
+ # treats it as `s[1..-1]` (inclusive to end). `s[..5]`
+ # mirrors with `left: -1, right: 5` and is equivalent to
+ # `s[0..5]`. The exclusive flag on the missing endpoint is
+ # ignored in CRuby (`s[1..]` == `s[1...]` == `s[1..-1]`).
+ # Issue #543. Without these arms, `compile_expr(-1)` lowered
+ # the missing endpoint to literal `0`, so `s[1..]` became
+ # `sp_str_sub_range_r(s, 1, 0, 0)` -- length-zero slice,
+ # silent empty string.
+            range_node_543 = a[0]
+            left_nid_543 = @nd_left[range_node_543]
+            right_nid_543 = @nd_right[range_node_543]
+            if left_nid_543 < 0
+              left = "0"
+            else
+              left = compile_expr(left_nid_543)
+            end
+            if right_nid_543 < 0
+              right = "-1"
+              excl_543 = "0"
+            else
+              right = compile_expr(right_nid_543)
+              excl_543 = (range_excl_end(range_node_543) == 1 ? "1" : "0")
+            end
+            return (use_len ? "sp_str_sub_range_len_r" : "sp_str_sub_range_r") + "(" + lprefix + ", " + left + ", " + right + ", " + excl_543 + ")"
           end
           if a.length >= 2
  # s[0, 2]
