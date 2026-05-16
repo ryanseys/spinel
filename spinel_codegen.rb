@@ -745,6 +745,7 @@ class Compiler
     @iexec_block_pnames = "".split(",", -1)
     @iexec_block_ptypes = "".split(",", -1)
     @iexec_return_types = "".split(",", -1)
+    @iexec_captures = "".split(",", -1)
   end
 
  # Backslash-n for C string literals - bootstrap-safe (avoids escape level issues)
@@ -6683,6 +6684,7 @@ class Compiler
   def compile_iexec_call(nid)
     mname = @nd_name[nid]
     suffix = mname[11, mname.length - 11]
+    n = suffix.to_i
     parts = compile_expr(@nd_receiver[nid])
     args_id = @nd_arguments[nid]
     if args_id >= 0
@@ -6691,6 +6693,22 @@ class Compiler
       while k < aids.length
         parts = parts + ", " + compile_expr(aids[k])
         k = k + 1
+      end
+    end
+ # Forward captured-local pointers so block-body writes propagate
+ # to the caller's storage. Each capture is `<T> *_cap_<name>` on
+ # the function side; call site passes `&lv_<name>`.
+    if n < @iexec_captures.length && @iexec_captures[n] != ""
+      cpairs = @iexec_captures[n].split("|")
+      ci2 = 0
+      while ci2 < cpairs.length
+        cp = cpairs[ci2]
+        colon = cp.index(":")
+        if colon != nil && colon >= 0
+          cname_c = cp[0, colon]
+          parts = parts + ", &" + fiber_var_ref(cname_c)
+        end
+        ci2 = ci2 + 1
       end
     end
     "sp_iexec_" + suffix + "(" + parts + ")"
@@ -6704,14 +6722,44 @@ class Compiler
  # value once @iexec_return_types is populated by
  # infer_iexec_body_return_types.
   def compile_iexec_call_expr(nid)
-    "(" + compile_iexec_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
+    mname = @nd_name[nid]
+    suffix = mname[11, mname.length - 11]
+    n = suffix.to_i
+    has_caps = n >= 0 && n < @iexec_captures.length && @iexec_captures[n] != ""
+    is_void = 1
+    if has_caps == false && n >= 0 && n < @iexec_return_types.length
+      rt = @iexec_return_types[n]
+      if rt != "" && rt != "void"
+        is_void = 0
+      end
+    end
+    if is_void == 0
+      return compile_iexec_call(nid)
+    end
+    recv = @nd_receiver[nid]
+    recv_c = recv < 0 ? self_expr : compile_expr(recv)
+    "(" + compile_iexec_call(nid) + ", " + recv_c + ")"
   end
 
   def emit_iexec_func(n, ci, bid)
     cname = @cls_names[ci]
     @current_class_idx = ci
     @current_method_name = "__sp_iexec_" + n.to_s
-    @current_method_return = "void"
+ # Return type inferred from the lifted block body. Falls back to
+ # "void" when infer_iexec_body_return_types hasn't populated it
+ # (or when the body's last expression is a void-ish form). When
+ # captures exist the function emits write-backs after the body
+ # so the return is forced void -- matches the prototype emission
+ # and the analyze-side infer_call_type branch.
+    has_caps_emit = n < @iexec_captures.length && @iexec_captures[n] != ""
+    ret_type = "void"
+    if has_caps_emit == false && n < @iexec_return_types.length
+      rt = @iexec_return_types[n]
+      if rt != "" && rt != "void"
+        ret_type = rt
+      end
+    end
+    @current_method_return = ret_type
     @indent = 1
     @in_gc_scope = 0
     @in_yield_method = 0
@@ -6729,11 +6777,36 @@ class Compiler
       ptypes = ptypes_s.split("|")
     end
 
+ # Outer-local captures: each pair name:type becomes a `<T> *_cap_<name>`
+ # extra param. The body gets a proxy local `<T> lv_<name> = *_cap_<name>;`
+ # on entry and a write-back `*_cap_<name> = lv_<name>;` before
+ # return so mutations propagate to the caller's storage.
+    cnames = "".split(",", -1)
+    ctypes = "".split(",", -1)
+    captures_s = ""
+    if n < @iexec_captures.length
+      captures_s = @iexec_captures[n]
+    end
+    if captures_s != ""
+      pairs = captures_s.split("|")
+      pi = 0
+      while pi < pairs.length
+        p = pairs[pi]
+        colon = p.index(":")
+        if colon != nil && colon >= 0
+          cnames.push(p[0, colon])
+          ctypes.push(p[colon + 1, p.length - colon - 1])
+        end
+        pi = pi + 1
+      end
+    end
+
+    sig_ret = ret_type == "void" ? "void" : c_type(ret_type)
     sig = ""
     if @cls_is_value_type[ci] == 1
-      sig = "static void sp_iexec_" + n.to_s + "(sp_" + cname + " self"
+      sig = "static " + sig_ret + " sp_iexec_" + n.to_s + "(sp_" + cname + " self"
     else
-      sig = "static void sp_iexec_" + n.to_s + "(sp_" + cname + " *self"
+      sig = "static " + sig_ret + " sp_iexec_" + n.to_s + "(sp_" + cname + " *self"
     end
     k = 0
     while k < pnames.length
@@ -6743,6 +6816,11 @@ class Compiler
       end
       sig = sig + ", " + c_type(pt) + " lv_" + pnames[k]
       k = k + 1
+    end
+    ck = 0
+    while ck < cnames.length
+      sig = sig + ", " + c_type(ctypes[ck]) + " *_cap_" + cnames[ck]
+      ck = ck + 1
     end
     sig = sig + ") {"
     emit_raw(sig)
@@ -6759,8 +6837,28 @@ class Compiler
       declare_var(pnames[k], pt)
       k = k + 1
     end
+ # Declare captures in the analyzer scope. declare_method_locals
+ # below emits the actual C declarations from @nd_scope_names; the
+ # capture-proxy assignment lands after to overwrite the
+ # zero-initialised value with the caller's actual value.
+    ck = 0
+    while ck < cnames.length
+      declare_var(cnames[ck], ctypes[ck])
+      ck = ck + 1
+    end
     if bid >= 0
       declare_method_locals(bid, pnames)
+ # Capture proxy load: now that declare_method_locals has emitted
+ # the `<T> lv_<name> = <default>;` declarations from the block's
+ # scope, overwrite each captured one with the caller's value.
+ # Mutations inside the block update lv_<name>; the write-back
+ # after compile_body_return propagates them back through the
+ # pointer.
+      ck = 0
+      while ck < cnames.length
+        emit("  lv_" + cnames[ck] + " = *_cap_" + cnames[ck] + ";")
+        ck = ck + 1
+      end
  # declare_method_locals already emits SP_GC_SAVE when the body
  # has pointer locals; only emit again if it didn't, so the
  # function never declares `_gc_saved` twice in one scope.
@@ -6786,7 +6884,20 @@ class Compiler
           k = k + 1
         end
       end
-      compile_body_return(bid, "void")
+ # When captures exist, force a void body so we can emit the
+ # write-back stores before the function returns. Mixing captures
+ # with a non-void return value is a follow-up: would need to
+ # compute the return-value into a temp, then write back captures,
+ # then return the temp.
+      body_ret = cnames.length > 0 ? "void" : ret_type
+      compile_body_return(bid, body_ret)
+ # Capture write-back: propagate mutations of each proxied local
+ # back through the pointer to the caller's storage.
+      ck = 0
+      while ck < cnames.length
+        emit("  *_cap_" + cnames[ck] + " = lv_" + cnames[ck] + ";")
+        ck = ck + 1
+      end
     end
     pop_scope
 
@@ -11037,11 +11148,24 @@ class Compiler
     n = 0
     while n < @iexec_class_idxs.length
       icn = @cls_names[@iexec_class_idxs[n]]
+      captures_s2 = ""
+      if n < @iexec_captures.length
+        captures_s2 = @iexec_captures[n]
+      end
+ # When captures exist the function body emits write-backs after
+ # the body, forcing void return -- match that in the prototype.
+      proto_ret = "void"
+      if n < @iexec_return_types.length && captures_s2 == ""
+        rt2 = @iexec_return_types[n]
+        if rt2 != "" && rt2 != "void"
+          proto_ret = c_type(rt2)
+        end
+      end
       sig = ""
       if @cls_is_value_type[@iexec_class_idxs[n]] == 1
-        sig = "static void sp_iexec_" + n.to_s + "(sp_" + icn + " self"
+        sig = "static " + proto_ret + " sp_iexec_" + n.to_s + "(sp_" + icn + " self"
       else
-        sig = "static void sp_iexec_" + n.to_s + "(sp_" + icn + " *self"
+        sig = "static " + proto_ret + " sp_iexec_" + n.to_s + "(sp_" + icn + " *self"
       end
       pnames_s = @iexec_block_pnames[n]
       ptypes_s = @iexec_block_ptypes[n]
@@ -11056,6 +11180,20 @@ class Compiler
           end
           sig = sig + ", " + c_type(pt) + " lv_" + pnames[k]
           k = k + 1
+        end
+      end
+      if captures_s2 != ""
+        cpairs2 = captures_s2.split("|")
+        ci3 = 0
+        while ci3 < cpairs2.length
+          cp2 = cpairs2[ci3]
+          colon = cp2.index(":")
+          if colon != nil && colon >= 0
+            cname2 = cp2[0, colon]
+            ctype2 = cp2[colon + 1, cp2.length - colon - 1]
+            sig = sig + ", " + c_type(ctype2) + " *_cap_" + cname2
+          end
+          ci3 = ci3 + 1
         end
       end
       sig = sig + ");"
@@ -51651,6 +51789,8 @@ class Compiler
       @iexec_block_ptypes = val
     elsif name == "@iexec_return_types"
       @iexec_return_types = val
+    elsif name == "@iexec_captures"
+      @iexec_captures = val
     end
   end
 

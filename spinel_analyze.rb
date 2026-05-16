@@ -721,12 +721,37 @@ class Compiler
  # returns the block's typed last expression. The call site is
  # rewritten to `__sp_iexec_<N>(recv, args...)` and codegen turns
  # the synthetic name into a direct C call.
+ #
+ # Parallel arrays, all indexed by synthetic id N:
+ #   class_idxs    -- receiver class idx
+ #   body_ids      -- block body nid
+ #   block_pnames  -- "|"-joined block param names (typed as call-site args)
+ #   block_ptypes  -- "|"-joined block param C types (per call-site arg)
+ #   return_types  -- inferred block-body return type, "void" if unused
+ #
+ # Boundaries enforced when the rewrite fires:
+ #   - Strict arity: call-site arg count == block param count
+ #   - No return/break/next/yield/block_given? inside the block
+ #   - No def/define_method inside the block
+ # Anything outside the supported subset reports a hard analyze-time
+ # error via iexec_reject() with a concrete suggested fix. Outer-
+ # local references that ARE supported get captured and threaded
+ # through the lifted function's signature -- see @iexec_captures.
     @iexec_counter = 0
     @iexec_class_idxs = []
     @iexec_body_ids = []
     @iexec_block_pnames = "".split(",", -1)
     @iexec_block_ptypes = "".split(",", -1)
     @iexec_return_types = "".split(",", -1)
+ # "|"-joined "name:type" pairs per lifted block, recording outer
+ # locals the block body reads or writes. The lifted function takes
+ # one `<T> *_cap_<name>` extra param per capture; on entry the
+ # function declares a proxy `<T> lv_<name> = *_cap_<name>;` and
+ # writes back `*_cap_<name> = lv_<name>;` on exit so mutations
+ # propagate to the caller's storage. The block body itself
+ # compiles unchanged (it just references `lv_<name>` like any
+ # local).
+    @iexec_captures = "".split(",", -1)
 
  # RBS-derived seed lines. Populated by load_rbs_seeds before
  # analyze_phase; consumed by apply_rbs_seeds after collect_all
@@ -3525,6 +3550,16 @@ class Compiler
     if is_iexec_call_name(mname) == 1
       suffix = mname[11, mname.length - 11]
       n = suffix.to_i
+ # When the lifted function takes capture pointers, the body
+ # write-backs force a void return; the call's value falls back
+ # to the receiver via the comma-expression form.
+      has_caps = n >= 0 && n < @iexec_captures.length && @iexec_captures[n] != ""
+      if has_caps == false && n >= 0 && n < @iexec_return_types.length
+        rt = @iexec_return_types[n]
+        if rt != "" && rt != "void"
+          return rt
+        end
+      end
       if n >= 0 && n < @iexec_class_idxs.length
         return "obj_" + @cls_names[@iexec_class_idxs[n]]
       end
@@ -8796,6 +8831,7 @@ class Compiler
     @iexec_block_pnames = "".split(",", -1)
     @iexec_block_ptypes = "".split(",", -1)
     @iexec_return_types = "".split(",", -1)
+    @iexec_captures = "".split(",", -1)
  # Widen class-method ptypes through obj-typed receivers before the
  # walk so a method-param receiver (e.g. `def configure(app);
  # app.instance_eval { } end` invoked as `cfg.configure(routes)`)
@@ -9184,6 +9220,58 @@ class Compiler
     exit(1)
   end
 
+ # Walk an instance_exec block body for LocalVariableRead /
+ # LocalVariableWrite/Target/Op nodes whose names are NOT in the
+ # supplied block-param list AND are statically typed in the outer
+ # scope (find_var_type returns non-empty). Each such name is a
+ # capture; the lifted function takes an extra `<T> *_cap_<name>`
+ # parameter so writes propagate back to the caller's storage.
+ # Names whose find_var_type returns "" are block-local
+ # declarations and are handled by the regular scan_locals /
+ # declare_method_locals path inside the lifted function.
+ # Returns a "|"-joined "name:type" string in visit order.
+ # Recursion stops at nested DefNode / LambdaNode / ClassNode
+ # boundaries -- those introduce new scopes.
+  def collect_iexec_captures(body_nid, bp_names)
+    seen = "".split(",", -1)
+    types = "".split(",", -1)
+    walk_iexec_capture_refs(body_nid, bp_names, seen, types)
+    pairs = "".split(",", -1)
+    k = 0
+    while k < seen.length
+      pairs.push(seen[k] + ":" + types[k])
+      k = k + 1
+    end
+    pairs.join("|")
+  end
+
+  def walk_iexec_capture_refs(nid, bp_names, seen, types)
+    if nid < 0
+      return
+    end
+    t = @nd_type[nid]
+    if t == "DefNode" || t == "ClassNode" || t == "ModuleNode" || t == "LambdaNode"
+      return
+    end
+    if t == "LocalVariableReadNode" || t == "LocalVariableWriteNode" || t == "LocalVariableTargetNode" || t == "LocalVariableOperatorWriteNode" || t == "LocalVariableOrWriteNode" || t == "LocalVariableAndWriteNode"
+      n = @nd_name[nid]
+      if not_in(n, bp_names) == 1 && not_in(n, seen) == 1
+        ty = find_var_type(n)
+        if ty != ""
+          seen.push(n)
+          types.push(ty)
+        end
+      end
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      walk_iexec_capture_refs(cs[k], bp_names, seen, types)
+      k = k + 1
+    end
+  end
+
  # Direct-path lift for `recv.instance_exec(args) { |params| body }`.
  # Sibling of ieval_rewrite_call -- detects an explicit-receiver
  # instance_exec call with a block literal, validates the supported
@@ -9340,12 +9428,20 @@ class Compiler
 
     bp_names_str = bp_names.join("|")
 
+ # Collect outer-local captures from the block body so the lifted
+ # function takes one pointer param per captured local. Reads and
+ # writes inside the body operate on a proxy local (proxied to /
+ # from the pointer on entry / exit), so the body compiles
+ # unchanged and mutations propagate back to the caller's storage.
+    captures_str = body_id >= 0 ? collect_iexec_captures(body_id, bp_names) : ""
+
     n = @iexec_counter
     @iexec_counter = @iexec_counter + 1
     @iexec_class_idxs.push(ci)
     @iexec_body_ids.push(body_id)
     @iexec_block_pnames.push(bp_names_str)
     @iexec_block_ptypes.push(bp_types_str)
+    @iexec_captures.push(captures_str)
  # Return type filled in by infer_iexec_body_return_types (Pass 3-
  # like step). Placeholder "void" gets overwritten when that pass
  # runs; the baseline locks to "void" since expression-position
@@ -33081,6 +33177,7 @@ class Compiler
     buf = ir_emit_sa(buf, "@iexec_block_pnames", @iexec_block_pnames)
     buf = ir_emit_sa(buf, "@iexec_block_ptypes", @iexec_block_ptypes)
     buf = ir_emit_sa(buf, "@iexec_return_types", @iexec_return_types)
+    buf = ir_emit_sa(buf, "@iexec_captures", @iexec_captures)
     buf = ir_emit_ia(buf, "@pre_execution_blocks", @pre_execution_blocks)
     buf = ir_emit_ia(buf, "@post_execution_blocks", @post_execution_blocks)
     buf = ir_emit_sa(buf, "@toplevel_ivar_names", @toplevel_ivar_names)
