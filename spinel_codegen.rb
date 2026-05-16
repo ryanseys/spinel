@@ -1018,12 +1018,14 @@ class Compiler
     if @nd_name[inner] != bp_name
       return 0
     end
- # Walk the trampoline body's positional args. The baseline
- # requires each arg to be a LocalVariableReadNode matching the
- # method's
- # required param at the same index, in order. Mixed-args (literals,
- # ivars, splat) reject for now; the strict-enumerable extension
- # lands in a later phase.
+ # Walk the trampoline body's positional args. Each must be one of:
+ #   - LocalVariableReadNode whose name matches a method param
+ #     (forwarded from call site)
+ #   - A literal node: Integer/Float/String/Symbol/True/False/Nil
+ #   - InstanceVariableReadNode (rebound receiver's ivar)
+ # The block at the call site is matched against these by position
+ # at inlining time, not by name; the detector only validates that
+ # every arg has a shape the inliner knows how to evaluate.
     pnames = cls_meth_pnames_get(ci, midx)
     req_n = pnames.length - 1   # last is the &block, already checked
     args_id = @nd_arguments[s]
@@ -1043,16 +1045,33 @@ class Compiler
       end
       k = k + 1
     end
-    if positional.length != req_n
-      return 0
-    end
     k = 0
-    while k < req_n
+    while k < positional.length
       aid = positional[k]
-      if @nd_type[aid] != "LocalVariableReadNode"
-        return 0
-      end
-      if @nd_name[aid] != pnames[k]
+      t = @nd_type[aid]
+      if t == "LocalVariableReadNode"
+ # Must reference one of the method's required params; otherwise
+ # the inliner can't resolve the value at the call site.
+        nm = @nd_name[aid]
+        found = 0
+        j = 0
+        while j < req_n
+          if pnames[j] == nm
+            found = 1
+            break
+          end
+          j = j + 1
+        end
+        if found == 0
+          return 0
+        end
+      elsif t == "IntegerNode" || t == "FloatNode" || t == "StringNode" || t == "SymbolNode" || t == "TrueNode" || t == "FalseNode" || t == "NilNode"
+ # Literal -- compiles to the same C value in any scope.
+      elsif t == "InstanceVariableReadNode"
+ # Rebound receiver's ivar (`@x` inside the trampoline body
+ # refers to the receiver-class instance, which becomes the
+ # rebound self in the spliced block).
+      else
         return 0
       end
       k = k + 1
@@ -49491,13 +49510,36 @@ class Compiler
     end
     rc = compile_expr_gc_rooted(recv)
     self_var = new_temp
- # Value-typed receivers (@cls_is_value_type[ci] == 1) are returned
- # by-value from sp_<C>_new(), so (sp_<C> *)<rc> is an invalid cast
- # of a struct value. Handling them requires the value-vs-pointer
- # branch from emit_ieval_func and is tracked separately.
-    emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
-    if @in_gc_scope == 1
-      emit("  SP_GC_ROOT(" + self_var + ");")
+    recv_ci = find_class_idx(cname)
+ # Value-typed classes (sp_<C> returned by-value from sp_<C>_new())
+ # need a different splice header than heap classes: bind `self_var`
+ # as the value itself, then route bare `self` and `@ivar` through
+ # `(&self_var)->...`. self_arrow() looks at @current_class_idx to
+ # pick the `.` vs `->` form, so save and restore it across the
+ # splice. Heap receivers keep the original pointer-cast path.
+    saved_ci_outer = @current_class_idx
+    is_value = recv_ci >= 0 && @cls_is_value_type[recv_ci] == 1
+    if is_value == 1
+      emit("  sp_" + cname + " " + self_var + " = (sp_" + cname + ")" + rc + ";")
+    else
+      emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
+      if @in_gc_scope == 1
+        emit("  SP_GC_ROOT(" + self_var + ");")
+      end
+    end
+ # Route bare `@ivar` reads/writes inside the spliced block to the
+ # rebound receiver. Without this, ivar_lhs's toplevel-fallback
+ # branch returns the bare static-global slot when the splice
+ # happens at toplevel scope.
+    saved_self_override = @self_override
+    saved_vt = -1
+    if is_value == 1
+      @self_override = "(&" + self_var + ")"
+      @current_class_idx = recv_ci
+      saved_vt = @cls_is_value_type[recv_ci]
+      @cls_is_value_type[recv_ci] = 0
+    else
+      @self_override = self_var
     end
  # Route bare `@ivar` reads/writes inside the spliced block to the
  # rebound receiver. Without this, ivar_lhs's toplevel-fallback
@@ -49508,7 +49550,11 @@ class Compiler
     saved_self_override = @self_override
     @self_override = self_var
     splice_block_with_self_rebound(@nd_body[blk], self_var, cname)
+    if is_value == 1
+      @cls_is_value_type[recv_ci] = saved_vt
+    end
     @self_override = saved_self_override
+    @current_class_idx = saved_ci_outer
   end
 
  # Inlines a `recv.m(args) { |params| body }` call when `m` is a
@@ -49561,30 +49607,52 @@ class Compiler
       end
     end
 
- # Trampoline-method param types: forward through @cls_meth_ptypes
- # so each call-site arg gets a typed local. The trampoline's
- # ptypes[k] for k < N (the required params) are the types the
- # block body should see for its block params.
-    ptypes_full = cls_meth_ptypes_get(cci, midx)
-    req_n = ptypes_full.length - 1   # last is &block
+ # Walk the trampoline body to find the `instance_exec(args..., &b)`
+ # call so we can read each positional arg's AST node directly --
+ # mixed-args (literals, ivars) need per-kind evaluation at the
+ # call site, not just by-index forwarding.
+    tramp_bid = cls_method_body_id(cci, midx)
+    tramp_stmt = -1
+    if tramp_bid >= 0
+      tstmts = get_stmts(tramp_bid)
+      if tstmts.length == 1
+        tramp_stmt = tstmts[0]
+      end
+    end
+    tramp_args_id = tramp_stmt >= 0 ? @nd_arguments[tramp_stmt] : -1
+    tramp_arg_nodes = []
+    if tramp_args_id >= 0
+      taids = get_args(tramp_args_id)
+      k = 0
+      while k < taids.length
+        if @nd_type[taids[k]] != "BlockArgumentNode"
+          tramp_arg_nodes.push(taids[k])
+        end
+        k = k + 1
+      end
+    end
 
  # Arity check: the user's block at the call site must declare the
- # same number of required params as the trampoline forwards.
+ # same number of params as the trampoline body forwards args.
  # Mismatches are user errors -- surface as a hard Spinel
  # diagnostic with a concrete suggestion rather than silently
  # falling through to the unsupported-method path.
-    if bp_names.length != req_n
-      $stderr.puts "Spinel: instance_exec trampoline: " + bp_names.length.to_s + " block param(s) do not match " + req_n.to_s + " trampoline arg(s); Spinel uses strict arity (CRuby's auto-splat / auto-pack is not modeled). Match the counts exactly."
+    if bp_names.length != tramp_arg_nodes.length
+      $stderr.puts "Spinel: instance_exec trampoline: " + bp_names.length.to_s + " block param(s) do not match " + tramp_arg_nodes.length.to_s + " trampoline arg(s); Spinel uses strict arity (CRuby's auto-splat / auto-pack is not modeled). Match the counts exactly."
       exit(1)
     end
 
+ # Trampoline-method param types: forward through @cls_meth_ptypes
+ # so each LocalVariableRead arg picks up its declared type.
+    pnames_m = cls_meth_pnames_get(cci, midx)
+    ptypes_m = cls_meth_ptypes_get(cci, midx)
+
  # Evaluate call-site args BEFORE rebinding self -- the args are
- # in the outer scope, not the splice context. Mirrors the order
- # in compile_yield_method_call_stmt (line ~30985+).
-    args_id = @nd_arguments[nid]
-    arg_ids = []
-    if args_id >= 0
-      arg_ids = get_args(args_id)
+ # in the outer scope, not the splice context.
+    call_args_id = @nd_arguments[nid]
+    call_arg_ids = []
+    if call_args_id >= 0
+      call_arg_ids = get_args(call_args_id)
     end
 
     rc = compile_expr_gc_rooted(recv)
@@ -49604,18 +49672,60 @@ class Compiler
     map_from = "".split(",")
     map_to = "".split(",")
 
+ # Per-position evaluation: each trampoline-body arg becomes a
+ # typed C local bound to the corresponding block param. The
+ # mixed-args detector already validated that every arg is one of
+ # the supported kinds, so the branches below are total.
     k = 0
-    while k < req_n
+    while k < tramp_arg_nodes.length
+      targ = tramp_arg_nodes[k]
+      tt = @nd_type[targ]
+      val_c = ""
       pt = "int"
-      if k < ptypes_full.length
-        pt = ptypes_full[k]
+      if tt == "LocalVariableReadNode"
+ # Forward from the call-site arg at the matching method-param
+ # position. Find the param index by name.
+        nm = @nd_name[targ]
+        j = 0
+        pidx = -1
+        while j < pnames_m.length - 1
+          if pnames_m[j] == nm
+            pidx = j
+            break
+          end
+          j = j + 1
+        end
+        if pidx >= 0 && pidx < call_arg_ids.length
+          val_c = compile_expr(call_arg_ids[pidx])
+          if pidx < ptypes_m.length
+            pt = ptypes_m[pidx]
+          end
+        else
+          val_c = "0"
+        end
+      elsif tt == "IntegerNode" || tt == "FloatNode" || tt == "StringNode" || tt == "SymbolNode" || tt == "TrueNode" || tt == "FalseNode" || tt == "NilNode"
+ # Literal: compiles to the same C value in any scope.
+        val_c = compile_expr(targ)
+        pt = infer_type(targ)
+      elsif tt == "InstanceVariableReadNode"
+ # Rebound receiver's ivar (`@x` in the trampoline body refers
+ # to the receiver-class instance, which becomes the rebound
+ # self in the spliced block). sanitize_ivar already produces
+ # the `iv_<name>` form -- don't double-prefix.
+        iname = @nd_name[targ]
+        val_c = self_var + (is_value == 1 ? "." : "->") + sanitize_ivar(iname)
+        if recv_ci >= 0
+          pt = cls_ivar_type(recv_ci, iname)
+          if pt == ""
+            pt = "int"
+          end
+        end
+      else
+        val_c = "0"
       end
+
       tname = bp_names[k] + suffix
-      val = "0"
-      if k < arg_ids.length
-        val = compile_expr(arg_ids[k])
-      end
-      emit("  " + c_type(pt) + " lv_" + tname + " = " + val + ";")
+      emit("  " + c_type(pt) + " lv_" + tname + " = " + val_c + ";")
       if type_is_pointer(pt) == 1 && @in_gc_scope == 1
         emit("  SP_GC_ROOT(lv_" + tname + ");")
       end
@@ -49626,11 +49736,22 @@ class Compiler
     end
 
  # Route bare @ivar reads/writes inside the spliced block to the
- # rebound receiver (same Step 1 retrofit as
- # compile_instance_eval_inlined_stmt). Save/restore for nested
- # rebinds.
+ # rebound receiver. For value-typed receivers, set @self_override
+ # to the address-of form `(&self_var)` and (transiently) fake the
+ # class as not-value-type during the splice so self_arrow()
+ # produces `(&self_var)->` rather than `(&self_var).`. Restore
+ # all state for nested rebinds.
     saved_self_override = @self_override
-    @self_override = self_var
+    saved_ci_outer = @current_class_idx
+    saved_vt = -1
+    if is_value == 1
+      @self_override = "(&" + self_var + ")"
+      @current_class_idx = recv_ci
+      saved_vt = @cls_is_value_type[recv_ci]
+      @cls_is_value_type[recv_ci] = 0
+    else
+      @self_override = self_var
+    end
     saved_in_rmf = @inline_rename_map_from
     saved_in_rmt = @inline_rename_map_to
     @inline_rename_map_from = map_from
@@ -49640,6 +49761,9 @@ class Compiler
 
     @inline_rename_map_from = saved_in_rmf
     @inline_rename_map_to = saved_in_rmt
+    if is_value == 1
+      @cls_is_value_type[recv_ci] = saved_vt
+    end
     @self_override = saved_self_override
   end
 
