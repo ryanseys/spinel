@@ -1044,15 +1044,21 @@ class Compiler
   end
 
  # Returns the &block param's name on (ci, midx), or "" if the
- # method's last param isn't proc-typed. Sibling of
- # cls_method_sole_proc_param_name, but allows the method to have
- # other (required) params before the &block. Used by the
- # instance_exec trampoline detector, where the trampoline forwards
- # N required params and the block:
+ # method's last param isn't a plausible proc reference. Sibling
+ # of cls_method_sole_proc_param_name, but allows the method to
+ # have other (required or rest) params before the &block. Used
+ # by the instance_exec trampoline detector to find the &b for
  #   def m(a, b, ..., &blk); instance_exec(a, b, ..., &blk); end
  # cls_method_sole_proc_param_name requires the method to have
  # exactly one param; this lifts that restriction by checking only
  # the last position.
+ #
+ # The last param's type is "proc" when the analyze pass has seen
+ # the param used as a proc (called, splatted via &, etc.), or
+ # "poly" when the inference defaulted because the body's only
+ # use is forwarding it via & (the trampoline shape itself).
+ # Both shapes count as proc-references for the trampoline
+ # detector's purposes.
   def cls_method_trailing_proc_param_name(ci, midx)
     pnames = cls_meth_pnames_get(ci, midx)
     ptypes = cls_meth_ptypes_get(ci, midx)
@@ -1060,21 +1066,15 @@ class Compiler
       return ""
     end
     last = pnames.length - 1
-    if ptypes[last] != "proc"
+    if ptypes[last] != "proc" && ptypes[last] != "poly"
       return ""
     end
- # Earlier params must be ordinary (no rest, no keyword) -- this
- # helper recognises fixed-arity forwarding only. Splat / mixed-args
- # trampolines need a relaxed variant.
+ # Earlier params must be ordinary types (a type name; not a
+ # second proc reference). Rest params (typed as array kinds or
+ # "poly") are allowed -- splat trampolines pass through here.
     k = 0
     while k < last
       pt = ptypes[k]
- # The required-arg ptypes include type names (int, str_array,
- # obj_<C>, etc.), never "rest" / "kwrest" / "block" markers. If
- # a non-required-arg slot appears here, abort the detection so
- # splat trampolines are not conflated with the fixed-arity shape.
- # TODO: relax this to accept "rest"-typed final-required-param
- # when the splat trampoline path is wired up.
       if pt == "" || pt == "proc"
         return ""
       end
@@ -1191,6 +1191,9 @@ class Compiler
  #     (forwarded from call site)
  #   - A literal node: Integer/Float/String/Symbol/True/False/Nil
  #   - InstanceVariableReadNode (rebound receiver's ivar)
+ #   - SplatNode of a LocalVariableRead matching the method's
+ #     rest param (forwards every call-site arg 1:1 to block
+ #     params -- e.g. `def m(*args, &b); instance_exec(*args, &b); end`)
  # The block at the call site is matched against these by position
  # at inlining time, not by name; the detector only validates that
  # every arg has a shape the inliner knows how to evaluate.
@@ -1239,6 +1242,27 @@ class Compiler
  # Rebound receiver's ivar (`@x` inside the trampoline body
  # refers to the receiver-class instance, which becomes the
  # rebound self in the spliced block).
+      elsif t == "SplatNode"
+ # Splat forwarding of the method's rest param. Only allowed as
+ # a sole positional arg (`instance_exec(*args, &b)`); mixing
+ # splat with other positional args isn't supported.
+        if positional.length != 1
+          return 0
+        end
+        exp = @nd_expression[aid]
+        if exp < 0 || @nd_type[exp] != "LocalVariableReadNode"
+          return 0
+        end
+ # The splatted local must be the method's rest param. Trampoline
+ # method has shape (*<rest>, &<proc>); rest is the second-to-last
+ # param if there are no other required args (i.e. pnames.length
+ # == 2 here -- rest + proc).
+        if pnames.length != 2
+          return 0
+        end
+        if pnames[0] != @nd_name[exp]
+          return 0
+        end
       else
         return 0
       end
@@ -31928,6 +31952,7 @@ class Compiler
     end
     tramp_args_id = tramp_stmt >= 0 ? @nd_arguments[tramp_stmt] : -1
     tramp_arg_nodes = []
+    is_splat_tramp = 0
     if tramp_args_id >= 0
       taids = get_args(tramp_args_id)
       k = 0
@@ -31937,6 +31962,14 @@ class Compiler
         end
         k = k + 1
       end
+ # Splat trampoline shape: the sole positional arg is a SplatNode
+ # of the method's rest param. Treat each call-site positional arg
+ # as if the trampoline body listed it explicitly -- the block
+ # param count matches the call-site arg count, with each arg
+ # forwarded verbatim.
+      if tramp_arg_nodes.length == 1 && @nd_type[tramp_arg_nodes[0]] == "SplatNode"
+        is_splat_tramp = 1
+      end
     end
 
  # Arity check: the user's block at the call site must declare the
@@ -31944,16 +31977,6 @@ class Compiler
  # Mismatches are user errors -- surface as a hard Spinel
  # diagnostic with a concrete suggestion rather than silently
  # falling through to the unsupported-method path.
-    if bp_names.length != tramp_arg_nodes.length
-      $stderr.puts "Spinel: instance_exec trampoline: " + bp_names.length.to_s + " block param(s) do not match " + tramp_arg_nodes.length.to_s + " trampoline arg(s); Spinel uses strict arity (CRuby's auto-splat / auto-pack is not modeled). Match the counts exactly."
-      exit(1)
-    end
-
- # Trampoline-method param types: forward through @cls_meth_ptypes
- # so each LocalVariableRead arg picks up its declared type.
-    pnames_m = cls_meth_pnames_get(cci, midx)
-    ptypes_m = cls_meth_ptypes_get(cci, midx)
-
  # Evaluate call-site args BEFORE rebinding self -- the args are
  # in the outer scope, not the splice context.
     call_args_id = @nd_arguments[nid]
@@ -31961,6 +31984,20 @@ class Compiler
     if call_args_id >= 0
       call_arg_ids = get_args(call_args_id)
     end
+
+ # Splat trampolines fan out: each call-site arg maps to one block
+ # param, regardless of how many positional args the trampoline
+ # body lists (which is always one SplatNode in this shape).
+    effective_arity = is_splat_tramp == 1 ? call_arg_ids.length : tramp_arg_nodes.length
+    if bp_names.length != effective_arity
+      $stderr.puts "Spinel: instance_exec trampoline: " + bp_names.length.to_s + " block param(s) do not match " + effective_arity.to_s + " trampoline arg(s); Spinel uses strict arity (CRuby's auto-splat / auto-pack is not modeled). Match the counts exactly."
+      exit(1)
+    end
+
+ # Trampoline-method param types: forward through @cls_meth_ptypes
+ # so each LocalVariableRead arg picks up its declared type.
+    pnames_m = cls_meth_pnames_get(cci, midx)
+    ptypes_m = cls_meth_ptypes_get(cci, midx)
 
     rc = compile_expr_gc_rooted(recv)
     self_var = new_temp
@@ -31998,14 +32035,29 @@ class Compiler
  # Per-position evaluation: each trampoline-body arg becomes a
  # typed C local bound to the corresponding block param. The
  # mixed-args detector already validated that every arg is one of
- # the supported kinds, so the branches below are total.
+ # the supported kinds, so the branches below are total. For splat
+ # trampolines, the "trampoline arg" at position k is the call
+ # site's k-th arg -- we fan out the SplatNode here so the loop
+ # body's LocalVariableReadNode branch isn't needed (each position
+ # is a direct call-site arg).
     k = 0
-    while k < tramp_arg_nodes.length
-      targ = tramp_arg_nodes[k]
-      tt = @nd_type[targ]
+    while k < effective_arity
       val_c = ""
       pt = "int"
-      if tt == "LocalVariableReadNode"
+      if is_splat_tramp == 1
+        if k < call_arg_ids.length
+          val_c = compile_expr(call_arg_ids[k])
+          pt = infer_type(call_arg_ids[k])
+          if pt == ""
+            pt = "int"
+          end
+        else
+          val_c = "0"
+        end
+      else
+        targ = tramp_arg_nodes[k]
+        tt = @nd_type[targ]
+        if tt == "LocalVariableReadNode"
  # Forward from the call-site arg at the matching method-param
  # position. Find the param index by name.
         nm = @nd_name[targ]
@@ -32044,8 +32096,9 @@ class Compiler
             pt = "int"
           end
         end
-      else
-        val_c = "0"
+        else
+          val_c = "0"
+        end
       end
 
       tname = bp_names[k] + suffix
