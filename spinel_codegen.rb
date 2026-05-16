@@ -736,7 +736,7 @@ class Compiler
 
  # instance_exec direct-path lift state, mirror of @ieval_* above.
  # Loaded from analyze's dump_analysis_buf; consumed by
- # emit_iexec_funcs / compile_iexec_call. v1 baseline locks
+ # emit_iexec_funcs / compile_iexec_call. The baseline locks
  # @iexec_return_types entries to "void"; expression-position
  # support is a follow-up.
     @iexec_counter = 0
@@ -894,19 +894,18 @@ class Compiler
     if ptypes[last] != "proc"
       return ""
     end
- # Earlier params must be ordinary (no rest, no keyword). v1
- # supports fixed-arity forwarding only; splat / mixed-args
- # extensions land later under the rs-instance-exec plan.
+ # Earlier params must be ordinary (no rest, no keyword). The
+ # baseline supports fixed-arity forwarding only; splat / mixed-args
+ # extensions land in follow-ups.
     k = 0
     while k < last
       pt = ptypes[k]
  # The required-arg ptypes include type names (int, str_array,
  # obj_<C>, etc.), never "rest" / "kwrest" / "block" markers. If
  # a non-required-arg slot appears here, abort the detection so
- # we don't conflate splat trampolines with the v1 fixed-arity
- # shape. TODO(rs-instance-exec splat phase): relax this to
- # accept "rest"-typed final-required-param when we wire up the
- # splat trampoline path.
+ # we don't conflate splat trampolines with the fixed-arity
+ # shape. A follow-up will relax this to accept "rest"-typed
+ # final-required-param when the splat trampoline path lands.
       if pt == "" || pt == "proc"
         return ""
       end
@@ -962,7 +961,7 @@ class Compiler
     1
   end
 
- # Detects the v1 fixed-arity instance_exec trampoline shape:
+ # Detects the fixed-arity instance_exec trampoline shape:
  #   def m(a1, ..., aN, &b); instance_exec(a1, ..., aN, &b); end
  # for N >= 0 with strict 1:1 forwarding -- positional method
  # params become positional instance_exec args, in order, and
@@ -977,14 +976,13 @@ class Compiler
  # inlines body with self rebound to recv and block params bound
  # to the call-site args.
  #
- # v1 boundaries (rejected by returning 0 -> falls through to
+ # Boundaries (rejected by returning 0 -> falls through to
  # ordinary dispatch which will error at codegen with the usual
  # warn-and-emit-0):
  #  - No mixed-args (literals, ivars in trampoline body)
  #  - No splat (def m(*args, &b))
  #  - No keyword args
- # TODO(rs-instance-exec phases 2-3): relax these once the
- # baseline path is solid.
+ # A follow-up relaxes these once the baseline path is solid.
   def is_instance_exec_trampoline(ci, midx)
     bid = cls_method_body_id(ci, midx)
     if bid < 0
@@ -1020,8 +1018,9 @@ class Compiler
     if @nd_name[inner] != bp_name
       return 0
     end
- # Walk the trampoline body's positional args. v1 requires each
- # arg to be a LocalVariableReadNode matching the method's
+ # Walk the trampoline body's positional args. The baseline
+ # requires each arg to be a LocalVariableReadNode matching the
+ # method's
  # required param at the same index, in order. Mixed-args (literals,
  # ivars, splat) reject for now; the strict-enumerable extension
  # lands in a later phase.
@@ -6657,7 +6656,7 @@ class Compiler
  # becomes a static C function:
  #   static <ret> sp_iexec_<N>(sp_<C> *self, <T0> lv_<p0>, ...)
  # called from the rewritten `recv.__sp_iexec_<N>(arg0, ...)` site.
- # v1 baseline locks return to "void"; expression-position support
+ # The baseline locks return to "void"; expression-position support
  # ships when @iexec_return_types stops being void.
   def emit_iexec_funcs
     n = 0
@@ -6697,12 +6696,13 @@ class Compiler
     "sp_iexec_" + suffix + "(" + parts + ")"
   end
 
- # v1 lifts to void-returning functions, so the expression form has
- # no real value. Same comma-expression trick as ieval to keep
- # type-checking happy when callers write `x = obj.instance_exec(...) { ... }`
- # or use it in a conditional; the receiver flows through.
- # TODO(rs-instance-exec): emit a real return value once
- # @iexec_return_types is populated by infer_iexec_body_return_types.
+ # The lift currently emits void-returning functions, so the
+ # expression form has no real value. Same comma-expression trick
+ # as ieval to keep type-checking happy when callers write
+ # `x = obj.instance_exec(...) { ... }` or use it in a conditional;
+ # the receiver flows through. A follow-up emits a real return
+ # value once @iexec_return_types is populated by
+ # infer_iexec_body_return_types.
   def compile_iexec_call_expr(nid)
     "(" + compile_iexec_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
   end
@@ -6761,9 +6761,14 @@ class Compiler
     end
     if bid >= 0
       declare_method_locals(bid, pnames)
-      if @needs_gc == 1
+ # declare_method_locals already emits SP_GC_SAVE when the body
+ # has pointer locals; only emit again if it didn't, so the
+ # function never declares `_gc_saved` twice in one scope.
+      if @needs_gc == 1 && @in_gc_scope == 0
         emit("  SP_GC_SAVE();")
         @in_gc_scope = 1
+      end
+      if @needs_gc == 1
         if @cls_is_value_type[ci] == 0
           emit("  SP_GC_ROOT(self);")
         end
@@ -11001,8 +11006,9 @@ class Compiler
       @current_class_idx = saved_ci_decl
       i = i + 1
     end
- # Hoisted instance_eval block functions: emit prototypes here. v1
- # fired only on top-level call sites, where the call always followed
+ # Hoisted instance_eval block functions: emit prototypes here. The
+ # initial implementation fired only on top-level call sites, where
+ # the call always followed
  # the corresponding `static void sp_ieval_<N>(...)` definition (both
  # land in `emit_main` / after `emit_class_methods`). Now that ivar
  # receivers can put the call inside a class method body — emitted
@@ -39122,7 +39128,7 @@ class Compiler
       return
     end
  # Hoisted instance_exec block (statement context). The lifted
- # function returns void in v1 baseline; statement form is just
+ # function currently returns void; statement form is just
  # `sp_iexec_<N>(...);`.
     if is_iexec_call_name(mname) == 1
       emit("  " + compile_iexec_call(nid) + ";")
@@ -49506,7 +49512,7 @@ class Compiler
   end
 
  # Inlines a `recv.m(args) { |params| body }` call when `m` is a
- # v1 fixed-arity instance_exec trampoline:
+ # fixed-arity instance_exec trampoline:
  #   def m(a1, ..., aN, &b); instance_exec(a1, ..., aN, &b); end
  #
  # Hybrid of compile_instance_eval_inlined_stmt (self rebind via
@@ -49517,12 +49523,12 @@ class Compiler
  # with @self_override / @instance_eval_self_var / _type set so
  # bare method calls and @ivar reads dispatch through the receiver.
  #
- # TODO(rs-instance-exec): value-typed receivers crash on the
- # pointer cast emitted for self_var, same shape as the
- # corresponding TODO in compile_instance_eval_inlined_stmt.
- # Expression-position support (return value of the call usable
- # in `total = recv.compute(...) { ... }`) is a follow-up; v1
- # ships statement-form only.
+ # Value-typed receivers crash on the pointer cast emitted for
+ # self_var, same shape as the corresponding limitation in
+ # compile_instance_eval_inlined_stmt. Expression-position support
+ # (return value of the call usable in
+ # `total = recv.compute(...) { ... }`) is a follow-up; the
+ # current implementation ships statement-form only.
   def compile_instance_exec_inlined_stmt(nid, recv, cci, midx)
     blk = @nd_block[nid]
     if blk < 0
@@ -49563,13 +49569,13 @@ class Compiler
     req_n = ptypes_full.length - 1   # last is &block
 
  # Arity check: the user's block at the call site must declare the
- # same number of required params as the trampoline forwards. Falls
- # through to ordinary dispatch on mismatch (which will error with
- # the existing warn-and-emit-0 path). TODO(rs-instance-exec
- # diagnostics): replace with a hard analyze-time error per Step 6
- # of the plan once the iexec_reject helper exists.
+ # same number of required params as the trampoline forwards.
+ # Mismatches are user errors -- surface as a hard Spinel
+ # diagnostic with a concrete suggestion rather than silently
+ # falling through to the unsupported-method path.
     if bp_names.length != req_n
-      return
+      $stderr.puts "Spinel: instance_exec trampoline: " + bp_names.length.to_s + " block param(s) do not match " + req_n.to_s + " trampoline arg(s); Spinel uses strict arity (CRuby's auto-splat / auto-pack is not modeled). Match the counts exactly."
+      exit(1)
     end
 
  # Evaluate call-site args BEFORE rebinding self -- the args are

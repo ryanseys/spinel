@@ -8,17 +8,17 @@
 # what most CRuby code writes: `obj.instance_exec(5) { |n| ... }` at
 # the call site, no wrapper method involved.
 #
-# v1 boundaries (documented in plan):
+# Boundaries:
 #   - Strict arity: call-site args count == block params count.
 #   - No outer-local capture (the lifted function cannot see the
 #     caller's locals). Convert to the trampoline form for that.
 #   - Receiver must be a statically-resolvable obj_<C> -- a typed
 #     local, ivar, method param, or constant constructor.
 #   - return / break / next / yield / block_given? inside the block
-#     are rejected (silently in v1; Step 6 upgrades to hard error).
-#   - Value-typed receivers are unsupported (TODO carried over from
-#     compile_instance_eval_inlined_stmt's same issue). Multi-instance
-#     classes keep the receiver heap-allocated.
+#     are rejected.
+#   - Value-typed receivers are unsupported (same issue as
+#     compile_instance_eval_inlined_stmt). Multi-instance classes
+#     keep the receiver heap-allocated.
 
 # 1. Bare direct call with one arg. The block body adds the call-site
 #    arg to the receiver's @sum via the typed method `add`. Bare
@@ -46,8 +46,8 @@ puts b.total                  #=> 42
 
 # 2. Two args at the call site forward into two block params. Block
 #    body computes against them, mutates the receiver's ivar via the
-#    rebound-self path, and returns nothing (v1 baseline locks the
-#    return type to void).
+#    rebound-self path, and returns nothing (the lift currently
+#    locks the return type to void).
 class Acc < Builder
 end
 
@@ -61,7 +61,7 @@ puts a2.total                 #=> 14
 
 # 3. Zero-arg form (degenerate, equivalent to instance_eval): the
 #    detector accepts arity-0, the lifted function takes only the
-#    receiver. Tests that the v1 baseline doesn't conflate arity-0
+#    receiver. Tests that the lift doesn't conflate arity-0
 #    with the instance_eval lift (they're independent registries
 #    even when behavior overlaps).
 b2 = Builder.new

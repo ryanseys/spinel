@@ -3515,15 +3515,13 @@ class Compiler
       end
     end
  # iexec direct-path lift: synthetic name `__sp_iexec_<N>` maps to
- # the lifted block's return type. v1 baseline emits a comma-
+ # the lifted block's return type. The lift currently emits a comma-
  # expression `(sp_iexec_<N>(...), recv)` for the expression form
  # (compile_iexec_call_expr in codegen), so the call's value is
  # the receiver -- match that here by returning obj_<C>. Mirrors
- # the ieval branch above (same comma-expression -> recv-type
- # rationale). When @iexec_return_types stops being void in the
- # expression-position follow-up, this branch will surface the
- # block's real last-expression type and compile_iexec_call_expr
- # will return the function's typed return instead of recv.
+ # the ieval branch above. When @iexec_return_types stops being
+ # void in the expression-position follow-up, this branch will
+ # surface the block's real last-expression type.
     if is_iexec_call_name(mname) == 1
       suffix = mname[11, mname.length - 11]
       n = suffix.to_i
@@ -9188,7 +9186,7 @@ class Compiler
 
  # Direct-path lift for `recv.instance_exec(args) { |params| body }`.
  # Sibling of ieval_rewrite_call -- detects an explicit-receiver
- # instance_exec call with a block literal, validates the v1
+ # instance_exec call with a block literal, validates the supported
  # constraints, and rewrites the call to `__sp_iexec_<N>(recv,
  # args...)`. The block body (with its params declared as typed
  # locals matching the call-site arg types) gets emitted as a
@@ -9201,15 +9199,13 @@ class Compiler
  #   - Call-site positional args are preserved on @nd_arguments[nid]
  #     so codegen can forward them as `sp_iexec_<N>(recv, arg0, ...)`.
  #   - Outer-local capture is rejected: the lifted function cannot
- #     see the caller's locals. The trampoline path (Step 5) is the
- #     intended workaround for capture.
+ #     see the caller's locals. The trampoline path is the intended
+ #     workaround for capture.
  #   - return/break/next/yield/block_given? inside the block body
  #     are rejected: they have no enclosing-method semantics here.
  #
- # Anything outside the supported subset bails the rewrite silently
- # in this baseline -- Step 6 of the plan upgrades the rejections
- # to hard `<file>:<line>: instance_exec: <reason>; <suggestion>`
- # errors with exit(1).
+ # Anything outside the supported subset is rejected with a hard
+ # `<file>:<line>: instance_exec: <reason>; <suggestion>` error.
   def iexec_rewrite_call(nid, local_class)
     if @nd_name[nid] != "instance_exec"
       return
@@ -9222,10 +9218,9 @@ class Compiler
  # @nd_block) and codegen's is_instance_exec_trampoline handles
  # the call-site inlining. Hard-erroring here would break that
  # path. Implicit-self direct calls at toplevel still fall through
- # silently in v1; future v1.2 will add an explicit detector that
- # disambiguates "implicit self direct call" from "trampoline body"
- # so users get a clear error for the former while preserving the
- # trampoline path.
+ # silently; a future detector will disambiguate "implicit self
+ # direct call" from "trampoline body" so users get a clear error
+ # for the former while preserving the trampoline path.
     if recv < 0
       return
     end
@@ -9245,7 +9240,7 @@ class Compiler
  # AOT compilation needs to know the receiver's class to generate
  # a typed `sp_iexec_<N>(sp_<C> *self, ...)` signature. Polymorphic
  # / un-narrowed receivers can't be supported without runtime
- # dispatch (v2 territory: `BasicObject#instance_exec` as a real
+ # dispatch (would require `BasicObject#instance_exec` as a real
  # dispatched method with a runtime self swap).
       iexec_reject(
         "receiver type cannot be statically resolved",
@@ -9264,8 +9259,8 @@ class Compiler
     end
 
  # Block param extraction (mirrors compile_yield_method_call_stmt
- # in codegen). v1 supports required positional params only -- no
- # rest, no keyword, no defaults. Anything else bails the rewrite.
+ # in codegen). Required positional params only -- no rest, no
+ # keyword, no defaults. Anything else bails the rewrite.
     bp_names = "".split(",")
     bp = @nd_parameters[blk]
     if bp >= 0
@@ -9333,7 +9328,7 @@ class Compiler
       if t == ""
         iexec_reject(
           "arg #" + (k + 1).to_s + " is a " + at + " whose type cannot be statically resolved",
-          "v1 supports param refs (typed locals), literals (Integer/Float/String/Symbol/true/false/nil), and InstanceVariableRead as direct args. Hoist a `arg<k> = <expr>` local before the call so the typed-local path fires."
+          "supported arg shapes: param refs (typed locals), literals (Integer/Float/String/Symbol/true/false/nil), and InstanceVariableRead. Hoist a `arg<k> = <expr>` local before the call so the typed-local path fires."
         )
       end
       if k > 0
@@ -9353,10 +9348,10 @@ class Compiler
     @iexec_block_ptypes.push(bp_types_str)
  # Return type filled in by infer_iexec_body_return_types (Pass 3-
  # like step). Placeholder "void" gets overwritten when that pass
- # runs; for the baseline v1 we lock to "void" since expression-
- # position support is a follow-up. TODO(rs-instance-exec): wire
- # up the return-type inference + codegen's compile_body_return
- # path so `total = recv.instance_exec(...) { ... }` works.
+ # runs; the baseline locks to "void" since expression-position
+ # support is a follow-up that wires the return-type inference into
+ # codegen's compile_body_return path so
+ # `total = recv.instance_exec(...) { ... }` works.
     @iexec_return_types.push("void")
 
  # Rewrite the call site: name flips to the synthetic prefix,

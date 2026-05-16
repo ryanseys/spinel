@@ -5,8 +5,8 @@
 # different classes / instances). Each section's output is compared
 # against CRuby by `make test`.
 #
-# v1 baseline ships with @iexec_return_types locked to "void", so
-# none of these sections relies on the call's return value -- they
+# The lift currently ships with @iexec_return_types locked to "void",
+# so none of these sections relies on the call's return value -- they
 # either mutate the receiver's state (and read it back via a regular
 # method afterwards) or perform side effects (puts). Once the
 # expression-position follow-up wires up infer_iexec_body_return_types,
