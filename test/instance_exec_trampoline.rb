@@ -13,29 +13,27 @@
 # shape match (def m(p1..pN, &b); instance_exec(p1..pN, &b); end),
 # inlined at the call site with self rebound to the receiver and block
 # params bound to fresh suffixed C locals carrying the call-site arg
-# values. Mismatched-arity / non-trampoline shapes fall through to
-# ordinary dispatch (today silently no-ops; Step 6 of the plan will
-# upgrade this to a hard analyze-time error).
+# values. Mismatched-arity / non-trampoline shapes report a hard
+# analyze-time error via the iexec_reject diagnostic.
 #
-# v1 limitations exercised by the asymmetry note in section A below:
+# Known limitations exercised by the asymmetry note in section A below:
 #   - Direct `recv.instance_exec(args) { ... }` (outside a trampoline
 #     method) lifts to a static function and cannot capture outer
-#     locals -- v1.1 follow-up.
+#     locals.
 #   - Trampoline body must forward params 1:1, no literals / ivars /
-#     splat in v1 baseline (later phases relax this).
-#   - Value-typed receivers crash on the pointer cast in the splice
-#     today; multi-instance classes (which Spinel keeps heap-allocated)
-#     are the workaround until the TODO in
+#     splat.
+#   - Value-typed receivers crash on the pointer cast in the splice;
+#     multi-instance classes (which Spinel keeps heap-allocated) are
+#     the workaround until the TODO in
 #     compile_instance_exec_inlined_stmt is fixed.
 
-# A. Asymmetry note for v1 readers
+# A. Asymmetry note
 #
 # Outer-local capture works on THIS path (trampoline) because the
 # block body is spliced at the call site, so outer locals are in
 # scope. The direct form `obj.instance_exec(args) { ... }` does NOT
-# capture outer locals in v1 -- its lifted static function cannot
-# see the caller's locals. Use the trampoline form when you need
-# capture. v1.1 will close this gap.
+# capture outer locals -- its lifted static function cannot see the
+# caller's locals. Use the trampoline form when capture is needed.
 
 # 1. Single fixed arg, statement form: forwards the call-site arg
 #    into the block param, then bare method calls dispatch against

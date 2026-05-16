@@ -5,11 +5,11 @@
 # runs the .rb without args and compares stdout; a clean compile is
 # a pass.
 #
-# This file exists primarily as inline documentation of the v1
-# boundaries -- the supported-shape positive tests (trampoline +
-# direct) cover the happy paths, and any new rejection added by
-# Step 6 of the rs-instance-exec plan adds a new commented section
-# here so reviewers can see exactly what fails and why.
+# This file exists primarily as inline documentation of the
+# direct-path boundaries -- the supported-shape positive tests
+# (trampoline + direct) cover the happy paths, and any new
+# rejection adds a commented section here so reviewers can see
+# exactly what fails and why.
 #
 # To exercise a rejection manually:
 #   uncomment one section, run `make build/test-results/instance_exec_unsupported.ok`,

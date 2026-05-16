@@ -593,15 +593,13 @@ class Compiler
  #   block_ptypes  -- "|"-joined block param C types (per call-site arg)
  #   return_types  -- inferred block-body return type, "void" if unused
  #
- # v1 boundaries (enforced when the rewrite fires):
+ # Boundaries enforced when the rewrite fires:
  #   - Strict arity: call-site arg count == block param count
  #   - No outer-local capture (lifted function can't see caller's locals)
  #   - No return/break/next/yield/block_given? inside the block
  #   - No def/define_method inside the block
- # Anything outside the supported subset bails the rewrite, leaving
- # the call to fall through to codegen's existing dispatch path
- # (which emits an unsupported-method diagnostic). Step 6 of the
- # rs-instance-exec plan upgrades these to hard analyze-time errors.
+ # Anything outside the supported subset reports a hard analyze-time
+ # error via iexec_reject() with a concrete suggested fix.
     @iexec_counter = 0
     @iexec_class_idxs = []
     @iexec_body_ids = []
@@ -2843,18 +2841,15 @@ class Compiler
     end
 
  # `recv.__sp_ieval_<N>(...)`: the rewritten form of an
- # `recv.instance_eval { ... }` call. v1 only fired on top-level call
- # sites, where the call's value was always discarded — so its return
- # type didn't matter and the warn-fallback "int" was harmless. Now
- # that the rewrite can land inside a class method body whose tail
- # expression IS the instance_eval call, the enclosing method's
- # signature has to match the value the lift actually emits:
- # `compile_ieval_call_expr` returns the receiver via a comma
- # expression, so the type is recv's class. Read the synthetic id's
- # registered class directly from `@ieval_class_idxs` rather than
- # re-inferring recv — by the time this runs (compile-side type
- # iteration), recv's type may have been refined and the registered
- # class is the canonical answer.
+ # `recv.instance_eval { ... }` call. When the rewrite lands inside
+ # a class method body whose tail expression IS the instance_eval
+ # call, the enclosing method's signature has to match the value
+ # the lift actually emits: `compile_ieval_call_expr` returns the
+ # receiver via a comma expression, so the type is recv's class.
+ # Read the synthetic id's registered class directly from
+ # `@ieval_class_idxs` rather than re-inferring recv -- by the time
+ # this runs (compile-side type iteration), recv's type may have
+ # been refined and the registered class is the canonical answer.
     if is_ieval_call_name(mname) == 1
       suffix = mname[11, mname.length - 11]
       n = suffix.to_i
@@ -2863,15 +2858,13 @@ class Compiler
       end
     end
  # iexec direct-path lift: synthetic name `__sp_iexec_<N>` maps to
- # the lifted block's return type. v1 baseline emits a comma-
- # expression `(sp_iexec_<N>(...), recv)` for the expression form
- # (compile_iexec_call_expr in codegen), so the call's value is
- # the receiver -- match that here by returning obj_<C>. Mirrors
- # the ieval branch above (same comma-expression -> recv-type
- # rationale). When @iexec_return_types stops being void in the
- # expression-position follow-up, this branch will surface the
- # block's real last-expression type and compile_iexec_call_expr
- # will return the function's typed return instead of recv.
+ # the lifted block's return type. compile_iexec_call_expr emits a
+ # comma-expression `(sp_iexec_<N>(...), recv)` for the expression
+ # form, so the call's value is the receiver -- match that here by
+ # returning obj_<C>. Mirrors the ieval branch above. When the
+ # lifted-block real return type is wired up (TODO at iexec_rewrite_call
+ # and emit_iexec_func), this branch and compile_iexec_call_expr
+ # will switch together to return the block's last-expression type.
     if is_iexec_call_name(mname) == 1
       suffix = mname[11, mname.length - 11]
       n = suffix.to_i
@@ -6494,12 +6487,17 @@ class Compiler
  # (last-include-wins); user-defined top-level `def`s are preserved.
  # Must run after module-function entries are registered.
     collect_toplevel_module_includes
- # Pass 2.6: hoist `recv.instance_eval do ... end` blocks into
- # file-scope static functions. Receiver-class flow analysis picks the
- # receiver's class, the block body is later compiled as a function
- # with a typed `self` parameter, and the call site is rewritten to
- # invoke that function directly. v1: top-level locals previously
- # assigned `ClassName.new`; no block params; no closures; no yield.
+ # Pass 2.6: hoist `recv.instance_eval do ... end` and
+ # `recv.instance_exec(args) do |params| ... end` blocks into
+ # file-scope static functions. Receiver-class flow analysis picks
+ # the receiver's class, the block body is later compiled as a
+ # function with a typed `self` parameter, and the call site is
+ # rewritten to invoke that function directly. Supported receivers:
+ # top-level locals assigned `ClassName.new`, instance variables,
+ # method params (with static types), and method-local copies of
+ # class instances; no closures over outer locals on the direct
+ # path (use the trampoline-method pattern for closure capture);
+ # no yield / block_given? inside the block.
     rewrite_instance_eval_calls
 
  # Pass 2.7: resolve module-level singleton accessors via constant
@@ -6789,12 +6787,12 @@ class Compiler
       if local_class.key?(vname)
         return local_class[vname]
       end
- # Inside a class instance method, the v1 top-level local_class
- # map is intentionally empty. Fall back to find_var_type so a
- # method param (or scan_locals-typed local) resolves through
- # the scope chain that ieval_walk_class_methods sets up. The
- # is_obj_type / base_type strip is the same shape used in the
- # ivar branch and at every other obj_-prefix site in this file.
+ # Inside a class instance method, the top-level local_class map
+ # is intentionally empty. Fall back to find_var_type so a method
+ # param (or scan_locals-typed local) resolves through the scope
+ # chain that ieval_walk_class_methods sets up. The is_obj_type /
+ # base_type strip is the same shape used in the ivar branch and
+ # at every other obj_-prefix site in this file.
       vt = find_var_type(vname)
       bt = base_type(vt)
       if is_obj_type(bt) == 1
@@ -6841,23 +6839,20 @@ class Compiler
     if ci < 0
       return
     end
- # Foundation A-light (override-aware intrinsic): if the receiver's
- # class (or its parent chain) defines its own `instance_eval` method,
- # the user has overridden the intrinsic. Skip the lift so ordinary
- # dispatch resolves to the user's method. v1 baseline string-match
- # would have silently bypassed the override; this check restores
- # the expected CRuby semantic. Full Foundation A (registering
- # BasicObject and routing every intrinsic through method-resolution)
- # is queued for v2; this lighter version covers the common-case
+ # Override-aware intrinsic check: if the receiver's class (or its
+ # parent chain) defines its own `instance_eval` method, the user
+ # has overridden the intrinsic. Skip the lift so ordinary dispatch
+ # resolves to the user's method, matching the CRuby semantic.
+ # A full BasicObject registration with inheritance plumbing
+ # (routing every intrinsic through cls_find_method from the start)
+ # would generalise this check; today's targeted version covers the
  # correctness win without rearchitecting the class table.
     if cls_find_method(ci, "instance_eval") >= 0
       return
     end
     body_id = @nd_body[blk]
- # v1: bail if the block uses yield/block_given?. Lifting it as a
- # plain function would lose the enclosing method's block plumbing.
- # Spinel rejected such code before — leaving it rejected is no
- # regression, and the support belongs in a follow-up.
+ # Bail if the block uses yield/block_given?. Lifting it as a plain
+ # function would lose the enclosing method's block plumbing.
     if body_id >= 0 && body_has_yield(body_id) == 1
       return
     end
@@ -6893,7 +6888,7 @@ class Compiler
 
  # Direct-path lift for `recv.instance_exec(args) { |params| body }`.
  # Sibling of ieval_rewrite_call -- detects an explicit-receiver
- # instance_exec call with a block literal, validates the v1
+ # instance_exec call with a block literal, validates the supported
  # constraints, and rewrites the call to `__sp_iexec_<N>(recv,
  # args...)`. The block body (with its params declared as typed
  # locals matching the call-site arg types) gets emitted as a
@@ -6911,10 +6906,9 @@ class Compiler
  #   - return/break/next/yield/block_given? inside the block body
  #     are rejected: they have no enclosing-method semantics here.
  #
- # Anything outside the supported subset bails the rewrite silently
- # in this baseline -- Step 6 of the plan upgrades the rejections
- # to hard `<file>:<line>: instance_exec: <reason>; <suggestion>`
- # errors with exit(1).
+ # Anything outside the supported subset emits a hard
+ # `Spinel: instance_exec: <reason>; <suggestion>` error via
+ # iexec_reject and exit(1).
   def iexec_rewrite_call(nid, local_class)
     if @nd_name[nid] != "instance_exec"
       return
@@ -6926,11 +6920,9 @@ class Compiler
  # where @nd_block is -1 (the &b arg lives in @nd_arguments, not
  # @nd_block) and codegen's is_instance_exec_trampoline handles
  # the call-site inlining. Hard-erroring here would break that
- # path. Implicit-self direct calls at toplevel still fall through
- # silently in v1; future v1.2 will add an explicit detector that
- # disambiguates "implicit self direct call" from "trampoline body"
- # so users get a clear error for the former while preserving the
- # trampoline path.
+ # path. Implicit-self direct calls at toplevel currently fall
+ # through silently; disambiguating "implicit self direct call"
+ # from "trampoline body" needs a separate detector.
     if recv < 0
       return
     end
@@ -6957,11 +6949,10 @@ class Compiler
         "assign the receiver to a typed local first (e.g. `r = Foo.new`), or narrow via a class predicate (`raise unless r.is_a?(Foo)`) before the call"
       )
     end
- # Foundation A-light (override-aware intrinsic): bypass the lift
- # if the user has defined their own `instance_exec` on the
- # receiver's class -- ordinary dispatch resolves to the user's
- # method, preserving CRuby semantics. Same shape as
- # ieval_rewrite_call's override check.
+ # Override-aware intrinsic check: bypass the lift if the user has
+ # defined their own `instance_exec` on the receiver's class --
+ # ordinary dispatch resolves to the user's method, preserving CRuby
+ # semantics. Same shape as ieval_rewrite_call's override check.
     if cls_find_method(ci, "instance_exec") >= 0
       return
     end
@@ -6977,8 +6968,8 @@ class Compiler
     end
 
  # Block param extraction (mirrors compile_yield_method_call_stmt
- # in codegen). v1 supports required positional params only -- no
- # rest, no keyword, no defaults. Anything else bails the rewrite.
+ # in codegen). Required positional params only -- no rest, no
+ # keyword, no defaults. Anything else bails the rewrite.
     bp_names = "".split(",")
     bp = @nd_parameters[blk]
     if bp >= 0
@@ -7046,7 +7037,7 @@ class Compiler
       if t == ""
         iexec_reject(
           "arg #" + (k + 1).to_s + " is a " + at + " whose type cannot be statically resolved",
-          "v1 supports param refs (typed locals), literals (Integer/Float/String/Symbol/true/false/nil), and InstanceVariableRead as direct args. Hoist a `arg<k> = <expr>` local before the call so the typed-local path fires."
+          "supported arg shapes are param refs (typed locals), literals (Integer/Float/String/Symbol/true/false/nil), and InstanceVariableRead. Hoist a `arg<k> = <expr>` local before the call so the typed-local path fires."
         )
       end
       if k > 0
@@ -7064,12 +7055,14 @@ class Compiler
     @iexec_body_ids.push(body_id)
     @iexec_block_pnames.push(bp_names_str)
     @iexec_block_ptypes.push(bp_types_str)
- # Return type filled in by infer_iexec_body_return_types (Pass 3-
- # like step). Placeholder "void" gets overwritten when that pass
- # runs; for the baseline v1 we lock to "void" since expression-
- # position support is a follow-up. TODO(rs-instance-exec): wire
- # up the return-type inference + codegen's compile_body_return
- # path so `total = recv.instance_exec(...) { ... }` works.
+ # Return type currently locked to "void"; the lifted function's
+ # body is compiled with compile_body_return(bid, "void"), and
+ # callers in expression position receive the receiver via the
+ # comma-expression hack in compile_iexec_call_expr.
+ # TODO: infer the block-body's last-expression type and switch the
+ # codegen path to emit a typed return, so
+ # `total = recv.instance_exec(...) { ... }` evaluates to the
+ # block's actual value.
     @iexec_return_types.push("void")
 
  # Rewrite the call site: name flips to the synthetic prefix,
@@ -7164,12 +7157,12 @@ class Compiler
   end
 
 
- # v1 lifts blocks into void-returning functions (Ruby's
- # instance_eval-as-expression value isn't supported yet). When a
- # call appears in expression position, return the recv pointer as a
- # truthy default via a comma expression so callers like
- # `if obj.instance_eval { ... }` still type-check. Real expression
- # support — return the block's last expression — is a v2 follow-up.
+ # Today lifts blocks into void-returning functions. When a call
+ # appears in expression position, return the receiver as a truthy
+ # default via a comma expression so callers like
+ # `if obj.instance_eval { ... }` still type-check.
+ # TODO: return the block's last expression as the call's value
+ # to match Ruby's instance_eval-as-expression semantics.
 
 
   def is_builtin_type_name(name)

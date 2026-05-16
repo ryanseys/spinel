@@ -1667,9 +1667,29 @@ static sp_PtrArray *sp_PtrArray_slice_bang(sp_PtrArray *a, mrb_int from, mrb_int
   return r;
 }
 
-typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); } sp_Proc;
+/* Lexical-scope reference for runtime instance_exec dispatch. Not
+ * consumed today -- the direct-path lift inlines constants at the
+ * call site, so no runtime cref walk is needed. The struct exists
+ * so a future runtime instance_exec path (dynamic self swap on an
+ * escaping proc) can resolve constants through the block's original
+ * lexical context, matching CRuby's vm_cref_push semantics. */
+typedef struct sp_Cref {
+  mrb_int class_idx;            /* owning class for definitions */
+  const struct sp_Cref *next;   /* lexical parent chain (NULL at root) */
+} sp_Cref;
+
+/* sp_Proc carries an optional bound-self pointer for a runtime
+ * instance_exec dispatch path. The field is zero-initialised by
+ * sp_proc_new and not read by today's call site (procs invoke
+ * `proc->fn(proc->cap, args)` without consulting self_ptr). A
+ * dynamic-rebind runtime would write `self_ptr` immediately before
+ * invoking the proc and the lifted block body would read self
+ * through the proc rather than a stack-allocated C parameter.
+ * Keeping sp_proc_new's 3-arg signature stable preserves every
+ * existing proc-creation site verbatim. */
+typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); void *self_ptr; } sp_Proc;
 static void sp_Proc_scan(void *p) { sp_Proc *pr = (sp_Proc *)p; if (pr->cap && pr->cap_scan) pr->cap_scan(pr->cap); }
-static sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *)) { sp_Proc *p = (sp_Proc *)sp_gc_alloc(sizeof(sp_Proc), NULL, sp_Proc_scan); p->fn = fn; p->cap = cap; p->cap_scan = cap_scan; return p; }
+static sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *)) { sp_Proc *p = (sp_Proc *)sp_gc_alloc(sizeof(sp_Proc), NULL, sp_Proc_scan); p->fn = fn; p->cap = cap; p->cap_scan = cap_scan; p->self_ptr = NULL; return p; }
 static mrb_int sp_proc_call(sp_Proc *p, mrb_int *args) { return (p && p->fn) ? ((mrb_int (*)(void *, mrb_int *))p->fn)(p->cap, args) : 0; }
 
 /* ---- StringIO runtime ---- */

@@ -93,8 +93,8 @@ puts c2.get               #=> 2
 #    prior trampoline test exercises direct ivar access inside the
 #    spliced block (existing tests only call methods like `bump`).
 #    Counter is reused here (two instances above) so value-type
-#    promotion stays disabled; the direct-ivar path needs heap
-#    receivers in v1.
+#    promotion stays disabled; the direct-ivar path requires a heap
+#    receiver until the splice learns to handle value types.
 c3 = Counter.new
 c3.with do
   @n = @n + 5

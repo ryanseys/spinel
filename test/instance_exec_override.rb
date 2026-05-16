@@ -1,17 +1,17 @@
-# Foundation A-light: user-defined instance_exec / instance_eval
-# methods shadow the compile-time intrinsic. Ordinary method dispatch
-# resolves to the user's method instead of the lift.
+# Override-aware intrinsic check: user-defined instance_exec /
+# instance_eval methods shadow the compile-time intrinsic. Ordinary
+# method dispatch resolves to the user's method instead of the lift.
 #
-# Before the override check landed in iexec_rewrite_call /
-# ieval_rewrite_call, Spinel silently bypassed user overrides by
-# rewriting the call to __sp_iexec_<N> at the analyze level. CRuby
-# would have dispatched to the user's method; Spinel did not.
+# Without the override check in iexec_rewrite_call /
+# ieval_rewrite_call, Spinel would silently bypass user overrides by
+# rewriting the call to __sp_iexec_<N> at the analyze level -- CRuby
+# would dispatch to the user's method while Spinel skipped it.
 #
-# Full Foundation A (registering BasicObject and routing every
-# intrinsic through method-resolution from the start) is queued for
-# v2. The lighter version here -- a cls_find_method check that bails
-# out of the rewrite when the user has their own method -- gets the
-# correctness win without the class-table rearchitecture risk.
+# A broader version would register BasicObject and route every
+# intrinsic through method-resolution from the start; the current
+# targeted version -- a cls_find_method check that bails out of the
+# rewrite when the user has their own method -- gets the correctness
+# win without the class-table rearchitecture risk.
 
 class Wrap
   def initialize

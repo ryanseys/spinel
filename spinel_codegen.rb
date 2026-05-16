@@ -587,9 +587,10 @@ class Compiler
 
  # instance_exec direct-path lift state, mirror of @ieval_* above.
  # Loaded from analyze's dump_analysis_buf; consumed by
- # emit_iexec_funcs / compile_iexec_call. v1 baseline locks
- # @iexec_return_types entries to "void"; expression-position
- # support is a follow-up.
+ # emit_iexec_funcs / compile_iexec_call. @iexec_return_types
+ # entries are currently locked to "void"; expression-position
+ # use returns the receiver via comma-expression (see TODO at
+ # compile_iexec_call_expr).
     @iexec_counter = 0
     @iexec_class_idxs = []
     @iexec_body_ids = []
@@ -1061,19 +1062,18 @@ class Compiler
     if ptypes[last] != "proc"
       return ""
     end
- # Earlier params must be ordinary (no rest, no keyword). v1
- # supports fixed-arity forwarding only; splat / mixed-args
- # extensions land later under the rs-instance-exec plan.
+ # Earlier params must be ordinary (no rest, no keyword) -- this
+ # helper recognises fixed-arity forwarding only. Splat / mixed-args
+ # trampolines need a relaxed variant.
     k = 0
     while k < last
       pt = ptypes[k]
  # The required-arg ptypes include type names (int, str_array,
  # obj_<C>, etc.), never "rest" / "kwrest" / "block" markers. If
  # a non-required-arg slot appears here, abort the detection so
- # we don't conflate splat trampolines with the v1 fixed-arity
- # shape. TODO(rs-instance-exec splat phase): relax this to
- # accept "rest"-typed final-required-param when we wire up the
- # splat trampoline path.
+ # splat trampolines are not conflated with the fixed-arity shape.
+ # TODO: relax this to accept "rest"-typed final-required-param
+ # when the splat trampoline path is wired up.
       if pt == "" || pt == "proc"
         return ""
       end
@@ -1129,12 +1129,12 @@ class Compiler
     1
   end
 
- # Detects the v1 fixed-arity instance_exec trampoline shape:
+ # Detects the fixed-arity instance_exec trampoline shape:
  #   def m(a1, ..., aN, &b); instance_exec(a1, ..., aN, &b); end
  # for N >= 0 with strict 1:1 forwarding -- positional method
- # params become positional instance_exec args, in order, and
- # the &b proc param is forwarded as the &-block. Returns 1 on
- # match, 0 otherwise.
+ # params become positional instance_exec args, in order, and the
+ # &b proc param is forwarded as the &-block. Returns 1 on match,
+ # 0 otherwise.
  #
  # Unlike instance_eval (arity-0 only, no block params), this
  # detector accepts methods that take required positional params
@@ -1144,14 +1144,12 @@ class Compiler
  # inlines body with self rebound to recv and block params bound
  # to the call-site args.
  #
- # v1 boundaries (rejected by returning 0 -> falls through to
- # ordinary dispatch which will error at codegen with the usual
- # warn-and-emit-0):
+ # Boundaries (rejected by returning 0 -> falls through to ordinary
+ # dispatch which will error at codegen with the usual warn-and-emit-0):
  #  - No mixed-args (literals, ivars in trampoline body)
  #  - No splat (def m(*args, &b))
  #  - No keyword args
- # TODO(rs-instance-exec phases 2-3): relax these once the
- # baseline path is solid.
+ # TODO: relax these once the fixed-arity path is well-exercised.
   def is_instance_exec_trampoline(ci, midx)
     bid = cls_method_body_id(ci, midx)
     if bid < 0
@@ -1187,11 +1185,11 @@ class Compiler
     if @nd_name[inner] != bp_name
       return 0
     end
- # Walk the trampoline body's positional args. v1 requires each
- # arg to be a LocalVariableReadNode matching the method's
- # required param at the same index, in order. Mixed-args (literals,
- # ivars, splat) reject for now; the strict-enumerable extension
- # lands in a later phase.
+ # Walk the trampoline body's positional args. Each must be a
+ # LocalVariableReadNode matching the method's required param at
+ # the same index, in order. Mixed-args (literals, ivars, splat)
+ # reject for now; broader detection requires a richer arg recipe
+ # for codegen to evaluate at the call site.
     pnames = cls_meth_pnames_get(ci, midx)
     req_n = pnames.length - 1   # last is the &block, already checked
     args_id = @nd_arguments[s]
@@ -4703,12 +4701,12 @@ class Compiler
     "sp_ieval_" + suffix + "(" + compile_expr(@nd_receiver[nid]) + ")"
   end
 
- # v1 lifts blocks into void-returning functions (Ruby's
- # instance_eval-as-expression value isn't supported yet). When a
- # call appears in expression position, return the recv pointer as a
- # truthy default via a comma expression so callers like
- # `if obj.instance_eval { ... }` still type-check. Real expression
- # support — return the block's last expression — is a v2 follow-up.
+ # The lifted block compiles into a void-returning function. When
+ # a call appears in expression position, return the receiver as
+ # a truthy default via a comma expression so callers like
+ # `if obj.instance_eval { ... }` still type-check.
+ # TODO: emit the block's last expression as the call's real
+ # value to match Ruby's instance_eval-as-expression semantics.
   def compile_ieval_call_expr(nid)
     "(" + compile_ieval_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
   end
@@ -4754,8 +4752,9 @@ class Compiler
  # becomes a static C function:
  #   static <ret> sp_iexec_<N>(sp_<C> *self, <T0> lv_<p0>, ...)
  # called from the rewritten `recv.__sp_iexec_<N>(arg0, ...)` site.
- # v1 baseline locks return to "void"; expression-position support
- # ships when @iexec_return_types stops being void.
+ # Return type is currently locked to "void"; expression-position
+ # use returns the receiver via comma-expression in
+ # compile_iexec_call_expr.
   def emit_iexec_funcs
     n = 0
     while n < @iexec_class_idxs.length
@@ -4794,12 +4793,13 @@ class Compiler
     "sp_iexec_" + suffix + "(" + parts + ")"
   end
 
- # v1 lifts to void-returning functions, so the expression form has
+ # The lifted function returns void, so the expression form has
  # no real value. Same comma-expression trick as ieval to keep
- # type-checking happy when callers write `x = obj.instance_exec(...) { ... }`
- # or use it in a conditional; the receiver flows through.
- # TODO(rs-instance-exec): emit a real return value once
- # @iexec_return_types is populated by infer_iexec_body_return_types.
+ # type-checking happy when callers write
+ # `x = obj.instance_exec(...) { ... }` or use it in a conditional;
+ # the receiver flows through.
+ # TODO: emit a real return value once @iexec_return_types is
+ # populated by an iexec body-return inference pass.
   def compile_iexec_call_expr(nid)
     "(" + compile_iexec_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
   end
@@ -7844,18 +7844,17 @@ class Compiler
     "self"
   end
 
- # TODO(rs-instance-exec, Foundation C): a `current_self_class()`
- # accessor would centralize "which class hosts method lookup for
- # bare calls in the current emit scope" so v2's runtime
- # self-rebinding can swap the source without touching every
- # dispatch site. A standalone unused accessor caused bootstrap IR
- # divergence (round-1 keeps it live, round-2's DCE drops it,
- # @cls_meth_live diverges). Defer until Foundation A's dispatch
- # path actually consumes it -- a referenced method is round-trip
- # stable. Plan: when Foundation A registers BasicObject and routes
- # instance_eval/exec through resolved-method lookup, that lookup
- # site will be the sole consumer, making the accessor live in
- # both rounds.
+ # TODO: a `current_self_class()` accessor would centralize "which
+ # class hosts method lookup for bare calls in the current emit
+ # scope" so a future runtime self-rebinding path can swap the
+ # source without touching every dispatch site. Attempted as a
+ # standalone unused accessor, but that caused bootstrap IR
+ # divergence (round-1 keeps the method live, round-2's DCE drops
+ # it, @cls_meth_live diverges). The accessor needs a real consumer
+ # to be live in both rounds -- the natural fit is a future
+ # BasicObject-routed intrinsic dispatch that resolves method
+ # lookup through cls_find_method, with the accessor feeding the
+ # target class name.
 
 
 
@@ -8420,13 +8419,13 @@ class Compiler
       @current_class_idx = saved_ci_decl
       i = i + 1
     end
- # Hoisted instance_eval block functions: emit prototypes here. v1
- # fired only on top-level call sites, where the call always followed
- # the corresponding `static void sp_ieval_<N>(...)` definition (both
- # land in `emit_main` / after `emit_class_methods`). Now that ivar
- # receivers can put the call inside a class method body — emitted
- # before `emit_ieval_funcs` runs — the call would be an implicit
- # declaration without these prototypes.
+ # Hoisted instance_eval block functions: emit prototypes here.
+ # Top-level call sites always followed the corresponding
+ # `static void sp_ieval_<N>(...)` definition (both land in
+ # `emit_main` / after `emit_class_methods`), but ivar receivers
+ # can put the call inside a class method body -- emitted before
+ # `emit_ieval_funcs` runs -- so without these prototypes the call
+ # would be an implicit declaration.
     n = 0
     while n < @ieval_class_idxs.length
       icn = @cls_names[@ieval_class_idxs[n]]
@@ -12729,8 +12728,8 @@ class Compiler
       return compile_ieval_call_expr(nid)
     end
  # Hoisted instance_exec block (expression context). Same comma-
- # expression wrap as ieval until the void-return baseline is
- # upgraded to a real return value.
+ # expression wrap as ieval until the lifted function emits a
+ # real return value.
     if is_iexec_call_name(mname) == 1
       return compile_iexec_call_expr(nid)
     end
@@ -24769,7 +24768,7 @@ class Compiler
       return
     end
  # Hoisted instance_exec block (statement context). The lifted
- # function returns void in v1 baseline; statement form is just
+ # function returns void today; statement form is just
  # `sp_iexec_<N>(...);`.
     if is_iexec_call_name(mname) == 1
       emit("  " + compile_iexec_call(nid) + ";")
@@ -31620,7 +31619,7 @@ class Compiler
     end
     rc = compile_expr_gc_rooted(recv)
     self_var = new_temp
- # TODO(rs-instance-exec): value-typed receivers crash here.
+ # TODO: value-typed receivers crash here.
  # `@cls_is_value_type[ci] == 1` classes are returned by-value from
  # `sp_<C>_new()`, so `(sp_<C> *)<rc>` is an invalid cast of a struct
  # value. The fix mirrors emit_ieval_func's value-vs-pointer branch:
@@ -31628,10 +31627,8 @@ class Compiler
  # @self_override = "(&" + self_var + ")", and the self_arrow path
  # below resolves correctly. Also: @current_class_idx must be saved
  # and set to `ci` during the splice so self_arrow()'s value-type
- # branch fires correctly. Deferred from Step 1 retrofit because it
- # touches more surface area than the @self_override fix; tracked
- # separately because existing instance_eval tests dodge this case
- # by using multi-instance classes that don't value-promote.
+ # branch fires correctly. Existing instance_eval tests dodge this
+ # case by using multi-instance classes that don't value-promote.
     emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
     if @in_gc_scope == 1
       emit("  SP_GC_ROOT(" + self_var + ");")
@@ -31649,7 +31646,7 @@ class Compiler
   end
 
  # Inlines a `recv.m(args) { |params| body }` call when `m` is a
- # v1 fixed-arity instance_exec trampoline:
+ # fixed-arity instance_exec trampoline:
  #   def m(a1, ..., aN, &b); instance_exec(a1, ..., aN, &b); end
  #
  # Hybrid of compile_instance_eval_inlined_stmt (self rebind via
@@ -31660,12 +31657,11 @@ class Compiler
  # with @self_override / @instance_eval_self_var / _type set so
  # bare method calls and @ivar reads dispatch through the receiver.
  #
- # TODO(rs-instance-exec): value-typed receivers crash on the
- # pointer cast emitted for self_var, same shape as the
- # corresponding TODO in compile_instance_eval_inlined_stmt.
- # Expression-position support (return value of the call usable
- # in `total = recv.compute(...) { ... }`) is a follow-up; v1
- # ships statement-form only.
+ # TODO: value-typed receivers crash on the pointer cast emitted
+ # for self_var, same shape as the corresponding TODO in
+ # compile_instance_eval_inlined_stmt. Expression-position support
+ # (return value usable in `total = recv.compute(...) { ... }`)
+ # also queued; statement form is the only supported context today.
   def compile_instance_exec_inlined_stmt(nid, recv, cci, midx)
     blk = @nd_block[nid]
     if blk < 0
@@ -31708,9 +31704,9 @@ class Compiler
  # Arity check: the user's block at the call site must declare the
  # same number of required params as the trampoline forwards. Falls
  # through to ordinary dispatch on mismatch (which will error with
- # the existing warn-and-emit-0 path). TODO(rs-instance-exec
- # diagnostics): replace with a hard analyze-time error per Step 6
- # of the plan once the iexec_reject helper exists.
+ # the existing warn-and-emit-0 path).
+ # TODO: replace with a hard analyze-time error (iexec_reject) so
+ # arity mismatches surface as clear Spinel diagnostics.
     if bp_names.length != req_n
       return
     end
