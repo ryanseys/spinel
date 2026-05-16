@@ -32022,6 +32022,14 @@ class Compiler
       end
     end
 
+ # Push a new analyzer scope so the block-param declarations
+ # (declared under both their suffixed and original names below
+ # so find_var_type resolves correctly inside the splice) shadow
+ # outer locals only within this call site. Without scope
+ # bracketing, a block param like `|b|` would shadow an outer
+ # `b = Builder.new`, breaking subsequent `b.method` dispatch.
+    push_scope
+
  # Per-call-site suffix for block-param locals so nested splices
  # / same-trampoline-different-call-sites don't shadow. Reuses
  # @block_counter (also used by compile_yield_method_call_stmt's
@@ -32109,6 +32117,12 @@ class Compiler
       map_from.push(bp_names[k])
       map_to.push(tname)
       declare_var(tname, pt)
+ # Also declare under the original name so find_var_type during
+ # the splice sees the typed slot when compile_expr type-checks
+ # references to the block params. The rename map handles the
+ # value expression ("lv_s" -> "lv_s_ixN"); this handles the
+ # type lookup ("s" -> string).
+      declare_var(bp_names[k], pt)
       k = k + 1
     end
 
@@ -32141,6 +32155,11 @@ class Compiler
     end
     @self_override = saved_self_override
     @current_class_idx = saved_ci_outer
+ # Pop the inner splice scope so block-param shadowing of outer
+ # locals (e.g. a block param named `b` shadowing a `b = Builder.new`
+ # in the enclosing scope) doesn't leak into subsequent code -- the
+ # next `b.method` call must still see `b` as obj_Builder.
+    pop_scope
   end
 
   def compile_yield_method_call_stmt(nid, cci, midx, mname)
