@@ -31680,16 +31680,23 @@ class Compiler
     rc = compile_expr_gc_rooted(recv)
     self_var = new_temp
     recv_ci = find_class_idx(cname)
- # Value-typed classes (sp_<C> returned by-value from sp_<C>_new())
- # need a different splice header than heap classes: bind `self_var`
- # as the value itself, then route bare `self` and `@ivar` through
- # `(&self_var)->...`. self_arrow() looks at @current_class_idx to
- # pick the `.` vs `->` form, so save and restore it across the
- # splice. Heap receivers keep the original pointer-cast path.
+ # Value-typed classes need self_var to point at the receiver so
+ # writes to @ivars inside the block body propagate back to the
+ # caller's storage. When `recv` is itself an addressable lvalue
+ # (LocalVariableRead, InstanceVariableRead), take its address
+ # directly. Otherwise (constructor calls, method returns) the
+ # receiver has no observable storage so a stack copy is fine --
+ # mutations are unreachable after the call returns either way.
     saved_ci_outer = @current_class_idx
     is_value = recv_ci >= 0 && @cls_is_value_type[recv_ci] == 1
     if is_value == 1
-      emit("  sp_" + cname + " " + self_var + " = (sp_" + cname + ")" + rc + ";")
+      if value_recv_is_addressable(recv) == 1
+        emit("  sp_" + cname + " *" + self_var + " = &(" + rc + ");")
+      else
+        copy_var = self_var + "_copy"
+        emit("  sp_" + cname + " " + copy_var + " = (sp_" + cname + ")" + rc + ";")
+        emit("  sp_" + cname + " *" + self_var + " = &" + copy_var + ";")
+      end
     else
       emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
       if @in_gc_scope == 1
@@ -31699,18 +31706,16 @@ class Compiler
  # Route bare `@ivar` reads/writes inside the spliced block to the
  # rebound receiver. Without this, ivar_lhs's toplevel-fallback
  # branch returns the bare static-global slot when the splice
- # happens at toplevel scope -- broken silently because no prior
- # trampoline test exercised direct ivar access inside the spliced
- # block (existing tests only call methods like `add` / `bump`).
+ # happens at toplevel scope. For value types, self_var is already
+ # a pointer; @self_override is the bare pointer name, and we still
+ # flip @cls_is_value_type[ci] to 0 so self_arrow() emits `->`.
     saved_self_override = @self_override
     saved_vt = -1
+    @self_override = self_var
     if is_value == 1
-      @self_override = "(&" + self_var + ")"
       @current_class_idx = recv_ci
       saved_vt = @cls_is_value_type[recv_ci]
       @cls_is_value_type[recv_ci] = 0
-    else
-      @self_override = self_var
     end
     splice_block_with_self_rebound(@nd_body[blk], self_var, cname)
     if is_value == 1
@@ -31718,6 +31723,23 @@ class Compiler
     end
     @self_override = saved_self_override
     @current_class_idx = saved_ci_outer
+  end
+
+ # Returns 1 when `nid` is a node whose C lowering is a stable
+ # lvalue we can take the address of for value-type splice
+ # write-through. LocalVariableReadNode lowers to `lv_<name>`;
+ # InstanceVariableReadNode lowers to `<self_arrow><iv_name>`,
+ # which is also addressable. Other shapes (constructor calls,
+ # method returns) lower to rvalues.
+  def value_recv_is_addressable(nid)
+    if nid < 0
+      return 0
+    end
+    t = @nd_type[nid]
+    if t == "LocalVariableReadNode" || t == "InstanceVariableReadNode"
+      return 1
+    end
+    0
   end
 
  # Inlines a `recv.m(args) { |params| body }` call when `m` is a
@@ -31821,8 +31843,18 @@ class Compiler
     self_var = new_temp
     recv_ci = find_class_idx(cname)
     is_value = recv_ci >= 0 && @cls_is_value_type[recv_ci] == 1
+ # Value-typed receivers: take the address of the original lvalue
+ # so block-body ivar writes propagate back to the caller's
+ # storage; non-lvalue recvs (constructor calls) get a stack copy
+ # (their mutations are unobservable after the call anyway).
     if is_value == 1
-      emit("  sp_" + cname + " " + self_var + " = (sp_" + cname + ")" + rc + ";")
+      if value_recv_is_addressable(recv) == 1
+        emit("  sp_" + cname + " *" + self_var + " = &(" + rc + ");")
+      else
+        copy_var = self_var + "_copy"
+        emit("  sp_" + cname + " " + copy_var + " = (sp_" + cname + ")" + rc + ";")
+        emit("  sp_" + cname + " *" + self_var + " = &" + copy_var + ";")
+      end
     else
       emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
       if @in_gc_scope == 1
@@ -31878,10 +31910,11 @@ class Compiler
       elsif tt == "InstanceVariableReadNode"
  # Rebound receiver's ivar (`@x` in the trampoline body refers
  # to the receiver-class instance, which becomes the rebound
- # self in the spliced block). sanitize_ivar already produces
- # the `iv_<name>` form -- don't double-prefix.
+ # self in the spliced block). self_var is always a pointer in
+ # this scope (heap or value receiver), so `->` regardless.
+ # sanitize_ivar already produces the `iv_<name>` form.
         iname = @nd_name[targ]
-        val_c = self_var + (is_value == 1 ? "." : "->") + sanitize_ivar(iname)
+        val_c = self_var + "->" + sanitize_ivar(iname)
         if recv_ci >= 0
           pt = cls_ivar_type(recv_ci, iname)
           if pt == ""
@@ -31912,13 +31945,11 @@ class Compiler
     saved_self_override = @self_override
     saved_ci_outer = @current_class_idx
     saved_vt = -1
+    @self_override = self_var
     if is_value == 1
-      @self_override = "(&" + self_var + ")"
       @current_class_idx = recv_ci
       saved_vt = @cls_is_value_type[recv_ci]
       @cls_is_value_type[recv_ci] = 0
-    else
-      @self_override = self_var
     end
     saved_in_rmf = @inline_rename_map_from
     saved_in_rmt = @inline_rename_map_to

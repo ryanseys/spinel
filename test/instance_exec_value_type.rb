@@ -42,4 +42,27 @@ v.instance_exec(3) { |n| @x = @x + n }
 v.instance_exec(4) { |n| @x = @x + n }
 puts v.x     # 7
 
+# 3. Value-type write-through via the trampoline path. Tag is a
+#    single-instance class, so Spinel value-promotes it. The
+#    trampoline body's `instance_exec(...)` splices at the call
+#    site -- the value-type splice must take the receiver's
+#    address (`&lv_tag`) so writes inside the block propagate
+#    back to the original storage.
+class Tag
+  def initialize
+    @count = 0
+  end
+  def bump(n, &b)
+    instance_exec(n, &b)
+  end
+  def count
+    @count
+  end
+end
+
+tag = Tag.new
+tag.bump(5) { |n| @count = @count + n }
+tag.bump(3) { |n| @count = @count + n }
+puts tag.count   # 8
+
 puts "done"
