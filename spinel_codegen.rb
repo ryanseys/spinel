@@ -31721,13 +31721,13 @@ class Compiler
     req_n = ptypes_full.length - 1   # last is &block
 
  # Arity check: the user's block at the call site must declare the
- # same number of required params as the trampoline forwards. Falls
- # through to ordinary dispatch on mismatch (which will error with
- # the existing warn-and-emit-0 path).
- # TODO: replace with a hard analyze-time error (iexec_reject) so
- # arity mismatches surface as clear Spinel diagnostics.
+ # same number of required params as the trampoline forwards.
+ # Mismatches are user errors -- surface as a hard Spinel
+ # diagnostic with a concrete suggestion rather than silently
+ # falling through to the unsupported-method path.
     if bp_names.length != req_n
-      return
+      $stderr.puts "Spinel: instance_exec trampoline: " + bp_names.length.to_s + " block param(s) do not match " + req_n.to_s + " trampoline arg(s); Spinel uses strict arity (CRuby's auto-splat / auto-pack is not modeled). Match the counts exactly."
+      exit(1)
     end
 
  # Evaluate call-site args BEFORE rebinding self -- the args are
