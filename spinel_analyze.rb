@@ -3515,16 +3515,19 @@ class Compiler
       end
     end
  # iexec direct-path lift: synthetic name `__sp_iexec_<N>` maps to
- # the lifted block's return type. The lift currently emits a comma-
- # expression `(sp_iexec_<N>(...), recv)` for the expression form
- # (compile_iexec_call_expr in codegen), so the call's value is
- # the receiver -- match that here by returning obj_<C>. Mirrors
- # the ieval branch above. When @iexec_return_types stops being
- # void in the expression-position follow-up, this branch will
- # surface the block's real last-expression type.
+ # the lifted block's inferred return type. Falls back to the
+ # receiver class name when the type isn't yet populated (e.g. an
+ # early type-resolution pass before infer_iexec_body_return_types
+ # has run, or a void-bodied block).
     if is_iexec_call_name(mname) == 1
       suffix = mname[11, mname.length - 11]
       n = suffix.to_i
+      if n >= 0 && n < @iexec_return_types.length
+        rt = @iexec_return_types[n]
+        if rt != "" && rt != "void"
+          return rt
+        end
+      end
       if n >= 0 && n < @iexec_class_idxs.length
         return "obj_" + @cls_names[@iexec_class_idxs[n]]
       end
@@ -9483,6 +9486,44 @@ class Compiler
         end
         scan_cls_method_calls(ci, bid)
         scan_new_calls(bid)
+        pop_scope
+        @current_class_idx = -1
+      end
+      n = n + 1
+    end
+  end
+
+ # Infer the typed return value of each lifted iexec block body so
+ # `x = recv.instance_exec(...) { ... }` evaluates to the block's
+ # actual last-expression value rather than the comma-expression
+ # fallback (which returned the receiver). Runs after
+ # infer_iexec_body_call_types so receiverless calls inside the
+ # body have been typed.
+  def infer_iexec_body_return_types
+    n = 0
+    while n < @iexec_class_idxs.length
+      ci = @iexec_class_idxs[n]
+      bid = @iexec_body_ids[n]
+      if bid >= 0
+        @current_class_idx = ci
+        push_scope
+        pnames_s = @iexec_block_pnames[n]
+        ptypes_s = @iexec_block_ptypes[n]
+        if pnames_s != ""
+          pnames = pnames_s.split("|")
+          ptypes = ptypes_s.split("|")
+          k = 0
+          while k < pnames.length
+            pt = "int"
+            if k < ptypes.length
+              pt = ptypes[k]
+            end
+            declare_var(pnames[k], pt)
+            k = k + 1
+          end
+        end
+        rt = infer_body_return(bid)
+        @iexec_return_types[n] = rt
         pop_scope
         @current_class_idx = -1
       end
@@ -26335,6 +26376,10 @@ class Compiler
     infer_class_body_call_types
     infer_ivar_types_from_writers
     infer_all_returns
+ # iexec block-body return-type inference. Runs after method
+ # returns are stable so receiverless calls inside lifted bodies
+ # see their final return types.
+    infer_iexec_body_return_types
  # Param types are now stable, so module ivar refinement (which
  # infers hash / array specialization from `@h[k] = v` writes in
  # class-method bodies) sees the right key / value types instead
