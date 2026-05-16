@@ -6947,17 +6947,34 @@ class Compiler
     end
     recv = @nd_receiver[nid]
     blk = @nd_block[nid]
-    if recv < 0
+    if blk < 0
       return
     end
-    if blk < 0
+ # Prism stores both literal blocks (`{ ... }`) and proc-arg
+ # references (`&block_var`) in @nd_block. Only the literal-block
+ # form (BlockNode) is lifted; the proc-arg form
+ # (BlockArgumentNode) is the trampoline-body shape that codegen's
+ # is_instance_eval_trampoline picks up at the call site.
+    if @nd_type[blk] != "BlockNode"
       return
     end
  # Skip blocks with parameters: lifted function takes only `self`.
     if @nd_parameters[blk] >= 0
       return
     end
-    ci = recv_class_idx_for_rebind(recv, local_class)
+    ci = -1
+    if recv >= 0
+      ci = recv_class_idx_for_rebind(recv, local_class)
+    else
+ # Implicit-self direct call: `instance_eval { ... }` inside a
+ # class method (or a toplevel def whose enclosing scope is
+ # typed). The receiver is `self`; the class is whichever scope
+ # we're walking. Disambiguated from the trampoline-body case
+ # by `blk >= 0` (a literal block, not a &block-arg).
+      if @current_class_idx >= 0
+        ci = @current_class_idx
+      end
+    end
     if ci < 0
       return
     end
@@ -7077,35 +7094,38 @@ class Compiler
     end
     recv = @nd_receiver[nid]
     blk = @nd_block[nid]
- # Silent-bail on receiverless `instance_exec(...)` calls -- they
- # show up in trampoline-method bodies (`def m(x, &b); instance_exec(x, &b); end`)
- # where @nd_block is -1 (the &b arg lives in @nd_arguments, not
- # @nd_block) and codegen's is_instance_exec_trampoline handles
- # the call-site inlining. Hard-erroring here would break that
- # path. Implicit-self direct calls at toplevel currently fall
- # through silently; disambiguating "implicit self direct call"
- # from "trampoline body" needs a separate detector.
-    if recv < 0
-      return
-    end
- # Silent-bail when there's no literal block. This catches:
- #   - `recv.instance_exec(args, &proc_var)` -- proc-arg form,
- #     not lifted statically because there's no AST block to lift
- #   - `recv.instance_exec(args)` -- no block; CRuby raises
- #     LocalJumpError at runtime, Spinel falls through to the
- #     unsupported-call warn-and-emit-0
- # Future work: add a separate detector that catches the no-block
- # case and emits a clear "instance_exec requires a block" error.
+ # Silent-bail when there's no block at all. CRuby raises
+ # LocalJumpError at runtime for blockless instance_exec; Spinel
+ # falls through to the unsupported-call warn-and-emit-0 path.
     if blk < 0
       return
     end
-    ci = recv_class_idx_for_rebind(recv, local_class)
+ # Prism stores both literal blocks (`{ ... }`) and proc-arg
+ # references (`&block_var`) in @nd_block. The proc-arg form is the
+ # trampoline-body shape (`def m(x, &b); instance_exec(x, &b); end`)
+ # that codegen's is_instance_exec_trampoline handles at the call
+ # site; only the literal-block form is lifted.
+    if @nd_type[blk] != "BlockNode"
+      return
+    end
+    ci = -1
+    if recv >= 0
+      ci = recv_class_idx_for_rebind(recv, local_class)
+    else
+ # Implicit-self direct call: `instance_exec(args) { ... }` inside
+ # a class method (or a toplevel def whose enclosing scope is
+ # typed). The receiver is `self`; the class is whichever scope
+ # we're walking. Disambiguated from the trampoline-body case by
+ # `blk >= 0` (a literal block, not a &block-arg).
+      if @current_class_idx >= 0
+        ci = @current_class_idx
+      end
+    end
     if ci < 0
  # AOT compilation needs to know the receiver's class to generate
  # a typed `sp_iexec_<N>(sp_<C> *self, ...)` signature. Polymorphic
  # / un-narrowed receivers can't be supported without runtime
- # dispatch (v2 territory: `BasicObject#instance_exec` as a real
- # dispatched method with a runtime self swap).
+ # dispatch.
       iexec_reject(
         "receiver type cannot be statically resolved",
         "assign the receiver to a typed local first (e.g. `r = Foo.new`), or narrow via a class predicate (`raise unless r.is_a?(Foo)`) before the call"
