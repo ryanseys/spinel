@@ -4698,7 +4698,14 @@ class Compiler
     mname = @nd_name[nid]
  # Synthetic id is the suffix after the 11-char "__sp_ieval_" prefix.
     suffix = mname[11, mname.length - 11]
-    "sp_ieval_" + suffix + "(" + compile_expr(@nd_receiver[nid]) + ")"
+    n = suffix.to_i
+    recv_c = compile_expr(@nd_receiver[nid])
+ # Value-typed receivers get their address taken so the lifted
+ # function can mutate the caller's value through the pointer.
+    if n >= 0 && n < @ieval_class_idxs.length && @cls_is_value_type[@ieval_class_idxs[n]] == 1
+      recv_c = "(&(" + recv_c + "))"
+    end
+    "sp_ieval_" + suffix + "(" + recv_c + ")"
   end
 
  # The lifted block compiles into a void-returning function. When
@@ -4720,11 +4727,17 @@ class Compiler
     @in_gc_scope = 0
     @in_yield_method = 0
 
-    if @cls_is_value_type[ci] == 1
-      emit_raw("static void sp_ieval_" + n.to_s + "(sp_" + cname + " self) {")
-    else
-      emit_raw("static void sp_ieval_" + n.to_s + "(sp_" + cname + " *self) {")
-    end
+ # Always take self as a pointer: heap-class receivers are already
+ # `sp_<C> *`, value-class receivers get their address taken at the
+ # call site (compile_ieval_call passes `&recv`). The body then uses
+ # `self->iv_X` for ivar access in both cases, which lets mutations
+ # propagate back to the caller's value-typed receiver. Override
+ # @cls_is_value_type[ci] to 0 during body emit so self_arrow()
+ # produces `self->` instead of the value-type `self.` form;
+ # restore after.
+    emit_raw("static void sp_ieval_" + n.to_s + "(sp_" + cname + " *self) {")
+    saved_vt = @cls_is_value_type[ci]
+    @cls_is_value_type[ci] = 0
 
     push_scope
     if bid >= 0
@@ -4732,14 +4745,13 @@ class Compiler
       if @needs_gc == 1
         emit("  SP_GC_SAVE();")
         @in_gc_scope = 1
-        if @cls_is_value_type[ci] == 0
-          emit("  SP_GC_ROOT(self);")
-        end
+        emit("  SP_GC_ROOT(self);")
       end
       compile_body_return(bid, "void")
     end
     pop_scope
 
+    @cls_is_value_type[ci] = saved_vt
     @current_class_idx = -1
     @current_method_name = ""
     @indent = 0
@@ -4776,11 +4788,18 @@ class Compiler
  # Emit the C function call: `sp_iexec_<N>(<recv>, <arg0>, <arg1>, ...)`.
  # @nd_arguments[nid] still carries the positional args from
  # iexec_rewrite_call (block-arg was detached at the same time the
- # call name was renamed).
+ # call name was renamed). For value-typed receivers, take the
+ # receiver's address so the lifted function can mutate it through
+ # the pointer (mirrors compile_ieval_call's value-type branch).
   def compile_iexec_call(nid)
     mname = @nd_name[nid]
     suffix = mname[11, mname.length - 11]
-    parts = compile_expr(@nd_receiver[nid])
+    n = suffix.to_i
+    recv_c = compile_expr(@nd_receiver[nid])
+    if n >= 0 && n < @iexec_class_idxs.length && @cls_is_value_type[@iexec_class_idxs[n]] == 1
+      recv_c = "(&(" + recv_c + "))"
+    end
+    parts = recv_c
     args_id = @nd_arguments[nid]
     if args_id >= 0
       aids = get_args(args_id)
@@ -4826,12 +4845,11 @@ class Compiler
       ptypes = ptypes_s.split("|")
     end
 
-    sig = ""
-    if @cls_is_value_type[ci] == 1
-      sig = "static void sp_iexec_" + n.to_s + "(sp_" + cname + " self"
-    else
-      sig = "static void sp_iexec_" + n.to_s + "(sp_" + cname + " *self"
-    end
+ # Self is always a pointer; value-typed receivers get their
+ # address taken at the call site (compile_iexec_call passes
+ # &recv for value types). Override @cls_is_value_type[ci] to 0
+ # while emitting the body so self_arrow() produces `self->`.
+    sig = "static void sp_iexec_" + n.to_s + "(sp_" + cname + " *self"
     k = 0
     while k < pnames.length
       pt = "int"
@@ -4843,6 +4861,8 @@ class Compiler
     end
     sig = sig + ") {"
     emit_raw(sig)
+    saved_vt = @cls_is_value_type[ci]
+    @cls_is_value_type[ci] = 0
 
     push_scope
  # Declare block params in the analyzer-equivalent scope so any
@@ -4861,9 +4881,7 @@ class Compiler
       if @needs_gc == 1
         emit("  SP_GC_SAVE();")
         @in_gc_scope = 1
-        if @cls_is_value_type[ci] == 0
-          emit("  SP_GC_ROOT(self);")
-        end
+        emit("  SP_GC_ROOT(self);")
  # GC root pointer-typed block params so the body can safely
  # allocate.
         k = 0
@@ -4882,6 +4900,7 @@ class Compiler
     end
     pop_scope
 
+    @cls_is_value_type[ci] = saved_vt
     @current_class_idx = -1
     @current_method_name = ""
     @indent = 0
@@ -8429,11 +8448,7 @@ class Compiler
     n = 0
     while n < @ieval_class_idxs.length
       icn = @cls_names[@ieval_class_idxs[n]]
-      if @cls_is_value_type[@ieval_class_idxs[n]] == 1
-        emit_raw("static void sp_ieval_" + n.to_s + "(sp_" + icn + " self);")
-      else
-        emit_raw("static void sp_ieval_" + n.to_s + "(sp_" + icn + " *self);")
-      end
+      emit_raw("static void sp_ieval_" + n.to_s + "(sp_" + icn + " *self);")
       n = n + 1
     end
  # Same forward-declares for instance_exec lifted functions. The
@@ -8442,12 +8457,7 @@ class Compiler
     n = 0
     while n < @iexec_class_idxs.length
       icn = @cls_names[@iexec_class_idxs[n]]
-      sig = ""
-      if @cls_is_value_type[@iexec_class_idxs[n]] == 1
-        sig = "static void sp_iexec_" + n.to_s + "(sp_" + icn + " self"
-      else
-        sig = "static void sp_iexec_" + n.to_s + "(sp_" + icn + " *self"
-      end
+      sig = "static void sp_iexec_" + n.to_s + "(sp_" + icn + " *self"
       pnames_s = @iexec_block_pnames[n]
       ptypes_s = @iexec_block_ptypes[n]
       if pnames_s != ""
@@ -31619,30 +31629,39 @@ class Compiler
     end
     rc = compile_expr_gc_rooted(recv)
     self_var = new_temp
- # TODO: value-typed receivers crash here.
- # `@cls_is_value_type[ci] == 1` classes are returned by-value from
- # `sp_<C>_new()`, so `(sp_<C> *)<rc>` is an invalid cast of a struct
- # value. The fix mirrors emit_ieval_func's value-vs-pointer branch:
- # for value types, emit `sp_<C> self_var = <rc>;`, set
- # @self_override = "(&" + self_var + ")", and the self_arrow path
- # below resolves correctly. Also: @current_class_idx must be saved
- # and set to `ci` during the splice so self_arrow()'s value-type
- # branch fires correctly. Existing instance_eval tests dodge this
- # case by using multi-instance classes that don't value-promote.
-    emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
-    if @in_gc_scope == 1
-      emit("  SP_GC_ROOT(" + self_var + ");")
+    recv_ci = find_class_idx(cname)
+ # Value-typed classes (sp_<C> returned by-value from sp_<C>_new())
+ # need a different splice header than heap classes: bind `self_var`
+ # as the value itself, then route bare `self` and `@ivar` through
+ # `(&self_var)->...`. self_arrow() looks at @current_class_idx to
+ # pick the `.` vs `->` form, so save and restore it across the
+ # splice. Heap receivers keep the original pointer-cast path.
+    saved_ci_outer = @current_class_idx
+    is_value = recv_ci >= 0 && @cls_is_value_type[recv_ci] == 1
+    if is_value == 1
+      emit("  sp_" + cname + " " + self_var + " = (sp_" + cname + ")" + rc + ";")
+    else
+      emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
+      if @in_gc_scope == 1
+        emit("  SP_GC_ROOT(" + self_var + ");")
+      end
     end
  # Route bare `@ivar` reads/writes inside the spliced block to the
  # rebound receiver. Without this, ivar_lhs's toplevel-fallback
  # branch returns the bare static-global slot when the splice
- # happens at toplevel scope — broken silently because no prior
+ # happens at toplevel scope -- broken silently because no prior
  # trampoline test exercised direct ivar access inside the spliced
  # block (existing tests only call methods like `add` / `bump`).
     saved_self_override = @self_override
-    @self_override = self_var
+    if is_value == 1
+      @self_override = "(&" + self_var + ")"
+      @current_class_idx = recv_ci
+    else
+      @self_override = self_var
+    end
     splice_block_with_self_rebound(@nd_body[blk], self_var, cname)
     @self_override = saved_self_override
+    @current_class_idx = saved_ci_outer
   end
 
  # Inlines a `recv.m(args) { |params| body }` call when `m` is a
@@ -31722,9 +31741,15 @@ class Compiler
 
     rc = compile_expr_gc_rooted(recv)
     self_var = new_temp
-    emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
-    if @in_gc_scope == 1
-      emit("  SP_GC_ROOT(" + self_var + ");")
+    recv_ci = find_class_idx(cname)
+    is_value = recv_ci >= 0 && @cls_is_value_type[recv_ci] == 1
+    if is_value == 1
+      emit("  sp_" + cname + " " + self_var + " = (sp_" + cname + ")" + rc + ";")
+    else
+      emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
+      if @in_gc_scope == 1
+        emit("  SP_GC_ROOT(" + self_var + ");")
+      end
     end
 
  # Per-call-site suffix for block-param locals so nested splices
@@ -31759,11 +31784,18 @@ class Compiler
     end
 
  # Route bare @ivar reads/writes inside the spliced block to the
- # rebound receiver (same Step 1 retrofit as
- # compile_instance_eval_inlined_stmt). Save/restore for nested
- # rebinds.
+ # rebound receiver (same routing as compile_instance_eval_inlined_stmt).
+ # Save/restore @current_class_idx along with @self_override so
+ # self_arrow()'s value-type vs heap branch picks the right form
+ # for value-typed receivers.
     saved_self_override = @self_override
-    @self_override = self_var
+    saved_ci_outer = @current_class_idx
+    if is_value == 1
+      @self_override = "(&" + self_var + ")"
+      @current_class_idx = recv_ci
+    else
+      @self_override = self_var
+    end
     saved_in_rmf = @inline_rename_map_from
     saved_in_rmt = @inline_rename_map_to
     @inline_rename_map_from = map_from
@@ -31774,6 +31806,7 @@ class Compiler
     @inline_rename_map_from = saved_in_rmf
     @inline_rename_map_to = saved_in_rmt
     @self_override = saved_self_override
+    @current_class_idx = saved_ci_outer
   end
 
   def compile_yield_method_call_stmt(nid, cci, midx, mname)
