@@ -6841,6 +6841,18 @@ class Compiler
     if ci < 0
       return
     end
+ # Foundation A-light (override-aware intrinsic): if the receiver's
+ # class (or its parent chain) defines its own `instance_eval` method,
+ # the user has overridden the intrinsic. Skip the lift so ordinary
+ # dispatch resolves to the user's method. v1 baseline string-match
+ # would have silently bypassed the override; this check restores
+ # the expected CRuby semantic. Full Foundation A (registering
+ # BasicObject and routing every intrinsic through method-resolution)
+ # is queued for v2; this lighter version covers the common-case
+ # correctness win without rearchitecting the class table.
+    if cls_find_method(ci, "instance_eval") >= 0
+      return
+    end
     body_id = @nd_body[blk]
  # v1: bail if the block uses yield/block_given?. Lifting it as a
  # plain function would lose the enclosing method's block plumbing.
@@ -6944,6 +6956,14 @@ class Compiler
         "receiver type cannot be statically resolved",
         "assign the receiver to a typed local first (e.g. `r = Foo.new`), or narrow via a class predicate (`raise unless r.is_a?(Foo)`) before the call"
       )
+    end
+ # Foundation A-light (override-aware intrinsic): bypass the lift
+ # if the user has defined their own `instance_exec` on the
+ # receiver's class -- ordinary dispatch resolves to the user's
+ # method, preserving CRuby semantics. Same shape as
+ # ieval_rewrite_call's override check.
+    if cls_find_method(ci, "instance_exec") >= 0
+      return
     end
     body_id = @nd_body[blk]
  # yield / block_given? inside the block has no enclosing-method
