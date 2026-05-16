@@ -6573,8 +6573,13 @@ class Compiler
  # ivar-only extension does not (yet) try to type method-local copies
  # of class instances.
     ieval_walk(@root_id, local_class)
-    pop_scope
     ieval_walk_class_methods
+ # Toplevel locals stay in scope for the toplevel-methods walk so
+ # propagate_toplevel_meth_arg_types_for_ieval's find_var_type
+ # lookups resolve `builder = Builder.new` to obj_Builder before
+ # widening the corresponding method-param type.
+    ieval_walk_toplevel_methods
+    pop_scope
   end
 
  # Visit each class's instance-method bodies with `@current_class_idx`
@@ -6633,6 +6638,120 @@ class Compiler
       end
       @current_class_idx = -1
       ci = ci + 1
+    end
+  end
+
+ # Visit each top-level `def foo(args)` body so an `arg.instance_eval { }`
+ # or `arg.instance_exec(...) { }` inside it can resolve `arg`'s type
+ # via the same find_var_type fallback the class-method walker uses.
+ # Without this, top-level methods silently bypass the rewrite even
+ # when their params are typed via call-site analysis.
+  def ieval_walk_toplevel_methods
+    propagate_toplevel_meth_arg_types_for_ieval
+    mi = 0
+    while mi < @meth_names.length
+      bid = @meth_body_ids[mi]
+      if bid >= 0
+        push_scope
+        pnames_s = @meth_param_names[mi]
+        ptypes_s = @meth_param_types[mi]
+        pnames = pnames_s == "" ? "".split(",") : pnames_s.split(",")
+        ptypes = ptypes_s == "" ? "".split(",") : ptypes_s.split(",")
+        k = 0
+        while k < pnames.length
+          pt = "int"
+          if k < ptypes.length
+            pt = ptypes[k]
+          end
+          declare_var(pnames[k], pt)
+          k = k + 1
+        end
+ # Body locals: same idea as ieval_walk_class_methods.
+        lnames = "".split(",")
+        ltypes = "".split(",")
+        scan_locals_first_type(bid, lnames, ltypes, pnames)
+        lk = 0
+        while lk < lnames.length
+          declare_var(lnames[lk], ltypes[lk])
+          lk = lk + 1
+        end
+        empty_locals = {}
+        ieval_walk(bid, empty_locals)
+        pop_scope
+      end
+      mi = mi + 1
+    end
+  end
+
+ # Targeted pre-pass for ieval_walk_toplevel_methods: scan toplevel
+ # statements for bare calls `meth(arg, ...)` where `arg` is a local
+ # known to be obj_<C> (via the toplevel scan_locals pass we already
+ # ran). Widens the method's matching param to that obj_<C> in
+ # @meth_param_types so ieval_walk_toplevel_methods's declare_var
+ # resolves the receiver. Surgical -- skips method-call args with
+ # receivers, splats, blocks; only the simple bare-call shape.
+  def propagate_toplevel_meth_arg_types_for_ieval
+    if @nd_type[@root_id] != "ProgramNode"
+      return
+    end
+    tl_body = @nd_body[@root_id]
+    if tl_body < 0
+      return
+    end
+    stmts = get_stmts(tl_body)
+    si = 0
+    while si < stmts.length
+      sid = stmts[si]
+      if @nd_type[sid] == "CallNode" && @nd_receiver[sid] < 0
+        mn = @nd_name[sid]
+        mi = -1
+        j = 0
+        while j < @meth_names.length
+          if @meth_names[j] == mn
+            mi = j
+            break
+          end
+          j = j + 1
+        end
+        if mi >= 0 && @meth_body_ids[mi] >= 0
+          args_id = @nd_arguments[sid]
+          if args_id >= 0
+            aids = get_args(args_id)
+            pnames = @meth_param_names[mi] == "" ? "".split(",") : @meth_param_names[mi].split(",")
+            ptypes_s = @meth_param_types[mi]
+            ptypes = ptypes_s == "" ? "".split(",") : ptypes_s.split(",")
+ # Pad ptypes to match pnames length with "int" defaults so the
+ # index assignment is safe.
+            while ptypes.length < pnames.length
+              ptypes.push("int")
+            end
+            k = 0
+            changed = 0
+            while k < aids.length && k < pnames.length
+              aid = aids[k]
+              at = ""
+              if @nd_type[aid] == "LocalVariableReadNode"
+                at = find_var_type(@nd_name[aid])
+              elsif @nd_type[aid] == "CallNode" && @nd_name[aid] == "new"
+                ci_idx = ieval_expr_class_idx(aid)
+                if ci_idx >= 0
+                  at = "obj_" + @cls_names[ci_idx]
+                end
+              end
+              bt = base_type(at)
+              if is_obj_type(bt) == 1 && ptypes[k] != bt
+                ptypes[k] = bt
+                changed = 1
+              end
+              k = k + 1
+            end
+            if changed == 1
+              @meth_param_types[mi] = ptypes.join(",")
+            end
+          end
+        end
+      end
+      si = si + 1
     end
   end
 
