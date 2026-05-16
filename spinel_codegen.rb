@@ -4812,14 +4812,26 @@ class Compiler
     "sp_iexec_" + suffix + "(" + parts + ")"
   end
 
- # The lifted function returns void, so the expression form has
- # no real value. Same comma-expression trick as ieval to keep
- # type-checking happy when callers write
- # `x = obj.instance_exec(...) { ... }` or use it in a conditional;
- # the receiver flows through.
- # TODO: emit a real return value once @iexec_return_types is
- # populated by an iexec body-return inference pass.
+ # When the lifted function has a non-void return, the expression
+ # form is just the function call (the block's last expression
+ # value). When the inferred return is void (e.g. the body ends in
+ # an assignment-only side effect), fall back to the comma-expression
+ # form so callers like `if obj.instance_exec(...) { ... }` still
+ # type-check; the receiver flows through.
   def compile_iexec_call_expr(nid)
+    mname = @nd_name[nid]
+    suffix = mname[11, mname.length - 11]
+    n = suffix.to_i
+    is_void = 1
+    if n >= 0 && n < @iexec_return_types.length
+      rt = @iexec_return_types[n]
+      if rt != "" && rt != "void"
+        is_void = 0
+      end
+    end
+    if is_void == 0
+      return compile_iexec_call(nid)
+    end
     "(" + compile_iexec_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
   end
 
@@ -4827,7 +4839,17 @@ class Compiler
     cname = @cls_names[ci]
     @current_class_idx = ci
     @current_method_name = "__sp_iexec_" + n.to_s
-    @current_method_return = "void"
+ # Return type inferred from the lifted block body. Falls back to
+ # "void" when infer_iexec_body_return_types hasn't populated it
+ # (or when the body's last expression is a void-ish form).
+    ret_type = "void"
+    if n < @iexec_return_types.length
+      rt = @iexec_return_types[n]
+      if rt != "" && rt != "void"
+        ret_type = rt
+      end
+    end
+    @current_method_return = ret_type
     @indent = 1
     @in_gc_scope = 0
     @in_yield_method = 0
@@ -4849,7 +4871,8 @@ class Compiler
  # address taken at the call site (compile_iexec_call passes
  # &recv for value types). Override @cls_is_value_type[ci] to 0
  # while emitting the body so self_arrow() produces `self->`.
-    sig = "static void sp_iexec_" + n.to_s + "(sp_" + cname + " *self"
+    sig_ret = ret_type == "void" ? "void" : c_type(ret_type)
+    sig = "static " + sig_ret + " sp_iexec_" + n.to_s + "(sp_" + cname + " *self"
     k = 0
     while k < pnames.length
       pt = "int"
@@ -4896,7 +4919,7 @@ class Compiler
           k = k + 1
         end
       end
-      compile_body_return(bid, "void")
+      compile_body_return(bid, ret_type)
     end
     pop_scope
 
@@ -8457,7 +8480,14 @@ class Compiler
     n = 0
     while n < @iexec_class_idxs.length
       icn = @cls_names[@iexec_class_idxs[n]]
-      sig = "static void sp_iexec_" + n.to_s + "(sp_" + icn + " *self"
+      proto_ret = "void"
+      if n < @iexec_return_types.length
+        rt2 = @iexec_return_types[n]
+        if rt2 != "" && rt2 != "void"
+          proto_ret = c_type(rt2)
+        end
+      end
+      sig = "static " + proto_ret + " sp_iexec_" + n.to_s + "(sp_" + icn + " *self"
       pnames_s = @iexec_block_pnames[n]
       ptypes_s = @iexec_block_ptypes[n]
       if pnames_s != ""
