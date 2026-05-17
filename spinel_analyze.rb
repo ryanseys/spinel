@@ -4656,6 +4656,13 @@ class Compiler
         if rt == "float_array"
           return "float"
         end
+ # ptr_array of arrays: `.max` / `.min` returns one of the
+ # inner arrays per Array#<=> ordering. Element type tracks
+ # the ptr_array's elem so downstream `[i]` / `.length` etc.
+ # dispatch on the right shape.
+        if is_ptr_array_type(rt) == 1
+          return ptr_array_elem_type(rt)
+        end
       end
       return "int"
     end

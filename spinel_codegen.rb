@@ -16986,6 +16986,24 @@ class Compiler
         end
         return "sp_PtrArray_str_join(" + rc + ", " + jarg + ")"
       end
+ # `.max` / `.min` on int_array_ptr_array via Array#<=> lex
+ # compare. Iterates the outer PtrArray, keeps a running winner
+ # by `sp_IntArray_cmp`. Empty recv falls through to the
+ # unresolved-call warning (CRuby would return nil; we don't
+ # have a poly-aware nil to return in this typed path).
+      if (mname == "max" || mname == "min") && elem_type == "int_array" && @nd_block[nid] < 0
+        @needs_int_array = 1
+        tmp_w = new_temp
+        tmp_i = new_temp
+        tmp_c = new_temp
+        op_cmp = mname == "max" ? "> 0" : "< 0"
+        emit("  sp_IntArray *" + tmp_w + " = (sp_IntArray *)sp_PtrArray_get(" + rc + ", 0);")
+        emit("  for (mrb_int " + tmp_i + " = 1; " + tmp_i + " < sp_PtrArray_length(" + rc + "); " + tmp_i + "++) {")
+        emit("    sp_IntArray *" + tmp_c + " = (sp_IntArray *)sp_PtrArray_get(" + rc + ", " + tmp_i + ");")
+        emit("    if (sp_IntArray_cmp(" + tmp_c + ", " + tmp_w + ") " + op_cmp + ") " + tmp_w + " = " + tmp_c + ";")
+        emit("  }")
+        return tmp_w
+      end
  # transpose for [[Int]] (int_array_ptr_array). Other
  # nested-array element shapes are not yet supported and fall
  # through to the unresolved-call warning.
