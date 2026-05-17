@@ -18248,7 +18248,7 @@ class Compiler
           return "sp_file_directory(" + compile_arg0(nid) + ")"
         end
         if mname == "file?"
-          return "sp_file_regular(" + compile_arg0(nid) + ")"
+          return "sp_file_file(" + compile_arg0(nid) + ")"
         end
         if mname == "readable?"
  # Reuse the exist check: on every platform Spinel

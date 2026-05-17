@@ -1699,8 +1699,42 @@ static mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
 static volatile int sp_catch_top = 0;
 static void sp_throw(const char *tag, mrb_int val) { int i = sp_catch_top - 1; while (i >= 0) { if (strcmp(sp_catch_tag[i], tag) == 0) { sp_catch_val[i] = val; sp_catch_top = i + 1; longjmp(sp_catch_stack[i], 1); } i--; } fprintf(stderr, "uncaught throw: %s\n", tag); exit(1); }
 
-static mrb_bool sp_file_directory(const char *path) { struct stat st; return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode); }
-static mrb_bool sp_file_regular(const char *path) { struct stat st; return path && stat(path, &st) == 0 && S_ISREG(st.st_mode); }
+#ifdef _WIN32
+static DWORD sp_file_attributes(const char *path) {
+  if (!path) return INVALID_FILE_ATTRIBUTES;
+  int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+  if (len <= 0) return INVALID_FILE_ATTRIBUTES;
+  wchar_t *wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)len);
+  if (!wpath) return INVALID_FILE_ATTRIBUTES;
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, len) <= 0) {
+    free(wpath);
+    return INVALID_FILE_ATTRIBUTES;
+  }
+  DWORD attrs = GetFileAttributesW(wpath);
+  free(wpath);
+  return attrs;
+}
+
+static mrb_bool sp_file_directory(const char *path) {
+  DWORD attrs = sp_file_attributes(path);
+  return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static mrb_bool sp_file_file(const char *path) {
+  DWORD attrs = sp_file_attributes(path);
+  return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+#else
+static mrb_bool sp_file_directory(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static mrb_bool sp_file_file(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+#endif
 
 /* Text mode ("r") matches CRuby's File.read: on Windows, CRLF is
    normalized to LF on read, which cancels out fopen("w")'s

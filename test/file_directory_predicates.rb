@@ -2,6 +2,7 @@ path = "spinel_file_predicate_test.txt"
 File.write(path, "x")
 
 puts File.directory?(".")
+puts File.directory?("./")
 puts File.directory?(path)
 puts File.file?(path)
 puts File.file?(".")
