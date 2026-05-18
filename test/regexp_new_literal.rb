@@ -47,3 +47,26 @@ def find_tag(body, tag)
   body =~ re
 end
 puts find_tag("foo <span class=\"y\"> bar", "span") # 4
+
+# Regexp.escape neutralizes regex metachars so the resulting
+# string matches the original bytes literally inside `Regexp.new`.
+puts Regexp.escape("foo+bar")              # foo\+bar
+puts Regexp.escape("a.b*c")                # a\.b\*c
+content = "foo.bar"
+literal_pat = Regexp.new(Regexp.escape(content))
+puts literal_pat.match?("foo.bar")         # true
+puts literal_pat.match?("fooXbar")         # false (the . is now literal)
+
+# `=~` returns Integer|nil matching CRuby (not -1 for no-match).
+puts ("abc" =~ /b/).inspect                # 1
+puts ("abc" =~ /xyz/).inspect              # nil
+puts ("abc" =~ /xyz/).nil?                 # true
+puts ("abc" =~ /b/).nil?                   # false
+
+# $~ / $& / $` / $' -- regex match globals exposed as strings
+# (spinel has no MatchData wrapper, so $~ === $&).
+"hello world" =~ /(o w)/
+puts $~                                    # o w
+puts $&                                    # o w
+puts $`                                    # hell
+puts $'                                    # orld

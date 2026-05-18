@@ -18713,6 +18713,23 @@ class Compiler
           return "({ struct timespec _ts; clock_gettime(CLOCK_MONOTONIC, &_ts); (mrb_float)_ts.tv_sec + (mrb_float)_ts.tv_nsec / 1e9; })"
         end
       end
+ # Regexp.escape / Regexp.quote -- single-string-arg form. Routes
+ # to sp_re_escape (runtime), which prefixes regex metachars and
+ # whitespace with a single backslash so the result feeds safely
+ # into `Regexp.new(...)`. The 0-arg or multi-arg form falls
+ # through to unresolved-call.
+      if rcname == "Regexp"
+        if mname == "escape" || mname == "quote"
+          args_id_rxe = @nd_arguments[nid]
+          if args_id_rxe >= 0
+            argl_rxe = get_args(args_id_rxe)
+            if argl_rxe.length == 1
+              @needs_regexp = 1
+              return "sp_re_escape(" + compile_expr(argl_rxe[0]) + ")"
+            end
+          end
+        end
+      end
  # ENV
       if rcname == "ENV"
         if mname == "[]"

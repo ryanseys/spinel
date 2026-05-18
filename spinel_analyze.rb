@@ -5465,6 +5465,14 @@ class Compiler
             return "complex"
           end
         end
+        if rcname == "Regexp"
+ # `Regexp.escape(s)` / `Regexp.quote(s)` returns a String safe to
+ # feed into `Regexp.new(...)` so the original bytes match
+ # literally. Codegen routes to sp_re_escape (runtime).
+          if mname == "escape" || mname == "quote"
+            return "string"
+          end
+        end
         if rcname == "File"
           if mname == "read" || mname == "binread"
             return "string"

@@ -1372,6 +1372,53 @@ static sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str) { mr
    (returning -1) stays available for internal callers needing the
    sentinel form. */
 static sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+
+/* Regexp.escape(s) / Regexp.quote(s) -- prefix every regex metachar
+   and whitespace byte with a single backslash, returning a heap
+   string that callers can feed into `Regexp.new(...)` to match the
+   original bytes literally. Matches CRuby's rb_reg_quote for the
+   ASCII range (the only range Spinel's regex engine indexes today,
+   so multibyte passes through unchanged).
+
+   The metachars covered: \\ . ? * + ^ $ | ( ) [ ] { } # -
+   The whitespace covered: ' ' \t \n \r \f \v
+   Everything else copies byte-for-byte. */
+static const char *sp_re_escape(const char *src) {
+  size_t i, in_len = strlen(src);
+  size_t out_len = 0;
+  for (i = 0; i < in_len; i++) {
+    unsigned char c = (unsigned char)src[i];
+    if (c == '\\' || c == '.' || c == '?' || c == '*' || c == '+' ||
+        c == '^' || c == '$' || c == '|' || c == '(' || c == ')' ||
+        c == '[' || c == ']' || c == '{' || c == '}' || c == '#' ||
+        c == '-' || c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+        c == '\f' || c == '\v') {
+      out_len += 2;
+    } else {
+      out_len += 1;
+    }
+  }
+  if (out_len == in_len) {
+    return src;
+  }
+  char *buf = sp_str_alloc(out_len);
+  size_t j = 0;
+  for (i = 0; i < in_len; i++) {
+    unsigned char c = (unsigned char)src[i];
+    if (c == '\\' || c == '.' || c == '?' || c == '*' || c == '+' ||
+        c == '^' || c == '$' || c == '|' || c == '(' || c == ')' ||
+        c == '[' || c == ']' || c == '{' || c == '}' || c == '#' ||
+        c == '-' || c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+        c == '\f' || c == '\v') {
+      buf[j++] = '\\';
+      buf[j++] = (char)c;
+    } else {
+      buf[j++] = (char)c;
+    }
+  }
+  buf[j] = 0;
+  return buf;
+}
 static sp_RbVal sp_box_nullable_obj(void *p, int cls_id) { return p ? sp_box_obj(p, cls_id) : sp_box_nil(); }
 /* Built-in pointer boxes — share SP_TAG_OBJ with a reserved negative
    cls_id so the dispatch path is uniform. */
