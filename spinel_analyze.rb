@@ -16232,6 +16232,199 @@ class Compiler
   end
 
  # Sibling of unify_imeth_override_returns for param types.
+ # Returns 1 when the method body's return paths contradict the
+ # declared return type on the value-vs-pointer axis (a primitive
+ # type like int / float / symbol returned from a function whose
+ # signature has a pointer-shaped return type like sp_StrStrHash *
+ # / sp_PtrArray * / sp_<Class> *, or vice versa). Skips bodies
+ # whose declared return is itself a sentinel default (int / poly
+ # / void / ""). Used by `widen_returns_for_mixed_paths` to widen
+ # the affected method's stored return type to "poly". Caller is
+ # expected to have set up method scope (push_scope + declare
+ # params + refine_method_body_locals) so the infer_type calls
+ # against ivar / local reads see the right context; otherwise
+ # they fall back to int default and report spurious mismatches.
+ # Issue #581.
+  def method_returns_need_poly_widening(body_id, declared_rt)
+    if body_id < 0
+      return 0
+    end
+    if declared_rt == "" || declared_rt == "poly" || declared_rt == "void"
+      return 0
+    end
+    declared_is_ptr = return_type_is_pointer(declared_rt)
+    stmts = get_stmts(body_id)
+    if stmts.length == 0
+      return 0
+    end
+    types = []
+    collect_return_types_nid(body_id, types)
+    last_id = stmts.last
+    last_t = infer_type(last_id)
+    types.push(last_t)
+    k = 0
+    while k < types.length
+      t = types[k]
+      if t != "" && t != "nil" && t != "void" && t != declared_rt && base_type(t) != base_type(declared_rt)
+        t_is_ptr = return_type_is_pointer(t)
+        if t_is_ptr != declared_is_ptr
+          return 1
+        end
+      end
+      k = k + 1
+    end
+    0
+  end
+
+  def return_type_is_pointer(t)
+    bt = base_type(t)
+    if bt == "int" || bt == "bool" || bt == "float" || bt == "symbol" || bt == "nil" || bt == "void" || bt == "poly" || bt == ""
+      return 0
+    end
+    1
+  end
+
+ # Run method_returns_need_poly_widening with proper method-body
+ # scope set up (params + locals declared) so infer_type calls
+ # see the right context. Without this, `infer_type` of ivar /
+ # local reads inside the body falls back to int default and the
+ # check reports spurious mismatches for methods whose body
+ # actually has homogeneous returns.
+  def widen_check_with_scope(bid, declared_rt, pnames, ptypes)
+    if bid < 0
+      return 0
+    end
+    if declared_rt == "" || declared_rt == "poly" || declared_rt == "void"
+      return 0
+    end
+    push_scope
+    k = 0
+    while k < pnames.length
+      pt = "int"
+      if k < ptypes.length
+        pt = ptypes[k]
+      end
+      declare_var(pnames[k], pt)
+      k = k + 1
+    end
+    lnames = "".split(",")
+    ltypes = "".split(",")
+    refine_method_body_locals(bid, lnames, ltypes, pnames)
+    need = method_returns_need_poly_widening(bid, declared_rt)
+    pop_scope
+    need
+  end
+
+ # Post-fixpoint pass: walk every method (top-level, class-
+ # instance, class-method) and widen stored return types to
+ # "poly" when the body's return paths contradict the analyzer's
+ # unified narrow type. Mirrors `infer_all_returns`'s scope-
+ # setup pattern (push_scope + declare params + refine locals)
+ # so infer_type returns the right answer for ivar / local reads.
+ # Issue #581.
+  def widen_returns_for_mixed_paths
+ # Top-level methods
+    mi = 0
+    while mi < @meth_names.length
+      bid = @meth_body_ids[mi]
+      cur_rt = @meth_return_types[mi]
+      pnames = @meth_param_names[mi].split(",")
+      ptypes = @meth_param_types[mi].split(",")
+      saved_meth = @current_method_name
+      @current_method_name = @meth_names[mi]
+      if widen_check_with_scope(bid, cur_rt, pnames, ptypes) == 1
+        @meth_return_types[mi] = "poly"
+        @needs_rb_value = 1
+      end
+      @current_method_name = saved_meth
+      mi = mi + 1
+    end
+ # Class instance methods
+    ci = 0
+    while ci < @cls_names.length
+      saved_ci = @current_class_idx
+      @current_class_idx = ci
+      bodies = @cls_meth_bodies[ci].split(";")
+      mnames = @cls_meth_names[ci].split(";")
+      returns = @cls_meth_returns[ci].split(";")
+      changed = 0
+      j = 0
+      while j < bodies.length
+        if j < returns.length
+          bid = bodies[j].to_i
+          cur_rt = returns[j]
+          pnames = cls_meth_pnames_get(ci, j)
+          ptypes = cls_meth_ptypes_get(ci, j)
+          saved_meth = @current_method_name
+          if j < mnames.length
+            @current_method_name = mnames[j]
+          end
+ # Skip slots where `unify_imeth_override_returns` already
+ # promoted the return type to match descendant overrides --
+ # the base method's body (typically `raise
+ # NotImplementedError`) infers as int, which would otherwise
+ # always mismatch the override-family's pointer return type
+ # and silently re-widen to poly. Same `@unified_imeth_returns`
+ # marker the imeth-unify pass uses.
+          imeth_tag = ci.to_s + ":" + j.to_s
+          if @unified_imeth_returns != nil && @unified_imeth_returns.index(imeth_tag) != nil
+            @current_method_name = saved_meth
+            j = j + 1
+            next
+          end
+          if widen_check_with_scope(bid, cur_rt, pnames, ptypes) == 1
+            returns[j] = "poly"
+            changed = 1
+            @needs_rb_value = 1
+          end
+          @current_method_name = saved_meth
+        end
+        j = j + 1
+      end
+      if changed == 1
+        @cls_meth_returns[ci] = returns.join(";")
+        @cls_meth_return_cache = {}
+      end
+      @current_class_idx = saved_ci
+      ci = ci + 1
+    end
+ # Class methods (def self.X)
+    ci = 0
+    while ci < @cls_names.length
+      saved_ci = @current_class_idx
+      @current_class_idx = ci
+      cbodies = @cls_cmeth_bodies[ci].split(";")
+      cmnames = @cls_cmeth_names[ci].split(";")
+      creturns = @cls_cmeth_returns[ci].split(";")
+      changed = 0
+      j = 0
+      while j < cbodies.length
+        if j < creturns.length
+          bid = cbodies[j].to_i
+          cur_rt = creturns[j]
+          pnames = cls_cmeth_pnames_get(ci, j)
+          ptypes = cls_cmeth_ptypes_get(ci, j)
+          saved_meth = @current_method_name
+          if j < cmnames.length
+            @current_method_name = cmnames[j]
+          end
+          if widen_check_with_scope(bid, cur_rt, pnames, ptypes) == 1
+            creturns[j] = "poly"
+            changed = 1
+            @needs_rb_value = 1
+          end
+          @current_method_name = saved_meth
+        end
+        j = j + 1
+      end
+      if changed == 1
+        @cls_cmeth_returns[ci] = creturns.join(";")
+      end
+      @current_class_idx = saved_ci
+      ci = ci + 1
+    end
+  end
+
  # When a base imeth and a descendant override disagree on a
  # param slot because the override widened to "poly" (mixed
  # call-site arg types), widen every member of the family at
@@ -19296,6 +19489,20 @@ class Compiler
     unify_imeth_override_returns
     infer_all_returns
     unify_imeth_override_returns
+ # Widen function return types to poly when explicit `return X`
+ # and the implicit final-expression return disagree on the
+ # value-vs-pointer axis. Runs post-fixpoint so the iterative
+ # `infer_all_returns` calls above don't re-clobber the widening
+ # (same shape as `unify_imeth_override_returns`). Without this,
+ # `def f(v); return v if v < 0; {"k"=>"v"}; end` declares a
+ # sp_StrStrHash * return but the early `return v` (int) emits a
+ # mrb_int return → -Wint-conversion fatal under -Werror. The
+ # codegen-side boxing path (compile_return_stmt's
+ # `@current_method_return == "poly"` arm + compile_body_return's
+ # implicit-return arm) already routes through box_expr_to_poly
+ # when the declared return is poly, so widening here is enough.
+ # Issue #581.
+    widen_returns_for_mixed_paths
  # Fix lambda return types based on call-site usage
     fix_lambda_return_types
  # Pre-detect bigint variables before feature detection
