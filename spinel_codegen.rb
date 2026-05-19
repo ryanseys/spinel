@@ -230,6 +230,15 @@ class Compiler
  # `"<class_idx>:<lv_name>"`, value is the resolved ivar name (or
  # `""` when the LV has multiple sources / non-ivar writes).
     @lv_alias_cache = {}
+ # Per-arm coerced-argument fragment cache for compile_poly_method_call.
+ # Keyed by the full call-site signature (mname + arg expressions +
+ # arg types + per-arg poly-rbval flags + arm ptypes). Value is the
+ # `, arg0, arg1, ...` fragment substituted into the per-arm call.
+ # The same fragment recurs across every arm that shares a method
+ # signature within a call site (canonical: N classes that all
+ # include a shared module), and across call sites that share the
+ # arg expressions and types.
+    @arm_argstr_cache = {}
  # Top-level (script-scope) ivars. Lowered to `static` file-scope
  # globals because `main()` / top-level `def` bodies have no `self`.
     @toplevel_ivar_names = "".split(",")
@@ -20782,6 +20791,34 @@ class Compiler
         k = k + 1
       end
     end
+ # Hoist the per-arg poly-rbval probe out of the per-arm loop -- the
+ # flag depends only on the source AST node (`aargs_for_unbox[pk]`),
+ # not on the dispatch arm, so we'd otherwise recompute it for every
+ # candidate class. arg_unbox_pk[pk] is "1" or "0" and feeds both
+ # the cache key and the unbox branch in the per-arm build. Stored
+ # as a StrArray so it composes uniformly with the other string-typed
+ # key components.
+    arg_unbox_pk = "".split(",")
+    fp = 0
+    while fp < aargs_for_unbox.length
+      ub = expr_emits_poly_rb_val(aargs_for_unbox[fp]) == 1 ? "1" : "0"
+      arg_unbox_pk.push(ub)
+      fp = fp + 1
+    end
+ # Call-site-wide prefix for @arm_argstr_cache. The per-arm fragment
+ # depends on `mname`, `arg_compiled`, `arg_types`, and the unbox
+ # flags (all fixed for one call site) plus `arm_ptypes` (which
+ # varies per arm). Append arm_ptypes per arm to form the full key.
+ # The `";|"` separator combines two characters unlikely to appear
+ # adjacent in any of the components (C expressions, type tags,
+ # binary digit flags); a collision would surface as a bootstrap
+ # fixpoint divergence.
+ # Lead with an empty string literal so the type-inference pass pins
+ # the chain to `string` at the leftmost receiver -- otherwise the
+ # parameter-typed `mname` lookup hasn't converged when the @arm_argstr_cache
+ # `[]=` site is first visited, and the hash gets seeded with an int
+ # key default.
+    arm_argstr_key_base = "" + mname + ";|" + arg_compiled.join(",") + ";|" + arg_types.join(",") + ";|" + arg_unbox_pk.join(",")
     tmp = new_temp
     emit("  " + ret_ct + " " + tmp + " = " + ret_def + ";")
  # `int[i]` (bit-extraction) on a poly receiver. When a CPU
@@ -20914,11 +20951,15 @@ class Compiler
  # truncate extras (when the call site supplies more args than
  # this candidate accepts — happens when several classes share
  # the method name but disagree on parameter count).
-        arm_arg_strs = ""
         arm_ptypes = cls_meth_ptypes_get(owner_idx, midx)
-        pk = 0
-        while pk < arm_ptypes.length
-          if pk < arg_compiled.length
+        arm_argstr_key = "" + arm_argstr_key_base + ";|" + arm_ptypes.join(",")
+        if @arm_argstr_cache.key?(arm_argstr_key)
+          arm_arg_strs = @arm_argstr_cache[arm_argstr_key]
+        else
+          arm_arg_strs = ""
+          pk = 0
+          while pk < arm_ptypes.length
+            if pk < arg_compiled.length
  # When this arm's param widened to `poly` (cross-
  # call-site union) but the call site supplied a
  # concrete value (string / mrb_int / symbol / ...),
@@ -20928,44 +20969,46 @@ class Compiler
  # `mrb_int` into a `sp_RbVal`. The inverse direction
  # (poly arg into a concrete-typed param) is handled
  # downstream; this only does the boxing direction.
-            arg_v = arg_compiled[pk]
-            arm_pt_base = base_type(arm_ptypes[pk])
+              arg_v = arg_compiled[pk]
+              arm_pt_base = base_type(arm_ptypes[pk])
  # Inverse direction: this arm expects a concrete primitive
  # but the call site supplied a value whose actual C type
  # is sp_RbVal (analyze's cached `at` lagged the emit -- see
  # expr_emits_poly_rb_val). Unbox via the matching union
  # field. Mirrors compile_expr_for_expected_type's poly→prim.
-            if pk < aargs_for_unbox.length && expr_emits_poly_rb_val(aargs_for_unbox[pk]) == 1
-              if arm_pt_base == "int" || arm_pt_base == "symbol"
-                @needs_rb_value = 1
-                arg_v = "(" + arg_v + ").v.i"
-                if arm_pt_base == "symbol"
-                  arg_v = "(sp_sym)" + arg_v
+              if pk < arg_unbox_pk.length && arg_unbox_pk[pk] == "1"
+                if arm_pt_base == "int" || arm_pt_base == "symbol"
+                  @needs_rb_value = 1
+                  arg_v = "(" + arg_v + ").v.i"
+                  if arm_pt_base == "symbol"
+                    arg_v = "(sp_sym)" + arg_v
+                  end
+                elsif arm_pt_base == "string" || arm_pt_base == "mutable_str"
+                  @needs_rb_value = 1
+                  arg_v = "(" + arg_v + ").v.s"
+                elsif arm_pt_base == "float"
+                  @needs_rb_value = 1
+                  arg_v = "(" + arg_v + ").v.f"
+                elsif arm_pt_base == "bool"
+                  @needs_rb_value = 1
+                  arg_v = "(" + arg_v + ").v.b"
                 end
-              elsif arm_pt_base == "string" || arm_pt_base == "mutable_str"
-                @needs_rb_value = 1
-                arg_v = "(" + arg_v + ").v.s"
-              elsif arm_pt_base == "float"
-                @needs_rb_value = 1
-                arg_v = "(" + arg_v + ").v.f"
-              elsif arm_pt_base == "bool"
-                @needs_rb_value = 1
-                arg_v = "(" + arg_v + ").v.b"
               end
+              if arm_pt_base == "poly" && pk < arg_types.length && arg_types[pk] != "poly" && arg_types[pk] != ""
+                arg_v = box_value_to_poly(arg_types[pk], arg_v)
+              end
+              arm_arg_strs = arm_arg_strs + ", " + arg_v
+            else
+              pad = "0"
+              pt_base = base_type(arm_ptypes[pk])
+              if pt_base == "poly"
+                pad = "sp_box_nil()"
+              end
+              arm_arg_strs = arm_arg_strs + ", " + pad
             end
-            if arm_pt_base == "poly" && pk < arg_types.length && arg_types[pk] != "poly" && arg_types[pk] != ""
-              arg_v = box_value_to_poly(arg_types[pk], arg_v)
-            end
-            arm_arg_strs = arm_arg_strs + ", " + arg_v
-          else
-            pad = "0"
-            pt_base = base_type(arm_ptypes[pk])
-            if pt_base == "poly"
-              pad = "sp_box_nil()"
-            end
-            arm_arg_strs = arm_arg_strs + ", " + pad
+            pk = pk + 1
           end
-          pk = pk + 1
+          @arm_argstr_cache[arm_argstr_key] = arm_arg_strs
         end
         call_expr = "sp_" + @cls_names[owner_idx] + "_" + sanitize_name(mname) + "((sp_" + @cls_names[owner_idx] + " *)" + recv_tmp + ".v.p" + arm_arg_strs + ")"
         rhs = call_expr
