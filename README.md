@@ -86,10 +86,11 @@ RUBY
 
 ### RBS type signatures
 
-Spinel can read RBS files to seed the analyzer. `spinel_rbs_extract`
-scans a directory of `*.rbs` files (the same layout `rbs` and Steep
-use) and emits seed records that `spinel_analyze` consumes via
-`--rbs DIR`. Seeds are advisory — inference still runs on top and
+Spinel can read RBS files to seed the analyzer. When invoked with
+`--rbs DIR`, the `spinel` wrapper runs `spinel_rbs_extract` over a
+directory of `*.rbs` files (the same layout `rbs` and Steep use) and
+passes the resulting seed file to `spinel_analyze` as a positional
+argument. Seeds are advisory — inference still runs on top and
 widens on observed contradiction, so a wrong or unrepresentable seed
 is at worst a no-op. See [docs/RBS-EXTRACT.md](docs/RBS-EXTRACT.md)
 for the supported subset.
