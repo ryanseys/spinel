@@ -24486,7 +24486,15 @@ class Compiler
         end
       end
       vref = fiber_var_ref(lname)
-      vt = find_var_type(lname)
+ # LV-write picks the slot's tracked C storage type — the narrow
+ # stack (find_var_type) is read-only. A re-assignment inside an
+ # `if x.is_a?(String) ... end` body must use the slot's actual
+ # type for the emit decision (poly_box arm, hash-variant arm,
+ # etc.), not the in-body narrow that only governs reads. Without
+ # this, `opt = { a: 7 } if opt.is_a?(String)` would look up
+ # vt=="string" inside the modifier-if body and skip the
+ # sym_poly_hash literal arm. See #615.
+      vt = find_var_declared_type(lname)
  # Empty array literal: create the correct array type. Returning
  # early here also preserves the scope's already-promoted type
  # , #85) — the fall-through path below would clobber
@@ -25736,7 +25744,25 @@ class Compiler
     end
     emit("  if (" + cond + ") {")
     @indent = @indent + 1
+ # Mirror compile_cond_return's is_a? narrow push so the then-arm of
+ # a non-tail `if x.is_a?(C) ... end` sees `x` as the narrowed type.
+ # Without this, a poly-typed `x` flowing into a typed callee
+ # (sp_re_escape, sp_re_match_p's string arg, `%s` interpolation,
+ # ...) inside the body emits the raw sp_RbVal and trips a C
+ # compile -- the #615 shape (volatile locals were a red herring;
+ # the actual gap was non-tail-position ifs). The narrow is popped
+ # before the else branch and after the body so the else sees the
+ # un-narrowed type.
+    isa_info_is = parse_is_a_predicate(@nd_predicate[nid])
+    isa_pushed_is = 0
+    if isa_info_is[0] != ""
+      push_type_narrow(isa_info_is[0], isa_info_is[1])
+      isa_pushed_is = 1
+    end
     compile_stmts_body(@nd_body[nid])
+    if isa_pushed_is == 1
+      pop_type_narrow
+    end
     @indent = @indent - 1
     sub = @nd_subsequent[nid]
     if sub >= 0
