@@ -36,6 +36,141 @@ class Compiler
     result + ""
   end
 
+ # Turn on poly-dispatch instrumentation with a CSV destination.
+ # Invoked from the entry script for `--stats=csv <path>`.
+  def enable_stats_csv(path)
+    @stats_enabled = 1
+    @stats_csv_path = path
+  end
+
+ # Turn on poly-dispatch instrumentation with a JSON destination.
+ # Invoked from the entry script for `--stats=json <path>`. The two
+ # setters are additive -- pass both flags to emit both formats.
+  def enable_stats_json(path)
+    @stats_enabled = 1
+    @stats_json_path = path
+  end
+
+ # Record one invocation of compile_poly_method_call with its observed
+ # arm count (number of class arms actually emitted, after narrow-set
+ # filtering and incompat suppression). Linear scan over @stats_mname
+ # is fine in practice -- the unique-mname count is bounded by the
+ # workload's distinct poly receivers, not by call site count.
+  def record_poly_dispatch_stats(mname, arm_count)
+    j = 0
+    while j < @stats_mname.length
+      if @stats_mname[j] == mname
+        @stats_call_sites[j] = @stats_call_sites[j] + 1
+        @stats_total_arms[j] = @stats_total_arms[j] + arm_count
+        if arm_count > @stats_max_arms[j]
+          @stats_max_arms[j] = arm_count
+        end
+        return
+      end
+      j = j + 1
+    end
+    @stats_mname.push(mname)
+    @stats_call_sites.push(1)
+    @stats_total_arms.push(arm_count)
+    @stats_max_arms.push(arm_count)
+  end
+
+ # Write collected per-mname stats to @stats_csv_path as CSV. Sorted
+ # by total_arms descending so the hottest dispatches appear at the
+ # top. No-op when no CSV destination was set.
+  def emit_stats_csv
+    if @stats_csv_path == ""
+      return
+    end
+    sorted = stats_sorted_by_total_arms_desc
+    body = "mname,call_sites,total_arms,max_arms" + 10.chr
+    k = 0
+    while k < sorted.length
+      idx = sorted[k]
+      body = body + @stats_mname[idx] + "," + @stats_call_sites[idx].to_s + "," + @stats_total_arms[idx].to_s + "," + @stats_max_arms[idx].to_s + 10.chr
+      k = k + 1
+    end
+    File.write(@stats_csv_path, body + "")
+  end
+
+ # Write collected per-mname stats to @stats_json_path as a JSON
+ # array of objects. Mname strings are escaped for `"` and `\` -- the
+ # only special chars expected in spinel method names. Other ASCII
+ # control bytes are passed through unescaped; spinel mnames don't
+ # contain them in practice. No-op when no JSON destination was set.
+  def emit_stats_json
+    if @stats_json_path == ""
+      return
+    end
+    sorted = stats_sorted_by_total_arms_desc
+    body = "["
+    k = 0
+    while k < sorted.length
+      if k > 0
+        body = body + ","
+      end
+      idx = sorted[k]
+      body = body + "{\"mname\":\"" + stats_json_escape(@stats_mname[idx]) + "\",\"call_sites\":" + @stats_call_sites[idx].to_s + ",\"total_arms\":" + @stats_total_arms[idx].to_s + ",\"max_arms\":" + @stats_max_arms[idx].to_s + "}"
+      k = k + 1
+    end
+    body = body + "]" + 10.chr
+    File.write(@stats_json_path, body + "")
+  end
+
+ # JSON-escape the two characters that would otherwise produce an
+ # invalid string literal -- backslash and double-quote.
+  def stats_json_escape(s)
+    out = ""
+    i = 0
+    while i < s.length
+      c = s[i]
+      if c == "\""
+        out = out + "\\\""
+      elsif c == "\\"
+        out = out + "\\\\"
+      else
+        out = out + c
+      end
+      i = i + 1
+    end
+    out + ""
+  end
+
+ # Return an IntArray of indices into @stats_mname sorted so that
+ # higher total_arms comes first. Simple selection sort -- N is small
+ # (one entry per distinct poly mname) and this only runs once at
+ # end-of-run.
+  def stats_sorted_by_total_arms_desc
+    n = @stats_mname.length
+    used = []
+    out = []
+    p = 0
+    while p < n
+      used.push(0)
+      p = p + 1
+    end
+    o = 0
+    while o < n
+      best_idx = -1
+      best_val = -1
+      m = 0
+      while m < n
+        if used[m] == 0 && @stats_total_arms[m] > best_val
+          best_val = @stats_total_arms[m]
+          best_idx = m
+        end
+        m = m + 1
+      end
+      if best_idx < 0
+        return out
+      end
+      out.push(best_idx)
+      used[best_idx] = 1
+      o = o + 1
+    end
+    out
+  end
+
   def initialize
     @out_lines = "".split(",", -1)
     @out = ""
@@ -52,6 +187,20 @@ class Compiler
  # cache for arithmetic on a bigint recv. In raise / wrap modes
  # the cache is up-to-date and the override stays off.
     @int_overflow_mode = ENV["SPINEL_INT_OVERFLOW"] || "raise"
+ # Optional poly-dispatch instrumentation. Enabled via either or
+ # both of the `--stats=csv <path>` / `--stats=json <path>` CLI flags
+ # in the entry script. When enabled, `compile_poly_method_call`
+ # records per-mname (call_sites, total_arms, max_arms) into parallel
+ # arrays indexed by `@stats_mname`. At end-of-run the entry script
+ # flushes whichever formats were requested. Zero overhead when
+ # disabled -- the per-site instrumentation is a single int compare.
+    @stats_enabled = 0
+    @stats_csv_path = ""
+    @stats_json_path = ""
+    @stats_mname = "".split(",")
+    @stats_call_sites = []
+    @stats_total_arms = []
+    @stats_max_arms = []
 
  # ---- AST node storage (parallel arrays by node ID) ----
  # Use "".split(",", -1) for StrArray init (v1 infers StrArray from split)
@@ -27282,6 +27431,13 @@ class Compiler
  # emit loop just needed the matching skip.
     dispatch_narrow_set = poly_dispatch_narrow_class_set(nid)
     poly_dispatch_arms_emitted = 0
+ # Number of class arms that found a dispatch target (real method,
+ # attr_reader, or attr_writer) at this call site. Reported to the
+ # stats sink via record_poly_dispatch_stats when --stats=csv/json
+ # is enabled; ignored otherwise. Arms that the narrow-set filter
+ # skipped above don't reach the bump, so the count reflects the
+ # work actually considered for emission.
+    arm_count = 0
     i = 0
     while i < @cls_names.length
       if dispatch_narrow_set != "" && poly_dispatch_class_in_set(dispatch_narrow_set, i) == 0
@@ -27301,6 +27457,7 @@ class Compiler
         end
       end
       if midx >= 0
+        arm_count = arm_count + 1
  # Match each arm to the target method's *fixed* C arity:
  # pad missing trailing slots with default-typed zeros, and
  # truncate extras (when the call site supplies more args than
@@ -27429,6 +27586,7 @@ class Compiler
           poly_dispatch_arms_emitted = poly_dispatch_arms_emitted + 1
         end
       elsif cls_has_attr_reader(i, mname) == 1
+        arm_count = arm_count + 1
  # An auto-registered attr_reader doesn't appear in
  # @cls_meth_names, so the explicit-method walk above misses it.
  # Read the ivar directly. .
@@ -27445,6 +27603,7 @@ class Compiler
           poly_dispatch_arms_emitted = poly_dispatch_arms_emitted + 1
         end
       elsif mname.length > 1 && mname[mname.length - 1] == "=" && cls_has_attr_writer(i, mname[0, mname.length - 1]) == 1
+        arm_count = arm_count + 1
  # An auto-registered attr_writer setter (`obj.x = v`) on a
  # poly-typed receiver. Without this arm the cls_id dispatch
  # finds neither a real method nor an attr_reader, falls
@@ -27495,6 +27654,9 @@ class Compiler
  # / CI grep for compile noise still surface this case.
     if poly_dispatch_arms_emitted == 0
       warn_unresolved_call(mname, "poly (no concrete user-class arm)")
+    end
+    if @stats_enabled == 1
+      record_poly_dispatch_stats(mname, arm_count)
     end
     tmp
   end
@@ -45983,15 +46145,43 @@ class Compiler
 end
 
 # ---- Main (codegen) ----
-ast_file = ARGV[0]
-ir_file = ARGV[1]
-out_file = ARGV[2]
+# Two-pass arg parse: extract --stats=csv / --stats=json flags into
+# dedicated vars and pack the remaining positional args back into
+# `positional`. Each flag takes the next ARGV entry as its path.
+# Unrecognized flags pass through as positional, preserving the
+# existing behavior for callers that didn't ask for instrumentation.
+positional = "".split(",")
+stats_csv_path = ""
+stats_json_path = ""
+ai = 0
+while ai < ARGV.length
+  flag = ARGV[ai]
+  if flag == "--stats=csv" && ai + 1 < ARGV.length
+    stats_csv_path = ARGV[ai + 1]
+    ai = ai + 2
+  elsif flag == "--stats=json" && ai + 1 < ARGV.length
+    stats_json_path = ARGV[ai + 1]
+    ai = ai + 2
+  else
+    positional.push(flag)
+    ai = ai + 1
+  end
+end
+ast_file = positional[0]
+ir_file = positional[1]
+out_file = positional[2]
 if ast_file == nil || ir_file == nil
-  $stderr.puts "Usage: ruby spinel_codegen.rb ast.txt in.ir out.c"
+  $stderr.puts "Usage: ruby spinel_codegen.rb [--stats=csv <path>] [--stats=json <path>] ast.txt in.ir out.c"
   exit(1)
 end
 data = File.read(ast_file)
 compiler = Compiler.new
+if stats_csv_path != ""
+  compiler.enable_stats_csv(stats_csv_path)
+end
+if stats_json_path != ""
+  compiler.enable_stats_json(stats_json_path)
+end
 compiler.read_text_ast(data)
 compiler.load_analysis_buf(File.read(ir_file))
 # AST mutations from rewrite_instance_eval_calls (CallNode names ->
@@ -46006,3 +46196,5 @@ if out_file != nil
 else
   print result
 end
+compiler.emit_stats_csv
+compiler.emit_stats_json
