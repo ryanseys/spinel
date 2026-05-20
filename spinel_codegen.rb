@@ -22102,6 +22102,40 @@ class Compiler
         return "(!sp_PolyArray_eq(" + lc + ", " + rc + "))"
       end
     end
+ # `<poly_array> == [nil, nil, ...]` shape (Array.new(N) ==
+ # [nil, nil, nil] etc.). The RHS array literal would
+ # otherwise lower to int_array of zeros and fall through to a
+ # raw pointer compare. Build a poly_array of nils inline to
+ # match the LHS shape and route through sp_PolyArray_eq. The
+ # global "[nil, ...] literal -> poly_array" lift is unsafe
+ # (it cascades into optcarrot's [nil] * N init pattern); the
+ # contextual lift here only fires at the == call site.
+ # Issue #619 puzzle 4.
+    if lt == "poly_array" && arg_id >= 0 && @nd_type[arg_id] == "ArrayNode"
+      rhs_elems_p4 = parse_id_list(@nd_elements[arg_id])
+      if rhs_elems_p4.length > 0
+        all_nil_p4 = 1
+        rhs_k_p4 = 0
+        while rhs_k_p4 < rhs_elems_p4.length
+          if @nd_type[rhs_elems_p4[rhs_k_p4]] != "NilNode"
+            all_nil_p4 = 0
+          end
+          rhs_k_p4 = rhs_k_p4 + 1
+        end
+        if all_nil_p4 == 1
+          @needs_rb_value = 1
+          @needs_gc = 1
+          rhs_pa_tmp = new_temp
+          emit("  sp_PolyArray *" + rhs_pa_tmp + " = sp_PolyArray_new();")
+          emit("  { mrb_int _n_pa = " + rhs_elems_p4.length.to_s + "; for (mrb_int _i_pa = 0; _i_pa < _n_pa; _i_pa++) sp_PolyArray_push(" + rhs_pa_tmp + ", sp_box_nil()); }")
+          if op == "=="
+            return "sp_PolyArray_eq(" + lc + ", " + rhs_pa_tmp + ")"
+          else
+            return "(!sp_PolyArray_eq(" + lc + ", " + rhs_pa_tmp + "))"
+          end
+        end
+      end
+    end
  # Hash equality arms. Same shape as the typed-array arms
  # above. Issue #555. Compares by sorted key set + per-key
  # value equality (each variant's _eq helper handles its
