@@ -7957,11 +7957,19 @@ class Compiler
     if @nd_body[nid] >= 0
       acc.push(@nd_body[nid])
     end
-    stmts = parse_id_list(@nd_stmts[nid])
-    k = 0
-    while k < stmts.length
-      acc.push(stmts[k])
-      k = k + 1
+ # Most AST nodes leave id-list fields ("@nd_stmts" etc.) as the
+ # empty string; calling parse_id_list on "" still hits the cache
+ # and returns an empty IntArray, but it's a wasted hash probe and
+ # zero-iter while-loop per field. Skipping on "" cuts ~11 probes
+ # per push_child_ids call on the typical-case node.
+    stmts_s = @nd_stmts[nid]
+    if stmts_s != ""
+      stmts = parse_id_list(stmts_s)
+      k = 0
+      while k < stmts.length
+        acc.push(stmts[k])
+        k = k + 1
+      end
     end
     if @nd_expression[nid] >= 0
       acc.push(@nd_expression[nid])
@@ -7981,29 +7989,41 @@ class Compiler
     if @nd_arguments[nid] >= 0
       acc.push(@nd_arguments[nid])
     end
-    args = parse_id_list(@nd_args[nid])
-    k = 0
-    while k < args.length
-      acc.push(args[k])
-      k = k + 1
+    args_s = @nd_args[nid]
+    if args_s != ""
+      args = parse_id_list(args_s)
+      k = 0
+      while k < args.length
+        acc.push(args[k])
+        k = k + 1
+      end
     end
-    conds = parse_id_list(@nd_conditions[nid])
-    k = 0
-    while k < conds.length
-      acc.push(conds[k])
-      k = k + 1
+    conds_s = @nd_conditions[nid]
+    if conds_s != ""
+      conds = parse_id_list(conds_s)
+      k = 0
+      while k < conds.length
+        acc.push(conds[k])
+        k = k + 1
+      end
     end
-    elems = parse_id_list(@nd_elements[nid])
-    k = 0
-    while k < elems.length
-      acc.push(elems[k])
-      k = k + 1
+    elems_s = @nd_elements[nid]
+    if elems_s != ""
+      elems = parse_id_list(elems_s)
+      k = 0
+      while k < elems.length
+        acc.push(elems[k])
+        k = k + 1
+      end
     end
-    parts = parse_id_list(@nd_parts[nid])
-    k = 0
-    while k < parts.length
-      acc.push(parts[k])
-      k = k + 1
+    parts_s = @nd_parts[nid]
+    if parts_s != ""
+      parts = parse_id_list(parts_s)
+      k = 0
+      while k < parts.length
+        acc.push(parts[k])
+        k = k + 1
+      end
     end
     if @nd_left[nid] >= 0
       acc.push(@nd_left[nid])
@@ -8047,41 +8067,59 @@ class Compiler
     if @nd_superclass[nid] >= 0
       acc.push(@nd_superclass[nid])
     end
-    reqs = parse_id_list(@nd_requireds[nid])
-    k = 0
-    while k < reqs.length
-      acc.push(reqs[k])
-      k = k + 1
+    reqs_s = @nd_requireds[nid]
+    if reqs_s != ""
+      reqs = parse_id_list(reqs_s)
+      k = 0
+      while k < reqs.length
+        acc.push(reqs[k])
+        k = k + 1
+      end
     end
-    opts = parse_id_list(@nd_optionals[nid])
-    k = 0
-    while k < opts.length
-      acc.push(opts[k])
-      k = k + 1
+    opts_s = @nd_optionals[nid]
+    if opts_s != ""
+      opts = parse_id_list(opts_s)
+      k = 0
+      while k < opts.length
+        acc.push(opts[k])
+        k = k + 1
+      end
     end
-    kws = parse_id_list(@nd_keywords[nid])
-    k = 0
-    while k < kws.length
-      acc.push(kws[k])
-      k = k + 1
+    kws_s = @nd_keywords[nid]
+    if kws_s != ""
+      kws = parse_id_list(kws_s)
+      k = 0
+      while k < kws.length
+        acc.push(kws[k])
+        k = k + 1
+      end
     end
-    excs = parse_id_list(@nd_exceptions[nid])
-    k = 0
-    while k < excs.length
-      acc.push(excs[k])
-      k = k + 1
+    excs_s = @nd_exceptions[nid]
+    if excs_s != ""
+      excs = parse_id_list(excs_s)
+      k = 0
+      while k < excs.length
+        acc.push(excs[k])
+        k = k + 1
+      end
     end
-    targs = parse_id_list(@nd_targets[nid])
-    k = 0
-    while k < targs.length
-      acc.push(targs[k])
-      k = k + 1
+    targs_s = @nd_targets[nid]
+    if targs_s != ""
+      targs = parse_id_list(targs_s)
+      k = 0
+      while k < targs.length
+        acc.push(targs[k])
+        k = k + 1
+      end
     end
-    rights = parse_id_list(@nd_rights[nid])
-    k = 0
-    while k < rights.length
-      acc.push(rights[k])
-      k = k + 1
+    rights_s = @nd_rights[nid]
+    if rights_s != ""
+      rights = parse_id_list(rights_s)
+      k = 0
+      while k < rights.length
+        acc.push(rights[k])
+        k = k + 1
+      end
     end
   end
 
