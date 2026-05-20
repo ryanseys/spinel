@@ -525,6 +525,38 @@ optcarrot: spinel_parse$(EXE) $(SP_RT_LIB) spinel_analyze$(EXE) spinel_codegen$(
 	  exit 1; \
 	fi
 
+# ---- Profile (CRuby-only Vernier wrapper + analyzer) ----
+# Captures a Vernier profile of spinel_codegen.rb compiling itself
+# under CRuby, then runs bin/analyze_profile.rb to emit a markdown
+# report. CRuby + the `vernier` gem are required (gem install vernier).
+# These targets touch nothing on the spinel self-host path; bootstrap
+# and tests are unaffected by construction.
+
+prof-self: spinel_codegen$(EXE)
+	@mkdir -p build/profiles
+	ruby spinel_codegen_profile.rb \
+		build/codegen.ast build/codegen.ir build/profiles/codegen-self.c \
+		> build/profiles/.last
+	ruby bin/analyze_profile.rb $$(cat build/profiles/.last) \
+		--out build/profiles/codegen-self.report.md
+	@echo "Report: build/profiles/codegen-self.report.md"
+
+prof-self-retained: spinel_codegen$(EXE)
+	@mkdir -p build/profiles
+	ruby spinel_codegen_profile.rb --mode retained \
+		build/codegen.ast build/codegen.ir build/profiles/codegen-self.c \
+		> build/profiles/.last
+	ruby bin/analyze_profile.rb $$(cat build/profiles/.last) \
+		--out build/profiles/codegen-self-retained.report.md
+	@echo "Report: build/profiles/codegen-self-retained.report.md"
+
+prof-self-deep: prof-self prof-self-retained
+	@echo "==== wall+alloc profile ===="
+	@cat build/profiles/codegen-self.report.md
+	@echo
+	@echo "==== retained-memory profile ===="
+	@cat build/profiles/codegen-self-retained.report.md
+
 # ---- Install ----
 
 PREFIX   ?= /usr/local
