@@ -20667,7 +20667,91 @@ class Compiler
        @meth_rbs_ptypes.length == 0
       return
     end
-    rbs_scan_callsites(@root_id)
+ # Walk every body with its precomputed scope set up so
+ # `infer_type` on a `LocalVariableReadNode` resolves through
+ # `find_var_type` to the local's concrete type (e.g. `c = Foo.new`
+ # → `c` typed `obj_Foo`). Without the scope wrap, a
+ # `c.method(literal)` receiver would fall through to the int
+ # default and the RBS-pinned-method lookup miss.
+    rbs_walk_with_scope(@root_id)
+  end
+
+ # Push the body's precomputed locals into the scope stack, walk
+ # the body checking CallNodes, then pop. Mirrors the pattern in
+ # `infer_main_call_types` / `scan_writer_calls` but reuses
+ # `@nd_scope_names` / `@nd_scope_types` filled by
+ # `precompute_all_scope_decls` rather than recomputing.
+  def rbs_walk_body_scoped(bid)
+    if bid < 0
+      return
+    end
+    push_scope
+    sn = @nd_scope_names[bid]
+    st = @nd_scope_types[bid]
+    if sn != ""
+      lnames = sn.split("|", -1)
+      ltypes = st.split("|", -1)
+      li = 0
+      while li < lnames.length
+        if lnames[li] != "" && li < ltypes.length
+          declare_var(lnames[li], ltypes[li])
+        end
+        li = li + 1
+      end
+    end
+    rbs_scan_callsites(bid)
+    pop_scope
+  end
+
+  def rbs_walk_with_scope(nid)
+    if nid < 0
+      return
+    end
+    t = @nd_type[nid]
+    if t == "ProgramNode"
+      bid = @nd_body[nid]
+      if bid >= 0
+        rbs_walk_body_scoped(@root_id)
+        bsts = get_stmts(bid)
+        bsi = 0
+        while bsi < bsts.length
+          rbs_walk_with_scope(bsts[bsi])
+          bsi = bsi + 1
+        end
+      end
+      return
+    end
+    if t == "ClassNode" || t == "ModuleNode"
+      saved_ci = @current_class_idx
+      saved_scope = @current_lexical_scope
+      if t == "ClassNode"
+        enter_class_scope_from_node(nid)
+      else
+        enter_module_scope_from_node(nid)
+      end
+      bid = @nd_body[nid]
+      if bid >= 0
+        bsts = get_stmts(bid)
+        bsi = 0
+        while bsi < bsts.length
+          rbs_walk_with_scope(bsts[bsi])
+          bsi = bsi + 1
+        end
+      end
+      @current_class_idx = saved_ci
+      @current_lexical_scope = saved_scope
+      return
+    end
+    if t == "DefNode"
+      bid = @nd_body[nid]
+      if bid >= 0
+        rbs_walk_body_scoped(bid)
+      end
+      return
+    end
+ # Other top-level statements: scope already set up by main's
+ # body walk above. Recurse via the unscoped walker.
+    rbs_scan_callsites(nid)
   end
 
   def rbs_scan_callsites(nid)
@@ -20716,18 +20800,12 @@ class Compiler
       end
     end
     if rbs_pt == "" && recv >= 0
- # Instance method call against a class-typed recv. Note:
- # `infer_type(recv)` for a `LocalVariableReadNode` resolves
- # through `find_var_type`, which needs a scope stack
- # populated. The arbitration walker runs outside any scope
- # context, so a `c.add(literal)` where `c` is a local variable
- # falls through to the default "int" path and the RBS lookup
- # misses. That case is the most common in practice but
- # exercising it correctly requires the scope-aware walk
- # `infer_main_call_types` / `scan_writer_calls` build up;
- # adding that here would double the pass's footprint without
- # changing the constant- and toplevel-recv coverage. Leaving
- # it as a known gap for now.
+ # Instance method call against a class-typed recv. The
+ # scope-aware walker (`rbs_walk_with_scope`) pushes the body's
+ # precomputed locals before reaching this check, so
+ # `infer_type` resolves a `LocalVariableReadNode` recv
+ # (`c = Foo.new; c.method(...)`) through `find_var_type` to
+ # the local's concrete type.
       rt = infer_type(recv)
       if rt.length > 4 && rt[0, 4] == "obj_"
         rcname = rt[4, rt.length - 4]
