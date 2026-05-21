@@ -1040,6 +1040,78 @@ static int flatten(pm_node_t *node) {
     R("right", n->right);
     break;
   }
+  case PM_ARRAY_PATTERN_NODE: {
+    /* `case x in [a, b, c]` (requireds), `in [a, *rest]` (rest),
+       `in [*pre, mid, *post]` (find-shape but with one fixed rest),
+       `in [a, b, *r, c, d]` (requireds + rest + posts). The
+       `constant` field for class-deconstructed patterns
+       (`in Foo[1, 2]`) is intentionally elided here -- the common
+       shapes don't need it and adding it would also need
+       deconstruct/deconstruct_keys runtime support. */
+    pm_array_pattern_node_t *n = (pm_array_pattern_node_t *)node;
+    N("ArrayPatternNode");
+    A("requireds", &n->requireds);
+    if (n->rest) R("rest", n->rest);
+    A("posts", &n->posts);
+    break;
+  }
+  case PM_HASH_PATTERN_NODE: {
+    /* `case x in {a:, b:}` (elements), `in {a:, **rest}` (rest),
+       `in {a: 1, b: "x"}` (literal-valued elements). Each element
+       is an AssocNode whose key is a SymbolNode and whose value
+       is either an implicit value-binding (LocalVariableTargetNode)
+       or an explicit sub-pattern. The `constant` field for
+       deconstruct-keys shapes (`in Foo(a:)`) is elided for the
+       same reason as ArrayPatternNode#constant. */
+    pm_hash_pattern_node_t *n = (pm_hash_pattern_node_t *)node;
+    N("HashPatternNode");
+    A("elements", &n->elements);
+    if (n->rest) R("rest", n->rest);
+    break;
+  }
+  case PM_FIND_PATTERN_NODE: {
+    /* `case x in [*pre, mid1, mid2, *post]`. Prism's FindPatternNode
+       splits into `left` (the leading *-splat), `requireds` (the
+       fixed middle elements), and `right` (the trailing *-splat).
+       Both splats are SplatNodes carrying the optional binding
+       name as `expression`. */
+    pm_find_pattern_node_t *n = (pm_find_pattern_node_t *)node;
+    N("FindPatternNode");
+    R("left", (pm_node_t *)n->left);
+    A("requireds", &n->requireds);
+    R("right", n->right);
+    break;
+  }
+  case PM_PINNED_EXPRESSION_NODE: {
+    /* `case x in ^(expr)`. The pinned expression is evaluated at
+       match time and compared by `==` against the scrutinee. */
+    pm_pinned_expression_node_t *n = (pm_pinned_expression_node_t *)node;
+    N("PinnedExpressionNode");
+    R("expression", n->expression);
+    break;
+  }
+  case PM_PINNED_VARIABLE_NODE: {
+    /* `case x in ^var`. The variable is a LocalVariableReadNode (or
+       IvarRead / GvarRead). Routed to the same `@nd_expression`
+       slot as PinnedExpressionNode so the codegen treats them
+       uniformly -- both are "match the scrutinee by `==` against
+       this expression". */
+    pm_pinned_variable_node_t *n = (pm_pinned_variable_node_t *)node;
+    N("PinnedVariableNode");
+    R("expression", n->variable);
+    break;
+  }
+  case PM_CAPTURE_PATTERN_NODE: {
+    /* `case x in Integer => n` -- match sub-pattern then bind to
+       the target local. `value` is the sub-pattern; `target` is
+       a LocalVariableTargetNode whose name slot carries the
+       binding identifier. */
+    pm_capture_pattern_node_t *n = (pm_capture_pattern_node_t *)node;
+    N("CapturePatternNode");
+    R("value", n->value);
+    R("target", (pm_node_t *)n->target);
+    break;
+  }
   case PM_NUMBERED_PARAMETERS_NODE: {
     pm_numbered_parameters_node_t *n = (pm_numbered_parameters_node_t *)node;
     N("NumberedParametersNode");

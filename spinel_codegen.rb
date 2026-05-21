@@ -26632,18 +26632,22 @@ class Compiler
     pred_type = infer_type(pred)
     pred_val = compile_expr(pred)
     tmp = new_temp
+ # For typed containers (int_array, sym_array, etc.) and other
+ # non-primitive scrutinee types, use the receiver's actual C
+ # type so the pattern arms can dereference `tmp->len` /
+ # `tmp->data[i]`. Without this the temp was declared as
+ # `mrb_int` for everything non-poly/string/float and array
+ # patterns crashed at C compile time.
     if pred_type == "poly"
       emit("  sp_RbVal " + tmp + " = " + pred_val + ";")
+    elsif pred_type == "string"
+      emit("  const char *" + tmp + " = " + pred_val + ";")
+    elsif pred_type == "float"
+      emit("  mrb_float " + tmp + " = " + pred_val + ";")
+    elsif pred_type == "int" || pred_type == "bool" || pred_type == "symbol" || pred_type == "" || pred_type == "nil"
+      emit("  mrb_int " + tmp + " = " + pred_val + ";")
     else
-      if pred_type == "string"
-        emit("  const char *" + tmp + " = " + pred_val + ";")
-      else
-        if pred_type == "float"
-          emit("  mrb_float " + tmp + " = " + pred_val + ";")
-        else
-          emit("  mrb_int " + tmp + " = " + pred_val + ";")
-        end
-      end
+      emit("  " + c_type(pred_type) + " " + tmp + " = " + pred_val + ";")
     end
     conds = parse_id_list(@nd_conditions[nid])
     k = 0
@@ -26739,6 +26743,114 @@ class Compiler
       left = compile_in_pattern(@nd_left[pat_id], tmp, pred_type)
       right = compile_in_pattern(@nd_right[pat_id], tmp, pred_type)
       return "(" + left + " || " + right + ")"
+    end
+ # PinnedVariableNode / PinnedExpressionNode: `case x in ^var` /
+ # `in ^(expr)`. Both share the `@nd_expression` slot (the parser
+ # routes the variable into the expression field for uniformity).
+ # Match by `==` against the pinned value -- no new bindings.
+    if pt == "PinnedVariableNode" || pt == "PinnedExpressionNode"
+      pinned = compile_expr(@nd_expression[pat_id])
+      pinned_type = infer_type(@nd_expression[pat_id])
+      if pred_type == "poly"
+        if pinned_type == "int"
+          return "(" + tmp + ".tag == SP_TAG_INT && " + tmp + ".v.i == (" + pinned + "))"
+        end
+        if pinned_type == "string"
+          return "(" + tmp + ".tag == SP_TAG_STR && strcmp(" + tmp + ".v.s, " + pinned + ") == 0)"
+        end
+        if pinned_type == "symbol"
+          return "(" + tmp + ".tag == SP_TAG_SYM && (sp_sym)" + tmp + ".v.i == (" + pinned + "))"
+        end
+        return "0"
+      end
+      if pinned_type == "string" && pred_type == "string"
+        return "strcmp(" + tmp + ", " + pinned + ") == 0"
+      end
+      return "(" + tmp + ") == (" + pinned + ")"
+    end
+ # ArrayPatternNode: `case x in [1, 2, 3]`. Literal-only requireds
+ # are supported -- emit length + per-element predicates. Bindings
+ # (`in [a, b]`) and rest splats need analyze-side scan_locals
+ # extension; emit a clear codegen error rather than silent miscompile.
+    if pt == "ArrayPatternNode"
+      reqs = parse_id_list(@nd_requireds[pat_id])
+      rest = @nd_rest[pat_id]
+      posts = parse_id_list(@nd_posts[pat_id])
+      if rest >= 0 || posts.length > 0
+        $stderr.puts "Spinel: ArrayPatternNode with rest/posts not yet supported (use literal-only requireds for now)"
+        exit(1)
+      end
+      ri = 0
+      while ri < reqs.length
+        if @nd_type[reqs[ri]] == "LocalVariableTargetNode"
+          $stderr.puts "Spinel: ArrayPatternNode binding `" + @nd_name[reqs[ri]] + "` not yet supported (use literal-only patterns for now)"
+          exit(1)
+        end
+        ri = ri + 1
+      end
+      arr_expr = tmp
+      arr_len = arr_expr + "->len"
+      elem_prefix = ""
+      elem_suffix = ""
+      elem_type = "int"
+      if pred_type == "poly"
+ # Runtime tag + cls_id check; route through int_array storage
+ # since all the value-type arrays share an `int`-cell backing
+ # plus per-cls_id reinterpretation. Sym/str element types
+ # under a poly-typed scrutinee would need a runtime-routed
+ # element extractor; defer that and only handle int-array
+ # poly variants here.
+        arr_expr = "((sp_IntArray *)" + tmp + ".v.p)"
+        arr_len = arr_expr + "->len"
+        elem_prefix = "((mrb_int)(" + arr_expr + "->data[" + arr_expr + "->start + "
+        elem_suffix = "]))"
+      elsif pred_type == "int_array"
+        elem_prefix = "((mrb_int)(" + arr_expr + "->data[" + arr_expr + "->start + "
+        elem_suffix = "]))"
+      elsif pred_type == "str_array"
+        elem_prefix = "((const char *)(" + arr_expr + "->data["
+        elem_suffix = "]))"
+        elem_type = "string"
+      elsif pred_type == "sym_array"
+        elem_prefix = "((sp_sym)(" + arr_expr + "->data[" + arr_expr + "->start + "
+        elem_suffix = "]))"
+        elem_type = "symbol"
+      else
+        elem_prefix = "(" + arr_expr + "->data["
+        elem_suffix = "])"
+      end
+      parts = ""
+      if pred_type == "poly"
+        parts = "(" + tmp + ".tag == SP_TAG_OBJ && (" + tmp + ".cls_id == SP_BUILTIN_INT_ARRAY || " + tmp + ".cls_id == SP_BUILTIN_STR_ARRAY || " + tmp + ".cls_id == SP_BUILTIN_SYM_ARRAY || " + tmp + ".cls_id == SP_BUILTIN_POLY_ARRAY || " + tmp + ".cls_id == SP_BUILTIN_FLT_ARRAY) && " + arr_len + " == " + reqs.length.to_s + ")"
+      else
+        parts = "(" + arr_len + " == " + reqs.length.to_s + ")"
+      end
+      ei = 0
+      while ei < reqs.length
+        elem_idx = elem_prefix + ei.to_s + elem_suffix
+        elem_sub = compile_in_pattern(reqs[ei], elem_idx, elem_type)
+        parts = parts + " && (" + elem_sub + ")"
+        ei = ei + 1
+      end
+      return "(" + parts + ")"
+    end
+ # HashPatternNode / FindPatternNode / CapturePatternNode all
+ # require deeper infrastructure (typed-Hash lookup helpers per
+ # variant for hash; analyze-side local registration for the
+ # binding form of capture; non-anchored search for find). Each
+ # is parsed and emitted into the IR but compile-time-erroring
+ # here keeps user code from silently misbehaving.
+    if pt == "HashPatternNode"
+      $stderr.puts "Spinel: HashPatternNode (`in {a: 1}`) not yet supported"
+      exit(1)
+    end
+    if pt == "FindPatternNode"
+      $stderr.puts "Spinel: FindPatternNode (`in [*, x, *]`) not yet supported"
+      exit(1)
+    end
+    if pt == "CapturePatternNode"
+      $stderr.puts "Spinel: CapturePatternNode (`in T => name`) not yet supported"
+      exit(1)
     end
     "1"
   end

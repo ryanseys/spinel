@@ -1,0 +1,13 @@
+int exact
+len2
+empty
+str match
+number
+number
+string
+nil
+bool
+pin match int
+pin match str
+no pin y
+pin expr 21
