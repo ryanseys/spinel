@@ -28,7 +28,13 @@ results = workers.map { |w| w.run(42) }
 
 # results is poly_array; result of [0] dispatch is poly. File.write
 # call site must unbox before the sp_file_write boundary.
-path = "/tmp/spinel_i643_test.txt"
+#
+# cwd-relative path so MSYS2 ruby (the test harness) and the
+# native-Windows-built spinel binary resolve to the same file. The
+# harness runs each test from the project root. `/tmp/...` lands in
+# different places on the two sides -- see test/bundle_io_sys.rb /
+# test/file_class_methods_int_recv.rb for the same workaround.
+path = "spinel_i643_test.txt"
 File.write(path, results[0])
 puts File.read(path)
 File.delete(path)
