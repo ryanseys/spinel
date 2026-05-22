@@ -28569,7 +28569,108 @@ class Compiler
       end
       return "(" + tmp + ") == (" + pinned + ")"
     end
+    if pt == "HashPatternNode"
+      return compile_hash_pattern(pat_id, tmp, pred_type)
+    end
     "1"
+  end
+
+ # HashPatternNode codegen: `case x in {a:, b: 1, **rest}`. Per-variant
+ # dispatch on the scrutinee's typed-Hash shape. Only sym-keyed
+ # variants (sym_int_hash / sym_str_hash / sym_poly_hash) and the
+ # catch-all poly_poly_hash can actually match a Ruby hash pattern
+ # (CRuby's spec restricts hash-pattern keys to Symbol literals, so
+ # str/int-keyed hashes never match). Non-Symbol-keyed scrutinees
+ # return a constant "0" predicate that always fails, matching
+ # CRuby's behaviour.
+  def compile_hash_pattern(pat_id, tmp, pred_type)
+    elements = parse_id_list(@nd_elements[pat_id])
+    rest = @nd_rest[pat_id]
+    info = hash_pattern_dispatch_info(tmp, pred_type)
+    if info == ""
+      return "0"
+    end
+    parts = info.split("|")
+    has_key_fn = parts[0]
+    get_fn = parts[1]
+    val_elem_type = parts[2]
+    dup_fn = parts[3]
+    delete_fn = parts[4]
+    cast_recv = parts[5]
+    parts_pred = "1"
+
+    ei = 0
+    while ei < elements.length
+      e = elements[ei]
+      if @nd_type[e] == "AssocNode"
+        k = @nd_key[e]
+        v = @nd_expression[e]
+        if @nd_type[k] != "SymbolNode"
+ # CRuby: hash patterns require Symbol keys. Anything else is
+ # a static error; fail the arm.
+          return "0"
+        end
+        sym_lit = compile_symbol_literal(@nd_content[k])
+        parts_pred = parts_pred + " && " + has_key_fn + "(" + cast_recv + ", " + sym_lit + ")"
+        if v >= 0
+          val_expr = get_fn + "(" + cast_recv + ", " + sym_lit + ")"
+          if @nd_type[v] == "LocalVariableTargetNode"
+            bname = "lv_" + @nd_name[v]
+            parts_pred = parts_pred + " && ((" + bname + " = " + val_expr + "), 1)"
+          else
+            parts_pred = parts_pred + " && (" + compile_in_pattern(v, val_expr, val_elem_type) + ")"
+          end
+        end
+      end
+      ei = ei + 1
+    end
+
+    if rest >= 0 && @nd_type[rest] == "AssocSplatNode"
+      rtgt = @nd_expression[rest]
+      if rtgt >= 0 && @nd_type[rtgt] == "LocalVariableTargetNode"
+        rname = "lv_" + @nd_name[rtgt]
+ # rest = dup(scrut); for each matched key: delete(rest, key)
+        parts_pred = parts_pred + " && ((" + rname + " = " + dup_fn + "(" + cast_recv + ")), 1)"
+        ei = 0
+        while ei < elements.length
+          e = elements[ei]
+          if @nd_type[e] == "AssocNode"
+            k = @nd_key[e]
+            if @nd_type[k] == "SymbolNode"
+              sym_lit = compile_symbol_literal(@nd_content[k])
+              parts_pred = parts_pred + " && ((" + delete_fn + "(" + rname + ", " + sym_lit + ")), 1)"
+            end
+          end
+          ei = ei + 1
+        end
+      end
+    end
+
+    "(" + parts_pred + ")"
+  end
+
+ # Per-variant Hash dispatch info for HashPattern. Returns a
+ # pipe-joined string: "has_key_fn|get_fn|val_elem_type|dup_fn|
+ # delete_fn|cast_recv". Empty for non-Symbol-keyed scrutinees.
+  def hash_pattern_dispatch_info(tmp, pred_type)
+    if pred_type == "sym_int_hash"
+      @needs_sym_int_hash = 1
+      return "sp_SymIntHash_has_key|sp_SymIntHash_get|int|sp_SymIntHash_dup|sp_SymIntHash_delete|" + tmp
+    end
+    if pred_type == "sym_str_hash"
+      @needs_sym_str_hash = 1
+      return "sp_SymStrHash_has_key|sp_SymStrHash_get|string|sp_SymStrHash_dup|sp_SymStrHash_delete|" + tmp
+    end
+    if pred_type == "sym_poly_hash"
+      @needs_sym_poly_hash = 1
+      return "sp_SymPolyHash_has_key|sp_SymPolyHash_get|poly|sp_SymPolyHash_dup|sp_SymPolyHash_delete|" + tmp
+    end
+ # CRuby's spec: hash patterns require Symbol keys in the scrutinee.
+ # Non-Symbol-keyed variants (str_*_hash, int_*_hash) and the
+ # polymorphic poly_poly_hash (where keys aren't statically known to
+ # be symbols) emit a "0" predicate that always fails -- this matches
+ # CRuby's "no Symbol key, no match" semantics.
+    ""
   end
 
   def compile_return_stmt(nid)

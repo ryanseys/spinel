@@ -1062,6 +1062,32 @@ static int flatten(pm_node_t *node) {
     R("expression", n->variable);
     break;
   }
+  case PM_HASH_PATTERN_NODE: {
+    /* `case x in {a:, b:, **rest}`. `elements` is a list of AssocNodes,
+       each carrying a SymbolNode key and a value that's either an
+       implicit LocalVariableTarget (for the `{a:}` shorthand, expanded
+       by the AssocNode emit's IMPLICIT_NODE unwrap), an explicit
+       sub-pattern, or a literal. `rest` is the optional `**name`
+       splat (PM_ASSOC_SPLAT_NODE) whose `.value` slot carries the rest
+       binding target. The `constant` field for `in Foo(a:)`
+       class-deconstructed patterns is intentionally elided. */
+    pm_hash_pattern_node_t *n = (pm_hash_pattern_node_t *)node;
+    N("HashPatternNode");
+    A("elements", &n->elements);
+    if (n->rest) R("rest", n->rest);
+    break;
+  }
+  case PM_ASSOC_SPLAT_NODE: {
+    /* `{**rest}`. The value slot holds the splat target (a
+       LocalVariableTargetNode for the HashPattern rest binding, or
+       a LocalVariableReadNode for hash-merge expressions). Routed
+       to @nd_expression so the codegen can read it the same way
+       it reads a SplatNode's payload. */
+    pm_assoc_splat_node_t *n = (pm_assoc_splat_node_t *)node;
+    N("AssocSplatNode");
+    if (n->value) R("expression", n->value);
+    break;
+  }
   case PM_NUMBERED_PARAMETERS_NODE: {
     pm_numbered_parameters_node_t *n = (pm_numbered_parameters_node_t *)node;
     N("NumberedParametersNode");

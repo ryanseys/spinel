@@ -19760,6 +19760,20 @@ class Compiler
         r_idx = r_idx + 1
       }
     end
+ # CaseMatchNode: walk InNode patterns for binding locals via the
+ # per-pattern-type dispatcher.
+    if @nd_type[nid] == "CaseMatchNode"
+      cmn_scrut = @nd_predicate[nid]
+      cmn_conds = parse_id_list(@nd_conditions[nid])
+      cmn_k = 0
+      while cmn_k < cmn_conds.length
+        cmn_inid = cmn_conds[cmn_k]
+        if @nd_type[cmn_inid] == "InNode"
+          scan_pattern_bindings_first(@nd_pattern[cmn_inid], cmn_scrut, names, types, params)
+        end
+        cmn_k = cmn_k + 1
+      end
+    end
  # Block parameters of `recv.method do |bp| ... end` need to be
  # declared as locals so the enclosing scope's call-site widening
  # (driven by scan_new_calls -> widen_ptypes_from_args ->
@@ -24202,6 +24216,107 @@ class Compiler
     0
   end
 
+  def scan_pattern_bindings_first(pat_id, scrut_id, names, types, params)
+    if pat_id < 0
+      return
+    end
+    pt = @nd_type[pat_id]
+    if pt == "HashPatternNode"
+      elements = parse_id_list(@nd_elements[pat_id])
+      rest = @nd_rest[pat_id]
+      vtype = hash_pattern_value_type(scrut_id)
+      ei = 0
+      while ei < elements.length
+        e = elements[ei]
+        if @nd_type[e] == "AssocNode"
+          v = @nd_expression[e]
+          if v >= 0 && @nd_type[v] == "LocalVariableTargetNode"
+            bname = @nd_name[v]
+            if not_in(bname, names) == 1 && not_in(bname, params) == 1
+              names.push(bname)
+              types.push(vtype)
+            end
+          elsif v >= 0
+            scan_pattern_bindings_first(v, scrut_id, names, types, params)
+          end
+        end
+        ei = ei + 1
+      end
+      if rest >= 0 && @nd_type[rest] == "AssocSplatNode"
+        rtgt = @nd_expression[rest]
+        if rtgt >= 0 && @nd_type[rtgt] == "LocalVariableTargetNode"
+          rname = @nd_name[rtgt]
+          if not_in(rname, names) == 1 && not_in(rname, params) == 1
+            names.push(rname)
+            types.push(infer_type(scrut_id))
+          end
+        end
+      end
+    end
+  end
+
+ # Element value type of the scrutinee hash variant. The hash
+ # pattern key is always a Symbol literal (Ruby parser-level
+ # constraint); the binding receives the hash's value-slot type.
+  def hash_pattern_value_type(scrut_id)
+    ht = infer_type(scrut_id)
+    if ht == "sym_int_hash" || ht == "str_int_hash" || ht == "int_int_hash"
+      return "int"
+    end
+    if ht == "sym_str_hash" || ht == "str_str_hash" || ht == "int_str_hash"
+      return "string"
+    end
+    if ht == "sym_poly_hash" || ht == "str_poly_hash" || ht == "poly_poly_hash"
+      return "poly"
+    end
+    "poly"
+  end
+
+  def scan_pattern_bindings(pat_id, scrut_id, names, types, params)
+    if pat_id < 0
+      return
+    end
+    pt = @nd_type[pat_id]
+    if pt == "HashPatternNode"
+      elements = parse_id_list(@nd_elements[pat_id])
+      rest = @nd_rest[pat_id]
+      vtype = hash_pattern_value_type(scrut_id)
+      ei = 0
+      while ei < elements.length
+        e = elements[ei]
+        if @nd_type[e] == "AssocNode"
+          v = @nd_expression[e]
+          if v >= 0 && @nd_type[v] == "LocalVariableTargetNode"
+            bname = @nd_name[v]
+            if not_in(bname, names) == 1 && not_in(bname, params) == 1
+              names.push(bname)
+              types.push(vtype)
+              @scan_literal_flags.push("")
+              @scan_empty_flags.push("")
+              @scan_empty_hash_flags.push("")
+            end
+          elsif v >= 0
+            scan_pattern_bindings(v, scrut_id, names, types, params)
+          end
+        end
+        ei = ei + 1
+      end
+      if rest >= 0 && @nd_type[rest] == "AssocSplatNode"
+        rtgt = @nd_expression[rest]
+        if rtgt >= 0 && @nd_type[rtgt] == "LocalVariableTargetNode"
+          rname = @nd_name[rtgt]
+          if not_in(rname, names) == 1 && not_in(rname, params) == 1
+            names.push(rname)
+            types.push(infer_type(scrut_id))
+            @scan_literal_flags.push("")
+            @scan_empty_flags.push("")
+            @scan_empty_hash_flags.push("")
+          end
+        end
+      end
+    end
+  end
+
   def scan_locals(nid, names, types, params)
     if nid < 0
       return
@@ -24442,6 +24557,20 @@ class Compiler
             ki = ki + 1
           end
         end
+      end
+    end
+ # CaseMatchNode: walk InNode patterns for binding locals via the
+ # per-pattern-type dispatcher.
+    if @nd_type[nid] == "CaseMatchNode"
+      cmn_scrut = @nd_predicate[nid]
+      cmn_conds = parse_id_list(@nd_conditions[nid])
+      cmn_k = 0
+      while cmn_k < cmn_conds.length
+        cmn_inid = cmn_conds[cmn_k]
+        if @nd_type[cmn_inid] == "InNode"
+          scan_pattern_bindings(@nd_pattern[cmn_inid], cmn_scrut, names, types, params)
+        end
+        cmn_k = cmn_k + 1
       end
     end
     if @nd_type[nid] == "LocalVariableOperatorWriteNode"
