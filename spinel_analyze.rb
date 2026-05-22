@@ -20772,6 +20772,22 @@ class Compiler
         r_idx = r_idx + 1
       }
     end
+ # CaseMatchNode (case/in) walks each InNode's pattern for binding
+ # targets. Pattern bindings (`in [a, b, *rest]`) introduce new
+ # locals into the enclosing scope, typed from the scrutinee's
+ # element type via the same multi_write helpers used for MultiWriteNode.
+    if @nd_type[nid] == "CaseMatchNode"
+      cmn_scrut = @nd_predicate[nid]
+      cmn_conds = parse_id_list(@nd_conditions[nid])
+      cmn_k = 0
+      while cmn_k < cmn_conds.length
+        cmn_inid = cmn_conds[cmn_k]
+        if @nd_type[cmn_inid] == "InNode"
+          scan_pattern_bindings_first(@nd_pattern[cmn_inid], cmn_scrut, names, types, params)
+        end
+        cmn_k = cmn_k + 1
+      end
+    end
  # Block parameters of `recv.method do |bp| ... end` need to be
  # declared as locals so the enclosing scope's call-site widening
  # (driven by scan_new_calls -> widen_ptypes_from_args ->
@@ -25563,6 +25579,119 @@ class Compiler
     0
   end
 
+  def scan_pattern_bindings_first(pat_id, scrut_id, names, types, params)
+    if pat_id < 0
+      return
+    end
+    pt = @nd_type[pat_id]
+    if pt == "ArrayPatternNode"
+      reqs = parse_id_list(@nd_requireds[pat_id])
+      rest = @nd_rest[pat_id]
+      posts = parse_id_list(@nd_posts[pat_id])
+      ai = 0
+      while ai < reqs.length
+        rtid = reqs[ai]
+        if @nd_type[rtid] == "LocalVariableTargetNode"
+          rname = @nd_name[rtid]
+          if not_in(rname, names) == 1 && not_in(rname, params) == 1
+            names.push(rname)
+            types.push(multi_write_target_type(scrut_id, ai))
+          end
+        else
+ # Nested pattern -- recurse to surface any inner bindings.
+          scan_pattern_bindings_first(rtid, scrut_id, names, types, params)
+        end
+        ai = ai + 1
+      end
+      if is_splat_with_target(rest) == 1
+        sext = @nd_expression[rest]
+        if @nd_type[sext] == "LocalVariableTargetNode"
+          sname = @nd_name[sext]
+          if not_in(sname, names) == 1 && not_in(sname, params) == 1
+            names.push(sname)
+            types.push(splat_rest_type(scrut_id))
+          end
+        end
+      end
+      pi = 0
+      while pi < posts.length
+        ptid = posts[pi]
+        if @nd_type[ptid] == "LocalVariableTargetNode"
+          pname = @nd_name[ptid]
+          if not_in(pname, names) == 1 && not_in(pname, params) == 1
+            names.push(pname)
+ # Element type is uniform across a typed array; index 0 is
+ # representative. multi_write_target_type's ArrayNode-literal
+ # precision path doesn't apply to a runtime case scrutinee.
+            types.push(multi_write_target_type(scrut_id, 0))
+          end
+        else
+          scan_pattern_bindings_first(ptid, scrut_id, names, types, params)
+        end
+        pi = pi + 1
+      end
+    end
+  end
+
+  def scan_pattern_bindings(pat_id, scrut_id, names, types, params)
+    if pat_id < 0
+      return
+    end
+    pt = @nd_type[pat_id]
+    if pt == "ArrayPatternNode"
+      reqs = parse_id_list(@nd_requireds[pat_id])
+      rest = @nd_rest[pat_id]
+      posts = parse_id_list(@nd_posts[pat_id])
+      ai = 0
+      while ai < reqs.length
+        rtid = reqs[ai]
+        if @nd_type[rtid] == "LocalVariableTargetNode"
+          rname = @nd_name[rtid]
+          if not_in(rname, names) == 1 && not_in(rname, params) == 1
+            names.push(rname)
+            types.push(multi_write_target_type(scrut_id, ai))
+            @scan_literal_flags.push("")
+            @scan_empty_flags.push("")
+            @scan_empty_hash_flags.push("")
+          end
+        else
+          scan_pattern_bindings(rtid, scrut_id, names, types, params)
+        end
+        ai = ai + 1
+      end
+      if is_splat_with_target(rest) == 1
+        sext = @nd_expression[rest]
+        if @nd_type[sext] == "LocalVariableTargetNode"
+          sname = @nd_name[sext]
+          if not_in(sname, names) == 1 && not_in(sname, params) == 1
+            names.push(sname)
+            types.push(splat_rest_type(scrut_id))
+            @scan_literal_flags.push("")
+            @scan_empty_flags.push("")
+            @scan_empty_hash_flags.push("")
+          end
+        end
+      end
+      pi = 0
+      while pi < posts.length
+        ptid = posts[pi]
+        if @nd_type[ptid] == "LocalVariableTargetNode"
+          pname = @nd_name[ptid]
+          if not_in(pname, names) == 1 && not_in(pname, params) == 1
+            names.push(pname)
+            types.push(multi_write_target_type(scrut_id, 0))
+            @scan_literal_flags.push("")
+            @scan_empty_flags.push("")
+            @scan_empty_hash_flags.push("")
+          end
+        else
+          scan_pattern_bindings(ptid, scrut_id, names, types, params)
+        end
+        pi = pi + 1
+      end
+    end
+  end
+
   def scan_locals(nid, names, types, params)
     if nid < 0
       return
@@ -25761,6 +25890,24 @@ class Compiler
         scan_locals(@nd_expression[nid], names, types, params)
       end
       return
+    end
+ # CaseMatchNode: walk each InNode's pattern for binding locals. The
+ # scrutinee is the case's predicate; bindings type from its element
+ # type via multi_write_target_type / splat_rest_type. See
+ # scan_pattern_bindings for the per-pattern-type dispatch.
+    if @nd_type[nid] == "CaseMatchNode"
+      cmn_scrut = @nd_predicate[nid]
+      cmn_conds = parse_id_list(@nd_conditions[nid])
+      cmn_k = 0
+      while cmn_k < cmn_conds.length
+        cmn_inid = cmn_conds[cmn_k]
+        if @nd_type[cmn_inid] == "InNode"
+          scan_pattern_bindings(@nd_pattern[cmn_inid], cmn_scrut, names, types, params)
+        end
+        cmn_k = cmn_k + 1
+      end
+ # Fall through so scan_locals_children walks the InNode bodies
+ # below (which may contain LocalVariableWrites etc.).
     end
     if @nd_type[nid] == "LocalVariableWriteNode"
       lname = @nd_name[nid]

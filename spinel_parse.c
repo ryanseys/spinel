@@ -1091,6 +1091,19 @@ static int flatten(pm_node_t *node) {
     R("expression", n->variable);
     break;
   }
+  case PM_ARRAY_PATTERN_NODE: {
+    /* `case x in [a, b, c]` (requireds), `in [a, *rest]` (rest),
+       `in [a, *rest, b]` (rest + posts). The `constant` field for
+       class-deconstructed patterns (`in Foo[1, 2]`) is intentionally
+       elided -- the common shapes don't need it and supporting it
+       would need deconstruct / deconstruct_keys runtime contracts. */
+    pm_array_pattern_node_t *n = (pm_array_pattern_node_t *)node;
+    N("ArrayPatternNode");
+    A("requireds", &n->requireds);
+    if (n->rest) R("rest", n->rest);
+    A("posts", &n->posts);
+    break;
+  }
   case PM_NUMBERED_PARAMETERS_NODE: {
     pm_numbered_parameters_node_t *n = (pm_numbered_parameters_node_t *)node;
     N("NumberedParametersNode");

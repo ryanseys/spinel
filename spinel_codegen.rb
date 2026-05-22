@@ -30824,7 +30824,151 @@ class Compiler
       end
       return "(" + tmp + ") == (" + pinned + ")"
     end
+    if pt == "ArrayPatternNode"
+      return compile_array_pattern(pat_id, tmp, pred_type)
+    end
     "1"
+  end
+
+ # ArrayPatternNode codegen: `case x in [a, b, *rest, c]`. Emits a
+ # length predicate combined via short-circuit `&&` with per-element
+ # binding writes (via the comma operator so bindings only fire on a
+ # successful element compare). Each element slot is either:
+ #   - a literal pattern (recursed via compile_in_pattern)
+ #   - a LocalVariableTargetNode (binding write)
+ #   - a nested pattern (recursed)
+ # Rest splat consumes the middle slice; an anonymous rest just
+ # contributes to the length math without binding.
+  def compile_array_pattern(pat_id, tmp, pred_type)
+    reqs = parse_id_list(@nd_requireds[pat_id])
+    rest = @nd_rest[pat_id]
+    posts = parse_id_list(@nd_posts[pat_id])
+    has_rest = (rest >= 0) ? 1 : 0
+    rest_binds = is_splat_with_target_codegen(rest)
+
+    if pred_type == "poly"
+      arr_expr = "((sp_IntArray *)" + tmp + ".v.p)"
+      arr_len = arr_expr + "->len"
+      elem_prefix = "((mrb_int)(" + arr_expr + "->data[" + arr_expr + "->start + "
+      elem_suffix = "]))"
+      elem_type = "int"
+      slice_helper = "sp_IntArray_slice"
+      rest_recv = arr_expr
+      tag_check = "(" + tmp + ".tag == SP_TAG_OBJ && (" + tmp + ".cls_id == SP_BUILTIN_INT_ARRAY || " + tmp + ".cls_id == SP_BUILTIN_STR_ARRAY || " + tmp + ".cls_id == SP_BUILTIN_SYM_ARRAY || " + tmp + ".cls_id == SP_BUILTIN_POLY_ARRAY || " + tmp + ".cls_id == SP_BUILTIN_FLT_ARRAY))"
+    elsif pred_type == "int_array"
+      arr_expr = tmp
+      arr_len = arr_expr + "->len"
+      elem_prefix = "((mrb_int)(" + arr_expr + "->data[" + arr_expr + "->start + "
+      elem_suffix = "]))"
+      elem_type = "int"
+      slice_helper = "sp_IntArray_slice"
+      rest_recv = arr_expr
+      tag_check = ""
+    elsif pred_type == "str_array"
+      arr_expr = tmp
+      arr_len = arr_expr + "->len"
+      elem_prefix = "((const char *)(" + arr_expr + "->data["
+      elem_suffix = "]))"
+      elem_type = "string"
+      slice_helper = "sp_StrArray_slice"
+      rest_recv = arr_expr
+      tag_check = ""
+    elsif pred_type == "sym_array"
+      arr_expr = tmp
+      arr_len = arr_expr + "->len"
+      elem_prefix = "((sp_sym)(" + arr_expr + "->data[" + arr_expr + "->start + "
+      elem_suffix = "]))"
+      elem_type = "symbol"
+      slice_helper = "sp_IntArray_slice"
+      rest_recv = arr_expr
+      tag_check = ""
+    elsif pred_type == "float_array"
+      arr_expr = tmp
+      arr_len = arr_expr + "->len"
+      elem_prefix = "((mrb_float)(" + arr_expr + "->data["
+      elem_suffix = "]))"
+      elem_type = "float"
+      slice_helper = "sp_FloatArray_slice"
+      rest_recv = arr_expr
+      tag_check = ""
+    elsif pred_type == "poly_array"
+      arr_expr = tmp
+      arr_len = arr_expr + "->len"
+      elem_prefix = "(" + arr_expr + "->data["
+      elem_suffix = "])"
+      elem_type = "poly"
+      slice_helper = "sp_PolyArray_slice"
+      rest_recv = arr_expr
+      tag_check = ""
+    else
+      return "0"
+    end
+
+    fixed_total = reqs.length + posts.length
+    if has_rest == 1
+      len_pred = arr_len + " >= " + fixed_total.to_s
+    else
+      len_pred = arr_len + " == " + fixed_total.to_s
+    end
+    parts = "(" + len_pred + ")"
+    if tag_check != ""
+      parts = "(" + tag_check + " && " + parts + ")"
+    end
+
+    ri = 0
+    while ri < reqs.length
+      tid = reqs[ri]
+      elem_idx = elem_prefix + ri.to_s + elem_suffix
+      parts = parts + " && " + compile_pattern_slot(tid, elem_idx, elem_type)
+      ri = ri + 1
+    end
+
+    if rest_binds == 1
+      sext = @nd_expression[rest]
+      bname = "lv_" + @nd_name[sext]
+      rest_slice = slice_helper + "(" + rest_recv + ", " + reqs.length.to_s + ", " + arr_len + " - " + fixed_total.to_s + ")"
+      parts = parts + " && ((" + bname + " = " + rest_slice + "), 1)"
+    end
+
+    pi = 0
+    while pi < posts.length
+      tid = posts[pi]
+ # Index from the tail: arr_len - posts.length + pi.
+      offset_expr = "(" + arr_len + " - " + posts.length.to_s + " + " + pi.to_s + ")"
+      elem_idx = elem_prefix + offset_expr + elem_suffix
+      parts = parts + " && " + compile_pattern_slot(tid, elem_idx, elem_type)
+      pi = pi + 1
+    end
+
+    "(" + parts + ")"
+  end
+
+ # Helper: compile a single pattern slot inside ArrayPatternNode (or
+ # FindPatternNode in a later PR). If the slot is a LocalVariableTargetNode
+ # the emit is a comma-op binding write. Otherwise recurse via the
+ # standard compile_in_pattern dispatch.
+  def compile_pattern_slot(slot_id, elem_expr, elem_type)
+    if @nd_type[slot_id] == "LocalVariableTargetNode"
+      bname = "lv_" + @nd_name[slot_id]
+      return "((" + bname + " = " + elem_expr + "), 1)"
+    end
+    "(" + compile_in_pattern(slot_id, elem_expr, elem_type) + ")"
+  end
+
+  def is_splat_with_target_codegen(nid)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] != "SplatNode"
+      return 0
+    end
+    if @nd_expression[nid] < 0
+      return 0
+    end
+    if @nd_type[@nd_expression[nid]] != "LocalVariableTargetNode"
+      return 0
+    end
+    1
   end
 
   def compile_return_stmt(nid)
