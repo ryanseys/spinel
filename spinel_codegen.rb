@@ -28419,6 +28419,12 @@ class Compiler
           kw = "} else if"
         end
         pat = @nd_pattern[inid]
+ # Some pattern shapes (notably FindPatternNode's linear scan)
+ # need statement-level setup before the if-condition can be
+ # phrased as a single expression. emit_in_pattern_preamble
+ # is a no-op for most patterns and emits the scan loop into
+ # a per-arm offset temp for FindPatternNode.
+        emit_in_pattern_preamble(pat, tmp, pred_type)
         cond_str = compile_in_pattern(pat, tmp, pred_type)
         emit("  " + kw + " (" + cond_str + ") {")
         @indent = @indent + 1
@@ -28569,7 +28575,162 @@ class Compiler
       end
       return "(" + tmp + ") == (" + pinned + ")"
     end
+ # FindPatternNode predicate. The preamble emitted by
+ # emit_in_pattern_preamble has populated an `_find_off_<pat_id>`
+ # local: -1 = no match, otherwise the offset within the array at
+ # which the literal middle succeeded. Bindings for left / mid /
+ # right are emitted here via comma-op so they fire only when the
+ # find succeeded.
+    if pt == "FindPatternNode"
+      return compile_find_pattern_predicate(pat_id, tmp, pred_type)
+    end
     "1"
+  end
+
+ # Pattern preamble emit: setup statements that have to land before
+ # the if-condition. Today only FindPatternNode uses it.
+  def emit_in_pattern_preamble(pat_id, tmp, pred_type)
+    if pat_id < 0
+      return
+    end
+    if @nd_type[pat_id] == "FindPatternNode"
+      emit_find_pattern_scan(pat_id, tmp, pred_type)
+    end
+  end
+
+ # Emit the linear-scan loop for `case x in [*pre, m1, m2, *post]`.
+ # Searches the array for an offset where the literal middle
+ # elements all match; stashes the offset in a per-pattern temp
+ # `_find_off_<pat_id>` (-1 = no match). Binding-target middle
+ # slots are wildcards in the scan (they always match); the
+ # corresponding lv writes happen in the predicate phase via
+ # comma-op so they only fire after find succeeded.
+  def emit_find_pattern_scan(pat_id, tmp, pred_type)
+    reqs = parse_id_list(@nd_requireds[pat_id])
+    info = find_pattern_array_info(tmp, pred_type)
+    if info == ""
+      emit("  mrb_int _find_off_" + pat_id.to_s + " = -1;")
+      return
+    end
+    arr_expr = info.split("|")[0]
+    arr_len = arr_expr + "->len"
+    elem_prefix = info.split("|")[1]
+    elem_suffix = info.split("|")[2]
+    elem_type = info.split("|")[3]
+    mid_len = reqs.length
+
+    emit("  mrb_int _find_off_" + pat_id.to_s + " = -1;")
+    emit("  {")
+    emit("    mrb_int _find_i_" + pat_id.to_s + " = 0;")
+    emit("    while (_find_i_" + pat_id.to_s + " <= " + arr_len + " - " + mid_len.to_s + ") {")
+ # Build literal-only predicate for the middle at the current
+ # scan offset. LocalVariableTargetNode slots are wildcards.
+    test_parts = "1"
+    mi = 0
+    while mi < reqs.length
+      mtid = reqs[mi]
+      if @nd_type[mtid] != "LocalVariableTargetNode"
+        slot_expr = elem_prefix + "_find_i_" + pat_id.to_s + " + " + mi.to_s + elem_suffix
+        sub = "(" + compile_in_pattern(mtid, slot_expr, elem_type) + ")"
+        test_parts = test_parts + " && " + sub
+      end
+      mi = mi + 1
+    end
+    emit("      if (" + test_parts + ") { _find_off_" + pat_id.to_s + " = _find_i_" + pat_id.to_s + "; break; }")
+    emit("      _find_i_" + pat_id.to_s + "++;")
+    emit("    }")
+    emit("  }")
+  end
+
+  def compile_find_pattern_predicate(pat_id, tmp, pred_type)
+    left = @nd_left[pat_id]
+    reqs = parse_id_list(@nd_requireds[pat_id])
+    right = @nd_right[pat_id]
+    info = find_pattern_array_info(tmp, pred_type)
+    if info == ""
+      return "0"
+    end
+    arr_expr = info.split("|")[0]
+    arr_len = arr_expr + "->len"
+    elem_prefix = info.split("|")[1]
+    elem_suffix = info.split("|")[2]
+    elem_type = info.split("|")[3]
+    slice_helper = info.split("|")[4]
+    mid_len = reqs.length
+
+    parts = "(_find_off_" + pat_id.to_s + " >= 0)"
+
+ # Middle bindings: emit comma-op writes that fire only after the
+ # find succeeded (the && short-circuit handles the gating).
+    mi = 0
+    while mi < reqs.length
+      mtid = reqs[mi]
+      if @nd_type[mtid] == "LocalVariableTargetNode"
+        bname = "lv_" + @nd_name[mtid]
+        slot_expr = elem_prefix + "_find_off_" + pat_id.to_s + " + " + mi.to_s + elem_suffix
+        parts = parts + " && ((" + bname + " = " + slot_expr + "), 1)"
+      end
+      mi = mi + 1
+    end
+
+ # Left splat binding: pre-slice `[0 .. _find_off)`.
+    if is_splat_with_target_codegen(left) == 1
+      lname = "lv_" + @nd_name[@nd_expression[left]]
+      parts = parts + " && ((" + lname + " = " + slice_helper + "(" + arr_expr + ", 0, _find_off_" + pat_id.to_s + ")), 1)"
+    end
+
+ # Right splat binding: post-slice `[_find_off + mid_len .. end)`.
+    if is_splat_with_target_codegen(right) == 1
+      rname = "lv_" + @nd_name[@nd_expression[right]]
+      post_start = "(_find_off_" + pat_id.to_s + " + " + mid_len.to_s + ")"
+      post_len = arr_len + " - " + post_start
+      parts = parts + " && ((" + rname + " = " + slice_helper + "(" + arr_expr + ", " + post_start + ", " + post_len + ")), 1)"
+    end
+
+    "(" + parts + ")"
+  end
+
+ # Per-variant array access info for FindPattern shared between
+ # the scan-loop preamble and the binding-predicate emit. Returns a
+ # pipe-joined string: "arr_expr|elem_prefix|elem_suffix|elem_type|slice_helper".
+ # Empty string when the scrutinee variant isn't a typed array.
+  def find_pattern_array_info(tmp, pred_type)
+    if pred_type == "poly"
+      arr_expr = "((sp_IntArray *)" + tmp + ".v.p)"
+      return arr_expr + "|((mrb_int)(" + arr_expr + "->data[" + arr_expr + "->start + |]))|int|sp_IntArray_slice"
+    end
+    if pred_type == "int_array"
+      return tmp + "|((mrb_int)(" + tmp + "->data[" + tmp + "->start + |]))|int|sp_IntArray_slice"
+    end
+    if pred_type == "str_array"
+      return tmp + "|((const char *)(" + tmp + "->data[|]))|string|sp_StrArray_slice"
+    end
+    if pred_type == "sym_array"
+      return tmp + "|((sp_sym)(" + tmp + "->data[" + tmp + "->start + |]))|symbol|sp_IntArray_slice"
+    end
+    if pred_type == "float_array"
+      return tmp + "|((mrb_float)(" + tmp + "->data[|]))|float|sp_FloatArray_slice"
+    end
+    if pred_type == "poly_array"
+      return tmp + "|(" + tmp + "->data[|])|poly|sp_PolyArray_slice"
+    end
+    ""
+  end
+
+  def is_splat_with_target_codegen(nid)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] != "SplatNode"
+      return 0
+    end
+    if @nd_expression[nid] < 0
+      return 0
+    end
+    if @nd_type[@nd_expression[nid]] != "LocalVariableTargetNode"
+      return 0
+    end
+    1
   end
 
   def compile_return_stmt(nid)

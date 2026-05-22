@@ -19760,6 +19760,20 @@ class Compiler
         r_idx = r_idx + 1
       }
     end
+ # CaseMatchNode: walk InNode patterns for binding locals via the
+ # per-pattern-type dispatcher.
+    if @nd_type[nid] == "CaseMatchNode"
+      cmn_scrut = @nd_predicate[nid]
+      cmn_conds = parse_id_list(@nd_conditions[nid])
+      cmn_k = 0
+      while cmn_k < cmn_conds.length
+        cmn_inid = cmn_conds[cmn_k]
+        if @nd_type[cmn_inid] == "InNode"
+          scan_pattern_bindings_first(@nd_pattern[cmn_inid], cmn_scrut, names, types, params)
+        end
+        cmn_k = cmn_k + 1
+      end
+    end
  # Block parameters of `recv.method do |bp| ... end` need to be
  # declared as locals so the enclosing scope's call-site widening
  # (driven by scan_new_calls -> widen_ptypes_from_args ->
@@ -24202,6 +24216,99 @@ class Compiler
     0
   end
 
+  def scan_pattern_bindings_first(pat_id, scrut_id, names, types, params)
+    if pat_id < 0
+      return
+    end
+    pt = @nd_type[pat_id]
+    if pt == "FindPatternNode"
+      left = @nd_left[pat_id]
+      reqs = parse_id_list(@nd_requireds[pat_id])
+      right = @nd_right[pat_id]
+      if is_splat_with_target(left) == 1
+        lext = @nd_expression[left]
+        lname = @nd_name[lext]
+        if not_in(lname, names) == 1 && not_in(lname, params) == 1
+          names.push(lname)
+          types.push(splat_rest_type(scrut_id))
+        end
+      end
+      ri = 0
+      while ri < reqs.length
+        rtid = reqs[ri]
+        if @nd_type[rtid] == "LocalVariableTargetNode"
+          rname = @nd_name[rtid]
+          if not_in(rname, names) == 1 && not_in(rname, params) == 1
+            names.push(rname)
+            types.push(multi_write_target_type(scrut_id, 0))
+          end
+        else
+          scan_pattern_bindings_first(rtid, scrut_id, names, types, params)
+        end
+        ri = ri + 1
+      end
+      if is_splat_with_target(right) == 1
+        rext = @nd_expression[right]
+        rname = @nd_name[rext]
+        if not_in(rname, names) == 1 && not_in(rname, params) == 1
+          names.push(rname)
+          types.push(splat_rest_type(scrut_id))
+        end
+      end
+    end
+  end
+
+  def scan_pattern_bindings(pat_id, scrut_id, names, types, params)
+    if pat_id < 0
+      return
+    end
+    pt = @nd_type[pat_id]
+    if pt == "FindPatternNode"
+      left = @nd_left[pat_id]
+      reqs = parse_id_list(@nd_requireds[pat_id])
+      right = @nd_right[pat_id]
+      if is_splat_with_target(left) == 1
+        lext = @nd_expression[left]
+        lname = @nd_name[lext]
+        if not_in(lname, names) == 1 && not_in(lname, params) == 1
+          names.push(lname)
+          types.push(splat_rest_type(scrut_id))
+          @scan_literal_flags.push("")
+          @scan_empty_flags.push("")
+          @scan_empty_hash_flags.push("")
+        end
+      end
+      ri = 0
+      while ri < reqs.length
+        rtid = reqs[ri]
+        if @nd_type[rtid] == "LocalVariableTargetNode"
+          rname = @nd_name[rtid]
+          if not_in(rname, names) == 1 && not_in(rname, params) == 1
+            names.push(rname)
+            types.push(multi_write_target_type(scrut_id, 0))
+            @scan_literal_flags.push("")
+            @scan_empty_flags.push("")
+            @scan_empty_hash_flags.push("")
+          end
+        else
+          scan_pattern_bindings(rtid, scrut_id, names, types, params)
+        end
+        ri = ri + 1
+      end
+      if is_splat_with_target(right) == 1
+        rext = @nd_expression[right]
+        rname = @nd_name[rext]
+        if not_in(rname, names) == 1 && not_in(rname, params) == 1
+          names.push(rname)
+          types.push(splat_rest_type(scrut_id))
+          @scan_literal_flags.push("")
+          @scan_empty_flags.push("")
+          @scan_empty_hash_flags.push("")
+        end
+      end
+    end
+  end
+
   def scan_locals(nid, names, types, params)
     if nid < 0
       return
@@ -24442,6 +24549,20 @@ class Compiler
             ki = ki + 1
           end
         end
+      end
+    end
+ # CaseMatchNode: walk InNode patterns for binding locals via the
+ # per-pattern-type dispatcher.
+    if @nd_type[nid] == "CaseMatchNode"
+      cmn_scrut = @nd_predicate[nid]
+      cmn_conds = parse_id_list(@nd_conditions[nid])
+      cmn_k = 0
+      while cmn_k < cmn_conds.length
+        cmn_inid = cmn_conds[cmn_k]
+        if @nd_type[cmn_inid] == "InNode"
+          scan_pattern_bindings(@nd_pattern[cmn_inid], cmn_scrut, names, types, params)
+        end
+        cmn_k = cmn_k + 1
       end
     end
     if @nd_type[nid] == "LocalVariableOperatorWriteNode"

@@ -1062,6 +1062,19 @@ static int flatten(pm_node_t *node) {
     R("expression", n->variable);
     break;
   }
+  case PM_FIND_PATTERN_NODE: {
+    /* `case x in [*pre, mid1, mid2, *post]`. left + right are
+       SplatNodes carrying optional binding targets on their
+       `.expression` field; requireds is the fixed middle. The
+       `constant` field is intentionally elided -- same reasoning
+       as ArrayPatternNode. */
+    pm_find_pattern_node_t *n = (pm_find_pattern_node_t *)node;
+    N("FindPatternNode");
+    R("left", (pm_node_t *)n->left);
+    A("requireds", &n->requireds);
+    R("right", n->right);
+    break;
+  }
   case PM_NUMBERED_PARAMETERS_NODE: {
     pm_numbered_parameters_node_t *n = (pm_numbered_parameters_node_t *)node;
     N("NumberedParametersNode");
