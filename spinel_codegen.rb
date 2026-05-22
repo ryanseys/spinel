@@ -30824,7 +30824,68 @@ class Compiler
       end
       return "(" + tmp + ") == (" + pinned + ")"
     end
+ # CapturePatternNode: `in <subpat> => name`. Match the sub-pattern;
+ # on success, bind the scrutinee value to the target local with the
+ # narrowed type. The binding write happens via comma-op inside the
+ # `&&` chain so it fires only after the sub-pattern predicate passed.
+    if pt == "CapturePatternNode"
+      sub = @nd_expression[pat_id]
+      tgt = @nd_target[pat_id]
+      sub_pred = compile_in_pattern(sub, tmp, pred_type)
+      if tgt < 0 || @nd_type[tgt] != "LocalVariableTargetNode"
+        return sub_pred
+      end
+      bname = "lv_" + @nd_name[tgt]
+      cap_val = compile_capture_value(tmp, pred_type, sub)
+      return "(" + sub_pred + " && ((" + bname + " = " + cap_val + "), 1))"
+    end
     "1"
+  end
+
+ # Extract the scrutinee value with the appropriate cast for the
+ # capture target's narrowed type. For a poly scrutinee whose
+ # sub-pattern narrows to a primitive, dig the payload out of the
+ # tag-union; for typed scrutinees the value is already the right
+ # shape and a bare `tmp` suffices.
+  def compile_capture_value(tmp, pred_type, sub_pat_id)
+    if pred_type != "poly"
+      return tmp
+    end
+    if sub_pat_id < 0
+      return tmp
+    end
+    st = @nd_type[sub_pat_id]
+    if st == "IntegerNode"
+      return tmp + ".v.i"
+    end
+    if st == "FloatNode"
+      return tmp + ".v.f"
+    end
+    if st == "StringNode"
+      return tmp + ".v.s"
+    end
+    if st == "SymbolNode"
+      return "(sp_sym)" + tmp + ".v.i"
+    end
+    if st == "TrueNode" || st == "FalseNode"
+      return tmp + ".v.b"
+    end
+    if st == "NilNode"
+      return "0"
+    end
+    if st == "ConstantReadNode"
+      cname = @nd_name[sub_pat_id]
+      if cname == "Integer"
+        return tmp + ".v.i"
+      end
+      if cname == "String"
+        return tmp + ".v.s"
+      end
+      if cname == "Float"
+        return tmp + ".v.f"
+      end
+    end
+    tmp
   end
 
   def compile_return_stmt(nid)

@@ -1091,6 +1091,17 @@ static int flatten(pm_node_t *node) {
     R("expression", n->variable);
     break;
   }
+  case PM_CAPTURE_PATTERN_NODE: {
+    /* `case x in Integer => n` -- match sub-pattern then bind to the
+       target local. Prism guarantees `.target` is
+       pm_local_variable_target_node_t *. The `value` field is the
+       sub-pattern; it can be any pattern node. */
+    pm_capture_pattern_node_t *n = (pm_capture_pattern_node_t *)node;
+    N("CapturePatternNode");
+    R("value", n->value);
+    R("target", (pm_node_t *)n->target);
+    break;
+  }
   case PM_NUMBERED_PARAMETERS_NODE: {
     pm_numbered_parameters_node_t *n = (pm_numbered_parameters_node_t *)node;
     N("NumberedParametersNode");

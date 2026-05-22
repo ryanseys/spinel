@@ -20772,6 +20772,22 @@ class Compiler
         r_idx = r_idx + 1
       }
     end
+ # CaseMatchNode (case/in) walks each InNode's pattern for binding
+ # targets. Pattern bindings introduce new locals into the enclosing
+ # scope, typed by the per-pattern-type dispatcher in
+ # scan_pattern_bindings_first.
+    if @nd_type[nid] == "CaseMatchNode"
+      cmn_scrut = @nd_predicate[nid]
+      cmn_conds = parse_id_list(@nd_conditions[nid])
+      cmn_k = 0
+      while cmn_k < cmn_conds.length
+        cmn_inid = cmn_conds[cmn_k]
+        if @nd_type[cmn_inid] == "InNode"
+          scan_pattern_bindings_first(@nd_pattern[cmn_inid], cmn_scrut, names, types, params)
+        end
+        cmn_k = cmn_k + 1
+      end
+    end
  # Block parameters of `recv.method do |bp| ... end` need to be
  # declared as locals so the enclosing scope's call-site widening
  # (driven by scan_new_calls -> widen_ptypes_from_args ->
@@ -25563,6 +25579,93 @@ class Compiler
     0
   end
 
+  def scan_pattern_bindings_first(pat_id, scrut_id, names, types, params)
+    if pat_id < 0
+      return
+    end
+    pt = @nd_type[pat_id]
+    if pt == "CapturePatternNode"
+      sub = @nd_expression[pat_id]
+      tgt = @nd_target[pat_id]
+      scan_pattern_bindings_first(sub, scrut_id, names, types, params)
+      if tgt >= 0 && @nd_type[tgt] == "LocalVariableTargetNode"
+        cname = @nd_name[tgt]
+        if not_in(cname, names) == 1 && not_in(cname, params) == 1
+          names.push(cname)
+          types.push(pattern_capture_binding_type(sub, scrut_id))
+        end
+      end
+    end
+  end
+
+ # Capture-pattern binding type: a subpattern narrows the scrutinee's
+ # static type. `Integer => n` binds n as int; `String => s` binds s
+ # as string; literal-value subpatterns narrow similarly. Other
+ # subpattern shapes preserve the scrutinee's static type.
+  def pattern_capture_binding_type(sub_pat_id, scrut_id)
+    scrut_type = infer_type(scrut_id)
+    if sub_pat_id < 0
+      return scrut_type
+    end
+    st = @nd_type[sub_pat_id]
+    if st == "ConstantReadNode"
+      cname = @nd_name[sub_pat_id]
+      if cname == "Integer"
+        return "int"
+      end
+      if cname == "String"
+        return "string"
+      end
+      if cname == "Float"
+        return "float"
+      end
+    end
+    if st == "IntegerNode"
+      return "int"
+    end
+    if st == "StringNode"
+      return "string"
+    end
+    if st == "SymbolNode"
+      return "symbol"
+    end
+    if st == "FloatNode"
+      return "float"
+    end
+    if st == "NilNode"
+      return "nil"
+    end
+    if st == "TrueNode"
+      return "bool"
+    end
+    if st == "FalseNode"
+      return "bool"
+    end
+    scrut_type
+  end
+
+  def scan_pattern_bindings(pat_id, scrut_id, names, types, params)
+    if pat_id < 0
+      return
+    end
+    pt = @nd_type[pat_id]
+    if pt == "CapturePatternNode"
+      sub = @nd_expression[pat_id]
+      tgt = @nd_target[pat_id]
+      scan_pattern_bindings(sub, scrut_id, names, types, params)
+      if tgt >= 0 && @nd_type[tgt] == "LocalVariableTargetNode"
+        cname = @nd_name[tgt]
+        if not_in(cname, names) == 1 && not_in(cname, params) == 1
+          names.push(cname)
+          types.push(pattern_capture_binding_type(sub, scrut_id))
+          @scan_literal_flags.push("")
+          @scan_empty_flags.push("")
+          @scan_empty_hash_flags.push("")
+        end
+      end
+    end
+  end
+
   def scan_locals(nid, names, types, params)
     if nid < 0
       return
@@ -25873,6 +25976,20 @@ class Compiler
             ki = ki + 1
           end
         end
+      end
+    end
+ # CaseMatchNode: walk each InNode's pattern for binding locals via
+ # the per-pattern-type dispatcher.
+    if @nd_type[nid] == "CaseMatchNode"
+      cmn_scrut = @nd_predicate[nid]
+      cmn_conds = parse_id_list(@nd_conditions[nid])
+      cmn_k = 0
+      while cmn_k < cmn_conds.length
+        cmn_inid = cmn_conds[cmn_k]
+        if @nd_type[cmn_inid] == "InNode"
+          scan_pattern_bindings(@nd_pattern[cmn_inid], cmn_scrut, names, types, params)
+        end
+        cmn_k = cmn_k + 1
       end
     end
     if @nd_type[nid] == "LocalVariableOperatorWriteNode"
