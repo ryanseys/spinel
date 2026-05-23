@@ -5858,6 +5858,16 @@ class Compiler
       @needs_bigint = 1
       return "sp_bigint_to_int((sp_Bigint *)" + val + ")"
     end
+ # bigint -> obj_<C>: an int-returning user method whose return
+ # widened to bigint under promote, but the caller's param slot is
+ # still typed obj_<C>?. Unbox via sp_bigint_to_int then cast to
+ # the pointer type (mirrors the int -> obj_<C> path in
+ # compile_typed_call_args).
+    if at == "bigint" && is_obj_type(expected_base) == 1
+      @needs_bigint = 1
+      cname_b2o = expected_base[4, expected_base.length - 4]
+      return "(sp_" + cname_b2o + " *)(uintptr_t)sp_bigint_to_int((sp_Bigint *)" + val + ")"
+    end
  # `*_ptr_array → poly_array` at the call boundary. The callee
  # was inferred to take poly_array (because at least one caller
  # passes a heterogeneous literal) but this caller passes a
@@ -24382,10 +24392,15 @@ class Compiler
  # `incompatible integer to pointer conversion`.
             if is_obj_type(ptypes[k]) == 1
               arg_at = infer_type(positional_ids[k])
-              if arg_at == "int"
+              if arg_at == "int" || arg_at == "bigint" || expr_emit_is_bigint(positional_ids[k]) == 1
                 bt_arg = base_type(ptypes[k])
                 arg_cname = bt_arg[4, bt_arg.length - 4]
-                result = result + "(sp_" + arg_cname + " *)" + compile_expr(positional_ids[k])
+                arg_v_ito = compile_expr(positional_ids[k])
+                if arg_at == "bigint" || expr_emit_is_bigint(positional_ids[k]) == 1
+                  @needs_bigint = 1
+                  arg_v_ito = "sp_bigint_to_int((sp_Bigint *)" + arg_v_ito + ")"
+                end
+                result = result + "(sp_" + arg_cname + " *)(uintptr_t)" + arg_v_ito
                 k = k + 1
                 next
               end
@@ -25042,18 +25057,23 @@ class Compiler
             next
           end
           aexpr = compile_expr(arg_ids[k])
-          if at == "int"
+          if at == "int" || at == "bigint" || expr_emit_is_bigint(arg_ids[k]) == 1
             if is_obj_type(pt) == 1
- # Cast int to object pointer. Strip the nullable `?`
- # marker before deriving the C class name — a param
- # type like `obj_BoundMethod?` would otherwise produce
- # `(sp_BoundMethod? *)0` and gcc chokes on the stray `?`.
+ # Cast int / bigint to object pointer. Strip the nullable
+ # `?` marker before deriving the C class name. For bigint,
+ # unbox first via sp_bigint_to_int (the int value is then
+ # cast to pointer; NULL/0 stays NULL).
               pt_base = pt
               if is_nullable_type(pt) == 1
                 pt_base = base_type(pt)
               end
               pcname = pt_base[4, pt_base.length - 4]
-              aexpr = "(sp_" + pcname + " *)" + aexpr
+              if at == "bigint" || expr_emit_is_bigint(arg_ids[k]) == 1
+                @needs_bigint = 1
+                aexpr = "(sp_" + pcname + " *)(uintptr_t)sp_bigint_to_int((sp_Bigint *)" + aexpr + ")"
+              else
+                aexpr = "(sp_" + pcname + " *)(uintptr_t)" + aexpr
+              end
             end
           end
           if is_obj_type(at) == 1
