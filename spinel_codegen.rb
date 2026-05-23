@@ -14511,6 +14511,27 @@ class Compiler
       if mname == "to_i"
         return "sp_bigint_to_int(" + rc_b + ")"
       end
+      if mname == "to_f"
+        return "(mrb_float)sp_bigint_to_int(" + rc_b + ")"
+      end
+      if mname == "abs"
+        return "({ sp_Bigint *_b = " + rc_b + "; sp_bigint_cmp(_b, sp_bigint_new_int(0)) < 0 ? sp_bigint_sub(sp_bigint_new_int(0), _b) : _b; })"
+      end
+      if mname == "even?"
+        return "((sp_bigint_to_int(" + rc_b + ") & 1) == 0)"
+      end
+      if mname == "odd?"
+        return "((sp_bigint_to_int(" + rc_b + ") & 1) != 0)"
+      end
+      if mname == "zero?"
+        return "(sp_bigint_cmp(" + rc_b + ", sp_bigint_new_int(0)) == 0)"
+      end
+      if mname == "positive?"
+        return "(sp_bigint_cmp(" + rc_b + ", sp_bigint_new_int(0)) > 0)"
+      end
+      if mname == "negative?"
+        return "(sp_bigint_cmp(" + rc_b + ", sp_bigint_new_int(0)) < 0)"
+      end
     end
 
  # Bool methods
