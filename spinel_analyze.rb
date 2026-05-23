@@ -4843,17 +4843,38 @@ class Compiler
     if mname == "merge"
       if recv >= 0
         rt_merge = infer_type(recv)
- # Cross-variant promote: sym_str_hash.merge(sym_poly_hash)
- # returns a fresh sym_poly_hash with the receiver's str
- # values boxed. Mirror direction (poly recv, str arg)
- # returns the receiver's type. Issue #515.
-        if rt_merge == "sym_str_hash"
+ # Cross-variant promote: when recv and arg are both sym-keyed
+ # hash variants but with different value types, the merge returns
+ # a fresh sym_poly_hash (boxing each side's values). Issue #515
+ # covered the str_hash<>poly_hash direction; #661 extends to
+ # int_hash <-> str_hash and int_hash <-> poly_hash.
+        if rt_merge == "sym_int_hash" || rt_merge == "sym_str_hash" || rt_merge == "sym_poly_hash"
           args_id_mg = @nd_arguments[nid]
           if args_id_mg >= 0
             arg_ids_mg = get_args(args_id_mg)
-            if arg_ids_mg.length >= 1 && infer_type(arg_ids_mg[0]) == "sym_poly_hash"
-              @needs_rb_value = 1
-              return "sym_poly_hash"
+            if arg_ids_mg.length >= 1
+              arg_t_mg = infer_type(arg_ids_mg[0])
+              if (arg_t_mg == "sym_int_hash" || arg_t_mg == "sym_str_hash" || arg_t_mg == "sym_poly_hash") && arg_t_mg != rt_merge
+                @needs_rb_value = 1
+                return "sym_poly_hash"
+              end
+            end
+          end
+        end
+ # Same shape for str-keyed hashes. The corresponding
+ # StrPolyHash converters already exist in sp_runtime.h
+ # (sp_StrPolyHash_from_str_int_hash / _from_str_str_hash) and
+ # sp_codegen.rb's emit raws sp_StrPolyHash_merge below.
+        if rt_merge == "str_int_hash" || rt_merge == "str_str_hash" || rt_merge == "str_poly_hash"
+          args_id_mg2 = @nd_arguments[nid]
+          if args_id_mg2 >= 0
+            arg_ids_mg2 = get_args(args_id_mg2)
+            if arg_ids_mg2.length >= 1
+              arg_t_mg2 = infer_type(arg_ids_mg2[0])
+              if (arg_t_mg2 == "str_int_hash" || arg_t_mg2 == "str_str_hash" || arg_t_mg2 == "str_poly_hash") && arg_t_mg2 != rt_merge
+                @needs_rb_value = 1
+                return "str_poly_hash"
+              end
             end
           end
         end

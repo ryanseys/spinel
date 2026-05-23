@@ -7435,6 +7435,10 @@ class Compiler
  # result's poly slots are populated correctly. Sibling of
  # sp_SymPolyHash_merge_str (#515). Issue #559.
     emit_raw("static sp_SymPolyHash*sp_SymPolyHash_merge_int(sp_SymPolyHash*a,sp_SymIntHash*b){sp_SymPolyHash*r=sp_SymPolyHash_new();for(mrb_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_box_int(sp_SymIntHash_get(b,b->order[i])));return r;}")
+ # Convert a sym_int_hash to a sym_poly_hash by boxing each
+ # int value via sp_box_int. Mirrors sp_SymStrHash_to_sym_poly
+ # for the cross-variant Hash#merge path (issue #661).
+    emit_raw("static sp_SymPolyHash*sp_SymIntHash_to_sym_poly(sp_SymIntHash*h){sp_SymPolyHash*r=sp_SymPolyHash_new();for(mrb_int i=0;i<h->len;i++)sp_SymPolyHash_set(r,h->order[i],sp_box_int(sp_SymIntHash_get(h,h->order[i])));return r;}")
     emit_raw("")
   end
 
@@ -19755,6 +19759,21 @@ class Compiler
             end
             return "sp_SymIntHash_merge(" + rc + ", " + tmp_kw + ")"
           end
+ # Cross-variant: sym_int_hash recv merged with a sym_str_hash
+ # or sym_poly_hash arg. Issue #661. Promote both sides to
+ # sym_poly_hash (boxing values via sp_box_int / sp_box_str on the
+ # converter helpers) and route through sp_SymPolyHash_merge.
+          if a_m546.length >= 1
+            arg_t_cv = infer_type(a_m546[0])
+            if arg_t_cv == "sym_str_hash"
+              @needs_sym_poly_hash = 1
+              @needs_sym_str_hash = 1
+              return "sp_SymPolyHash_merge(sp_SymIntHash_to_sym_poly(" + rc + "), sp_SymStrHash_to_sym_poly(" + compile_arg0(nid) + "))"
+            elsif arg_t_cv == "sym_poly_hash"
+              @needs_sym_poly_hash = 1
+              return "sp_SymPolyHash_merge(sp_SymIntHash_to_sym_poly(" + rc + "), " + compile_arg0(nid) + ")"
+            end
+          end
         end
         return "sp_SymIntHash_merge(" + rc + ", " + compile_arg0(nid) + ")"
       end
@@ -19847,8 +19866,17 @@ class Compiler
         args_id_m = @nd_arguments[nid]
         if args_id_m >= 0
           a_m = get_args(args_id_m)
-          if a_m.length >= 1 && infer_type(a_m[0]) == "sym_poly_hash"
-            return "sp_SymPolyHash_merge(sp_SymStrHash_to_sym_poly(" + rc + "), " + compile_expr(a_m[0]) + ")"
+          if a_m.length >= 1
+            arg_t_m = infer_type(a_m[0])
+            if arg_t_m == "sym_poly_hash"
+              return "sp_SymPolyHash_merge(sp_SymStrHash_to_sym_poly(" + rc + "), " + compile_expr(a_m[0]) + ")"
+ # sym_str_hash recv + sym_int_hash arg. Issue #661.
+ # Promote both to sym_poly_hash and merge.
+            elsif arg_t_m == "sym_int_hash"
+              @needs_sym_poly_hash = 1
+              @needs_sym_int_hash = 1
+              return "sp_SymPolyHash_merge(sp_SymStrHash_to_sym_poly(" + rc + "), sp_SymIntHash_to_sym_poly(" + compile_expr(a_m[0]) + "))"
+            end
           end
         end
         return "sp_SymStrHash_merge(" + rc + ", " + compile_arg0(nid) + ")"
@@ -20196,6 +20224,25 @@ class Compiler
         end
       end
       if mname == "merge"
+ # Cross-variant: str_int_hash recv + str_str_hash / str_poly_hash
+ # arg. Issue #661. Promote both sides to str_poly_hash and route
+ # through sp_StrPolyHash_merge -- the per-source converters
+ # sp_StrPolyHash_from_str_{int,str}_hash already box values via
+ # sp_box_int / sp_box_str.
+        args_id_sm = @nd_arguments[nid]
+        if args_id_sm >= 0
+          a_sm = get_args(args_id_sm)
+          if a_sm.length >= 1
+            arg_t_sm = infer_type(a_sm[0])
+            if arg_t_sm == "str_str_hash"
+              @needs_str_poly_hash = 1
+              return "sp_StrPolyHash_merge(sp_StrPolyHash_from_str_int_hash(" + rc + "), sp_StrPolyHash_from_str_str_hash(" + compile_expr(a_sm[0]) + "))"
+            elsif arg_t_sm == "str_poly_hash"
+              @needs_str_poly_hash = 1
+              return "sp_StrPolyHash_merge(sp_StrPolyHash_from_str_int_hash(" + rc + "), " + compile_expr(a_sm[0]) + ")"
+            end
+          end
+        end
         tmp = new_temp
         arg = compile_arg0(nid)
         emit("  sp_StrIntHash *" + tmp + " = sp_StrIntHash_merge(" + rc + ", " + arg + ");")
