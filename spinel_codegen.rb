@@ -15810,6 +15810,26 @@ class Compiler
       if rcv_bm_eb >= 0 && base_type(infer_type(rcv_bm_eb)) == "obj_Method"
         return 1
       end
+ # Static alias: `m = method(:foo)` then `m.call(x)` rewrites to
+ # a direct `sp_foo(x)` (see compile_dot_call_expr). Look up the
+ # target method's promote-mode return.
+      if rcv_bm_eb >= 0 && @nd_type[rcv_bm_eb] == "LocalVariableReadNode"
+        rname_ma = @nd_name[rcv_bm_eb]
+        ri_ma = 0
+        while ri_ma < @method_ref_vars.length
+          if @method_ref_vars[ri_ma] == rname_ma
+            ref_mname_ma = @method_ref_names[ri_ma]
+            mi_ma = find_method_idx(ref_mname_ma)
+            if mi_ma >= 0 && mi_ma < @meth_return_types.length
+              if base_type(@meth_return_types[mi_ma]) == "bigint"
+                return 1
+              end
+            end
+            ri_ma = @method_ref_vars.length
+          end
+          ri_ma = ri_ma + 1
+        end
+      end
     end
  # CallNode dispatch to a user method whose return slot has been
  # promoted to bigint: infer_type can be stale (the cls_method
@@ -25055,7 +25075,14 @@ class Compiler
       end
       val = compile_expr(arg_ids[k])
       at = infer_type(arg_ids[k])
-      if type_is_pointer(at) == 1
+      if base_type(at) == "bigint"
+ # Proc ABI is `mrb_int(*)(void*, mrb_int*)`. In promote mode an
+ # int arg arrives as sp_Bigint *; unbox to the underlying int
+ # before packing. Wrapping the pointer via (mrb_int)(uintptr_t)
+ # would silently pass a heap address as the proc's `n`.
+        @needs_bigint = 1
+        result = result + "sp_bigint_to_int((sp_Bigint *)" + val + ")"
+      elsif type_is_pointer(at) == 1
         result = result + "(mrb_int)(uintptr_t)(" + val + ")"
       else
         result = result + val
