@@ -26540,6 +26540,19 @@ class Compiler
     if vt == "" || type_is_pointer(vt) != 1
       return val
     end
+ # Skip the cast when `val` isn't a bare `lv_<name>` read --
+ # compile_expr_for_expected_type may have wrapped the LV in a
+ # conversion call (e.g. `sp_StrPolyHash_from_sym_poly_hash(lv_form_attrs)`),
+ # producing a value whose actual type differs from the LV's
+ # declared type. Casting that to `(c_type(vt))` would emit the
+ # wrong cast (LV's old type) on a value of the new type --
+ # the #700 shape "(sp_SymPolyHash *)sp_StrPolyHash_from_sym_poly_hash(...)"
+ # symptom. The wrapping itself isn't volatile-sensitive (the
+ # conversion fn reads h->order[i] which is safe under longjmp),
+ # so dropping the cast here is correct.
+    if val != ("lv_" + @nd_name[arg_id])
+      return val
+    end
     "(" + c_type(vt) + ")" + val
   end
 
