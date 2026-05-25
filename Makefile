@@ -469,13 +469,21 @@ EXPECTED_FILES := $(patsubst test/%.rb,test/%.rb.expected,$(TESTS))
 regen-expected: $(EXPECTED_FILES)
 
 test/%.rb.expected: test/%.rb
-	@$(TIMEOUT10) $(REF_RUBY) $< >$@.tmp 2>/dev/null; \
+	@args=""; \
+	if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
+	$(TIMEOUT10) $(REF_RUBY) $< $$args >$@.tmp 2>/dev/null; \
 	rc=$$?; \
 	if [ $$rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
-	  $(TIMEOUT10) ruby $< >$@.tmp 2>/dev/null; \
+	  $(TIMEOUT10) ruby $< $$args >$@.tmp 2>/dev/null; \
+	  rc=$$?; \
 	fi; \
-	LC_ALL=C sed 's/\r$$//' $@.tmp > $@; \
-	rm -f $@.tmp
+	if [ $$rc -ne 0 ]; then \
+	  echo "regen-expected: $< failed (rc=$$rc); skipping" >&2; \
+	  rm -f $@.tmp; \
+	else \
+	  LC_ALL=C sed 's/\r$$//' $@.tmp > $@; \
+	  rm -f $@.tmp; \
+	fi
 
 bench: spinel_parse$(EXE) $(SP_RT_LIB) spinel_analyze$(EXE) spinel_codegen$(EXE)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
