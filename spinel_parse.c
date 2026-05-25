@@ -129,15 +129,26 @@ static void emit_node_array(int id, const char *field, pm_node_list_t *list) {
   int *ids = malloc(sizeof(int) * list->size);
   for (size_t i = 0; i < list->size; i++)
     ids[i] = flatten(list->nodes[i]);
-  /* Build comma-separated string */
-  char buf[65536];
-  int pos = 0;
+  /* Issue #744: build comma-separated string into a growable buffer.
+     Previously a fixed 65536-byte stack buffer overflowed on
+     20k+-element arrays -- snprintf returns the bytes it WOULD have
+     written, advancing pos past the end and corrupting the stack. */
+  size_t cap = 1024;
+  char *buf = malloc(cap);
+  size_t pos = 0;
   for (size_t i = 0; i < list->size; i++) {
+    /* worst case per iter: ", -2147483648\0" -> 14 bytes; reserve 16 to be safe */
+    if (pos + 16 >= cap) {
+      cap = cap * 2 + 16;
+      buf = realloc(buf, cap);
+    }
     if (i > 0) buf[pos++] = ',';
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "%d", ids[i]);
+    int n = snprintf(buf + pos, cap - pos, "%d", ids[i]);
+    if (n > 0) pos += (size_t)n;
   }
   buf[pos] = '\0';
   out_add("A %d %s %s", id, field, buf);
+  free(buf);
   free(ids);
 }
 
