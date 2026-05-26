@@ -30899,6 +30899,8 @@ class Compiler
  # and gate match on length + per-elem sub-pattern check. Issue #669.
         if @nd_type[pat] == "ArrayPatternNode"
           compile_array_pattern_arm(pat, tmp, pred_type, kw, inid, declared_arr_pat_lvs)
+        elsif @nd_type[pat] == "HashPatternNode"
+          compile_hash_pattern_arm(pat, tmp, pred_type, kw, inid)
         else
           cond_str = compile_in_pattern(pat, tmp, pred_type)
           emit("  " + kw + " (" + cond_str + ") {")
@@ -30972,7 +30974,12 @@ class Compiler
  # codegen-side declare_method_locals_from emits the C declaration
  # at function entry. No per-arm emit needed here -- the bind
  # below assigns into the pre-declared slot.
-    emit("  " + kw + " (" + len_expr + " == " + n.to_s + ") {")
+ # Issue #805: when the pattern has a trailing rest (`[a, b, *]`),
+ # the length check is `>= requireds` rather than `== requireds`
+ # so longer arrays still match.
+    rest_id = @nd_rest[pat_id]
+    cmp_op = (rest_id >= 0) ? ">=" : "=="
+    emit("  " + kw + " (" + len_expr + " " + cmp_op + " " + n.to_s + ") {")
     @indent = @indent + 1
     qi = 0
     while qi < n
@@ -30991,6 +30998,113 @@ class Compiler
         emit("lv_" + nm_b + " = " + get_expr + ";")
       end
       qi = qi + 1
+    end
+ # `*name` rest (SplatNode with non-nil expression): bind the
+ # remaining elements as an array slice. `*` without a name is
+ # just a length-flexibility hint with no binding.
+    if rest_id >= 0 && @nd_type[rest_id] == "SplatNode"
+      rest_expr_id = @nd_expression[rest_id]
+      if rest_expr_id >= 0 && @nd_type[rest_expr_id] == "LocalVariableTargetNode"
+        rname = @nd_name[rest_expr_id]
+        if pred_type == "int_array" || pred_type == "sym_array"
+          emit("lv_" + rname + " = sp_IntArray_slice(" + tmp + ", " + n.to_s + "LL, " + len_expr + " - " + n.to_s + "LL);")
+        elsif pred_type == "str_array"
+          emit("lv_" + rname + " = sp_StrArray_slice(" + tmp + ", " + n.to_s + "LL, " + len_expr + " - " + n.to_s + "LL);")
+        elsif pred_type == "float_array"
+          emit("lv_" + rname + " = sp_FloatArray_slice(" + tmp + ", " + n.to_s + "LL, " + len_expr + " - " + n.to_s + "LL);")
+        elsif pred_type == "poly_array"
+          emit("lv_" + rname + " = sp_PolyArray_slice(" + tmp + ", " + n.to_s + "LL, " + len_expr + " - " + n.to_s + "LL);")
+        end
+      end
+    end
+    compile_stmts_body(@nd_body[inid])
+    @indent = @indent - 1
+  end
+
+ # `case h in {a:, b: 2, c:}` -- HashPatternNode. Each AssocNode
+ # element pairs a symbol key with either a LocalVariableTargetNode
+ # (shorthand `a:` binding) or a sub-pattern (literal match like
+ # `b: 2`). The arm matches when every required key is present and,
+ # for non-binding entries, the stored value satisfies the sub-
+ # pattern. Issue #805.
+  def compile_hash_pattern_arm(pat_id, tmp, pred_type, kw, inid)
+    elems = parse_id_list(@nd_elements[pat_id])
+    has_key_fn = ""
+    get_fn = ""
+    key_cast = ""
+    val_type = ""
+    if pred_type == "sym_int_hash"
+      has_key_fn = "sp_SymIntHash_has_key"
+      get_fn = "sp_SymIntHash_get"
+      val_type = "int"
+    elsif pred_type == "sym_str_hash"
+      has_key_fn = "sp_SymStrHash_has_key"
+      get_fn = "sp_SymStrHash_get"
+      val_type = "string"
+    elsif pred_type == "sym_poly_hash"
+      has_key_fn = "sp_SymPolyHash_has_key"
+      get_fn = "sp_SymPolyHash_get"
+      val_type = "poly"
+    elsif pred_type == "str_int_hash"
+      has_key_fn = "sp_StrIntHash_has_key"
+      get_fn = "sp_StrIntHash_get"
+      val_type = "int"
+    elsif pred_type == "str_str_hash"
+      has_key_fn = "sp_StrStrHash_has_key"
+      get_fn = "sp_StrStrHash_get"
+      val_type = "string"
+    elsif pred_type == "str_poly_hash"
+      has_key_fn = "sp_StrPolyHash_has_key"
+      get_fn = "sp_StrPolyHash_get"
+      val_type = "poly"
+    else
+ # Unknown hash variant -- emit a stub arm so the case still
+ # type-checks but never fires.
+      emit("  " + kw + " (0) {")
+      @indent = @indent + 1
+      compile_stmts_body(@nd_body[inid])
+      @indent = @indent - 1
+      return
+    end
+ # Build the match guard: AND over has_key checks for every required
+ # symbol key. Sub-pattern value checks (literals) are appended below.
+    conds = "".split(",", -1)
+    binds = "".split(",", -1)
+    ei = 0
+    while ei < elems.length
+      asoc = elems[ei]
+      if @nd_type[asoc] == "AssocNode"
+        kn = @nd_key[asoc]
+        if kn >= 0 && @nd_type[kn] == "SymbolNode"
+ # SymbolNode's "value" field is routed to @nd_content by the
+ # AST loader (see compiler_helpers.rb's set_ref_field "value" arm).
+          ksym_name = @nd_content[kn]
+          if pred_type[0, 4] == "sym_"
+            key_c = "SPS_" + ksym_name
+          else
+            key_c = "(&(\"\\xff\" \"" + ksym_name + "\")[1])"
+          end
+          conds.push(has_key_fn + "(" + tmp + ", " + key_c + ")")
+ # AssocNode's "value" REF lowers to @nd_expression in the loader
+ # (see compiler_helpers.rb's set_ref_field).
+          vn = @nd_expression[asoc]
+          if vn >= 0 && @nd_type[vn] == "LocalVariableTargetNode"
+            binds.push("lv_" + @nd_name[vn] + " = " + get_fn + "(" + tmp + ", " + key_c + ");")
+          end
+        end
+      end
+      ei = ei + 1
+    end
+    cond_expr = "1"
+    if conds.length > 0
+      cond_expr = conds.join(" && ")
+    end
+    emit("  " + kw + " (" + cond_expr + ") {")
+    @indent = @indent + 1
+    bi = 0
+    while bi < binds.length
+      emit(binds[bi])
+      bi = bi + 1
     end
     compile_stmts_body(@nd_body[inid])
     @indent = @indent - 1

@@ -110,6 +110,9 @@ class Compiler
  # type each bound LV with the enclosing CaseMatchNode's scrutinee
  # element type. Issue #669.
     @scan_case_match_pred_elem = ""
+ # Sibling side-channel for HashPatternNode: the hash's value type.
+ # Issue #805.
+    @scan_case_match_pred_val_t = ""
  # 1 once analysis has converged and freeze_analysis has filled
  # @nd_inferred_type. Switches infer_type to consult the cache
  # first; analysis iterations themselves keep recomputing because
@@ -25803,10 +25806,35 @@ class Compiler
         ap_ri = ap_ri + 1
       end
     end
+ # `case x in {a:, b:}` -- HashPatternNode, the named hash keys
+ # bind to LVs whose type is the hash's value type. Issue #805.
+    if @nd_type[nid] == "HashPatternNode"
+      hp_elems = parse_id_list(@nd_elements[nid])
+      hp_val_t = @scan_case_match_pred_val_t != "" ? @scan_case_match_pred_val_t : "int"
+      hp_ei = 0
+      while hp_ei < hp_elems.length
+        hp_asoc = hp_elems[hp_ei]
+        if @nd_type[hp_asoc] == "AssocNode"
+          hp_v = @nd_expression[hp_asoc]
+          if hp_v >= 0 && @nd_type[hp_v] == "LocalVariableTargetNode"
+            hp_lname = @nd_name[hp_v]
+            if not_in(hp_lname, names) == 1 && not_in(hp_lname, params) == 1
+              names.push(hp_lname)
+              types.push(hp_val_t)
+              @scan_literal_flags.push("")
+              @scan_empty_flags.push("")
+              @scan_empty_hash_flags.push("")
+            end
+          end
+        end
+        hp_ei = hp_ei + 1
+      end
+    end
  # CaseMatchNode: stash the scrutinee's element type so the
  # ArrayPatternNode handler above can type the bound LVs.
     if @nd_type[nid] == "CaseMatchNode"
       saved_pred_elem = @scan_case_match_pred_elem
+      saved_pred_val_t = @scan_case_match_pred_val_t
       pred_nid = @nd_predicate[nid]
       if pred_nid >= 0
         cmt = infer_type(pred_nid)
@@ -25823,9 +25851,21 @@ class Compiler
         else
           @scan_case_match_pred_elem = ""
         end
+ # Issue #805: stash the hash value type so HashPatternNode's
+ # LV binding above gets the right element type.
+        if cmt == "sym_int_hash" || cmt == "str_int_hash"
+          @scan_case_match_pred_val_t = "int"
+        elsif cmt == "sym_str_hash" || cmt == "str_str_hash" || cmt == "int_str_hash"
+          @scan_case_match_pred_val_t = "string"
+        elsif cmt == "sym_poly_hash" || cmt == "str_poly_hash" || cmt == "poly_poly_hash"
+          @scan_case_match_pred_val_t = "poly"
+        else
+          @scan_case_match_pred_val_t = ""
+        end
       end
       scan_locals_children(nid, names, types, params)
       @scan_case_match_pred_elem = saved_pred_elem
+      @scan_case_match_pred_val_t = saved_pred_val_t
       return
     end
     if @nd_type[nid] == "MultiWriteNode"

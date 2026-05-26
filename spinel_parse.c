@@ -1089,6 +1089,34 @@ static int flatten(pm_node_t *node) {
     A("posts", &n->posts);
     break;
   }
+  case PM_HASH_PATTERN_NODE: {
+    /* `case x in {a:, b: 2}`. elements is a list of AssocNodes
+       (key + sub-pattern); a `:b:` shorthand binds the key's symbol
+       as a same-named LV. Constant covers `Foo[a:]` destructuring
+       (not yet handled by codegen). Rest covers `**rest` (also not
+       yet handled). Issue #805. */
+    pm_hash_pattern_node_t *n = (pm_hash_pattern_node_t *)node;
+    N("HashPatternNode");
+    R("constant", n->constant);
+    A("elements", &n->elements);
+    R("rest", n->rest);
+    break;
+  }
+  case PM_FIND_PATTERN_NODE: {
+    /* `case x in [*a, b, *c]` -- find-anywhere pattern with leading
+       and trailing wildcards plus required middle elements.
+       Currently surfaces all three slots so the codegen can match
+       on length + extract requireds; the find-anywhere semantics
+       (variable-position match) are not yet implemented but the
+       shape no longer drops to UnsupportedNode. Issue #805. */
+    pm_find_pattern_node_t *n = (pm_find_pattern_node_t *)node;
+    N("FindPatternNode");
+    R("constant", n->constant);
+    R("left", (pm_node_t *)n->left);
+    A("requireds", &n->requireds);
+    R("right", n->right);
+    break;
+  }
   case PM_PINNED_EXPRESSION_NODE: {
     /* `case x in ^(expr)`. The pinned expression is evaluated at
        match time and compared by `==` against the scrutinee. */
