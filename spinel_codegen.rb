@@ -19190,6 +19190,35 @@ class Compiler
       end
       return "FALSE"
     end
+ # String#each_char returns the receiver. Issue #866. Mirrors the
+ # statement-level handler but emits a value (`rc`) so callers
+ # like `s = "hi".each_char { ... }` get the string back.
+    if mname == "each_char" && @nd_block[nid] >= 0
+      bp_ec = get_block_param(nid, 0)
+      if bp_ec == ""
+        bp_ec = "_c"
+      end
+      tmp_ec = new_temp
+      src_tmp_ec = new_temp
+      cn_tmp_ec = new_temp
+      char_buf_ec = new_temp
+      emit("  const char *" + src_tmp_ec + " = " + rc + ";")
+      emit("  for (mrb_int " + tmp_ec + " = 0; " + src_tmp_ec + "[" + tmp_ec + "]; ) {")
+      emit("    int " + cn_tmp_ec + " = sp_utf8_advance(" + src_tmp_ec + " + " + tmp_ec + ");")
+      emit("    char *" + char_buf_ec + " = sp_str_alloc_raw(" + cn_tmp_ec + " + 1);")
+      emit("    memcpy(" + char_buf_ec + ", " + src_tmp_ec + " + " + tmp_ec + ", " + cn_tmp_ec + ");")
+      emit("    " + char_buf_ec + "[" + cn_tmp_ec + "] = 0;")
+      emit("    const char *lv_" + bp_ec + " = " + char_buf_ec + ";")
+      @indent = @indent + 1
+      push_scope
+      declare_var(bp_ec, "string")
+      compile_stmts_body(@nd_body[@nd_block[nid]])
+      pop_scope
+      @indent = @indent - 1
+      emit("    " + tmp_ec + " += " + cn_tmp_ec + ";")
+      emit("  }")
+      return rc
+    end
  # String#each_byte returns the receiver per CRuby. The statement-level
  # handler at compile_block_iteration_stmt emits the loop for `do …
  # end` / `{ … }` with no captured value; the expression-level form

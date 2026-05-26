@@ -4339,7 +4339,7 @@ class Compiler
  # String#each_byte returns the receiver per CRuby. The block-bearing
  # form is handled in compile_string_method_expr; the inference rule
  # here is what makes `ret = "hi".each_byte { ... }` typed as string.
-    if mname == "each_byte"
+    if mname == "each_byte" || mname == "each_char"
       if recv >= 0 && @nd_block[nid] >= 0
         rt = infer_type(recv)
         if rt == "string" || rt == "mutable_str"
