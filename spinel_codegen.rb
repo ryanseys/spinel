@@ -16759,6 +16759,14 @@ class Compiler
       if mname == "replace"
         return "(sp_String_replace(" + rc + ", " + compile_arg0(nid) + "), " + rc + ")"
       end
+ # `mutable_str#frozen?` returns false. The string-receiver path
+ # below delegates through `compile_string_method_expr` which
+ # hardcodes `TRUE` for frozen? (correct for the always-frozen
+ # string-literal slot but not for `String.new(...)` / `+=` /
+ # any mutable_str). Intercept before that delegation.
+      if mname == "frozen?"
+        return "FALSE"
+      end
  # For all other string methods, convert via ->data
       r = compile_string_method_expr(nid, mname, rc + "->data")
       if r != ""
