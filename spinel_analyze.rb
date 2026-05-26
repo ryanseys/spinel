@@ -26288,6 +26288,22 @@ class Compiler
         end
         ap_ri = ap_ri + 1
       end
+ # `case x in [a, *rest]` -- the splat target. Type is the
+ # source array's full type (slice keeps the variant). Issue #844.
+      ap_rest = @nd_rest[nid]
+      if ap_rest >= 0 && @nd_type[ap_rest] == "SplatNode"
+        ap_rest_exp = @nd_expression[ap_rest]
+        if ap_rest_exp >= 0 && @nd_type[ap_rest_exp] == "LocalVariableTargetNode"
+          ap_rname = @nd_name[ap_rest_exp]
+          if not_in(ap_rname, names) == 1 && not_in(ap_rname, params) == 1
+            names.push(ap_rname)
+            types.push(@scan_case_match_pred_type != "" ? @scan_case_match_pred_type : "int_array")
+            @scan_literal_flags.push("")
+            @scan_empty_flags.push("")
+            @scan_empty_hash_flags.push("")
+          end
+        end
+      end
     end
  # `case x in {a:, b:}` -- HashPatternNode, the named hash keys
  # bind to LVs whose type is the hash's value type. Issue #805.
