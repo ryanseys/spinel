@@ -1700,7 +1700,7 @@ static const char*sp_str_rjust2(const char*s,mrb_int w,const char*pad){mrb_int c
 static const char*sp_str_center2(const char*s,mrb_int w,const char*pad){mrb_int cl=sp_str_length(s);if(cl>=w)return s;size_t bl=strlen(s);size_t pn;uint32_t*pcps=sp_utf8_decode_all(pad,&pn);if(pn==0){free(pcps);char*r=sp_str_alloc_raw(bl+1);memcpy(r,s,bl+1);return r;}mrb_int pd=w-cl;mrb_int left=pd/2;mrb_int right=pd-left;size_t leftb=0,rightb=0;{char tmp[4];for(mrb_int i=0;i<left;i++)leftb+=sp_utf8_encode(pcps[i%pn],tmp);for(mrb_int i=0;i<right;i++)rightb+=sp_utf8_encode(pcps[i%pn],tmp);}char*r=sp_str_alloc_raw(leftb+bl+rightb+1);size_t n=0;for(mrb_int i=0;i<left;i++)n+=sp_utf8_encode(pcps[i%pn],r+n);memcpy(r+n,s,bl);n+=bl;for(mrb_int i=0;i<right;i++)n+=sp_utf8_encode(pcps[i%pn],r+n);r[n]=0;free(pcps);return r;}
 static const char*sp_str_lstrip(const char*s){if(!s)return sp_str_empty;while(*s&&isspace((unsigned char)*s))s++;char*r=sp_str_alloc_raw(strlen(s)+1);strcpy(r,s);return r;}
 static const char*sp_str_rstrip(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);while(l>0&&isspace((unsigned char)s[l-1]))l--;char*r=sp_str_alloc_raw(l+1);memcpy(r,s,l);r[l]=0;return r;}
-static const char*sp_str_dup(const char*s){if(!s)return NULL;char*r=sp_str_alloc_raw(strlen(s)+1);strcpy(r,s);return r;}
+static const char*sp_str_dup(const char*s){if(!s)return NULL;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);memcpy(r,s,l+1);return r;}
 
 /* String#setbyte: mutate s[i] = v in place. Spinel adopts
    `# frozen_string_literal: true` semantics globally — all
