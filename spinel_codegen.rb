@@ -21495,6 +21495,43 @@ class Compiler
         emit("  if (" + cur_sw + "->len > 0) sp_PtrArray_push(" + out_sw + ", " + cur_sw + ");")
         return out_sw
       end
+ # `arr.slice_before(val)` / `slice_after(val)` — split before
+ # or after each matching element. Simple int-equality arg form
+ # only (no regexp / block); covers the common idiom.
+      if (mname == "slice_before" || mname == "slice_after") && @nd_block[nid] < 0
+        args_id_sb = @nd_arguments[nid]
+        if args_id_sb >= 0
+          a_sb = get_args(args_id_sb)
+          if a_sb.length == 1
+            @needs_int_array = 1
+            @needs_gc = 1
+            after_p = (mname == "slice_after") ? 1 : 0
+            pat_sb = compile_expr_as_int(a_sb[0])
+            out_sb = new_temp
+            cur_sb = new_temp
+            ii_sb = new_temp
+            v_sb = new_temp
+            pat_var = new_temp
+            emit("  sp_PtrArray *" + out_sb + " = sp_PtrArray_new();")
+            emit("  SP_GC_ROOT(" + out_sb + ");")
+            emit("  sp_IntArray *" + cur_sb + " = sp_IntArray_new();")
+            emit("  SP_GC_ROOT(" + cur_sb + ");")
+            emit("  mrb_int " + pat_var + " = " + pat_sb + ";")
+            emit("  for (mrb_int " + ii_sb + " = 0; " + ii_sb + " < sp_IntArray_length(" + rc + "); " + ii_sb + "++) {")
+            emit("    mrb_int " + v_sb + " = sp_IntArray_get(" + rc + ", " + ii_sb + ");")
+            if after_p == 0
+              emit("    if (" + v_sb + " == " + pat_var + " && " + cur_sb + "->len > 0) { sp_PtrArray_push(" + out_sb + ", " + cur_sb + "); " + cur_sb + " = sp_IntArray_new(); }")
+              emit("    sp_IntArray_push(" + cur_sb + ", " + v_sb + ");")
+            else
+              emit("    sp_IntArray_push(" + cur_sb + ", " + v_sb + ");")
+              emit("    if (" + v_sb + " == " + pat_var + ") { sp_PtrArray_push(" + out_sb + ", " + cur_sb + "); " + cur_sb + " = sp_IntArray_new(); }")
+            end
+            emit("  }")
+            emit("  if (" + cur_sb + "->len > 0) sp_PtrArray_push(" + out_sb + ", " + cur_sb + ");")
+            return out_sb
+          end
+        end
+      end
  # `arr.chunk { |x| key }` materialises an array of [key,
  # sub_array] pairs where consecutive elements with the same
  # block-returned key are grouped.

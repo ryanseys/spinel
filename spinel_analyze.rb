@@ -4477,7 +4477,7 @@ class Compiler
     if mname == "product"
       return "int_array_ptr_array"
     end
-    if mname == "slice_when" || mname == "chunk_while"
+    if mname == "slice_when" || mname == "chunk_while" || mname == "slice_before" || mname == "slice_after"
       return "int_array_ptr_array"
     end
     if mname == "chunk"
