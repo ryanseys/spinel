@@ -236,18 +236,17 @@ static mrb_int sp_str_to_i_cruby(const char *s) {
   else if (*p == '-') { neg = 1; p++; }
   mrb_int v = 0;
   int any = 0;
-  int saturated = 0;
   while (*p) {
     if (*p >= '0' && *p <= '9') {
-      /* Issue #743: signed-overflow on `v * 10 + digit` is undefined
-         behavior. Detect via __builtin_*_overflow and clamp to
-         MRB_INT_MAX (CRuby returns a bignum here; spinel's int model
-         is int64-only, so saturate as the next-best approximation). */
+      /* Signed-overflow on `v * 10 + digit` is undefined behavior;
+         detect via __builtin_*_overflow. CRuby promotes to Bignum
+         on overflow but spinel's int model is int64-only — raise
+         RangeError instead of silently saturating, so a user-side
+         `rescue` can react. */
       mrb_int t;
       if (__builtin_mul_overflow(v, 10, &t) ||
           __builtin_add_overflow(t, (mrb_int)(*p - '0'), &v)) {
-        v = INT64_MAX;
-        saturated = 1;
+        sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
       }
       any = 1;
       p++;
@@ -258,7 +257,6 @@ static mrb_int sp_str_to_i_cruby(const char *s) {
     }
   }
   if (!any) return 0;
-  if (saturated) return neg ? INT64_MIN : INT64_MAX;
   return neg ? -v : v;
 }
 
@@ -283,7 +281,6 @@ static mrb_int sp_str_to_i_base(const char *s, mrb_int base) {
   }
   mrb_int v = 0;
   int any = 0;
-  int saturated = 0;
   while (*p) {
     int d = -1;
     if (*p >= '0' && *p <= '9') d = *p - '0';
@@ -304,14 +301,12 @@ static mrb_int sp_str_to_i_base(const char *s, mrb_int base) {
     mrb_int t;
     if (__builtin_mul_overflow(v, base, &t) ||
         __builtin_add_overflow(t, (mrb_int)d, &v)) {
-      v = INT64_MAX;
-      saturated = 1;
+      sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
     }
     any = 1;
     p++;
   }
   if (!any) return 0;
-  if (saturated) return neg ? INT64_MIN : INT64_MAX;
   return neg ? -v : v;
 }
 
@@ -328,8 +323,13 @@ static mrb_int sp_str_to_i_strict(const char *s) {
   while (isspace((unsigned char)*p)) p++;
   if (*p == '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
   char *endptr;
+  errno = 0;
   long long v = strtoll(p, &endptr, 10);
   if (endptr == p) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+  /* strtoll signals overflow via errno=ERANGE and clamps to
+     LLONG_MAX/MIN — raise rather than silently saturate so the
+     caller can distinguish "fits in int64" from "too big". */
+  if (errno == ERANGE) sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
   while (isspace((unsigned char)*endptr)) endptr++;
   if (*endptr != '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
   return (mrb_int)v;
@@ -370,7 +370,13 @@ static mrb_int sp_str_to_i_strict_base(const char *s, mrb_int base) {
       }
       break;
     }
-    v = v * base + d;
+    {
+      mrb_int t;
+      if (__builtin_mul_overflow(v, base, &t) ||
+          __builtin_add_overflow(t, (mrb_int)d, &v)) {
+        sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
+      }
+    }
     any = 1;
     p++;
   }
