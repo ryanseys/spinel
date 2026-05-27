@@ -13492,8 +13492,14 @@ class Compiler
         return "sp_ruby_platform_str()"
       end
       if is_known_constant_name(rname) == 0
-        warn_unresolved_const(rname)
-        return "0"
+ # Uninitialised constant — raise NameError at runtime (CRuby
+ # behaviour). Stmt-expression so the call site still gets an
+ # expression value of the inferred type (the cast is reached
+ # only after sp_raise_cls's longjmp, so it's dead code that
+ # has to type-check).
+        @needs_setjmp = 1
+        rt_uc = infer_type(nid)
+        return "({ sp_raise_cls(\"NameError\", \"uninitialized constant " + rname + "\"); " + c_default_val(rt_uc) + "; })"
       end
       return rname
     end
