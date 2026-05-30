@@ -14,3 +14,5 @@ puts "aaabbbccc".squeeze("a-c").inspect
 puts "aaabbbccc".squeeze("^a").inspect
 # no change case
 puts "abc".squeeze("a").inspect
+# a lone "^" is the literal caret, not a negation
+puts "aaa^^^bbb".squeeze("^").inspect

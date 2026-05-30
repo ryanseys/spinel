@@ -1468,7 +1468,7 @@ static const char*sp_str_squeeze(const char*s){if(!s)return sp_str_empty;size_t 
 /* String#squeeze(chars) — only squeeze chars listed in the charset
    (same charset syntax as tr: a-z, ^x, etc.). Consecutive runs of
    non-listed chars pass through untouched. */
-static const char*sp_str_squeeze_chars(const char*s,const char*cs){if(!s)return sp_str_empty;if(!cs||!*cs)return sp_str_squeeze(s);int negate=0;const char*csp=cs;if(*csp=='^'){negate=1;csp++;}size_t fn;uint32_t*fcps=sp_utf8_decode_charset(csp,&fn);size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t n=0;uint32_t prev=0xFFFFFFFFu;const char*p=s;while(*p){uint32_t cp;int cn=sp_utf8_decode(p,&cp);int in_set=0;for(size_t j=0;j<fn;j++)if(fcps[j]==cp){in_set=1;break;}if(negate)in_set=!in_set;if(!in_set){memcpy(r+n,p,cn);n+=cn;prev=0xFFFFFFFFu;}else if(cp!=prev){memcpy(r+n,p,cn);n+=cn;prev=cp;}p+=cn;}r[n]=0;sp_str_set_len(r,n);free(fcps);return r;}
+static const char*sp_str_squeeze_chars(const char*s,const char*cs){if(!s)return sp_str_empty;if(!cs||!*cs)return sp_str_squeeze(s);int negate=0;const char*csp=cs;if(*csp=='^'&&*(csp+1)){negate=1;csp++;}size_t fn;uint32_t*fcps=sp_utf8_decode_charset(csp,&fn);size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t n=0;uint32_t prev=0xFFFFFFFFu;const char*p=s;while(*p){uint32_t cp;int cn=sp_utf8_decode(p,&cp);int in_set=0;for(size_t j=0;j<fn;j++)if(fcps[j]==cp){in_set=1;break;}if(negate)in_set=!in_set;if(!in_set){memcpy(r+n,p,cn);n+=cn;prev=0xFFFFFFFFu;}else if(cp!=prev){memcpy(r+n,p,cn);n+=cn;prev=cp;}p+=cn;}r[n]=0;sp_str_set_len(r,n);free(fcps);return r;}
 
 /* Forward decl from sp_crypto.h (libspinel_rt.a). Used by
    sp_str_crypt below to provide a deterministic crypt-like
