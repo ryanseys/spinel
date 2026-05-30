@@ -4643,14 +4643,16 @@ class Compiler
  # future call-site-type-narrowing pass can claim them.
     if mname == "ceil" || mname == "floor" || mname == "round" || mname == "truncate"
       if recv >= 0 && infer_type(recv) == "float"
+ # Return type is decided by argument *presence*, not value: the
+ # no-arg form returns Integer, the ndigits form always returns
+ # Float. CRuby instead keys off the runtime sign of ndigits
+ # (Integer when <= 0), but that makes the return type depend on a
+ # value spinel can't see statically (and a splat like `round(*[])`
+ # can't be classified at all). Keeping it presence-based stays
+ # fully static and value-correct; the only divergence is that
+ # `x.round(-1)` is Float-typed (10.0) rather than Integer (10).
+ # See docs/FLOAT-ROUNDING.md.
         if @nd_arguments[nid] >= 0
- # `round(0)` (and ceil/floor/truncate(0)) match the no-arg
- # form: CRuby returns Integer when the precision arg is the
- # literal 0. Other precisions stay Float.
-          ap_rd = get_args(@nd_arguments[nid])
-          if ap_rd.length > 0 && @nd_type[ap_rd[0]] == "IntegerNode" && @nd_value[ap_rd[0]].to_i == 0
-            return "int"
-          end
           return "float"
         end
         return "int"

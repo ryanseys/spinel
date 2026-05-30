@@ -22321,10 +22321,8 @@ class Compiler
  # form double-evaluated both, which broke any side-effecting arg.
     if mname == "ceil"
       if @nd_arguments[nid] >= 0
-        ap = get_args(@nd_arguments[nid])
-        if ap.length > 0 && @nd_type[ap[0]] == "IntegerNode" && @nd_value[ap[0]].to_i == 0
-          return "(mrb_int)ceil(" + rc + ")"
-        end
+ # Any ndigits arg -> Float (presence-based; see the matching
+ # infer_method_name_type arm and docs/FLOAT-ROUNDING.md).
         arg = compile_arg0(nid)
         return "({ double _f = pow(10, " + arg + "); ceil((" + rc + ") * _f) / _f; })"
       end
@@ -22332,10 +22330,6 @@ class Compiler
     end
     if mname == "floor"
       if @nd_arguments[nid] >= 0
-        ap = get_args(@nd_arguments[nid])
-        if ap.length > 0 && @nd_type[ap[0]] == "IntegerNode" && @nd_value[ap[0]].to_i == 0
-          return "(mrb_int)floor(" + rc + ")"
-        end
         arg = compile_arg0(nid)
         return "({ double _f = pow(10, " + arg + "); floor((" + rc + ") * _f) / _f; })"
       end
@@ -22343,10 +22337,6 @@ class Compiler
     end
     if mname == "round"
       if @nd_arguments[nid] >= 0
-        ap = get_args(@nd_arguments[nid])
-        if ap.length > 0 && @nd_type[ap[0]] == "IntegerNode" && @nd_value[ap[0]].to_i == 0
-          return "(mrb_int)round(" + rc + ")"
-        end
         arg = compile_arg0(nid)
         return "({ double _f = pow(10, " + arg + "); round((" + rc + ") * _f) / _f; })"
       end
