@@ -1955,6 +1955,18 @@ static mrb_bool sp_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_i
   int caps[2];
   return re_exec(pat, str, slen, (mrb_int)pos, caps, 2) > 0;
 }
+/* String#match?(/re/, pos) — pos is a codepoint index (CRuby semantics),
+   unlike Regexp#match?(str, pos) which uses byte offset. Convert the
+   codepoint index to a byte offset before dispatching to re_exec. */
+static mrb_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_int cpos) {
+  mrb_int cl = sp_str_length(str);
+  if (cpos < 0) cpos += cl;
+  if (cpos < 0 || cpos > cl) return FALSE;
+  size_t boff = sp_utf8_byte_offset(str, cpos);
+  int64_t slen = (int64_t)strlen(str);
+  int caps[2];
+  return re_exec(pat, str, slen, (mrb_int)boff, caps, 2) > 0;
+}
 
 /* Issue #855: expand `\1`..`\9` / `\&` / `\0` backreferences in
    the replacement string against the current caps[] array. `\\`
@@ -2568,6 +2580,29 @@ static sp_MatchData *sp_re_matchdata(mrb_regexp_pattern *pat, const char *str) {
   int64_t slen = (int64_t)strlen(str);
   int caps[64];
   int n = re_exec(pat, str, slen, 0, caps, 64);
+  if (n <= 0 || caps[0] < 0) {
+    for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
+    sp_re_last_str = NULL; sp_re_match_str = NULL;
+    sp_re_match_pre = NULL; sp_re_match_post = NULL;
+    return NULL;
+  }
+  int pairs = (n > 64 ? 64 : n) / 2;
+  sp_re_set_captures(str, caps, pairs);
+  sp_MatchData *m = (sp_MatchData *)sp_gc_alloc(sizeof(sp_MatchData), NULL, sp_MatchData_scan);
+  m->source = str;
+  m->ncap = pairs;
+  for (int i = 0; i < pairs * 2; i++) m->caps[i] = caps[i];
+  return m;
+}
+/* String#match(/re/, pos) — pos is a codepoint index (CRuby semantics). */
+static sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str, mrb_int cpos) {
+  mrb_int cl = sp_str_length(str);
+  if (cpos < 0) cpos += cl;
+  if (cpos < 0 || cpos > cl) return NULL;
+  size_t boff = sp_utf8_byte_offset(str, cpos);
+  int64_t slen = (int64_t)strlen(str);
+  int caps[64];
+  int n = re_exec(pat, str, slen, (mrb_int)boff, caps, 64);
   if (n <= 0 || caps[0] < 0) {
     for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
     sp_re_last_str = NULL; sp_re_match_str = NULL;

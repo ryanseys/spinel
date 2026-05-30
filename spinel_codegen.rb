@@ -21111,6 +21111,9 @@ class Compiler
           if rpat_m != ""
             @needs_rb_value = 1
             @needs_gc = 1
+            if argl_m.length >= 2
+              return "sp_re_matchdata_at(" + rpat_m + ", " + rc + ", " + compile_expr_as_int(argl_m[1]) + ")"
+            end
             return "sp_re_matchdata(" + rpat_m + ", " + rc + ")"
           end
         end
@@ -21123,6 +21126,9 @@ class Compiler
         if argl.length > 0
           rpat = regex_pat_c_expr(argl[0])
           if rpat != ""
+            if argl.length >= 2
+              return "sp_str_re_match_p_at(" + rpat + ", " + rc + ", " + compile_expr_as_int(argl[1]) + ")"
+            end
             return "sp_re_match_p(" + rpat + ", " + rc + ")"
           end
         end
