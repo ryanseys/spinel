@@ -1,0 +1,5 @@
+lo
+he
+hello
+delete_prefix!: can't modify frozen String
+delete_suffix!: can't modify frozen String

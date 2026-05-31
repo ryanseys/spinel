@@ -20836,7 +20836,8 @@ class Compiler
     if mname == "insert" || mname == "prepend" || mname == "<<" || mname == "concat" || mname == "replace" || mname == "clear" ||
        mname == "chomp!" || mname == "chop!" || mname == "upcase!" || mname == "downcase!" || mname == "swapcase!" || mname == "capitalize!" ||
        mname == "sub!" || mname == "gsub!" || mname == "squeeze!" || mname == "strip!" || mname == "lstrip!" || mname == "rstrip!" ||
-       mname == "tr!" || mname == "tr_s!" || mname == "delete!" || mname == "reverse!" || mname == "succ!" || mname == "next!"
+       mname == "tr!" || mname == "tr_s!" || mname == "delete!" || mname == "reverse!" || mname == "succ!" || mname == "next!" ||
+       mname == "delete_prefix!" || mname == "delete_suffix!"
       @needs_exc_class_hierarchy = 1
       return "({ sp_raise_cls(\"FrozenError\", \"can't modify frozen String\"); " + rc + "; })"
     end
