@@ -13938,8 +13938,43 @@ class Compiler
       return "SymStrHash|string|sym"
     elsif rt_oh == "int_str_hash"
       return "IntStrHash|string|int"
+    elsif rt_oh == "int_int_hash"
+      return "IntIntHash|int|int"
     end
     ""
+  end
+
+ # For `h[k]` on an int-VALUED typed hash (str_int / sym_int / int_int),
+ # return the `sp_<Class>_has_key(recv, key)` C expression; its negation
+ # is the Ruby-correct nil-ness of the read. "" for any other shape --
+ # string-valued and poly variants already return NULL / sp_box_nil on
+ # miss and report nil correctly without this. Used by the consumption-
+ # site handlers (.nil? / inspect / p / puts) so a missing int-hash key
+ # reads as nil at those sites without making the read globally int?
+ # (which cascades through self-host). Issue #801.
+  def int_hash_read_has_key(read_nid)
+    info = lhs_typed_hash_get_for_or(read_nid)
+    if info == ""
+      return ""
+    end
+    parts = info.split("|", -1)
+    cls = parts[0]
+    val_t = parts[1]
+    key_kind = parts[2]
+    if val_t != "int"
+      return ""
+    end
+    rc = compile_expr(@nd_receiver[read_nid])
+    if key_kind == "str"
+      key = compile_str_arg0(read_nid)
+    elsif key_kind == "sym"
+      key = compile_arg0_as_sym(read_nid)
+    elsif key_kind == "int"
+      key = compile_arg0_as_int(read_nid)
+    else
+      key = compile_expr(get_args(@nd_arguments[read_nid])[0])
+    end
+    "sp_" + cls + "_has_key(" + rc + ", " + key + ")"
   end
 
   def logical_truthiness_kind(nid, t)
@@ -28487,6 +28522,13 @@ class Compiler
 
  # nil?
     if mname == "nil?"
+ # `int_hash[k].nil?` -- the read is typed int, but a missing key is
+ # nil in Ruby. Report it via has_key without making the read int?.
+ # Issue #801.
+      hk_nil_801 = int_hash_read_has_key(@nd_receiver[nid])
+      if hk_nil_801 != ""
+        return "(!" + hk_nil_801 + ")"
+      end
       if recv_type == "nil"
         return "TRUE"
       end
@@ -30989,6 +31031,9 @@ class Compiler
     end
     if t == "int_str_hash"
       return "sp_IntStrHash_has_key"
+    end
+    if t == "int_int_hash"
+      return "sp_IntIntHash_has_key"
     end
     if t == "poly_poly_hash"
       return "sp_PolyPolyHash_has_key"
