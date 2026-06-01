@@ -28249,6 +28249,14 @@ class Compiler
         return "sp_File_gets(" + rc + ")"
       end
       if mname == "read"
+ # `read(n)` reads up to n bytes from the current position (nil at
+ # EOF); the no-arg form reads the rest of the file.
+        if @nd_arguments[nid] >= 0
+          a_rd = get_args(@nd_arguments[nid])
+          if a_rd.length >= 1
+            return "sp_File_read_n(" + rc + ", " + compile_expr_as_int(a_rd[0]) + ")"
+          end
+        end
         return "sp_File_read(" + rc + ")"
       end
       if mname == "eof?" || mname == "eof"

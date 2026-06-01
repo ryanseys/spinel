@@ -1745,6 +1745,23 @@ static inline mrb_bool sp_File_eof_p(sp_File *f) {
   ungetc(c, f->fp);
   return FALSE;
 }
+/* IO#read(n): read up to n bytes from the current position. Returns NULL
+   (nil) at EOF for a positive n, "" for n == 0, and the whole rest for a
+   negative n (treated as the no-count read). A short read produces a
+   string of the bytes actually read. */
+static inline const char *sp_File_read_n(sp_File *f, mrb_int n) {
+  if (!f || !f->fp) return NULL;
+  if (n < 0) return sp_File_read(f);
+  if (n == 0) return sp_str_empty;
+  char *r = sp_str_alloc((size_t)n);
+  size_t got = fread(r, 1, (size_t)n, f->fp);
+  if (got == 0) return NULL;
+  if ((mrb_int)got == n) { r[got] = 0; return r; }
+  char *s = sp_str_alloc(got);
+  memcpy(s, r, got);
+  s[got] = 0;
+  return s;
+}
 static inline const char *sp_File_path(sp_File *f) { return f && f->path ? f->path : sp_str_empty; }
 
 /* Array#inspect for each typed array: `[elem1, elem2, ...]` with each
