@@ -41,6 +41,8 @@ class Compiler
     @out = ""
     @deferred_tuple = ""
     @deferred_lambda = ""
+    @json_record_helper_class_idxs = []
+    @json_record_helper_names = "".split(",", -1)
     @meth_blk_param_types = nil
     @cls_cmeth_blk_param_types = nil
     @indent = 0
@@ -27470,7 +27472,14 @@ class Compiler
         if args_id_j >= 0
           aa_j = get_args(args_id_j)
           if aa_j.length >= 1
-            bt_j = base_type(infer_type(aa_j[0]))
+            at_j = infer_type(aa_j[0])
+            bt_j = base_type(at_j)
+            if is_obj_type(bt_j) == 1
+              rec_json_j = json_record_call_expr(aa_j[0], at_j)
+              if rec_json_j != ""
+                return rec_json_j
+              end
+            end
             if bt_j == "sym_int_hash"
               return "sp_SymIntHash_json(" + compile_expr(aa_j[0]) + ")"
             end
@@ -31474,6 +31483,161 @@ class Compiler
       end
     end
     box_non_nullable_value_to_poly(at, val)
+  end
+
+  def json_append(out, value_expr)
+    "sp_String_append(" + out + ", " + value_expr + ");"
+  end
+
+  def json_append_token(out, token)
+    json_append(out, "\"" + token + "\"")
+  end
+
+  def json_append_null(out)
+    json_append_token(out, "null")
+  end
+
+  def json_append_null_or(out, nil_check, value_stmt)
+    "if (" + nil_check + ") {" + 10.chr +
+      "  " + json_append_null(out) + 10.chr +
+      "} else {" + 10.chr +
+      "  " + value_stmt + 10.chr +
+      "}"
+  end
+
+  def json_append_escaped_string(out, string_expr)
+    json_append(out, "sp_json_str(" + string_expr + ")")
+  end
+
+ # Emit the value side of one JSON object member. Struct-generated
+ # records can contain sentinel-nullable ints and NULL string slots;
+ # both must become JSON null instead of their raw storage encoding.
+  def json_record_field_append_stmt(out, field_type, field_expr)
+    at = field_type
+    val = field_expr
+    bt = base_type(at)
+    if is_scalar_nullable_type(at) == 1
+      if bt == "int"
+        return json_append_null_or(out, scalar_is_nil_call(at, val), json_append(out, "sp_int_to_s(" + val + ")"))
+      end
+    end
+    if bt == "int"
+      return json_append(out, "sp_int_to_s(" + val + ")")
+    end
+    if bt == "bigint"
+      @needs_bigint = 1
+      return json_append(out, "sp_bigint_to_s((sp_Bigint *)" + val + ")")
+    end
+    if bt == "float"
+      return json_append(out, "sp_float_to_s(" + val + ")")
+    end
+    if bt == "bool"
+      return json_append(out, "(" + val + ") ? \"true\" : \"false\"")
+    end
+    if bt == "nil"
+      return json_append_null(out)
+    end
+    if bt == "string"
+      return json_append_null_or(out, "!(" + val + ")", json_append_escaped_string(out, val))
+    end
+    if bt == "mutable_str"
+      return json_append_null_or(out, "!(" + val + ")", json_append_escaped_string(out, mutable_str_to_cstr(val)))
+    end
+    if bt == "symbol"
+      return json_append_escaped_string(out, "sp_sym_to_s((sp_sym)" + val + ")")
+    end
+    if json_serializable_type(bt) == 1 || is_obj_type(bt) == 1
+      @needs_rb_value = 1
+      return json_append(out, "sp_json_val(" + box_value_to_poly(at, val) + ")")
+    end
+    ""
+  end
+
+  def json_record_helper_name(ci)
+    "sp_" + @cls_names[ci] + "_json"
+  end
+
+  def append_deferred_json_record_line(line)
+    @deferred_lambda = @deferred_lambda + line + 10.chr
+    0
+  end
+
+  def register_json_record_helper(ci)
+    cname = @cls_names[ci]
+    k = 0
+    while k < @json_record_helper_class_idxs.length
+      if @json_record_helper_class_idxs[k] == ci
+        return @json_record_helper_names[k]
+      end
+      k = k + 1
+    end
+    helper = json_record_helper_name(ci)
+    @json_record_helper_class_idxs.push(ci)
+    @json_record_helper_names.push(helper)
+    out = "o"
+    recv = "r"
+    append_deferred_json_record_line("static const char *" + helper + "(sp_" + cname + " *" + recv + ") __attribute__((unused));")
+    append_deferred_json_record_line("static const char *" + helper + "(sp_" + cname + " *" + recv + ") {")
+    append_deferred_json_record_line("  SP_GC_ROOT(" + recv + ");")
+    append_deferred_json_record_line("  sp_String *" + out + " = sp_String_new(\"\");")
+    append_deferred_json_record_line("  SP_GC_ROOT(" + out + ");")
+    append_deferred_json_record_line("  if (!" + recv + ") {")
+    append_deferred_json_record_line("    " + json_append_null(out))
+    append_deferred_json_record_line("  } else {")
+    append_deferred_json_record_line("    " + json_append_token(out, "{"))
+    readers = @cls_attr_readers[ci].split(";", -1)
+    j = 0
+    emitted = 0
+    while j < readers.length
+      m = readers[j]
+      if m != ""
+        ft = cls_ivar_type(ci, "@" + m)
+        field = recv + "->" + sanitize_ivar(m)
+        app = json_record_field_append_stmt(out, ft, field)
+        if app == ""
+          @needs_rb_value = 1
+          app = json_append(out, "sp_json_val(" + box_value_to_poly(ft, field) + ")")
+        end
+        if emitted > 0
+          append_deferred_json_record_line("    " + json_append_token(out, ","))
+        end
+        append_deferred_json_record_line("    " + json_append_escaped_string(out, c_string_literal(m)))
+        append_deferred_json_record_line("    " + json_append_token(out, ":"))
+        app_lines = app.split(10.chr, -1)
+        ak = 0
+        while ak < app_lines.length
+          if app_lines[ak] != ""
+            append_deferred_json_record_line("    " + app_lines[ak])
+          end
+          ak = ak + 1
+        end
+        emitted = emitted + 1
+      end
+      j = j + 1
+    end
+    append_deferred_json_record_line("    " + json_append_token(out, "}"))
+    append_deferred_json_record_line("  }")
+    append_deferred_json_record_line("  return " + out + "->data;")
+    append_deferred_json_record_line("}")
+    append_deferred_json_record_line("")
+    helper
+  end
+
+ # JSON.generate(record) / JSON.dump(record) for Struct-shaped user
+ # objects. The first call site for a class registers one generated
+ # helper; all call sites lower to that helper.
+  def json_record_call_expr(arg_id, at)
+    bt = base_type(at)
+    if is_obj_type(bt) == 0
+      return ""
+    end
+    cname = bt[4, bt.length - 4]
+    ci = find_class_idx(cname)
+    if ci < 0 || @cls_attr_readers[ci] == "" || synthetic_struct_class?(ci) == 0
+      return ""
+    end
+    json_record_fn = register_json_record_helper(ci)
+    json_record_fn + "(" + compile_expr(arg_id) + ")"
   end
 
  # 1 if a value of base type `bt` can be serialized by sp_json_val

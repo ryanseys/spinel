@@ -29,6 +29,11 @@ Two implementations of the parser exist and produce byte-identical AST:
 Plain UTF-8 text, line-oriented (`\n`-terminated). Every line is one
 record. Fields are space-separated.
 
+Records are not length-limited by the format. Large source constructs
+can produce `A` records longer than 4096 bytes, so parser emitters must
+size output records dynamically instead of formatting through a fixed
+line buffer.
+
 The first record is always:
 
 ```

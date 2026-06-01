@@ -25,24 +25,42 @@
 
 /* ---- Output buffer ---- */
 static char **lines;
-static int line_count;
-static int line_cap;
+static size_t line_count;
+static size_t line_cap;
 static int node_counter;
 
 static void out_add(const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  char buf[4096];
-  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_list ap2;
+  va_copy(ap2, ap);
+  int needed = vsnprintf(NULL, 0, fmt, ap);
   va_end(ap);
+  if (needed < 0) {
+    va_end(ap2);
+    fprintf(stderr, "spinel_parse: vsnprintf failed\n");
+    exit(1);
+  }
+  char *buf = malloc((size_t)needed + 1);
+  if (!buf) {
+    va_end(ap2);
+    fprintf(stderr, "spinel_parse: out of memory\n");
+    exit(1);
+  }
+  vsnprintf(buf, (size_t)needed + 1, fmt, ap2);
+  va_end(ap2);
   if (line_count >= line_cap) {
+    if (line_cap > (((size_t)-1) - 256) / 2) {
+      fprintf(stderr, "spinel_parse: out of memory\n");
+      exit(1);
+    }
     size_t new_cap = line_cap * 2 + 256;
     char **new_lines = realloc(lines, sizeof(char *) * new_cap);
     if (!new_lines) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
     lines = new_lines;
     line_cap = new_cap;
   }
-  lines[line_count++] = strdup(buf);
+  lines[line_count++] = buf;
 }
 
 /* ---- Name from constant pool ---- */
@@ -1899,7 +1917,7 @@ int main(int argc, char **argv) {
          failure. We've allocated source, g_source_file_escaped,
          lines[], plus parser/root, and registered sp_included_paths
          entries -- free all to avoid leaking on the way out. */
-      for (int i = 0; i < line_count; i++) free(lines[i]);
+      for (size_t i = 0; i < line_count; i++) free(lines[i]);
       free(lines);
       pm_node_destroy(&parser, root);
       pm_parser_free(&parser);
@@ -1917,7 +1935,7 @@ int main(int argc, char **argv) {
      even when the source contains no `__FILE__` reference. The
      loader stashes it in @source_file_path. */
   fprintf(out, "SOURCE_FILE %s\n", g_source_file_escaped);
-  for (int i = 0; i < line_count; i++) {
+  for (size_t i = 0; i < line_count; i++) {
     fprintf(out, "%s\n", lines[i]);
     free(lines[i]);
   }
