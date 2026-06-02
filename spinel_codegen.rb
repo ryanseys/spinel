@@ -39903,6 +39903,14 @@ class Compiler
               end
               if slot_t == "poly"
                 arg0_w = box_value_to_poly(arg_t_aw, arg0_w)
+              elsif arg_t_aw == "poly" && slot_t != "" && slot_t != "poly"
+ # An inherited factory widened the subclass ctor param to poly
+ # (e.g. `self.create` forwarding `new(attrs)` with a Hash) while
+ # this attr_accessor field stayed narrow. Unbox to the field's
+ # concrete C type so the direct write type-checks instead of
+ # emitting `mrb_int = sp_RbVal`. Mirrors the poly-receiver
+ # dispatch arm's slot-concrete / arg-poly case.
+                arg0_w = unbox_poly_to(slot_t, arg0_w)
               elsif slot_t == "bigint" && arg_t_aw == "int"
  # promote-mode-widened ivar: wrap an int rhs.
                 @needs_bigint = 1
