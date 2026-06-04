@@ -9323,6 +9323,15 @@ class Compiler
     if body_id >= 0 && body_has_yield(body_id) == 1
       return
     end
+ # Reject non-local control flow and runtime method definition inside
+ # the block -- return / break / next / def / define_method have no
+ # statically-translatable semantics once the body is lifted.
+    if body_id >= 0
+      kind = body_iexec_unsupported_kind(body_id)
+      if kind != ""
+        iexec_reject_kind("instance_eval", kind)
+      end
+    end
     n = @ieval_counter
     @ieval_counter = @ieval_counter + 1
     @ieval_class_idxs.push(ci)
@@ -9341,6 +9350,105 @@ class Compiler
  # emit a direct C call to `sp_ieval_<N>`.
     @nd_name[nid] = "__sp_ieval_" + n.to_s
     @nd_block[nid] = -1
+  end
+
+ # Emit a hard `Spinel: <intrinsic>: <reason>; <suggestion>` diagnostic
+ # and exit. `intrinsic` is the user-facing method name so the message
+ # points at the right call.
+  def iexec_reject(intrinsic, reason, suggestion)
+    msg = "Spinel: " + intrinsic + ": " + reason
+    if suggestion != ""
+      msg = msg + "; " + suggestion
+    end
+    $stderr.puts msg
+    exit(1)
+  end
+
+ # Rejection helper for the body_iexec_unsupported_kind enum. Maps the
+ # construct name to a reason + suggestion, then rejects.
+  def iexec_reject_kind(intrinsic, kind)
+    reason = ""
+    suggestion = ""
+    if kind == "return"
+      reason = "block uses 'return', which would return from the enclosing method"
+      suggestion = "remove the 'return' (the block's last expression is its value), or move the non-local exit outside the " + intrinsic + " block"
+    elsif kind == "break"
+      reason = "block uses 'break', which has no enclosing-iterator semantics under " + intrinsic
+      suggestion = "restructure to avoid non-local control flow"
+    elsif kind == "next"
+      reason = "block uses 'next', which has no enclosing-iterator semantics under " + intrinsic
+      suggestion = "restructure to avoid non-local control flow"
+    elsif kind == "def"
+      reason = "block contains a 'def', defining a method at runtime"
+      suggestion = "Spinel does not support runtime method definition; define the method statically on the receiver's class"
+    elsif kind == "define_method"
+      reason = "block calls 'define_method', defining a method at runtime"
+      suggestion = "Spinel does not support runtime method definition; define the method statically on the receiver's class"
+    else
+      reason = "block uses unsupported construct '" + kind + "'"
+      suggestion = "remove the construct or restructure the block body"
+    end
+    iexec_reject(intrinsic, reason, suggestion)
+  end
+
+ # Walks an instance_eval / instance_exec block body and returns the
+ # name of the first unsupported construct found (return / break /
+ # next / def / define_method), or "" when the body uses only
+ # constructs the lift can model. Nested DefNodes return "def" at the
+ # boundary rather than descending -- their bodies belong to a
+ # different scope and are checked when those methods compile.
+  def body_iexec_unsupported_kind(nid)
+    if nid < 0
+      return ""
+    end
+    t = @nd_type[nid]
+    if t == "ReturnNode"
+      return "return"
+    end
+    if t == "BreakNode"
+      return "break"
+    end
+    if t == "NextNode"
+      return "next"
+    end
+    if t == "DefNode"
+      return "def"
+    end
+    if t == "CallNode" && @nd_name[nid] == "define_method"
+      return "define_method"
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      r = body_iexec_unsupported_kind(cs[k])
+      if r != ""
+        return r
+      end
+      k = k + 1
+    end
+    ""
+  end
+
+ # A `recv.<intrinsic>(args)` with no literal block and no `&proc`
+ # argument is a no-block call. CRuby raises LocalJumpError at
+ # runtime; Spinel surfaces the same as a compile-time error. Returns
+ # 1 when the args carry a BlockArgumentNode (`&proc` form), so the
+ # caller can leave that case for the proc-arg path instead.
+  def iexec_args_have_block_arg(nid)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return 0
+    end
+    aids = get_args(args_id)
+    k = 0
+    while k < aids.length
+      if @nd_type[aids[k]] == "BlockArgumentNode"
+        return 1
+      end
+      k = k + 1
+    end
+    0
   end
 
  # Direct-path lift for `recv.instance_exec(args) { |params| body }`.
@@ -9373,15 +9481,35 @@ class Compiler
     end
     recv = @nd_receiver[nid]
     blk = @nd_block[nid]
+ # Receiverless `instance_exec(...)` is the trampoline-body shape
+ # (`def m(x, &b); instance_exec(x, &b); end`), handled by codegen's
+ # call-site inlining. Leave it for that path.
     if recv < 0
       return
     end
     if blk < 0
+ # An explicit-receiver call with no literal block: either a no-block
+ # call (CRuby raises LocalJumpError -- surface it at compile time)
+ # or a `&proc` form (left for the proc-arg path).
+      if iexec_args_have_block_arg(nid) == 0
+        iexec_reject(
+          "instance_exec",
+          "no block given",
+          "pass a literal block (`recv.instance_exec { ... }`)"
+        )
+      end
       return
     end
     ci = recv_class_idx_for_rebind(recv, local_class)
     if ci < 0
-      return
+ # AOT codegen needs the receiver's class to emit a typed
+ # `sp_iexec_<N>(sp_<C> *self, ...)` signature; a polymorphic /
+ # un-narrowed receiver can't be lifted without runtime dispatch.
+      iexec_reject(
+        "instance_exec",
+        "receiver type cannot be statically resolved",
+        "assign the receiver to a typed local first (e.g. `r = Foo.new`), or narrow via a class predicate (`raise unless r.is_a?(Foo)`) before the call"
+      )
     end
  # Override-aware intrinsic: bypass the lift when the receiver's
  # class defines its own `instance_exec`; ordinary dispatch then
@@ -9395,7 +9523,21 @@ class Compiler
  # plumbing once we lift the body to a static function. Same
  # gate as ieval_rewrite_call.
     if body_id >= 0 && body_has_yield(body_id) == 1
-      return
+      iexec_reject(
+        "instance_exec",
+        "block uses 'yield' or 'block_given?', which require an enclosing block-receiving method",
+        "restructure the inner logic to take a Proc parameter instead of yielding"
+      )
+    end
+ # Reject non-local control flow and runtime method definition --
+ # return / break / next have no enclosing-method semantics once the
+ # body is lifted to a static function, and def / define_method are
+ # runtime definitions Spinel does not model.
+    if body_id >= 0
+      kind = body_iexec_unsupported_kind(body_id)
+      if kind != ""
+        iexec_reject_kind("instance_exec", kind)
+      end
     end
 
  # Block param extraction (mirrors compile_yield_method_call_stmt
