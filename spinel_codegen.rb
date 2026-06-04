@@ -6745,7 +6745,11 @@ class Compiler
     mname = @nd_name[nid]
  # Synthetic id is the suffix after the 11-char "__sp_ieval_" prefix.
     suffix = mname[11, mname.length - 11]
-    "sp_ieval_" + suffix + "(" + compile_expr(@nd_receiver[nid]) + ")"
+ # Implicit-self direct call (analyze rewrote it with no receiver):
+ # the enclosing `self` is the receiver.
+    recv = @nd_receiver[nid]
+    recv_c = recv < 0 ? self_expr : compile_expr(recv)
+    "sp_ieval_" + suffix + "(" + recv_c + ")"
   end
 
  # Non-void lifted body: the function returns the block's last
@@ -6767,7 +6771,9 @@ class Compiler
     if is_void == 0
       return compile_ieval_call(nid)
     end
-    "(" + compile_ieval_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
+    recv = @nd_receiver[nid]
+    recv_c = recv < 0 ? self_expr : compile_expr(recv)
+    "(" + compile_ieval_call(nid) + ", " + recv_c + ")"
   end
 
  # Map a lifted body's inferred return type to its C signature
@@ -6905,7 +6911,9 @@ class Compiler
   def compile_iexec_call(nid)
     mname = @nd_name[nid]
     suffix = mname[11, mname.length - 11]
-    parts = compile_expr(@nd_receiver[nid])
+ # Implicit-self direct call: receiver is the enclosing `self`.
+    recv = @nd_receiver[nid]
+    parts = recv < 0 ? self_expr : compile_expr(recv)
     args_id = @nd_arguments[nid]
     if args_id >= 0
       aids = get_args(args_id)
@@ -6925,7 +6933,9 @@ class Compiler
  # TODO: emit a real return value once expression-position support
  # infers the lifted body's last-expression type.
   def compile_iexec_call_expr(nid)
-    "(" + compile_iexec_call(nid) + ", " + compile_expr(@nd_receiver[nid]) + ")"
+    recv = @nd_receiver[nid]
+    recv_c = recv < 0 ? self_expr : compile_expr(recv)
+    "(" + compile_iexec_call(nid) + ", " + recv_c + ")"
   end
 
  # A direct-iexec lift is always inlined at its call site rather than

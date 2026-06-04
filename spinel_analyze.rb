@@ -9187,6 +9187,7 @@ class Compiler
  # of class instances.
     ieval_walk(@root_id, local_class)
     ieval_walk_class_methods
+    ieval_walk_toplevel_methods
   end
 
  # Visit each class's instance-method bodies with `@current_class_idx`
@@ -9248,6 +9249,68 @@ class Compiler
     end
   end
 
+ # Walk top-level method bodies (file-scope `def`s, stored in @meth_*)
+ # so `def g; o = Foo.new; o.instance_exec { } end` lifts. Mirrors
+ # ieval_walk_class_methods but leaves @current_class_idx at -1 (no
+ # enclosing instance): a LocalVariableReadNode receiver resolves via
+ # find_var_type over the method's params + body locals
+ # (scan_locals_first_type), the same scope the class-method walk
+ # builds. A body already rewritten by the root/class walk (e.g. via
+ # an alias sharing the body id) re-walks harmlessly -- the renamed
+ # call no longer matches the instance_exec gate.
+  def ieval_walk_toplevel_methods
+    mi = 0
+    while mi < @meth_names.length
+      bid = @meth_body_ids[mi]
+      if bid >= 0
+        push_scope
+        pnames = @meth_param_names[mi].split(",", -1)
+        ptypes = @meth_param_types[mi].split(",", -1)
+        pk = 0
+        while pk < pnames.length
+          if pnames[pk] != ""
+            declare_var(pnames[pk], ptypes[pk])
+          end
+          pk = pk + 1
+        end
+        lnames = "".split(",", -1)
+        ltypes = "".split(",", -1)
+        scan_locals_first_type(bid, lnames, ltypes, pnames)
+        lk = 0
+        while lk < lnames.length
+          declare_var(lnames[lk], ltypes[lk])
+          lk = lk + 1
+        end
+        empty_locals = {}
+        ieval_walk(bid, empty_locals)
+        pop_scope
+      end
+      mi = mi + 1
+    end
+  end
+
+ # After a direct instance_eval/instance_exec lift, descend into the
+ # now-detached block body so a nested instance_eval/instance_exec
+ # inside it also lifts. Codegen inlines the outer body at the call
+ # site, so the inner lifted call is spliced in turn (its receiver is
+ # typically an outer-scope local captured into the block, resolved
+ # via the same local_class). Only descend when the call was actually
+ # rewritten -- a successful lift flips the name to the synthetic
+ # prefix; an un-lifted call keeps its block for codegen and is left
+ # alone to avoid orphaning an inner lift the outer never inlines.
+  def descend_lifted_block(nid, blk_before, local_class)
+    if @nd_name[nid] == "instance_eval" || @nd_name[nid] == "instance_exec"
+      return
+    end
+    if blk_before < 0 || @nd_type[blk_before] != "BlockNode"
+      return
+    end
+    inner_body = @nd_body[blk_before]
+    if inner_body >= 0
+      ieval_walk(inner_body, local_class)
+    end
+  end
+
   def ieval_walk(nid, local_class)
     if nid < 0
       return
@@ -9284,13 +9347,15 @@ class Compiler
     end
     if t == "CallNode"
       if @nd_name[nid] == "instance_eval"
+        blk_before = @nd_block[nid]
         ieval_rewrite_call(nid, local_class)
- # Don't descend into the lifted block body.
+        descend_lifted_block(nid, blk_before, local_class)
         return
       end
       if @nd_name[nid] == "instance_exec"
+        blk_before = @nd_block[nid]
         iexec_rewrite_call(nid, local_class)
- # Don't descend into the lifted block body.
+        descend_lifted_block(nid, blk_before, local_class)
         return
       end
       r = @nd_receiver[nid]
@@ -9433,6 +9498,21 @@ class Compiler
       end
       return -1
     end
+    if @nd_type[recv] == "ConstantReadNode" || @nd_type[recv] == "ConstantPathNode"
+ # `CONST.instance_eval { }` where the constant was bound to an
+ # instance (`CONST = Foo.new`). The registered const type carries
+ # `obj_<Class>`; strip the prefix the same way the local/ivar
+ # branches do to recover the receiver's class.
+      cname = const_ref_flat_name(recv, 32)
+      cidx = find_const_idx(cname)
+      if cidx >= 0
+        bt = base_type(@const_types[cidx])
+        if is_obj_type(bt) == 1
+          return find_class_idx(bt[4, bt.length - 4])
+        end
+      end
+      return -1
+    end
     -1
   end
 
@@ -9442,10 +9522,15 @@ class Compiler
     end
     recv = @nd_receiver[nid]
     blk = @nd_block[nid]
-    if recv < 0
+    if blk < 0
       return
     end
-    if blk < 0
+ # Prism stores both literal blocks (`{ ... }`) and proc-arg
+ # references (`&block_var`) in @nd_block. Only the literal-block
+ # form (BlockNode) is lifted; the proc-arg form (BlockArgumentNode)
+ # is the trampoline-body shape that codegen's
+ # is_instance_eval_trampoline picks up at the call site.
+    if @nd_type[blk] != "BlockNode"
       return
     end
  # Lifted sp_ieval_<N> takes only `self`. Accept `{ }`, `{ || }`,
@@ -9485,7 +9570,19 @@ class Compiler
         end
       end
     end
-    ci = recv_class_idx_for_rebind(recv, local_class)
+    ci = -1
+    if recv >= 0
+      ci = recv_class_idx_for_rebind(recv, local_class)
+    else
+ # Implicit-self direct call: `instance_eval { ... }` with no
+ # receiver inside a class method. The receiver is `self`; the class
+ # is the method's enclosing class (@current_class_idx). Already
+ # disambiguated from the trampoline-body case by the BlockNode
+ # check above.
+      if @current_class_idx >= 0
+        ci = @current_class_idx
+      end
+    end
     if ci < 0
       return
     end
@@ -9612,27 +9709,6 @@ class Compiler
     ""
   end
 
- # A `recv.<intrinsic>(args)` with no literal block and no `&proc`
- # argument is a no-block call. CRuby raises LocalJumpError at
- # runtime; Spinel surfaces the same as a compile-time error. Returns
- # 1 when the args carry a BlockArgumentNode (`&proc` form), so the
- # caller can leave that case for the proc-arg path instead.
-  def iexec_args_have_block_arg(nid)
-    args_id = @nd_arguments[nid]
-    if args_id < 0
-      return 0
-    end
-    aids = get_args(args_id)
-    k = 0
-    while k < aids.length
-      if @nd_type[aids[k]] == "BlockArgumentNode"
-        return 1
-      end
-      k = k + 1
-    end
-    0
-  end
-
  # Direct-path lift for `recv.instance_exec(args) { |params| body }`.
  # Sibling of ieval_rewrite_call -- detects an explicit-receiver
  # instance_exec call with a block literal, validates the
@@ -9663,26 +9739,35 @@ class Compiler
     end
     recv = @nd_receiver[nid]
     blk = @nd_block[nid]
- # Receiverless `instance_exec(...)` is the trampoline-body shape
- # (`def m(x, &b); instance_exec(x, &b); end`), handled by codegen's
- # call-site inlining. Leave it for that path.
-    if recv < 0
-      return
-    end
     if blk < 0
- # An explicit-receiver call with no literal block: either a no-block
- # call (CRuby raises LocalJumpError -- surface it at compile time)
- # or a `&proc` form (left for the proc-arg path).
-      if iexec_args_have_block_arg(nid) == 0
-        iexec_reject(
-          "instance_exec",
-          "no block given",
-          "pass a literal block (`recv.instance_exec { ... }`)"
-        )
-      end
+ # No block in @nd_block (Prism stores both `{ ... }` and `&proc`
+ # there), so this is a genuine no-block call. CRuby raises
+ # LocalJumpError at runtime; surface it at compile time.
+      iexec_reject(
+        "instance_exec",
+        "no block given",
+        "pass a literal block (`recv.instance_exec { ... }`)"
+      )
+    end
+ # Only the literal-block form is lifted; the `&proc` / trampoline-
+ # body shape (BlockArgumentNode) is handled by codegen's call-site
+ # inlining, so leave it for that path.
+    if @nd_type[blk] != "BlockNode"
       return
     end
-    ci = recv_class_idx_for_rebind(recv, local_class)
+    ci = -1
+    if recv >= 0
+      ci = recv_class_idx_for_rebind(recv, local_class)
+    else
+ # Implicit-self direct call: `instance_exec(args) { ... }` with no
+ # receiver inside a class method. The receiver is `self`; the class
+ # is the method's enclosing class (@current_class_idx). Already
+ # disambiguated from the trampoline-body case by the BlockNode
+ # check above.
+      if @current_class_idx >= 0
+        ci = @current_class_idx
+      end
+    end
     if ci < 0
  # AOT codegen needs the receiver's class to emit a typed
  # `sp_iexec_<N>(sp_<C> *self, ...)` signature; a polymorphic /
