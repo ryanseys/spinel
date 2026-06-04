@@ -9307,6 +9307,14 @@ class Compiler
     if ci < 0
       return
     end
+ # Override-aware intrinsic: if the receiver's class (or its parent
+ # chain) defines its own `instance_eval`, the user has shadowed the
+ # intrinsic. Skip the lift so ordinary dispatch resolves to the
+ # user's method, matching CRuby. A gate on the method-name string
+ # alone would silently bypass the override.
+    if cls_find_method(ci, "instance_eval") >= 0
+      return
+    end
     body_id = @nd_body[blk]
  # v1: bail if the block uses yield/block_given?. Lifting it as a
  # plain function would lose the enclosing method's block plumbing.
@@ -9373,6 +9381,13 @@ class Compiler
     end
     ci = recv_class_idx_for_rebind(recv, local_class)
     if ci < 0
+      return
+    end
+ # Override-aware intrinsic: bypass the lift when the receiver's
+ # class defines its own `instance_exec`; ordinary dispatch then
+ # resolves to the user's method, preserving CRuby semantics. Same
+ # shape as the override check in ieval_rewrite_call.
+    if cls_find_method(ci, "instance_exec") >= 0
       return
     end
     body_id = @nd_body[blk]
