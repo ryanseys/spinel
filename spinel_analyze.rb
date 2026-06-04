@@ -9260,10 +9260,15 @@ class Compiler
     end
     recv = @nd_receiver[nid]
     blk = @nd_block[nid]
-    if recv < 0
+    if blk < 0
       return
     end
-    if blk < 0
+ # Prism stores both literal blocks (`{ ... }`) and proc-arg
+ # references (`&block_var`) in @nd_block. Only the literal-block
+ # form (BlockNode) is lifted; the proc-arg form (BlockArgumentNode)
+ # is the trampoline-body shape that codegen's
+ # is_instance_eval_trampoline picks up at the call site.
+    if @nd_type[blk] != "BlockNode"
       return
     end
  # Lifted sp_ieval_<N> takes only `self`. Accept `{ }`, `{ || }`,
@@ -9303,7 +9308,19 @@ class Compiler
         end
       end
     end
-    ci = recv_class_idx_for_rebind(recv, local_class)
+    ci = -1
+    if recv >= 0
+      ci = recv_class_idx_for_rebind(recv, local_class)
+    else
+ # Implicit-self direct call: `instance_eval { ... }` with no
+ # receiver inside a class method. The receiver is `self`; the class
+ # is the method's enclosing class (@current_class_idx). Already
+ # disambiguated from the trampoline-body case by the BlockNode
+ # check above.
+      if @current_class_idx >= 0
+        ci = @current_class_idx
+      end
+    end
     if ci < 0
       return
     end
@@ -9430,27 +9447,6 @@ class Compiler
     ""
   end
 
- # A `recv.<intrinsic>(args)` with no literal block and no `&proc`
- # argument is a no-block call. CRuby raises LocalJumpError at
- # runtime; Spinel surfaces the same as a compile-time error. Returns
- # 1 when the args carry a BlockArgumentNode (`&proc` form), so the
- # caller can leave that case for the proc-arg path instead.
-  def iexec_args_have_block_arg(nid)
-    args_id = @nd_arguments[nid]
-    if args_id < 0
-      return 0
-    end
-    aids = get_args(args_id)
-    k = 0
-    while k < aids.length
-      if @nd_type[aids[k]] == "BlockArgumentNode"
-        return 1
-      end
-      k = k + 1
-    end
-    0
-  end
-
  # Direct-path lift for `recv.instance_exec(args) { |params| body }`.
  # Sibling of ieval_rewrite_call -- detects an explicit-receiver
  # instance_exec call with a block literal, validates the
@@ -9481,26 +9477,35 @@ class Compiler
     end
     recv = @nd_receiver[nid]
     blk = @nd_block[nid]
- # Receiverless `instance_exec(...)` is the trampoline-body shape
- # (`def m(x, &b); instance_exec(x, &b); end`), handled by codegen's
- # call-site inlining. Leave it for that path.
-    if recv < 0
-      return
-    end
     if blk < 0
- # An explicit-receiver call with no literal block: either a no-block
- # call (CRuby raises LocalJumpError -- surface it at compile time)
- # or a `&proc` form (left for the proc-arg path).
-      if iexec_args_have_block_arg(nid) == 0
-        iexec_reject(
-          "instance_exec",
-          "no block given",
-          "pass a literal block (`recv.instance_exec { ... }`)"
-        )
-      end
+ # No block in @nd_block (Prism stores both `{ ... }` and `&proc`
+ # there), so this is a genuine no-block call. CRuby raises
+ # LocalJumpError at runtime; surface it at compile time.
+      iexec_reject(
+        "instance_exec",
+        "no block given",
+        "pass a literal block (`recv.instance_exec { ... }`)"
+      )
+    end
+ # Only the literal-block form is lifted; the `&proc` / trampoline-
+ # body shape (BlockArgumentNode) is handled by codegen's call-site
+ # inlining, so leave it for that path.
+    if @nd_type[blk] != "BlockNode"
       return
     end
-    ci = recv_class_idx_for_rebind(recv, local_class)
+    ci = -1
+    if recv >= 0
+      ci = recv_class_idx_for_rebind(recv, local_class)
+    else
+ # Implicit-self direct call: `instance_exec(args) { ... }` with no
+ # receiver inside a class method. The receiver is `self`; the class
+ # is the method's enclosing class (@current_class_idx). Already
+ # disambiguated from the trampoline-body case by the BlockNode
+ # check above.
+      if @current_class_idx >= 0
+        ci = @current_class_idx
+      end
+    end
     if ci < 0
  # AOT codegen needs the receiver's class to emit a typed
  # `sp_iexec_<N>(sp_<C> *self, ...)` signature; a polymorphic /
