@@ -775,21 +775,18 @@ class Compiler
       return ""
     end
     last = pnames.length - 1
-    if ptypes[last] != "proc"
+ # The last param is a proc reference when analyze typed it "proc"
+ # (seen called / splatted) or defaulted it to "poly" (its only use
+ # is forwarding via `&` -- the trampoline shape itself).
+    if ptypes[last] != "proc" && ptypes[last] != "poly"
       return ""
     end
- # Earlier params must be ordinary (no rest, no keyword). The
- # baseline supports fixed-arity forwarding only; splat / mixed-args
- # extensions land in follow-ups.
+ # Earlier params must be ordinary types (a type name, not a second
+ # proc reference). Rest params (typed as array kinds or "poly") are
+ # allowed -- splat trampolines pass through here.
     k = 0
     while k < last
       pt = ptypes[k]
- # The required-arg ptypes include type names (int, str_array,
- # obj_<C>, etc.), never "rest" / "kwrest" / "block" markers. If
- # a non-required-arg slot appears here, abort the detection so
- # we don't conflate splat trampolines with the fixed-arity
- # shape. A follow-up relaxes this to accept a "rest"-typed
- # final-required-param when the splat trampoline path lands.
       if pt == "" || pt == "proc"
         return ""
       end
@@ -902,11 +899,17 @@ class Compiler
     if @nd_name[inner] != bp_name
       return 0
     end
- # Walk the trampoline body's positional args. The baseline requires
- # each arg to be a LocalVariableReadNode matching the method's
- # required param at the same index, in order. Mixed-args (literals,
- # ivars, splat) reject for now; the strict-enumerable extension
- # lands in a follow-up.
+ # Walk the trampoline body's positional args. Each must be one of:
+ #   - LocalVariableReadNode whose name matches a method param
+ #     (forwarded from call site)
+ #   - A literal node: Integer/Float/String/Symbol/True/False/Nil
+ #   - InstanceVariableReadNode (rebound receiver's ivar)
+ #   - SplatNode of a LocalVariableRead matching the method's
+ #     rest param (forwards every call-site arg 1:1 to block
+ #     params -- e.g. `def m(*args, &b); instance_exec(*args, &b); end`)
+ # The block at the call site is matched against these by position
+ # at inlining time, not by name; the detector only validates that
+ # every arg has a shape the inliner knows how to evaluate.
     pnames = cls_meth_pnames_get(ci, midx)
     req_n = pnames.length - 1   # last is the &block, already checked
     args_id = @nd_arguments[s]
@@ -926,16 +929,54 @@ class Compiler
       end
       k = k + 1
     end
-    if positional.length != req_n
-      return 0
-    end
     k = 0
-    while k < req_n
+    while k < positional.length
       aid = positional[k]
-      if @nd_type[aid] != "LocalVariableReadNode"
-        return 0
-      end
-      if @nd_name[aid] != pnames[k]
+      t = @nd_type[aid]
+      if t == "LocalVariableReadNode"
+ # Must reference one of the method's required params; otherwise
+ # the inliner can't resolve the value at the call site.
+        nm = @nd_name[aid]
+        found = 0
+        j = 0
+        while j < req_n
+          if pnames[j] == nm
+            found = 1
+            break
+          end
+          j = j + 1
+        end
+        if found == 0
+          return 0
+        end
+      elsif t == "IntegerNode" || t == "FloatNode" || t == "StringNode" || t == "SymbolNode" || t == "TrueNode" || t == "FalseNode" || t == "NilNode"
+ # Literal -- compiles to the same C value in any scope.
+      elsif t == "InstanceVariableReadNode"
+ # Rebound receiver's ivar (`@x` inside the trampoline body
+ # refers to the receiver-class instance, which becomes the
+ # rebound self in the spliced block).
+      elsif t == "SplatNode"
+ # Splat forwarding of the method's rest param. Only allowed as
+ # a sole positional arg (`instance_exec(*args, &b)`); mixing
+ # splat with other positional args isn't supported.
+        if positional.length != 1
+          return 0
+        end
+        exp = @nd_expression[aid]
+        if exp < 0 || @nd_type[exp] != "LocalVariableReadNode"
+          return 0
+        end
+ # The splatted local must be the method's rest param. Trampoline
+ # method has shape (*<rest>, &<proc>); rest is the second-to-last
+ # param if there are no other required args (i.e. pnames.length
+ # == 2 here -- rest + proc).
+        if pnames.length != 2
+          return 0
+        end
+        if pnames[0] != @nd_name[exp]
+          return 0
+        end
+      else
         return 0
       end
       k = k + 1
@@ -51875,38 +51916,78 @@ class Compiler
       end
     end
 
- # Trampoline-method param types: forward through @cls_meth_ptypes
- # so each call-site arg gets a typed local. The trampoline's
- # ptypes[k] for k < N (the required params) are the types the
- # block body should see for its block params.
-    ptypes_full = cls_meth_ptypes_get(cci, midx)
-    req_n = ptypes_full.length - 1   # last is &block
-
- # Arity check: the user's block at the call site must declare the
- # same number of required params as the trampoline forwards. A
- # mismatch is a hard error rather than a silent miscompile --
- # Spinel uses strict arity here (CRuby's auto-splat / auto-pack is
- # not modeled), so the counts must match exactly.
-    if bp_names.length != req_n
-      $stderr.puts "Spinel: instance_exec trampoline: " + bp_names.length.to_s + " block param(s) do not match " + req_n.to_s + " trampoline arg(s); Spinel uses strict arity (CRuby's auto-splat / auto-pack is not modeled). Match the counts exactly."
-      exit(1)
+ # Walk the trampoline body to find the `instance_exec(args..., &b)`
+ # call so we can read each positional arg's AST node directly --
+ # mixed-args (literals, ivars) need per-kind evaluation at the
+ # call site, not just by-index forwarding.
+    tramp_bid = cls_method_body_id(cci, midx)
+    tramp_stmt = -1
+    if tramp_bid >= 0
+      tstmts = get_stmts(tramp_bid)
+      if tstmts.length == 1
+        tramp_stmt = tstmts[0]
+      end
+    end
+    tramp_args_id = tramp_stmt >= 0 ? @nd_arguments[tramp_stmt] : -1
+    tramp_arg_nodes = []
+    is_splat_tramp = 0
+    if tramp_args_id >= 0
+      taids = get_args(tramp_args_id)
+      k = 0
+      while k < taids.length
+        if @nd_type[taids[k]] != "BlockArgumentNode"
+          tramp_arg_nodes.push(taids[k])
+        end
+        k = k + 1
+      end
+ # Splat trampoline shape: the sole positional arg is a SplatNode
+ # of the method's rest param. Treat each call-site positional arg
+ # as if the trampoline body listed it explicitly -- the block
+ # param count matches the call-site arg count, each forwarded
+ # verbatim.
+      if tramp_arg_nodes.length == 1 && @nd_type[tramp_arg_nodes[0]] == "SplatNode"
+        is_splat_tramp = 1
+      end
     end
 
  # Evaluate call-site args BEFORE rebinding self -- the args are
- # in the outer scope, not the splice context. Mirrors the order
- # in compile_yield_method_call_stmt.
-    args_id = @nd_arguments[nid]
-    arg_ids = []
-    if args_id >= 0
-      arg_ids = get_args(args_id)
+ # in the outer scope, not the splice context.
+    call_args_id = @nd_arguments[nid]
+    call_arg_ids = []
+    if call_args_id >= 0
+      call_arg_ids = get_args(call_args_id)
     end
+
+ # Arity check: the user's block must declare the same number of
+ # params as the trampoline body forwards args. Splat trampolines
+ # fan out -- each call-site arg maps to one block param. A mismatch
+ # is a hard error (Spinel uses strict arity; CRuby's auto-splat /
+ # auto-pack is not modeled).
+    effective_arity = is_splat_tramp == 1 ? call_arg_ids.length : tramp_arg_nodes.length
+    if bp_names.length != effective_arity
+      $stderr.puts "Spinel: instance_exec trampoline: " + bp_names.length.to_s + " block param(s) do not match " + effective_arity.to_s + " trampoline arg(s); Spinel uses strict arity (CRuby's auto-splat / auto-pack is not modeled). Match the counts exactly."
+      exit(1)
+    end
+
+ # Trampoline-method param types: forward through @cls_meth_ptypes
+ # so each LocalVariableRead arg picks up its declared type.
+    pnames_m = cls_meth_pnames_get(cci, midx)
+    ptypes_m = cls_meth_ptypes_get(cci, midx)
 
     rc = compile_expr_gc_rooted(recv)
     self_var = new_temp
+    recv_ci = find_class_idx(cname)
     emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
     if @in_gc_scope == 1
       emit("  SP_GC_ROOT(" + self_var + ");")
     end
+
+ # Push a new analyzer scope so the block-param declarations (under
+ # both their suffixed and original names below) shadow outer locals
+ # only within this call site. Without bracketing, a block param
+ # `|b|` would shadow an outer `b = Builder.new`, breaking later
+ # `b.method` dispatch.
+    push_scope
 
  # Per-call-site suffix for block-param locals so nested splices
  # / same-trampoline-different-call-sites don't shadow. Reuses
@@ -51918,24 +51999,82 @@ class Compiler
     map_from = "".split(",")
     map_to = "".split(",")
 
+ # Per-position evaluation: each trampoline-body arg becomes a typed
+ # C local bound to the corresponding block param. The mixed-args
+ # detector already validated every arg is a supported kind, so the
+ # branches below are total. For splat trampolines the arg at
+ # position k is the call site's k-th arg, forwarded directly.
     k = 0
-    while k < req_n
+    while k < effective_arity
+      val_c = ""
       pt = "int"
-      if k < ptypes_full.length
-        pt = ptypes_full[k]
+      if is_splat_tramp == 1
+        if k < call_arg_ids.length
+          val_c = compile_expr(call_arg_ids[k])
+          pt = infer_type(call_arg_ids[k])
+          if pt == ""
+            pt = "int"
+          end
+        else
+          val_c = "0"
+        end
+      else
+        targ = tramp_arg_nodes[k]
+        tt = @nd_type[targ]
+        if tt == "LocalVariableReadNode"
+ # Forward from the call-site arg at the matching method-param
+ # position. Find the param index by name.
+          nm = @nd_name[targ]
+          j = 0
+          pidx = -1
+          while j < pnames_m.length - 1
+            if pnames_m[j] == nm
+              pidx = j
+              break
+            end
+            j = j + 1
+          end
+          if pidx >= 0 && pidx < call_arg_ids.length
+            val_c = compile_expr(call_arg_ids[pidx])
+            if pidx < ptypes_m.length
+              pt = ptypes_m[pidx]
+            end
+          else
+            val_c = "0"
+          end
+        elsif tt == "IntegerNode" || tt == "FloatNode" || tt == "StringNode" || tt == "SymbolNode" || tt == "TrueNode" || tt == "FalseNode" || tt == "NilNode"
+ # Literal: compiles to the same C value in any scope.
+          val_c = compile_expr(targ)
+          pt = infer_type(targ)
+        elsif tt == "InstanceVariableReadNode"
+ # Rebound receiver's ivar (`@x` in the trampoline body refers to
+ # the receiver-class instance, which becomes the rebound self in
+ # the spliced block). sanitize_ivar already yields the `iv_<name>`
+ # form -- don't double-prefix.
+          iname = @nd_name[targ]
+          val_c = self_var + "->" + sanitize_ivar(iname)
+          if recv_ci >= 0
+            pt = cls_ivar_type(recv_ci, iname)
+            if pt == ""
+              pt = "int"
+            end
+          end
+        else
+          val_c = "0"
+        end
       end
+
       tname = bp_names[k] + suffix
-      val = "0"
-      if k < arg_ids.length
-        val = compile_expr(arg_ids[k])
-      end
-      emit("  " + c_type(pt) + " lv_" + tname + " = " + val + ";")
+      emit("  " + c_type(pt) + " lv_" + tname + " = " + val_c + ";")
       if type_is_pointer(pt) == 1 && @in_gc_scope == 1
         emit("  SP_GC_ROOT(lv_" + tname + ");")
       end
       map_from.push(bp_names[k])
       map_to.push(tname)
       declare_var(tname, pt)
+ # Also declare under the original name so find_var_type during the
+ # splice resolves block-param references to the typed slot.
+      declare_var(bp_names[k], pt)
       k = k + 1
     end
 
@@ -51955,6 +52094,9 @@ class Compiler
     @inline_rename_map_from = saved_in_rmf
     @inline_rename_map_to = saved_in_rmt
     @self_override = saved_self_override
+ # Pop the inner splice scope so block-param shadowing of outer
+ # locals doesn't leak into subsequent code.
+    pop_scope
   end
 
   def compile_yield_method_call_stmt(nid, cci, midx, mname)
