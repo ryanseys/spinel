@@ -7019,6 +7019,64 @@ class Compiler
     if args_id >= 0
       arg_ids = get_args(args_id)
     end
+ # Split positional args from the keyword hash. analyze appended any
+ # keyword block params after the positionals in pnames; they bind by
+ # name (below), the positionals bind in order. With no keyword hash
+ # pos_arg_ids == arg_ids, so the positional/auto-splat path is unchanged.
+    pos_arg_ids = []
+    khash_id = -1
+    ai = 0
+    while ai < arg_ids.length
+      if @nd_type[arg_ids[ai]] == "KeywordHashNode"
+        khash_id = arg_ids[ai]
+      elsif @nd_type[arg_ids[ai]] != "BlockArgumentNode"
+        pos_arg_ids.push(arg_ids[ai])
+      end
+      ai = ai + 1
+    end
+ # Keyword params from the block's ParametersNode (analyze stashed its id
+ # in @iexec_block_param_ids): name + default expr (-1 when required).
+    kw_pnames = "".split(",", -1)
+    kw_defaults = []
+    pnode = -1
+    if n < @iexec_block_param_ids.length
+      pnode = @iexec_block_param_ids[n]
+    end
+    if pnode >= 0 && @nd_type[pnode] == "ParametersNode"
+      kws = parse_id_list(@nd_keywords[pnode])
+      kk = 0
+      while kk < kws.length
+        kw_pnames.push(@nd_name[kws[kk]])
+        if @nd_type[kws[kk]] == "OptionalKeywordParameterNode"
+          kw_defaults.push(@nd_expression[kws[kk]])
+        else
+          kw_defaults.push(-1)
+        end
+        kk = kk + 1
+      end
+    end
+ # Call-site keyword args: name -> value node.
+    call_kw_keys = "".split(",", -1)
+    call_kw_vals = []
+    if khash_id >= 0
+      kelems = parse_id_list(@nd_elements[khash_id])
+      ke = 0
+      while ke < kelems.length
+        if @nd_type[kelems[ke]] == "AssocNode"
+          kkey = @nd_key[kelems[ke]]
+          kval = @nd_expression[kelems[ke]]
+          if kkey >= 0 && kval >= 0 && @nd_type[kkey] == "SymbolNode"
+            knm = @nd_content[kkey]
+            if knm == ""
+              knm = @nd_name[kkey]
+            end
+            call_kw_keys.push(knm)
+            call_kw_vals.push(kval)
+          end
+        end
+        ke = ke + 1
+      end
+    end
     rc = recv < 0 ? self_expr : compile_expr_gc_rooted(recv)
     self_var = new_temp
     vt = 0
@@ -7041,9 +7099,28 @@ class Compiler
     suffix = "_ix" + @block_counter.to_s
     map_from = "".split(",")
     map_to = "".split(",")
+ # Auto-splat: a single array arg destructured across N>=2 block
+ # params (analyze recorded the params typed from the element type).
+ # Evaluate the array once; each param then binds to its element via
+ # the typed sp_<Prefix>_get. A recorded lift with one arg and >=2
+ # params is always this shape -- the positional path is strict 1:1.
+    splat_arr = ""
+    splat_pfx = ""
+    if pos_arg_ids.length == 1 && pnames.length >= 2 && kw_pnames.length == 0
+      arr_t_ix = infer_type(pos_arg_ids[0])
+      if is_array_type(arr_t_ix) == 1
+        splat_pfx = array_c_prefix(arr_t_ix)
+        splat_arr = new_temp
+        emit("  " + c_type(arr_t_ix) + " " + splat_arr + " = " + compile_expr_gc_rooted(pos_arg_ids[0]) + ";")
+        if @in_gc_scope == 1
+          emit("  SP_GC_ROOT(" + splat_arr + ");")
+        end
+      end
+    end
  # Evaluate call-site args BEFORE rebinding self -- they live in the
  # outer scope, not the splice context.
     k = 0
+    pi = 0
     while k < pnames.length
       if pnames[k] != ""
         pt = "int"
@@ -7051,8 +7128,37 @@ class Compiler
           pt = ptypes[k]
         end
         val_c = "0"
-        if k < arg_ids.length
-          val_c = compile_expr(arg_ids[k])
+        kw_idx = -1
+        ksi = 0
+        while ksi < kw_pnames.length
+          if kw_pnames[ksi] == pnames[k]
+            kw_idx = ksi
+          end
+          ksi = ksi + 1
+        end
+        if kw_idx >= 0
+ # Keyword param: bind from the matching call-site `key:` value, or
+ # the param's default expr when the call omits it.
+          vnode = -1
+          cj = 0
+          while cj < call_kw_keys.length
+            if call_kw_keys[cj] == pnames[k]
+              vnode = call_kw_vals[cj]
+            end
+            cj = cj + 1
+          end
+          if vnode < 0
+            vnode = kw_defaults[kw_idx]
+          end
+          if vnode >= 0
+            val_c = compile_expr(vnode)
+          end
+        elsif splat_arr != ""
+          val_c = "sp_" + splat_pfx + "_get(" + splat_arr + ", " + pi.to_s + "LL)"
+          pi = pi + 1
+        elsif pi < pos_arg_ids.length
+          val_c = compile_expr(pos_arg_ids[pi])
+          pi = pi + 1
         end
         tname = pnames[k] + suffix
         emit("  " + c_type(pt) + " lv_" + tname + " = " + val_c + ";")
