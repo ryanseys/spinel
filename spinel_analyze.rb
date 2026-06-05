@@ -9711,13 +9711,17 @@ class Compiler
         "restructure the inner logic to take a Proc parameter instead of yielding"
       )
     end
- # Reject non-local control flow and runtime method definition --
- # return / break / next have no enclosing-method semantics once the
- # body is lifted to a static function, and def / define_method are
- # runtime definitions Spinel does not model.
+ # Reject runtime method definition and the control-flow shapes the
+ # inline splice can't yet model. `return`, `break` and `next` ARE
+ # allowed: the body is spliced at the call site, so `return` lowers to
+ # a real C return from the enclosing method, and `break <v>` / `next
+ # <v>` lower to the value of the call (codegen wraps the splice in a
+ # `do { } while (0)` and reuses the expression-break temp -- `break`
+ # via C `break`, `next` via C `continue` through the `while (0)`).
+ # def / define_method are runtime definitions Spinel does not model.
     if body_id >= 0
       kind = body_iexec_unsupported_kind(body_id)
-      if kind != ""
+      if kind != "" && kind != "return" && kind != "break" && kind != "next"
         iexec_reject_kind("instance_exec", kind)
       end
     end
