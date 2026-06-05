@@ -9557,13 +9557,26 @@ class Compiler
     bp_names = "".split(",")
     bp = @nd_parameters[blk]
     if bp >= 0
-      inner = @nd_parameters[bp]
-      if inner >= 0
-        reqs = parse_id_list(@nd_requireds[inner])
-        k = 0
-        while k < reqs.length
-          bp_names.push(@nd_name[reqs[k]])
+      if @nd_type[bp] == "NumberedParametersNode"
+ # Numbered params `_1.._N` (and `it`, which the parser normalizes
+ # to a single-slot NumberedParametersNode): synthesize one
+ # positional param per slot so they bind to the call-site args like
+ # ordinary `{ |a, b| }` params. @nd_value holds the maximum index.
+        nmax = @nd_value[bp]
+        k = 1
+        while k <= nmax
+          bp_names.push("_" + k.to_s)
           k = k + 1
+        end
+      else
+        inner = @nd_parameters[bp]
+        if inner >= 0
+          reqs = parse_id_list(@nd_requireds[inner])
+          k = 0
+          while k < reqs.length
+            bp_names.push(@nd_name[reqs[k]])
+            k = k + 1
+          end
         end
       end
     end
