@@ -9166,6 +9166,10 @@ class Compiler
     @iexec_body_ids = []
     @iexec_block_pnames = "".split(",", -1)
     @iexec_block_ptypes = "".split(",", -1)
+ # Inner ParametersNode id per lift (-1 when none), so codegen can
+ # reach the block's keyword params -- their optional/default exprs are
+ # unreachable from the detached call node otherwise.
+    @iexec_block_param_ids = []
  # Widen class-method ptypes through obj-typed receivers before the
  # walk so a method-param receiver (e.g. `def configure(app);
  # app.instance_eval { } end` invoked as `cfg.configure(routes)`)
@@ -9185,7 +9189,25 @@ class Compiler
  # into method bodies — locals there are out of scope, and the
  # ivar-only extension does not (yet) try to type method-local copies
  # of class instances.
+ # Declare top-level locals in scope (mirroring the class-method and
+ # top-level-method walks) so infer_type resolves them during the walk
+ # -- e.g. a top-level-local array arg auto-splats across block params.
+ # scan_locals_first_type infers each from its first assignment (array
+ # literals type directly, no fixpoint needed); pop before the method
+ # walks so these locals don't leak into method bodies.
+    push_scope
+    rlnames = "".split(",", -1)
+    rltypes = "".split(",", -1)
+    scan_locals_first_type(@root_id, rlnames, rltypes, [])
+    rk = 0
+    while rk < rlnames.length
+      if rlnames[rk] != ""
+        declare_var(rlnames[rk], rltypes[rk])
+      end
+      rk = rk + 1
+    end
     ieval_walk(@root_id, local_class)
+    pop_scope
     ieval_walk_class_methods
     ieval_walk_toplevel_methods
   end
@@ -9733,6 +9755,43 @@ class Compiler
  # in this baseline -- a follow-up upgrades the rejections
  # to hard `<file>:<line>: instance_exec: <reason>; <suggestion>`
  # errors with exit(1).
+ # Static type of a call-site arg (or a keyword param's default expr)
+ # from its AST node, in the c_type vocabulary the param binding needs.
+ # "" means untypable -- the caller bails the lift. LocalVariableReadNode
+ # resolves via the scope the walk declared (scan_locals_first_type);
+ # InstanceVariableReadNode via the enclosing class. Shared by the
+ # positional and keyword binding paths.
+  def iexec_arg_static_type(aid)
+    at = @nd_type[aid]
+    if at == "LocalVariableReadNode"
+      return find_var_type(@nd_name[aid])
+    end
+    if at == "IntegerNode"
+      return "int"
+    end
+    if at == "FloatNode"
+      return "float"
+    end
+    if at == "StringNode"
+      return "str"
+    end
+    if at == "SymbolNode"
+      return "sym"
+    end
+    if at == "TrueNode" || at == "FalseNode"
+      return "bool"
+    end
+    if at == "NilNode"
+      return "poly"
+    end
+    if at == "InstanceVariableReadNode"
+      if @current_class_idx >= 0
+        return cls_ivar_type(@current_class_idx, @nd_name[aid])
+      end
+    end
+    ""
+  end
+
   def iexec_rewrite_call(nid, local_class)
     if @nd_name[nid] != "instance_exec"
       return
@@ -9811,78 +9870,188 @@ class Compiler
       end
     end
 
- # Block param extraction (mirrors compile_yield_method_call_stmt
- # in codegen). The baseline supports required positional params only -- no
- # rest, no keyword, no defaults. Anything else bails the rewrite.
+ # Block param extraction (mirrors compile_yield_method_call_stmt in
+ # codegen). Positional required params bind 1:1 (or auto-splat); named
+ # keyword params (required + optional-with-default) bind by name below.
+ # param_node_id carries the inner ParametersNode to codegen (via the
+ # @iexec_block_param_ids registry) so it can reach the keyword params'
+ # optional/default exprs -- unreachable from the detached call node.
     bp_names = "".split(",")
+    kw_nodes = []
+    param_node_id = -1
     bp = @nd_parameters[blk]
     if bp >= 0
-      inner = @nd_parameters[bp]
-      if inner >= 0
-        reqs = parse_id_list(@nd_requireds[inner])
-        k = 0
-        while k < reqs.length
-          bp_names.push(@nd_name[reqs[k]])
+      if @nd_type[bp] == "NumberedParametersNode"
+ # Numbered params `_1.._N` (and `it`, which the parser normalizes
+ # to a single-slot NumberedParametersNode): synthesize one
+ # positional param per slot so they bind to the call-site args like
+ # ordinary `{ |a, b| }` params. @nd_value holds the maximum index.
+        nmax = @nd_value[bp]
+        k = 1
+        while k <= nmax
+          bp_names.push("_" + k.to_s)
           k = k + 1
+        end
+      else
+        inner = @nd_parameters[bp]
+        if inner >= 0
+          param_node_id = inner
+ # Keyword-rest (`**opts`) needs a runtime hash the splice can't
+ # model; reject precisely. Required and optional keyword params ARE
+ # bound below (matched to call-site `key:` args by name).
+          if @nd_keyword_rest[inner] >= 0
+            iexec_reject(
+              "instance_exec",
+              "block has a keyword-rest parameter (`**`), which Spinel cannot bind from the call site",
+              "use named keyword params (`{ |k:, j:| }`) or positional params"
+            )
+          end
+          reqs = parse_id_list(@nd_requireds[inner])
+          k = 0
+          while k < reqs.length
+            bp_names.push(@nd_name[reqs[k]])
+            k = k + 1
+          end
+          kw_nodes = parse_id_list(@nd_keywords[inner])
         end
       end
     end
 
- # Call-site positional args (excluding the block-arg). Must match
- # block param count 1:1 (strict arity, no CRuby auto-splat).
+ # Call-site positional args (excluding the block-arg and the keyword
+ # hash). Positional args match the positional params 1:1 (or auto-
+ # splat); the keyword hash, if any, is bound to keyword params by name.
     args_id = @nd_arguments[nid]
     pos_arg_ids = []
+    khash_id = -1
     if args_id >= 0
       aids = get_args(args_id)
       k = 0
       while k < aids.length
-        if @nd_type[aids[k]] != "BlockArgumentNode"
+        if @nd_type[aids[k]] == "KeywordHashNode"
+          khash_id = aids[k]
+        elsif @nd_type[aids[k]] != "BlockArgumentNode"
           pos_arg_ids.push(aids[k])
         end
         k = k + 1
       end
     end
-    if pos_arg_ids.length != bp_names.length
-      return
-    end
-
- # Type each block param from its corresponding call-site arg.
- # find_var_type / infer_type-equivalent is the analyze-side
- # cousin; the simplest path is to read the AST node type via
- # the helpers used elsewhere in this file.
+ # Auto-splat: CRuby destructures a single array arg across N>=2
+ # block params (binding arr[0]..arr[N-1]). Type every param from the
+ # array's element type; codegen reads the elements via the matching
+ # sp_<Prefix>_get. Restricted to a uniform scalar element type so the
+ # params get a concrete C type -- poly / object-array elements fall
+ # through and bail (no lift), preserving prior behavior.
     bp_types_str = ""
-    k = 0
-    while k < pos_arg_ids.length
-      t = ""
-      aid = pos_arg_ids[k]
-      at = @nd_type[aid]
-      if at == "LocalVariableReadNode"
-        t = find_var_type(@nd_name[aid])
-      elsif at == "IntegerNode"
-        t = "int"
-      elsif at == "FloatNode"
-        t = "float"
-      elsif at == "StringNode"
-        t = "str"
-      elsif at == "SymbolNode"
-        t = "sym"
-      elsif at == "TrueNode" || at == "FalseNode"
-        t = "bool"
-      elsif at == "NilNode"
-        t = "poly"
-      elsif at == "InstanceVariableReadNode"
-        if @current_class_idx >= 0
-          t = cls_ivar_type(@current_class_idx, @nd_name[aid])
+    auto_splat = 0
+    if pos_arg_ids.length == 1 && bp_names.length >= 2 && kw_nodes.length == 0
+      arr_t = infer_type(pos_arg_ids[0])
+      if is_array_type(arr_t) == 1
+ # elem_type_of_array yields the c_type vocabulary (`string` /
+ # `symbol`), matching what sp_<Prefix>_get returns; recording `str`
+ # / `sym` would mis-declare the param (those are not c_type arms).
+        et = elem_type_of_array(arr_t)
+        if et == "int" || et == "float" || et == "string" || et == "symbol"
+          auto_splat = 1
+          k = 0
+          while k < bp_names.length
+            if k > 0
+              bp_types_str = bp_types_str + "|"
+            end
+            bp_types_str = bp_types_str + et
+            k = k + 1
+          end
         end
       end
-      if t == ""
+    end
+    if auto_splat == 0
+      if pos_arg_ids.length != bp_names.length
         return
       end
-      if k > 0
-        bp_types_str = bp_types_str + "|"
+ # Type each positional block param from its corresponding call-site arg.
+      k = 0
+      while k < pos_arg_ids.length
+        t = iexec_arg_static_type(pos_arg_ids[k])
+        if t == ""
+          return
+        end
+        if k > 0
+          bp_types_str = bp_types_str + "|"
+        end
+        bp_types_str = bp_types_str + t
+        k = k + 1
       end
-      bp_types_str = bp_types_str + t
-      k = k + 1
+    end
+
+ # Keyword block params bind after the positionals. Each is matched to a
+ # call-site `key:` arg by name; an optional param with no matching key
+ # falls back to its default expr. A required param with no key, or a
+ # call-site keyword hash with no keyword params to receive it, are
+ # ArgumentError shapes the splice can't model -- reject precisely.
+    if kw_nodes.length > 0
+      kw_keys = "".split(",", -1)
+      kw_vals = []
+      if khash_id >= 0
+        elems = parse_id_list(@nd_elements[khash_id])
+        ei = 0
+        while ei < elems.length
+          if @nd_type[elems[ei]] == "AssocNode"
+            key_id = @nd_key[elems[ei]]
+            val_id = @nd_expression[elems[ei]]
+            if key_id >= 0 && val_id >= 0 && @nd_type[key_id] == "SymbolNode"
+              kn = @nd_content[key_id]
+              if kn == ""
+                kn = @nd_name[key_id]
+              end
+              kw_keys.push(kn)
+              kw_vals.push(val_id)
+            end
+          end
+          ei = ei + 1
+        end
+      end
+      ki = 0
+      while ki < kw_nodes.length
+        kwn = kw_nodes[ki]
+        pname = @nd_name[kwn]
+        vid = -1
+        kj = 0
+        while kj < kw_keys.length
+          if kw_keys[kj] == pname
+            vid = kw_vals[kj]
+          end
+          kj = kj + 1
+        end
+        t = ""
+        if vid >= 0
+          t = iexec_arg_static_type(vid)
+        elsif @nd_type[kwn] == "OptionalKeywordParameterNode"
+ # Omitted optional param: bind its default expr. Evaluated in the
+ # outer scope (codegen binds args before rebinding self), so a
+ # default referencing self / another param is not modeled.
+          t = iexec_arg_static_type(@nd_expression[kwn])
+        else
+          iexec_reject(
+            "instance_exec",
+            "required keyword argument is missing at the call site",
+            "supply every required keyword (`recv.instance_exec(k: ...) { |k:| }`)"
+          )
+        end
+        if t == ""
+          return
+        end
+        bp_names.push(pname)
+        if bp_types_str != ""
+          bp_types_str = bp_types_str + "|"
+        end
+        bp_types_str = bp_types_str + t
+        ki = ki + 1
+      end
+    elsif khash_id >= 0
+      iexec_reject(
+        "instance_exec",
+        "keyword arguments passed but the block has no keyword parameters",
+        "remove the keyword arguments or add matching keyword params to the block"
+      )
     end
 
     bp_names_str = bp_names.join("|")
@@ -9893,6 +10062,7 @@ class Compiler
     @iexec_body_ids.push(body_id)
     @iexec_block_pnames.push(bp_names_str)
     @iexec_block_ptypes.push(bp_types_str)
+    @iexec_block_param_ids.push(param_node_id)
  # Return type filled in by infer_iexec_body_return_types (Pass 3-
  # like step). Placeholder "void" gets overwritten when that pass
  # runs; for now we lock to "void" since expression-

@@ -1,0 +1,1 @@
+Spinel: instance_exec: block has a keyword-rest parameter (`**`), which Spinel cannot bind from the call site; use named keyword params (`{ |k:, j:| }`) or positional params
