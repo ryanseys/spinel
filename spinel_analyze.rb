@@ -9540,13 +9540,15 @@ class Compiler
         "restructure the inner logic to take a Proc parameter instead of yielding"
       )
     end
- # Reject non-local control flow and runtime method definition --
- # return / break / next have no enclosing-method semantics once the
- # body is lifted to a static function, and def / define_method are
- # runtime definitions Spinel does not model.
+ # Reject runtime method definition and the control-flow shapes the
+ # inline splice can't yet model. `return` IS allowed: the body is
+ # spliced at the call site, so a `return` lowers to a real C return
+ # from the enclosing method -- exactly CRuby's semantics. `break` /
+ # `next` still need label-based lowering (a follow-up), and def /
+ # define_method are runtime definitions Spinel does not model.
     if body_id >= 0
       kind = body_iexec_unsupported_kind(body_id)
-      if kind != ""
+      if kind != "" && kind != "return"
         iexec_reject_kind("instance_exec", kind)
       end
     end
