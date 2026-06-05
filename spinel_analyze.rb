@@ -3461,11 +3461,17 @@ class Compiler
         return "obj_" + @cls_names[@ieval_class_idxs[n]]
       end
     end
- # iexec direct-path lift: the synthetic `__sp_iexec_<N>` function is
- # void-returning in the baseline, so its call resolves to "void".
- # The expression-position follow-up surfaces the real last-expression
- # type here via infer_iexec_body_return_types.
+ # iexec direct-path lift: a heap receiver is inlined at the call site
+ # and the call's value is the block's last expression, so type the call
+ # by that expression (simple ctypes only -- array / hash / poly bodies
+ # stay "void" and take the receiver-yielding comma-expr fallback, like
+ # the ieval arm above). Computed on the fly to avoid a per-lift ivar.
     if is_iexec_call_name(mname) == 1
+      suffix = mname[11, mname.length - 11]
+      rt = iexec_call_value_type(suffix.to_i)
+      if ieval_return_type_is_simple(rt) == 1
+        return rt
+      end
       return "void"
     end
 
@@ -9768,6 +9774,45 @@ class Compiler
       end
       n = n + 1
     end
+  end
+
+ # On-the-fly last-expression type of a lifted iexec block, used to
+ # type a local assigned from `recv.instance_exec(...) { ... }`. Computed
+ # here rather than cached in a per-lift ivar so no new serialized
+ # compiler state is added. Mirrors infer_ieval_body_return_types' setup:
+ # rebind the class and declare the block params, then infer the body's
+ # last-expression type.
+  def iexec_call_value_type(n)
+    if n < 0 || n >= @iexec_body_ids.length
+      return "void"
+    end
+    bid = @iexec_body_ids[n]
+    if bid < 0
+      return "void"
+    end
+    ci = @iexec_class_idxs[n]
+    saved_ci = @current_class_idx
+    @current_class_idx = ci
+    push_scope
+    pnames_s = @iexec_block_pnames[n]
+    ptypes_s = @iexec_block_ptypes[n]
+    if pnames_s != ""
+      pnames = pnames_s.split("|")
+      ptypes = ptypes_s.split("|")
+      k = 0
+      while k < pnames.length
+        pt = "int"
+        if k < ptypes.length
+          pt = ptypes[k]
+        end
+        declare_var(pnames[k], pt)
+        k = k + 1
+      end
+    end
+    rt = infer_body_return(bid)
+    pop_scope
+    @current_class_idx = saved_ci
+    rt
   end
 
   def is_iexec_call_name(mname)
