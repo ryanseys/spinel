@@ -9541,14 +9541,16 @@ class Compiler
       )
     end
  # Reject runtime method definition and the control-flow shapes the
- # inline splice can't yet model. `return` IS allowed: the body is
- # spliced at the call site, so a `return` lowers to a real C return
- # from the enclosing method -- exactly CRuby's semantics. `break` /
- # `next` still need label-based lowering (a follow-up), and def /
- # define_method are runtime definitions Spinel does not model.
+ # inline splice can't yet model. `return` and `break` ARE allowed:
+ # the body is spliced at the call site, so `return` lowers to a real
+ # C return from the enclosing method, and `break <v>` lowers to the
+ # value of the call (codegen wraps the splice in a `do { } while (0)`
+ # and reuses the expression-break temp). `next` still needs its own
+ # lowering (a follow-up), and def / define_method are runtime
+ # definitions Spinel does not model.
     if body_id >= 0
       kind = body_iexec_unsupported_kind(body_id)
-      if kind != "" && kind != "return"
+      if kind != "" && kind != "return" && kind != "break"
         iexec_reject_kind("instance_exec", kind)
       end
     end
