@@ -6737,21 +6737,18 @@ class Compiler
     "(" + compile_iexec_call(nid) + ", " + recv_c + ")"
   end
 
- # A direct-iexec lift is inlined at its call site (rather than emitted
- # as a static sp_iexec_<N> function) when its receiver class is heap-
- # allocated. Value-typed receivers stay on the lift: inlining casts the
- # receiver through a pointer, invalid for a by-value struct. Each lift
- # has exactly one call site, so an inlined lift's function is unused and
- # is skipped in emit_iexec_funcs.
+ # A direct-iexec lift is always inlined at its call site rather than
+ # emitted as a static sp_iexec_<N> function: a heap receiver splices
+ # with a pointer self, a value-type receiver with a by-value-struct self
+ # (compile_iexec_inline picks the form). Each lift has exactly one call
+ # site, so the inlined lift's function is unused and is skipped in
+ # emit_iexec_funcs.
   def iexec_lift_inlined(n)
     if n < 0 || n >= @iexec_class_idxs.length
       return 0
     end
     ci = @iexec_class_idxs[n]
     if ci < 0 || ci >= @cls_is_value_type.length
-      return 0
-    end
-    if @cls_is_value_type[ci] == 1
       return 0
     end
     1
@@ -6833,9 +6830,20 @@ class Compiler
     end
     rc = recv < 0 ? self_expr : compile_expr_gc_rooted(recv)
     self_var = new_temp
-    emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
-    if @in_gc_scope == 1
-      emit("  SP_GC_ROOT(" + self_var + ");")
+    vt = 0
+    if ci >= 0 && ci < @cls_is_value_type.length && @cls_is_value_type[ci] == 1
+      vt = 1
+    end
+    if vt == 1
+ # Value-type receiver: self is a by-value struct copy, not a pointer.
+ # self_arrow emits `.` (keyed on @current_class_idx, rebound to ci
+ # below); the struct holds only scalar fields, so no transient GC root.
+      emit("  sp_" + cname + " " + self_var + " = " + rc + ";")
+    else
+      emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
+      if @in_gc_scope == 1
+        emit("  SP_GC_ROOT(" + self_var + ");")
+      end
     end
     push_scope
     @block_counter = @block_counter + 1
@@ -6902,6 +6910,14 @@ class Compiler
     end
     saved_self_override = @self_override
     @self_override = self_var
+ # For a value-type receiver, rebind @current_class_idx to ci so
+ # self_arrow emits `.` (not `->`) for ivar refs in the spliced body.
+ # Scoped to value types; the heap path keeps @current_class_idx
+ # unchanged so its generated C stays byte-identical.
+    saved_cci = @current_class_idx
+    if vt == 1
+      @current_class_idx = ci
+    end
     saved_in_rmf = @inline_rename_map_from
     saved_in_rmt = @inline_rename_map_to
     @inline_rename_map_from = map_from
@@ -6951,6 +6967,7 @@ class Compiler
     @inline_rename_map_from = saved_in_rmf
     @inline_rename_map_to = saved_in_rmt
     @self_override = saved_self_override
+    @current_class_idx = saved_cci
     pop_scope
     ret
   end
@@ -20491,6 +20508,11 @@ class Compiler
         if cidx >= 0
           owner = find_method_owner(target_ci, mname)
           cast_recv = "(sp_" + owner + " *)" + @instance_eval_self_var
+ # A value-type rebound self is a by-value struct; the method takes
+ # `sp_<owner> self` by value, so pass it directly (no pointer cast).
+          if @cls_is_value_type[target_ci] == 1
+            cast_recv = @instance_eval_self_var
+          end
  # Use compile_typed_call_args so the per-arg expected-type
  # coerce (incl. promote-mode int -> bigint) fires; without
  # it, an int literal arg flows raw into a promoted bigint
