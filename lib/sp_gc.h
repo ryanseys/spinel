@@ -48,13 +48,15 @@ void sp_gc_collect(void);
 void sp_gc_enforce_mem_limit(void);
 void sp_oom_die(void);
 
-/* ---- Marked in the generated TU; called from the collector body.
- * sp_str_sweep frees unmarked heap strings; sp_re_mark_globals roots the
- * regexp engine's globals. Both stay in the generated TU (they reach
- * runtime-private string / regex state) but are reached by name from
- * lib/sp_gc.c, so they carry external linkage. */
-void sp_str_sweep(void);
-void sp_re_mark_globals(void);
+/* ---- Embedder callbacks supplied by the generated TU ----
+ * The collector cannot own the program's roots or string heap (they are
+ * static state in the generated TU: the regexp match globals, ARGV, the
+ * in-flight exception stack, and the heap-string free list). The TU
+ * installs its mark-roots and string-sweep callbacks here at startup;
+ * sp_gc_mark_all / sp_gc_collect invoke them through these pointers, the
+ * same way fibers register sp_gc_mark_suspended_fibers_hook. */
+extern void (*sp_gc_mark_globals_hook)(void);
+extern void (*sp_gc_str_sweep_hook)(void);
 
 /* ---- Hot inline mark helpers (inlined into both sides) ----
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked; others skipped. */
