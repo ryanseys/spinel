@@ -6850,6 +6850,24 @@ class Compiler
     suffix = "_ix" + @block_counter.to_s
     map_from = "".split(",")
     map_to = "".split(",")
+ # Auto-splat: a single array arg destructured across N>=2 block
+ # params (analyze recorded the params typed from the element type).
+ # Evaluate the array once; each param then binds to its element via
+ # the typed sp_<Prefix>_get. A recorded lift with one arg and >=2
+ # params is always this shape -- the positional path is strict 1:1.
+    splat_arr = ""
+    splat_pfx = ""
+    if arg_ids.length == 1 && pnames.length >= 2
+      arr_t_ix = infer_type(arg_ids[0])
+      if is_array_type(arr_t_ix) == 1
+        splat_pfx = array_c_prefix(arr_t_ix)
+        splat_arr = new_temp
+        emit("  " + c_type(arr_t_ix) + " " + splat_arr + " = " + compile_expr_gc_rooted(arg_ids[0]) + ";")
+        if @in_gc_scope == 1
+          emit("  SP_GC_ROOT(" + splat_arr + ");")
+        end
+      end
+    end
  # Evaluate call-site args BEFORE rebinding self -- they live in the
  # outer scope, not the splice context.
     k = 0
@@ -6860,7 +6878,9 @@ class Compiler
           pt = ptypes[k]
         end
         val_c = "0"
-        if k < arg_ids.length
+        if splat_arr != ""
+          val_c = "sp_" + splat_pfx + "_get(" + splat_arr + ", " + k.to_s + "LL)"
+        elsif k < arg_ids.length
           val_c = compile_expr(arg_ids[k])
         end
         tname = pnames[k] + suffix

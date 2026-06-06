@@ -9011,6 +9011,7 @@ class Compiler
  # of class instances.
     ieval_walk(@root_id, local_class)
     ieval_walk_class_methods
+    ieval_walk_toplevel_methods
   end
 
  # Visit each class's instance-method bodies with `@current_class_idx`
@@ -9072,6 +9073,68 @@ class Compiler
     end
   end
 
+ # Walk top-level method bodies (file-scope `def`s, stored in @meth_*)
+ # so `def g; o = Foo.new; o.instance_exec { } end` lifts. Mirrors
+ # ieval_walk_class_methods but leaves @current_class_idx at -1 (no
+ # enclosing instance): a LocalVariableReadNode receiver resolves via
+ # find_var_type over the method's params + body locals
+ # (scan_locals_first_type), the same scope the class-method walk
+ # builds. A body already rewritten by the root/class walk (e.g. via
+ # an alias sharing the body id) re-walks harmlessly -- the renamed
+ # call no longer matches the instance_exec gate.
+  def ieval_walk_toplevel_methods
+    mi = 0
+    while mi < @meth_names.length
+      bid = @meth_body_ids[mi]
+      if bid >= 0
+        push_scope
+        pnames = @meth_param_names[mi].split(",", -1)
+        ptypes = @meth_param_types[mi].split(",", -1)
+        pk = 0
+        while pk < pnames.length
+          if pnames[pk] != ""
+            declare_var(pnames[pk], ptypes[pk])
+          end
+          pk = pk + 1
+        end
+        lnames = "".split(",", -1)
+        ltypes = "".split(",", -1)
+        scan_locals_first_type(bid, lnames, ltypes, pnames)
+        lk = 0
+        while lk < lnames.length
+          declare_var(lnames[lk], ltypes[lk])
+          lk = lk + 1
+        end
+        empty_locals = {}
+        ieval_walk(bid, empty_locals)
+        pop_scope
+      end
+      mi = mi + 1
+    end
+  end
+
+ # After a direct instance_eval/instance_exec lift, descend into the
+ # now-detached block body so a nested instance_eval/instance_exec
+ # inside it also lifts. Codegen inlines the outer body at the call
+ # site, so the inner lifted call is spliced in turn (its receiver is
+ # typically an outer-scope local captured into the block, resolved
+ # via the same local_class). Only descend when the call was actually
+ # rewritten -- a successful lift flips the name to the synthetic
+ # prefix; an un-lifted call keeps its block for codegen and is left
+ # alone to avoid orphaning an inner lift the outer never inlines.
+  def descend_lifted_block(nid, blk_before, local_class)
+    if @nd_name[nid] == "instance_eval" || @nd_name[nid] == "instance_exec"
+      return
+    end
+    if blk_before < 0 || @nd_type[blk_before] != "BlockNode"
+      return
+    end
+    inner_body = @nd_body[blk_before]
+    if inner_body >= 0
+      ieval_walk(inner_body, local_class)
+    end
+  end
+
   def ieval_walk(nid, local_class)
     if nid < 0
       return
@@ -9108,13 +9171,15 @@ class Compiler
     end
     if t == "CallNode"
       if @nd_name[nid] == "instance_eval"
+        blk_before = @nd_block[nid]
         ieval_rewrite_call(nid, local_class)
- # Don't descend into the lifted block body.
+        descend_lifted_block(nid, blk_before, local_class)
         return
       end
       if @nd_name[nid] == "instance_exec"
+        blk_before = @nd_block[nid]
         iexec_rewrite_call(nid, local_class)
- # Don't descend into the lifted block body.
+        descend_lifted_block(nid, blk_before, local_class)
         return
       end
       r = @nd_receiver[nid]
@@ -9251,6 +9316,21 @@ class Compiler
       if @current_class_idx >= 0
         it = cls_ivar_type(@current_class_idx, @nd_name[recv])
         bt = base_type(it)
+        if is_obj_type(bt) == 1
+          return find_class_idx(bt[4, bt.length - 4])
+        end
+      end
+      return -1
+    end
+    if @nd_type[recv] == "ConstantReadNode" || @nd_type[recv] == "ConstantPathNode"
+ # `CONST.instance_eval { }` where the constant was bound to an
+ # instance (`CONST = Foo.new`). The registered const type carries
+ # `obj_<Class>`; strip the prefix the same way the local/ivar
+ # branches do to recover the receiver's class.
+      cname = const_ref_flat_name(recv, 32)
+      cidx = find_const_idx(cname)
+      if cidx >= 0
+        bt = base_type(@const_types[cidx])
         if is_obj_type(bt) == 1
           return find_class_idx(bt[4, bt.length - 4])
         end
@@ -9575,6 +9655,18 @@ class Compiler
       else
         inner = @nd_parameters[bp]
         if inner >= 0
+ # Keyword block params (`{ |k:| }`) need call-site keyword args
+ # matched by name and bound into the splice -- a distinct binding
+ # path Spinel does not model yet. Reject precisely rather than
+ # silently skipping the lift (which leaves a runtime
+ # `undefined method 'instance_exec'`).
+          if parse_id_list(@nd_keywords[inner]).length > 0 || @nd_keyword_rest[inner] >= 0
+            iexec_reject(
+              "instance_exec",
+              "block has keyword parameters, which Spinel cannot bind from the call site",
+              "use positional block params (`{ |a, b| }`) with positional args"
+            )
+          end
           reqs = parse_id_list(@nd_requireds[inner])
           k = 0
           while k < reqs.length
@@ -9599,47 +9691,75 @@ class Compiler
         k = k + 1
       end
     end
-    if pos_arg_ids.length != bp_names.length
-      return
+ # Auto-splat: CRuby destructures a single array arg across N>=2
+ # block params (binding arr[0]..arr[N-1]). Type every param from the
+ # array's element type; codegen reads the elements via the matching
+ # sp_<Prefix>_get. Restricted to a uniform scalar element type so the
+ # params get a concrete C type -- poly / object-array elements fall
+ # through and bail (no lift), preserving prior behavior.
+    bp_types_str = ""
+    auto_splat = 0
+    if pos_arg_ids.length == 1 && bp_names.length >= 2
+      arr_t = infer_type(pos_arg_ids[0])
+      if is_array_type(arr_t) == 1
+ # elem_type_of_array yields the c_type vocabulary (`string` /
+ # `symbol`), matching what sp_<Prefix>_get returns; recording `str`
+ # / `sym` would mis-declare the param (those are not c_type arms).
+        et = elem_type_of_array(arr_t)
+        if et == "int" || et == "float" || et == "string" || et == "symbol"
+          auto_splat = 1
+          k = 0
+          while k < bp_names.length
+            if k > 0
+              bp_types_str = bp_types_str + "|"
+            end
+            bp_types_str = bp_types_str + et
+            k = k + 1
+          end
+        end
+      end
     end
-
+    if auto_splat == 0
+      if pos_arg_ids.length != bp_names.length
+        return
+      end
  # Type each block param from its corresponding call-site arg.
  # find_var_type / infer_type-equivalent is the analyze-side
  # cousin; the simplest path is to read the AST node type via
  # the helpers used elsewhere in this file.
-    bp_types_str = ""
-    k = 0
-    while k < pos_arg_ids.length
-      t = ""
-      aid = pos_arg_ids[k]
-      at = @nd_type[aid]
-      if at == "LocalVariableReadNode"
-        t = find_var_type(@nd_name[aid])
-      elsif at == "IntegerNode"
-        t = "int"
-      elsif at == "FloatNode"
-        t = "float"
-      elsif at == "StringNode"
-        t = "str"
-      elsif at == "SymbolNode"
-        t = "sym"
-      elsif at == "TrueNode" || at == "FalseNode"
-        t = "bool"
-      elsif at == "NilNode"
-        t = "poly"
-      elsif at == "InstanceVariableReadNode"
-        if @current_class_idx >= 0
-          t = cls_ivar_type(@current_class_idx, @nd_name[aid])
+      k = 0
+      while k < pos_arg_ids.length
+        t = ""
+        aid = pos_arg_ids[k]
+        at = @nd_type[aid]
+        if at == "LocalVariableReadNode"
+          t = find_var_type(@nd_name[aid])
+        elsif at == "IntegerNode"
+          t = "int"
+        elsif at == "FloatNode"
+          t = "float"
+        elsif at == "StringNode"
+          t = "str"
+        elsif at == "SymbolNode"
+          t = "sym"
+        elsif at == "TrueNode" || at == "FalseNode"
+          t = "bool"
+        elsif at == "NilNode"
+          t = "poly"
+        elsif at == "InstanceVariableReadNode"
+          if @current_class_idx >= 0
+            t = cls_ivar_type(@current_class_idx, @nd_name[aid])
+          end
         end
+        if t == ""
+          return
+        end
+        if k > 0
+          bp_types_str = bp_types_str + "|"
+        end
+        bp_types_str = bp_types_str + t
+        k = k + 1
       end
-      if t == ""
-        return
-      end
-      if k > 0
-        bp_types_str = bp_types_str + "|"
-      end
-      bp_types_str = bp_types_str + t
-      k = k + 1
     end
 
     bp_names_str = bp_names.join("|")
