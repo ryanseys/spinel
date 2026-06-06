@@ -8,4 +8,4 @@ class BoxPlus < Box
 end
 
 r = BoxPlus.new(0)
-puts(r.instance_exec(k: 9) { |**opts| opts[:k] })
+puts(r.instance_exec { |k:| k })

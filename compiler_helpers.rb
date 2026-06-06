@@ -122,7 +122,7 @@ class Compiler
   compiler_state_ia :cls_is_sra, :const_expr_ids, :const_mutated, :gvar_written, :module_body_ids, :ffi_buf_sizes, :ffi_reader_offsets
   compiler_state_ia :dyn_regex_node_ids, :local_regex_idx, :local_regex_call_nids, :undef_class_idx, :ieval_class_idxs, :ieval_body_ids
   compiler_state_ia :pre_execution_blocks, :post_execution_blocks
-  compiler_state_ia :iexec_class_idxs, :iexec_body_ids
+  compiler_state_ia :iexec_class_idxs, :iexec_body_ids, :iexec_block_param_ids
 
   def compiler_state_init_body_id; -31; end
   def compiler_state_dump_body_id; -32; end
