@@ -6906,7 +6906,7 @@ class Compiler
     saved_in_rmt = @inline_rename_map_to
     @inline_rename_map_from = map_from
     @inline_rename_map_to = map_to
-    has_break = iexec_has_toplevel_break(body)
+    has_break_next = iexec_has_toplevel_break_next(body)
     ret = ""
     if want_value == 1
       rtype = iexec_inline_rettype(n)
@@ -6916,12 +6916,13 @@ class Compiler
       saved_ist = @instance_eval_self_type
       @instance_eval_self_var = self_var
       @instance_eval_self_type = cname
-      if has_break == 1
- # A top-level `break <v>` exits the block with <v> as the value of
- # the call. Wrap the splice in `do { } while (0)` so the C `break`
- # lands here, and push the result temp so `break <v>` assigns it
- # (compile_break_stmt). A `break` inside a nested loop binds to
- # that loop -- the loop pushes its own temp on top of this one.
+      if has_break_next == 1
+ # A top-level `break <v>` / `next <v>` exits the block with <v> as
+ # the value of the call. Wrap the splice in `do { } while (0)` so the
+ # C `break` / `continue` lands here, and push the result temp so the
+ # value is assigned (compile_break_stmt / compile_next_stmt). A
+ # break/next inside a nested loop binds to that loop -- the loop
+ # pushes its own temp on top of this one.
         @loop_expr_break_var.push(ret)
         emit("  do {")
         compile_body_into(body, ret, rtype)
@@ -6933,11 +6934,11 @@ class Compiler
       @instance_eval_self_var = saved_isv
       @instance_eval_self_type = saved_ist
     else
-      if has_break == 1
- # Statement position: the break value is discarded, but the C
- # `break` still needs an enclosing construct. Wrap in
- # `do { } while (0)`; the "" sentinel tells compile_break_stmt to
- # skip the (unused, possibly mistyped) value assignment.
+      if has_break_next == 1
+ # Statement position: the break/next value is discarded, but the C
+ # `break` / `continue` still needs an enclosing construct. Wrap in
+ # `do { } while (0)`; the "" sentinel tells compile_break_stmt /
+ # compile_next_stmt to skip the (unused, possibly mistyped) value.
         @loop_expr_break_var.push("")
         emit("  do {")
         splice_block_with_self_rebound(body, self_var, cname)
@@ -6954,20 +6955,21 @@ class Compiler
     ret
   end
 
- # True (1) when the spliced block body contains a `break` that binds
- # to the instance_exec block itself -- i.e. one not enclosed by a
- # nested loop or iterator within the body. The scan descends through
- # ordinary control flow (if / case / begin / and-or) but stops at
- # WhileNode / UntilNode / ForNode (their own `break`) and at nested
- # BlockNode / DefNode / LambdaNode (a `break` there binds to that
- # block, not to this call). Used to decide whether the splice needs
- # a `do { } while (0)` wrapper so the C `break` has a target.
-  def iexec_has_toplevel_break(body)
+ # True (1) when the spliced block body contains a `break` or `next`
+ # that binds to the instance_exec block itself -- i.e. one not
+ # enclosed by a nested loop or iterator within the body. The scan
+ # descends through ordinary control flow (if / case / begin / and-or)
+ # but stops at WhileNode / UntilNode / ForNode (their own break/next)
+ # and at nested BlockNode / DefNode / LambdaNode (a break/next there
+ # binds to that block, not to this call). Used to decide whether the
+ # splice needs a `do { } while (0)` wrapper so the C `break` /
+ # `continue` lowering has a target.
+  def iexec_has_toplevel_break_next(body)
     cs = []
     push_child_ids(body, cs)
     k = 0
     while k < cs.length
-      if iexec_break_scan(cs[k]) == 1
+      if iexec_break_next_scan(cs[k]) == 1
         return 1
       end
       k = k + 1
@@ -6975,12 +6977,12 @@ class Compiler
     0
   end
 
-  def iexec_break_scan(nid)
+  def iexec_break_next_scan(nid)
     if nid < 0
       return 0
     end
     t = @nd_type[nid]
-    if t == "BreakNode"
+    if t == "BreakNode" || t == "NextNode"
       return 1
     end
     if t == "WhileNode" || t == "UntilNode" || t == "ForNode" || t == "BlockNode" || t == "DefNode" || t == "LambdaNode"
@@ -6990,7 +6992,7 @@ class Compiler
     push_child_ids(nid, cs)
     k = 0
     while k < cs.length
-      if iexec_break_scan(cs[k]) == 1
+      if iexec_break_next_scan(cs[k]) == 1
         return 1
       end
       k = k + 1
@@ -38040,7 +38042,7 @@ class Compiler
       return
     end
     if t == "NextNode"
-      emit("  continue;")
+      compile_next_stmt(nid)
       return
     end
     if t == "RetryNode"
@@ -49406,6 +49408,27 @@ class Compiler
       end
     end
     emit("  break;")
+  end
+
+ # `next` lowers to `continue`. The value-carrying form (`next <v>`)
+ # only matters inside an instance_exec splice wrapped in a
+ # `do { } while (0)`, where `continue` falls through the `while (0)`
+ # and exits the block once with <v> as the call's value -- assigned
+ # via the pushed result temp, exactly like `break <v>`. In a real
+ # loop the assigned temp is only ever read on an actual `break`, so
+ # setting it here is harmless. The "" sentinel (statement-position
+ # splice) means the value is discarded.
+  def compile_next_stmt(nid)
+    args_id = @nd_arguments[nid]
+    if args_id >= 0 && @loop_expr_break_var.length > 0 && @loop_expr_break_var.last != ""
+      arg_ids = get_args(args_id)
+      if arg_ids.length >= 1
+        tmp = @loop_expr_break_var.last
+        val = compile_expr(arg_ids[0])
+        emit("  " + tmp + " = " + val + ";")
+      end
+    end
+    emit("  continue;")
   end
 
   def compile_catch_expr(nid)
