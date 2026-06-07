@@ -313,3 +313,24 @@ const char *nt_content(const NodeTable *nt, int id) {
   const SpNode *nd = node_at(nt, id);
   return nd ? nd->content : NULL;
 }
+
+int nt_num_refs(const NodeTable *nt, int id) {
+  const SpNode *nd = node_at(nt, id);
+  return nd ? nd->nr : 0;
+}
+int nt_ref_at(const NodeTable *nt, int id, int i) {
+  const SpNode *nd = node_at(nt, id);
+  if (!nd || i < 0 || i >= nd->nr) return -1;
+  return nd->r[i].ref;
+}
+int nt_num_arrs(const NodeTable *nt, int id) {
+  const SpNode *nd = node_at(nt, id);
+  return nd ? nd->na : 0;
+}
+const int *nt_arr_at(const NodeTable *nt, int id, int i, int *out_n) {
+  *out_n = 0;
+  const SpNode *nd = node_at(nt, id);
+  if (!nd || i < 0 || i >= nd->na) return NULL;
+  *out_n = nd->a[i].n;
+  return nd->a[i].ids;
+}

@@ -54,4 +54,11 @@ int         nt_ref(const NodeTable *nt, int id, const char *key);   /* -1 */
 const int  *nt_arr(const NodeTable *nt, int id, const char *key, int *out_n); /* NULL,0 */
 const char *nt_content(const NodeTable *nt, int id);       /* NULL */
 
+/* Generic child iteration (for structural walks that don't know field
+   names). Ref fields and array-field elements are the node's children. */
+int        nt_num_refs(const NodeTable *nt, int id);
+int        nt_ref_at(const NodeTable *nt, int id, int i);   /* ref value, may be -1 */
+int        nt_num_arrs(const NodeTable *nt, int id);
+const int *nt_arr_at(const NodeTable *nt, int id, int i, int *out_n);
+
 #endif

@@ -2,10 +2,9 @@
  *
  * In the single-binary design the analyzer and code generator share one
  * in-memory state object instead of serializing an IR file. This struct
- * is that object; its field set corresponds to the legacy .ir dump
- * (node-type cache, local/method/class tables, capability flags). It
- * grows milestone by milestone -- for M1 it holds the per-node inferred
- * type cache and the top-level local variable table.
+ * is that object; its field set corresponds to the legacy .ir dump. It
+ * grows milestone by milestone -- M2 adds method scopes (one Scope per
+ * `def`, plus the top-level scope) on top of M1's node type cache.
  */
 #ifndef SPINEL_COMPILER_H
 #define SPINEL_COMPILER_H
@@ -17,21 +16,43 @@ typedef struct {
   char *name;       /* Ruby local name (without sigil) */
   TyKind type;      /* inferred type */
   int gc_root;      /* needs SP_GC_ROOT (heap-managed: strings, ...) */
+  int is_param;     /* declared as a method parameter */
 } LocalVar;
 
 typedef struct {
-  const NodeTable *nt;
-  TyKind *ntype;         /* [nt->count] node id -> inferred type */
-  LocalVar *locals;      /* top-level locals */
+  char *name;       /* method name; NULL for the top-level scope */
+  int def_node;     /* DefNode id; -1 for top-level */
+  int body;         /* StatementsNode id (-1 if empty) */
+
+  char **pnames;    /* parameter names, in order */
+  int nparams;
+
+  TyKind ret;       /* inferred return type */
+
+  LocalVar *locals; /* params + body locals */
   int nlocals, clocals;
+} Scope;
+
+typedef struct {
+  const NodeTable *nt;
+  TyKind *ntype;    /* [nt->count] node id -> inferred type */
+  int *nscope;      /* [nt->count] node id -> owning scope index */
+
+  Scope *scopes;    /* scope[0] = top level */
+  int nscopes, cscopes;
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);
 void comp_free(Compiler *c);
 
-/* Local variable table. comp_local returns NULL if absent. */
-LocalVar *comp_local(Compiler *c, const char *name);
-LocalVar *comp_local_intern(Compiler *c, const char *name); /* find or create */
+/* Scopes. */
+Scope *comp_scope_new(Compiler *c, const char *name, int def_node);
+Scope *comp_scope_of(Compiler *c, int node_id);        /* owning scope */
+int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
+
+/* Locals within a scope. */
+LocalVar *scope_local(Scope *s, const char *name);
+LocalVar *scope_local_intern(Scope *s, const char *name);
 
 /* Node type cache. */
 static inline TyKind comp_ntype(const Compiler *c, int id) {
