@@ -216,6 +216,9 @@ static TyKind infer_call(Compiler *c, int id) {
     if (emi > 0 && is_blk_param_call(c, id, emi)) return yield_value_type(c, emi);
   }
 
+  /* __dir__ -> the source directory (a string) */
+  if (recv < 0 && !strcmp(name, "__dir__") && argc == 0) return TY_STRING;
+
   /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
   if (is_proc_literal(c, id)) return TY_PROC;
 

@@ -334,6 +334,27 @@ static int eq_family(TyKind t) {
   return 0;
 }
 
+/* Compile-time `is_a?` for a concrete builtin receiver type: 1 yes, 0 no,
+   -1 not determinable here. `exact` is instance_of? (no ancestor match). */
+static int ty_matches_class(TyKind t, const char *cn, int exact) {
+  const char *self_cls = NULL;
+  if (t == TY_STRING) self_cls = "String";
+  else if (t == TY_INT) self_cls = "Integer";
+  else if (t == TY_FLOAT) self_cls = "Float";
+  else if (t == TY_SYMBOL) self_cls = "Symbol";
+  else if (t == TY_RANGE) self_cls = "Range";
+  else if (ty_is_array(t)) self_cls = "Array";
+  else if (ty_is_hash(t)) self_cls = "Hash";
+  if (!self_cls) return -1;
+  if (!strcmp(cn, self_cls)) return 1;
+  if (exact) return 0;
+  if (!strcmp(cn, "Object") || !strcmp(cn, "BasicObject") || !strcmp(cn, "Kernel")) return 1;
+  if (!strcmp(cn, "Comparable") && (t == TY_STRING || t == TY_INT || t == TY_FLOAT)) return 1;
+  if (!strcmp(cn, "Numeric") && (t == TY_INT || t == TY_FLOAT)) return 1;
+  if (!strcmp(cn, "Enumerable") && (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE)) return 1;
+  return 0;
+}
+
 static void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -621,6 +642,17 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "); ");
     }
     buf_printf(b, "_t%d; })", t);
+    return;
+  }
+
+  /* __dir__ -> the source file's directory (compile-time literal, mirroring
+     the legacy generator). */
+  if (recv < 0 && !strcmp(name, "__dir__") && argc == 0) {
+    const char *sf = nt->source_file;
+    char dir[1024];
+    if (sf && strrchr(sf, '/')) { size_t n = (size_t)(strrchr(sf, '/') - sf); if (n >= sizeof dir) n = sizeof dir - 1; if (n == 0) { dir[0] = '/'; dir[1] = 0; } else { memcpy(dir, sf, n); dir[n] = 0; } }
+    else { dir[0] = '.'; dir[1] = 0; }
+    emit_str_literal(b, dir);
     return;
   }
 
@@ -1008,6 +1040,15 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
     unsupported(c, id, "comparison");
+  }
+
+  /* concrete builtin receiver: is_a?/kind_of?/instance_of? is known at compile
+     time (evaluate the receiver for side effects, then yield the constant). */
+  if (recv >= 0 && argc == 1 &&
+      (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?")) &&
+      nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode")) {
+    int yes = ty_matches_class(rt, nt_str(nt, argv[0], "name"), !strcmp(name, "instance_of?"));
+    if (yes >= 0) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes); return; }
   }
 
   /* poly.is_a?(Class) / kind_of?: runtime tag/cls_id check */
