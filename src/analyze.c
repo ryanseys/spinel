@@ -682,6 +682,15 @@ static TyKind infer_uncached(Compiler *c, int id) {
     int iv = nm ? comp_ivar_index(ci, nm) : -1;
     return iv >= 0 ? ci->ivar_types[iv] : TY_UNKNOWN;
   }
+  if (!strcmp(ty, "ClassVariableReadNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    Scope *s = comp_scope_of(c, id);
+    if (s->class_id < 0) return TY_UNKNOWN;
+    int idx = nm ? comp_cvar_index(&c->classes[s->class_id], nm) : -1;
+    return idx >= 0 ? c->classes[s->class_id].cvar_types[idx] : TY_UNKNOWN;
+  }
+  if (!strcmp(ty, "ClassVariableWriteNode"))
+    return infer_type(c, nt_ref(nt, id, "value"));
   if (!strcmp(ty, "ParenthesesNode")) {
     int body = nt_ref(nt, id, "body");
     if (body < 0) return TY_NIL;
@@ -1140,6 +1149,27 @@ static int infer_inherited_ivars(Compiler *c) {
 }
 
 /* @ivar types from their assignments across the class's methods. */
+/* Register each class variable (@@x) in its owning class and infer its type
+   from the write sites' RHS. */
+static int infer_cvar_types(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "ClassVariableWriteNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    Scope *s = comp_scope_of(c, id);
+    if (!nm || s->class_id < 0) continue;
+    ClassInfo *ci = &c->classes[s->class_id];
+    int idx = comp_cvar_intern(ci, nm);
+    TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
+    if (vt == TY_NIL) continue;
+    TyKind merged = ty_unify(ci->cvar_types[idx], vt);
+    if (merged != ci->cvar_types[idx]) { ci->cvar_types[idx] = merged; changed = 1; }
+  }
+  return changed;
+}
+
 static int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -2004,6 +2034,7 @@ void analyze_program(Compiler *c) {
     ch |= infer_block_params(c);
     ch |= infer_for_index(c);
     ch |= infer_ivar_types(c);
+    ch |= infer_cvar_types(c);
     ch |= infer_inherited_ivars(c);
     ch |= infer_global_const_types(c);
     ch |= infer_return_types(c);

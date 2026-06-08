@@ -2525,6 +2525,25 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "%s->iv_%s", g_self, nm + 1);
     return;
   }
+  if (!strcmp(ty, "ClassVariableReadNode")) {
+    const char *nm = nt_str(nt, id, "name");  /* "@@x" */
+    Scope *s = comp_scope_of(c, id);
+    if (s->class_id >= 0) { buf_printf(b, "cvar_%s_%s", c->classes[s->class_id].name, nm + 2); return; }
+    unsupported(c, id, "class variable read (no class scope)");
+  }
+  if (!strcmp(ty, "ClassVariableWriteNode")) {  /* in value position: yields the assigned value */
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    Scope *s = comp_scope_of(c, id);
+    if (s->class_id < 0) unsupported(c, id, "class variable write (no class scope)");
+    TyKind ct = TY_INT;
+    int idx = comp_cvar_index(&c->classes[s->class_id], nm);
+    if (idx >= 0) ct = c->classes[s->class_id].cvar_types[idx];
+    buf_printf(b, "(cvar_%s_%s = ", c->classes[s->class_id].name, nm + 2);
+    if (ct == TY_POLY) emit_boxed(c, v, b); else emit_expr(c, v, b);
+    buf_puts(b, ")");
+    return;
+  }
   if (!strcmp(ty, "GlobalVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     if (nm && comp_gvar(c, nm + 1)) { buf_printf(b, "gv_%s", nm + 1); return; }
@@ -3458,6 +3477,20 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, ";\n");
     return;
   }
+  if (!strcmp(ty, "ClassVariableWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");  /* "@@x" */
+    int v = nt_ref(nt, id, "value");
+    int sc = comp_scope_of(c, id)->class_id;
+    if (sc < 0) unsupported(c, id, "class variable write (no class scope)");
+    TyKind ct = TY_INT;
+    int idx = comp_cvar_index(&c->classes[sc], nm);
+    if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
+    emit_indent(b, indent);
+    buf_printf(b, "cvar_%s_%s = ", c->classes[sc].name, nm + 2);
+    if (ct == TY_POLY) emit_boxed(c, v, b); else emit_expr(c, v, b);
+    buf_puts(b, ";\n");
+    return;
+  }
   if (!strcmp(ty, "InstanceVariableOperatorWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");
@@ -4299,6 +4332,18 @@ char *codegen_program(const NodeTable *nt) {
   for (int i = 0; i < c->nclasses; i++) emit_class_struct(c, &c->classes[i], &b);
   for (int i = 0; i < c->nclasses; i++) emit_class_scan(c, &c->classes[i], &b);
   if (c->nclasses > 0) buf_puts(&b, "\n");
+
+  /* class variables: one file-scope static per (class, @@var) */
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    for (int j = 0; j < ci->ncvars; j++) {
+      TyKind t = ci->cvar_types[j] == TY_UNKNOWN ? TY_INT : ci->cvar_types[j];
+      buf_puts(&b, "static ");
+      emit_ctype(c, t, &b);
+      buf_printf(&b, " cvar_%s_%s = %s;\n", ci->name, ci->cvars[j] + 2,
+                 t == TY_RANGE ? "{0}" : default_value(t));
+    }
+  }
 
   /* method prototypes (scope 0 is top-level) */
   for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || !c->scopes[s].reachable) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }

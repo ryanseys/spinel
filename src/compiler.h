@@ -55,6 +55,9 @@ typedef struct {
   char **ivars;        /* instance variable names, incl. leading '@' */
   TyKind *ivar_types;
   int nivars, civars;
+  char **cvars;        /* class variable names, incl. leading '@@' */
+  TyKind *cvar_types;
+  int ncvars, ccvars;
   char **readers;      /* attr reader method names (no '@') */
   int nreaders, creaders;
   char **writers;      /* attr writer base names (no '@', no '=') */
@@ -113,6 +116,8 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
 int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
 int        comp_ivar_index(ClassInfo *ci, const char *name);  /* -1 if none */
 int        comp_ivar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
+int        comp_cvar_index(ClassInfo *ci, const char *name);  /* class var; -1 if none */
+int        comp_cvar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
 /* Find the instance-method scope index for class_id + method name, or -1. */
 int        comp_method_in_class(Compiler *c, int class_id, const char *name);
 /* Find the class (singleton) method scope, walking the superclass chain. */

@@ -131,6 +131,25 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
   return ci->nivars++;
 }
 
+int comp_cvar_index(ClassInfo *ci, const char *name) {
+  for (int i = 0; i < ci->ncvars; i++)
+    if (strcmp(ci->cvars[i], name) == 0) return i;
+  return -1;
+}
+
+int comp_cvar_intern(ClassInfo *ci, const char *name) {
+  int idx = comp_cvar_index(ci, name);
+  if (idx >= 0) return idx;
+  if (ci->ncvars >= ci->ccvars) {
+    ci->ccvars = ci->ccvars ? ci->ccvars * 2 : 8;
+    ci->cvars = realloc(ci->cvars, sizeof(char *) * (size_t)ci->ccvars);
+    ci->cvar_types = realloc(ci->cvar_types, sizeof(TyKind) * (size_t)ci->ccvars);
+  }
+  ci->cvars[ci->ncvars] = strdup(name);
+  ci->cvar_types[ci->ncvars] = TY_UNKNOWN;
+  return ci->ncvars++;
+}
+
 int comp_method_in_class(Compiler *c, int class_id, const char *name) {
   if (!name) return -1;
   for (int s = 0; s < c->nscopes; s++)
