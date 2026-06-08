@@ -53,6 +53,30 @@ static int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode) {
   return -1;
 }
 
+/* Last statement of a scope's body, or -1. */
+static int scope_body_last(Compiler *c, int mi) {
+  int body = c->scopes[mi].body;
+  if (body < 0 || !nt_type(c->nt, body) || strcmp(nt_type(c->nt, body), "StatementsNode")) return -1;
+  int n = 0; const int *bb = nt_arr(c->nt, body, "body", &n);
+  return n > 0 ? bb[n - 1] : -1;
+}
+
+/* The return type of a call to method `mi`. A method whose body is just a
+   bare `yield` returns the block's value -- and since it inlines per call
+   site, use THIS site's block value type rather than the unified return. */
+static TyKind method_call_ret(Compiler *c, int mi, int call_id) {
+  int last = scope_body_last(c, mi);
+  if (last >= 0 && nt_type(c->nt, last) && !strcmp(nt_type(c->nt, last), "YieldNode")) {
+    int blk = nt_ref(c->nt, call_id, "block");
+    if (blk >= 0) {
+      int bbody = nt_ref(c->nt, blk, "body");
+      int bn = 0; const int *bb = bbody >= 0 ? nt_arr(c->nt, bbody, "body", &bn) : NULL;
+      if (bn > 0) return infer_type(c, bb[bn - 1]);
+    }
+  }
+  return c->scopes[mi].ret;
+}
+
 static TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -214,7 +238,7 @@ static TyKind infer_call(Compiler *c, int id) {
       }
     }
     int mi = comp_method_in_chain(c, cid, name, NULL);
-    if (mi >= 0) return c->scopes[mi].ret;
+    if (mi >= 0) return method_call_ret(c, mi, id);
     if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
   }
 
@@ -229,14 +253,14 @@ static TyKind infer_call(Compiler *c, int id) {
         if (iv >= 0) return c->classes[self->class_id].ivar_types[iv];
       }
       int mi = comp_method_in_chain(c, self->class_id, name, NULL);
-      if (mi >= 0) return c->scopes[mi].ret;
+      if (mi >= 0) return method_call_ret(c, mi, id);
     }
   }
 
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
     int mi = comp_method_index(c, name);
-    if (mi >= 0) return c->scopes[mi].ret;
+    if (mi >= 0) return method_call_ret(c, mi, id);
     /* Kernel conversions */
     if (!strcmp(name, "Integer") && argc == 1) return TY_INT;
     if (!strcmp(name, "Float") && argc == 1) return TY_FLOAT;
