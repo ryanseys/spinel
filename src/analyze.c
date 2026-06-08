@@ -63,6 +63,18 @@ static TyKind infer_call(Compiler *c, int id) {
     }
   }
 
+  /* Class.cmethod(...) -> the class method's return type */
+  if (recv >= 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && !strcmp(rty, "ConstantReadNode")) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (ci >= 0) {
+        int mi = comp_cmethod_in_chain(c, ci, name, NULL);
+        if (mi >= 0) return c->scopes[mi].ret;
+      }
+    }
+  }
+
   /* obj.method(...) -> the method's return type (walks the superclass chain) */
   if (recv >= 0 && ty_is_object(rt)) {
     int cid = ty_object_class(rt);
@@ -458,6 +470,8 @@ static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
     int new_idx = c->nscopes - 1;
     s->body = nt_ref(c->nt, id, "body");
     s->class_id = class_id;   /* instance method of the enclosing class */
+    /* `def self.foo` / `def Klass.foo`: a class (singleton) method. */
+    if (nt_ref(c->nt, id, "receiver") >= 0) s->is_cmethod = 1;
     int pn = nt_ref(c->nt, id, "parameters");
     if (pn >= 0) {
       int rn = 0;
@@ -953,19 +967,48 @@ static int infer_param_types(Compiler *c) {
       changed |= bind_call_params(c, id, mi);
       continue;
     }
-    /* Class.new -> initialize params */
-    if (!strcmp(name, "new")) {
+    /* Class.new -> initialize params; Class.cmethod -> cmethod params */
+    {
       const char *rty = nt_type(nt, recv);
       if (rty && !strcmp(rty, "ConstantReadNode")) {
         int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-        if (ci >= 0) changed |= bind_call_params(c, id, comp_method_in_chain(c, ci, "initialize", NULL));
+        if (ci >= 0) {
+          if (!strcmp(name, "new"))
+            changed |= bind_call_params(c, id, comp_method_in_chain(c, ci, "initialize", NULL));
+          else
+            changed |= bind_call_params(c, id, comp_cmethod_in_chain(c, ci, name, NULL));
+          continue;
+        }
       }
-      continue;
+      if (!strcmp(name, "new")) continue;
     }
     /* obj.method -> instance method params */
     TyKind rt = infer_type(c, recv);
     if (ty_is_object(rt))
       changed |= bind_call_params(c, id, comp_method_in_chain(c, ty_object_class(rt), name, NULL));
+  }
+  return changed;
+}
+
+/* `for x in coll` binds x to the collection's element type (int for a
+   range, the array element type for an array). */
+static int infer_for_index(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "ForNode")) continue;
+    int idx = nt_ref(nt, id, "index");
+    int coll = nt_ref(nt, id, "collection");
+    if (idx < 0 || coll < 0) continue;
+    const char *vn = nt_str(nt, idx, "name");
+    if (!vn) continue;
+    TyKind ct = infer_type(c, coll);
+    TyKind et = ct == TY_RANGE ? TY_INT : ty_is_array(ct) ? ty_array_elem(ct) : TY_UNKNOWN;
+    if (et == TY_UNKNOWN) continue;
+    LocalVar *lv = scope_local_intern(comp_scope_of(c, idx), vn);
+    lv->is_block_param = 1;  /* iteration-bound: survives the write-types reset */
+    if (lv->type != et) { lv->type = et; changed = 1; }
   }
   return changed;
 }
@@ -1212,6 +1255,7 @@ void analyze_program(Compiler *c) {
     ch |= infer_param_types(c);
     ch |= infer_default_param_types(c);
     ch |= infer_block_params(c);
+    ch |= infer_for_index(c);
     ch |= infer_ivar_types(c);
     ch |= infer_inherited_ivars(c);
     ch |= infer_global_const_types(c);

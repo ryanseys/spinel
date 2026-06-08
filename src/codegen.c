@@ -558,6 +558,22 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* Class.cmethod(args) -> sp_<Class>_s_<method>(args) */
+  if (recv >= 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && !strcmp(rty, "ConstantReadNode")) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      int defcls = -1;
+      int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, &defcls) : -1;
+      if (mi >= 0) {
+        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, c->scopes[mi].name);
+        emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
+        buf_puts(b, ")");
+        return;
+      }
+    }
+  }
+
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
@@ -1223,7 +1239,18 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (!name || recv < 0) return 0;
+  if (!name) return 0;
+
+  /* loop { ... } -- infinite loop, exited by break */
+  if (recv < 0 && !strcmp(name, "loop")) {
+    int lbody = nt_ref(nt, block, "body");
+    emit_indent(b, indent); buf_puts(b, "for (;;) {\n");
+    emit_stmts(c, lbody, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
+  if (recv < 0) return 0;
   int body = nt_ref(nt, block, "body");
   const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
   TyKind rt = comp_ntype(c, recv);
@@ -1953,6 +1980,46 @@ static void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   buf_puts(b, "}\n");
 }
 
+static void emit_for(Compiler *c, int id, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int idx = nt_ref(nt, id, "index");
+  int coll = nt_ref(nt, id, "collection");
+  int body = nt_ref(nt, id, "statements");
+  const char *vn = idx >= 0 ? nt_str(nt, idx, "name") : NULL;
+  TyKind ct = comp_ntype(c, coll);
+
+  if (ct == TY_RANGE && nt_type(nt, coll) && !strcmp(nt_type(nt, coll), "RangeNode")) {
+    /* for v in lo..hi -- a plain counted loop */
+    int excl = (int)(nt_int(nt, coll, "flags", 0) & 4) ? 1 : 0;
+    int thi = ++g_tmp;
+    emit_indent(b, indent); buf_puts(b, "{ mrb_int ");
+    buf_printf(b, "_t%d = ", thi); emit_expr(c, nt_ref(nt, coll, "right"), b); buf_puts(b, ";\n");
+    emit_indent(b, indent + 1);
+    buf_printf(b, "for (lv_%s = ", vn); emit_expr(c, nt_ref(nt, coll, "left"), b);
+    buf_printf(b, "; lv_%s %s _t%d; lv_%s++) {\n", vn, excl ? "<" : "<=", thi, vn);
+    emit_stmts(c, body, b, indent + 2);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return;
+  }
+  if (ty_is_array(ct)) {
+    const char *k = array_kind(ct);
+    int ta = ++g_tmp, ti = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "{ sp_%sArray *_t%d = ", k ? k : "Poly", ta); emit_expr(c, coll, b); buf_puts(b, ";\n");
+    emit_indent(b, indent + 1);
+    buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
+               ti, ti, k ? k : "Poly", ta, ti);
+    emit_indent(b, indent + 2);
+    buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", vn, k ? k : "Poly", ta, ti);
+    emit_stmts(c, body, b, indent + 2);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return;
+  }
+  emit_indent(b, indent); buf_puts(b, "/* unsupported for-loop collection */\n");
+}
+
 static void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int args = nt_ref(c->nt, id, "arguments");
   int n = 0;
@@ -2300,6 +2367,10 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   if (!strcmp(ty, "UnlessNode")) { emit_if(c, id, b, indent, 1, 0); return; }
   if (!strcmp(ty, "WhileNode"))  { emit_while(c, id, b, indent, 0); return; }
   if (!strcmp(ty, "UntilNode"))  { emit_while(c, id, b, indent, 1); return; }
+  if (!strcmp(ty, "ForNode"))    { emit_for(c, id, b, indent); return; }
+  if (!strcmp(ty, "BreakNode"))  { emit_indent(b, indent); buf_puts(b, "break;\n"); return; }
+  if (!strcmp(ty, "NextNode"))   { emit_indent(b, indent); buf_puts(b, "continue;\n"); return; }
+  if (!strcmp(ty, "RedoNode"))   { emit_indent(b, indent); buf_puts(b, "continue;\n"); return; }
   if (!strcmp(ty, "CaseNode"))   { emit_case(c, id, b, indent); return; }
   if (!strcmp(ty, "BeginNode"))  { emit_begin(c, id, b, indent, NULL); return; }
   if (!strcmp(ty, "ReturnNode")) { emit_return(c, id, b, indent); return; }
@@ -2456,7 +2527,9 @@ static int method_is_void(Scope *s) {
 /* The mangled C name: sp_<name> for free functions, sp_<Class>_<name>
    for instance methods. */
 static void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
-  if (s->class_id >= 0)
+  if (s->class_id >= 0 && s->is_cmethod)
+    buf_printf(b, "sp_%s_s_%s", c->classes[s->class_id].name, s->name);
+  else if (s->class_id >= 0)
     buf_printf(b, "sp_%s_%s", c->classes[s->class_id].name, s->name);
   else
     buf_printf(b, "sp_%s", s->name);
@@ -2468,7 +2541,7 @@ static void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   emit_method_cname(c, s, b);
   buf_puts(b, "(");
   int wrote = 0;
-  if (s->class_id >= 0) {
+  if (s->class_id >= 0 && !s->is_cmethod) {
     /* self: by pointer (reference semantics for ivar mutation) */
     buf_printf(b, "sp_%s *self", c->classes[s->class_id].name);
     wrote = 1;

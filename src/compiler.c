@@ -134,8 +134,24 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
 int comp_method_in_class(Compiler *c, int class_id, const char *name) {
   if (!name) return -1;
   for (int s = 0; s < c->nscopes; s++)
-    if (c->scopes[s].class_id == class_id && c->scopes[s].name &&
-        strcmp(c->scopes[s].name, name) == 0) return s;
+    if (c->scopes[s].class_id == class_id && !c->scopes[s].is_cmethod &&
+        c->scopes[s].name && strcmp(c->scopes[s].name, name) == 0) return s;
+  return -1;
+}
+
+static int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
+  if (!name) return -1;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].class_id == class_id && c->scopes[s].is_cmethod &&
+        c->scopes[s].name && strcmp(c->scopes[s].name, name) == 0) return s;
+  return -1;
+}
+int comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
+  name = comp_resolve_alias(c, class_id, name);
+  for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent) {
+    int mi = comp_cmethod_in_class(c, cid, name);
+    if (mi >= 0) { if (def_class) *def_class = cid; return mi; }
+  }
   return -1;
 }
 

@@ -27,6 +27,7 @@ typedef struct {
   int class_id;     /* owning class index, or -1 for free functions */
   int yields;       /* body contains a YieldNode (inlined at call sites) */
   int reachable;    /* method name is referenced somewhere (else dead code) */
+  int is_cmethod;   /* `def self.foo`: a class (singleton) method, no instance self */
 
   char **pnames;    /* parameter names, in order (requireds then optionals) */
   int *pdefault;    /* per-param default-value node id, or -1 if required */
@@ -101,8 +102,10 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
 int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
 int        comp_ivar_index(ClassInfo *ci, const char *name);  /* -1 if none */
 int        comp_ivar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
-/* Find the method scope index for class_id + method name, or -1. */
+/* Find the instance-method scope index for class_id + method name, or -1. */
 int        comp_method_in_class(Compiler *c, int class_id, const char *name);
+/* Find the class (singleton) method scope, walking the superclass chain. */
+int        comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
