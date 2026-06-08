@@ -64,9 +64,54 @@ static int scope_body_last(Compiler *c, int mi) {
 /* The return type of a call to method `mi`. A method whose body is just a
    bare `yield` returns the block's value -- and since it inlines per call
    site, use THIS site's block value type rather than the unified return. */
+/* 1 if `node` is `<&block-param>.call(...)` / .() / [] for method mi -- the
+   explicit-call equivalent of `yield`, inlined the same way. */
+static int is_blk_param_call(Compiler *c, int node, int mi) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || !nt_type(nt, node) || strcmp(nt_type(nt, node), "CallNode")) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm || (strcmp(nm, "call") && strcmp(nm, "()") && strcmp(nm, "[]"))) return 0;
+  int recv = nt_ref(nt, node, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
+  const char *rn = nt_str(nt, recv, "name");
+  const char *bp = c->scopes[mi].blk_param;
+  return rn && bp && bp[0] && !strcmp(rn, bp);
+}
+
+/* The value type of `yield` / a `<&block-param>.call` inside method mi: the
+   block-body value type at a (any) call site of mi. Polymorphic, resolved from
+   the first matching caller -- matches how the rewrite inlines per call site. */
+static TyKind yield_value_type(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  for (int cid = 0; cid < nt->count; cid++) {
+    const char *cty = nt_type(nt, cid);
+    if (!cty || strcmp(cty, "CallNode")) continue;
+    int blk = nt_ref(nt, cid, "block");
+    if (blk < 0) continue;
+    const char *cn = nt_str(nt, cid, "name");
+    int crecv = nt_ref(nt, cid, "receiver");
+    int rmi = -1;
+    if (crecv < 0) {
+      rmi = comp_method_index(c, cn);
+      if (rmi < 0) { Scope *cs = comp_scope_of(c, cid); if (cs->class_id >= 0) rmi = comp_method_in_chain(c, cs->class_id, cn, NULL); }
+    } else {
+      TyKind crt = infer_type(c, crecv);
+      if (ty_is_object(crt)) rmi = comp_method_in_chain(c, ty_object_class(crt), cn, NULL);
+    }
+    if (rmi != mi) continue;
+    int bb = nt_ref(nt, blk, "body");
+    int bn = 0; const int *bd = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
+    if (bn == 0) return TY_NIL;
+    TyKind bt = infer_type(c, bd[bn - 1]);
+    return bt == TY_VOID ? TY_NIL : bt;  /* a void last-expr's block value is nil */
+  }
+  return TY_UNKNOWN;
+}
+
 static TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);
-  if (last >= 0 && nt_type(c->nt, last) && !strcmp(nt_type(c->nt, last), "YieldNode")) {
+  int is_yield = last >= 0 && nt_type(c->nt, last) && !strcmp(nt_type(c->nt, last), "YieldNode");
+  if (is_yield || is_blk_param_call(c, last, mi)) {
     int blk = nt_ref(c->nt, call_id, "block");
     if (blk >= 0) {
       int bbody = nt_ref(c->nt, blk, "body");
@@ -163,6 +208,13 @@ static TyKind infer_call(Compiler *c, int id) {
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
+
+  /* `<&block-param>.call(...)` inside a yielding method: the explicit-call form
+     of yield. Its value is the call-site block's value (resolved like yield). */
+  {
+    int emi = (int)(comp_scope_of(c, id) - c->scopes);
+    if (emi > 0 && is_blk_param_call(c, id, emi)) return yield_value_type(c, emi);
+  }
 
   /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
   if (is_proc_literal(c, id)) return TY_PROC;
@@ -671,36 +723,8 @@ static TyKind infer_uncached(Compiler *c, int id) {
     if (hv == TY_UNKNOWN && kt == TY_STRING && vt != TY_UNKNOWN) return TY_STR_POLY_HASH;
     return hv;
   }
-  if (!strcmp(ty, "YieldNode")) {
-    /* value of yield = the block body's value at a call site of this method */
-    int mi = (int)(comp_scope_of(c, id) - c->scopes);
-    for (int cid = 0; cid < nt->count; cid++) {
-      const char *cty = nt_type(nt, cid);
-      if (!cty || strcmp(cty, "CallNode")) continue;
-      int blk = nt_ref(nt, cid, "block");
-      if (blk < 0) continue;
-      const char *cn = nt_str(nt, cid, "name");
-      int crecv = nt_ref(nt, cid, "receiver");
-      int rmi = -1;
-      if (crecv < 0) {
-        rmi = comp_method_index(c, cn);
-        if (rmi < 0) {
-          Scope *cs = comp_scope_of(c, cid);
-          if (cs->class_id >= 0) rmi = comp_method_in_chain(c, cs->class_id, cn, NULL);
-        }
-      }
-      else {
-        TyKind crt = infer_type(c, crecv);
-        if (ty_is_object(crt)) rmi = comp_method_in_chain(c, ty_object_class(crt), cn, NULL);
-      }
-      if (rmi != mi) continue;
-      int bb = nt_ref(nt, blk, "body");
-      int bn = 0;
-      const int *bd = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
-      return bn > 0 ? infer_type(c, bd[bn - 1]) : TY_NIL;
-    }
-    return TY_UNKNOWN;
-  }
+  if (!strcmp(ty, "YieldNode"))
+    return yield_value_type(c, (int)(comp_scope_of(c, id) - c->scopes));
   if (!strcmp(ty, "SuperNode") || !strcmp(ty, "ForwardingSuperNode")) {
     Scope *s = comp_scope_of(c, id);
     if (s->class_id < 0 || !s->name) return TY_UNKNOWN;

@@ -2057,6 +2057,13 @@ static int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_ex
   if (block >= 0 && nt_type(nt, block) && !strcmp(nt_type(nt, block), "BlockArgumentNode"))
     block = g_block_id;
   if (g_nren + m->nlocals >= MAX_RENAME) return 0;
+  /* Pre-check: every body local must have an emittable type. Bail BEFORE
+     writing anything (a mid-emit bail would leave an unbalanced `{`). */
+  for (int i = 0; i < m->nlocals; i++) {
+    LocalVar *lv = &m->locals[i];
+    if (m->blk_param && lv->name && !strcmp(lv->name, m->blk_param)) continue;
+    if (!is_scalar_ret(lv->type)) return 0;
+  }
 
   int tag = ++g_tmp;
   int saved_nren = g_nren, saved_block = g_block_id;
@@ -2088,10 +2095,6 @@ static int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_ex
     snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
     const char *rn = g_ren_to[g_nren];
     g_nren++;
-    if (!is_scalar_ret(lv->type)) { /* unsupported local type: bail out */
-      g_nren = saved_nren; g_block_id = saved_block; g_block_param_name = saved_bpn;
-      return 0;
-    }
     emit_indent(b, din);
     emit_ctype(c, lv->type, b);
     buf_printf(b, " lv_%s = %s;\n", rn, lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type));
@@ -3625,7 +3628,14 @@ static void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
     case TY_STR_ARRAY:   fn = "sp_box_str_array";   break;
     case TY_POLY_ARRAY:  fn = "sp_box_poly_array";  break;
-    case TY_NIL:    buf_puts(b, "sp_box_nil()"); return;
+    case TY_NIL: {
+      const char *nty = nt_type(c->nt, node);
+      if (nty && !strcmp(nty, "NilNode")) { buf_puts(b, "sp_box_nil()"); return; }
+      /* a nil-typed expression can still have side effects (e.g. a void-valued
+         block call): evaluate it for effect, then yield nil */
+      buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())");
+      return;
+    }
     default: break;
   }
   if (!fn) { unsupported(c, node, "boxing value into poly"); return; }
