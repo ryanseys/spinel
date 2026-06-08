@@ -2071,6 +2071,11 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         else { buf_puts(b, "sp_PolyArray_flatten("); emit_expr(c, recv, b); buf_puts(b, ")"); }
         return;
       }
+      if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && argc == 1) {
+        buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
       if (!strcmp(name, "join") && argc == 1) {
         buf_puts(b, "sp_PolyArray_join("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;

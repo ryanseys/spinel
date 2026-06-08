@@ -472,6 +472,8 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "compact") || !strcmp(name, "flatten") ||
         !strcmp(name, "values_at")) return rt;
     if (!strcmp(name, "[]="))                         return ty_array_elem(rt);
+    if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && rt == TY_POLY_ARRAY)
+      return TY_POLY_ARRAY;  /* the matching sub-array, or nil (NULL ptr) */
   }
 
   /* exception receiver methods */
