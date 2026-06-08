@@ -226,11 +226,30 @@ static const char *int_arith_fn(const char *op) {
   return NULL;
 }
 
+/* Mangle a Ruby method name into a C identifier: `?`->_p, `!`->_bang,
+   `=`->_set, anything else non-identifier -> `_`. Returns a static buffer
+   (one live result at a time -- fine since each use is consumed inline). */
+static const char *mc(const char *name) {
+  static char buf[256];
+  int j = 0;
+  for (const char *p = name; *p && j < (int)sizeof buf - 6; p++) {
+    char ch = *p;
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+        (ch >= '0' && ch <= '9') || ch == '_') buf[j++] = ch;
+    else if (ch == '?') { buf[j++] = '_'; buf[j++] = 'p'; }
+    else if (ch == '!') { memcpy(buf + j, "_bang", 5); j += 5; }
+    else if (ch == '=') { memcpy(buf + j, "_set", 4); j += 4; }
+    else buf[j++] = '_';
+  }
+  buf[j] = '\0';
+  return buf;
+}
+
 static void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int mi = comp_method_index(c, name);
-  buf_printf(b, "sp_%s(", name);
+  buf_printf(b, "sp_%s(", mc(name));
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
   buf_puts(b, ")");
 }
@@ -319,13 +338,18 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
 /* Emit the value for callee param `idx`: the provided arg node if any,
    else the param's default (a nil default becomes the type's default). */
 static void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
-  if (provided >= 0) { emit_expr(c, provided, out); return; }
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_INT;
+  if (provided >= 0) {
+    if (pt == TY_POLY) emit_boxed(c, provided, out);   /* box into a poly param */
+    else emit_expr(c, provided, out);
+    return;
+  }
   int dv = m->pdefault[idx];
   const char *dty = dv >= 0 ? nt_type(c->nt, dv) : NULL;
   if (dv < 0 || (dty && !strcmp(dty, "NilNode")))
     buf_puts(out, pt == TY_RANGE ? "(sp_Range){0}" : default_value(pt));
+  else if (pt == TY_POLY) emit_boxed(c, dv, out);
   else
     emit_expr(c, dv, out);
 }
@@ -397,7 +421,7 @@ static void emit_dispatch(Compiler *c, int cid, const char *name,
   int virtual = dispatch_impl_count(c, cid, name) > 1 && is_scalar_ret(ret);
 
   if (!virtual) {
-    buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, mname, c->classes[defcls].name, selfptr);
+    buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, mc(mname), c->classes[defcls].name, selfptr);
     for (int k = 0; k < np; k++) buf_printf(b, ", _t%d", atmp[k]);
     buf_puts(b, ")");
     free(atmp);
@@ -415,12 +439,12 @@ static void emit_dispatch(Compiler *c, int cid, const char *name,
     int kmi = comp_method_in_chain(c, k, name, &kd);
     if (kmi < 0) continue;
     buf_printf(b, " case %d: _t%d = sp_%s_%s((sp_%s *)%s", k, rtmp,
-               c->classes[kd].name, c->scopes[kmi].name, c->classes[kd].name, selfptr);
+               c->classes[kd].name, mc(c->scopes[kmi].name), c->classes[kd].name, selfptr);
     for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
     buf_puts(b, "); break;");
   }
   buf_printf(b, " default: _t%d = sp_%s_%s((sp_%s *)%s", rtmp,
-             c->classes[defcls].name, mname, c->classes[defcls].name, selfptr);
+             c->classes[defcls].name, mc(mname), c->classes[defcls].name, selfptr);
   for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
   buf_printf(b, "); break; } _t%d; })", rtmp);
   free(atmp);
@@ -575,7 +599,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       int defcls = -1;
       int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, &defcls) : -1;
       if (mi >= 0) {
-        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, c->scopes[mi].name);
+        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
         emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
         buf_puts(b, ")");
         return;
@@ -598,6 +622,30 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     else if (rt == TY_NIL) { buf_puts(b, "1"); }
     else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); }  /* truthy -> false */
     return;
+  }
+
+  /* poly arithmetic: sp_poly_<op>(boxed, boxed) -> a (poly) result */
+  if (recv >= 0 && argc == 1 && (rt == TY_POLY || a0 == TY_POLY)) {
+    const char *pfn = NULL;
+    if (!strcmp(name, "+")) pfn = "sp_poly_add";
+    else if (!strcmp(name, "-")) pfn = "sp_poly_sub";
+    else if (!strcmp(name, "*")) pfn = "sp_poly_mul";
+    else if (!strcmp(name, "/")) pfn = "sp_poly_div";
+    else if (!strcmp(name, "%")) pfn = "sp_poly_mod";
+    else if (!strcmp(name, "**")) pfn = "sp_poly_pow";
+    if (pfn) {
+      buf_printf(b, "%s(", pfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    const char *cfn = NULL;
+    if (!strcmp(name, "<")) cfn = "sp_poly_lt";
+    else if (!strcmp(name, ">")) cfn = "sp_poly_gt";
+    else if (!strcmp(name, "<=")) cfn = "sp_poly_le";
+    else if (!strcmp(name, ">=")) cfn = "sp_poly_ge";
+    if (cfn) {
+      buf_printf(b, "%s(", cfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
   }
 
   if (recv >= 0 && argc == 1 && int_arith_fn(name)) {
@@ -662,9 +710,15 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     unsupported(c, id, "comparison");
   }
 
-  /* poly receiver: nil? / a few type-agnostic queries */
+  /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (!strcmp(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+    if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) {
+      buf_printf(b, "%s(", !strcmp(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect");
+      emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "to_i")) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+    if (!strcmp(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
   }
 
   if (argc == 1 && (!strcmp(name, "==") || !strcmp(name, "!="))) {
@@ -2755,11 +2809,11 @@ static int method_is_void(Scope *s) {
    for instance methods. */
 static void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
   if (s->class_id >= 0 && s->is_cmethod)
-    buf_printf(b, "sp_%s_s_%s", c->classes[s->class_id].name, s->name);
+    buf_printf(b, "sp_%s_s_%s", c->classes[s->class_id].name, mc(s->name));
   else if (s->class_id >= 0)
-    buf_printf(b, "sp_%s_%s", c->classes[s->class_id].name, s->name);
+    buf_printf(b, "sp_%s_%s", c->classes[s->class_id].name, mc(s->name));
   else
-    buf_printf(b, "sp_%s", s->name);
+    buf_printf(b, "sp_%s", mc(s->name));
 }
 
 static void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
@@ -2889,7 +2943,7 @@ static void emit_super(Compiler *c, int id, Buf *b) {
   int defcls = -1;
   int mi = p >= 0 ? comp_method_in_chain(c, p, s->name, &defcls) : -1;
   if (mi < 0) unsupported(c, id, "super (no parent method)");
-  buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, s->name, c->classes[defcls].name, g_self);
+  buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, mc(s->name), c->classes[defcls].name, g_self);
   /* explicit args, or forward the current method's params for bare super */
   const char *ty = nt_type(c->nt, id);
   if (ty && !strcmp(ty, "ForwardingSuperNode")) {

@@ -162,6 +162,23 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "full_message") || !strcmp(name, "class")) return TY_STRING;
   }
 
+  /* poly receiver / poly operand: result type of operations on sp_RbVal */
+  if (recv >= 0 && (rt == TY_POLY || a0 == TY_POLY)) {
+    if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") ||
+        !strcmp(name, "/") || !strcmp(name, "%") || !strcmp(name, "**"))
+      return TY_POLY;
+    if (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") ||
+        !strcmp(name, ">=") || !strcmp(name, "==") || !strcmp(name, "!=") ||
+        !strcmp(name, "nil?") || !strcmp(name, "is_a?") || !strcmp(name, "kind_of?") ||
+        !strcmp(name, "include?"))
+      return TY_BOOL;
+    if (rt == TY_POLY) {
+      if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
+      if (!strcmp(name, "to_i")) return TY_INT;
+      if (!strcmp(name, "to_f")) return TY_FLOAT;
+    }
+  }
+
   /* range receiver methods */
   if (recv >= 0 && rt == TY_RANGE) {
     if (!strcmp(name, "to_a"))      return TY_INT_ARRAY;
