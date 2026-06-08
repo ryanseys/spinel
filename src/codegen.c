@@ -3585,7 +3585,11 @@ static void emit_case(Compiler *c, int id, Buf *b, int indent) {
     for (int j = 0; j < wc; j++) {
       if (j) buf_puts(b, " || ");
       if (pred >= 0) {
-        if (pt == TY_STRING) {
+        int reidx = re_lit_index(c, conds[j]);
+        if (reidx >= 0 && pt == TY_STRING) {
+          buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d)", reidx, t);
+        }
+        else if (pt == TY_STRING) {
           buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
         }
         else {
