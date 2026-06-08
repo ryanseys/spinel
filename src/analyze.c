@@ -534,6 +534,20 @@ static TyKind infer_call(Compiler *c, int id) {
 
   /* range receiver methods */
   if (recv >= 0 && rt == TY_RANGE) {
+    /* a literal string range ("a".."z") yields strings, not ints */
+    if (!strcmp(name, "to_a")) {
+      int rn = recv;
+      while (rn >= 0 && nt_type(nt, rn) && !strcmp(nt_type(nt, rn), "ParenthesesNode")) {
+        int body = nt_ref(nt, rn, "body"); int bn = 0;
+        const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        rn = bn == 1 ? bd[0] : -1;
+      }
+      if (rn >= 0 && nt_type(nt, rn) && !strcmp(nt_type(nt, rn), "RangeNode")) {
+        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+        if (lo >= 0 && hi >= 0 && infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING)
+          return TY_STR_ARRAY;
+      }
+    }
     if (!strcmp(name, "to_a") || !strcmp(name, "minmax")) return TY_INT_ARRAY;
     if (!strcmp(name, "include?") || !strcmp(name, "member?") ||
         !strcmp(name, "cover?") || !strcmp(name, "exclude_end?") ||
@@ -705,7 +719,13 @@ static TyKind infer_uncached(Compiler *c, int id) {
   if (!strcmp(ty, "TrueNode"))                return TY_BOOL;
   if (!strcmp(ty, "FalseNode"))               return TY_BOOL;
   if (!strcmp(ty, "NilNode"))                 return TY_NIL;
-  if (!strcmp(ty, "RangeNode"))               return TY_RANGE;
+  if (!strcmp(ty, "RangeNode")) {
+    /* infer the bounds so codegen can tell an int range from a string range */
+    int lo = nt_ref(nt, id, "left"), hi = nt_ref(nt, id, "right");
+    if (lo >= 0) infer_type(c, lo);
+    if (hi >= 0) infer_type(c, hi);
+    return TY_RANGE;
+  }
   if (!strcmp(ty, "LambdaNode"))              return TY_PROC;
   /* an assignment expression evaluates to the assigned value */
   if (!strcmp(ty, "LocalVariableWriteNode"))  return infer_type(c, nt_ref(nt, id, "value"));

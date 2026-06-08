@@ -1766,6 +1766,43 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* string-range literal methods: the int-only sp_Range struct can't hold
+     string bounds, so inline strcmp / char-iteration for a literal
+     `("a".."z")` receiver. */
+  if (recv >= 0 && rt == TY_RANGE && nt_type(nt, unwrap_parens(c, recv)) &&
+      !strcmp(nt_type(nt, unwrap_parens(c, recv)), "RangeNode")) {
+    int rnode = unwrap_parens(c, recv);
+    int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
+    if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
+      int excl = (int)(nt_int(nt, rnode, "flags", 0) & 4) ? 1 : 0;
+      if ((!strcmp(name, "include?") || !strcmp(name, "member?") ||
+           !strcmp(name, "cover?") || !strcmp(name, "===")) && argc == 1) {
+        if (a0 != TY_STRING) {
+          /* a non-string can't be in a string range: false (eval arg) */
+          buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
+        }
+        else {
+          int ta = ++g_tmp;
+          buf_printf(b, "({ const char *_t%d = ", ta); emit_expr(c, argv[0], b);
+          buf_puts(b, "; (strcmp("); emit_expr(c, lo, b); buf_printf(b, ", _t%d) <= 0 && strcmp(_t%d, ", ta, ta);
+          emit_expr(c, hi, b); buf_printf(b, ") %s 0); })", excl ? "<" : "<=");
+        }
+        return;
+      }
+      if (!strcmp(name, "to_a") && argc == 0) {
+        /* single-char ASCII range -> [lo, lo+1, ..., hi(-excl)] */
+        int tl = ++g_tmp, th = ++g_tmp, to = ++g_tmp, ci = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", tl); emit_expr(c, lo, b);
+        buf_printf(b, "; const char *_t%d = ", th); emit_expr(c, hi, b);
+        buf_printf(b, "; sp_StrArray *_t%d = sp_StrArray_new();"
+                      " for (int _t%d = (unsigned char)_t%d[0]; _t%d <= (unsigned char)_t%d[0] - %d; _t%d++)"
+                      " sp_StrArray_push(_t%d, sp_int_chr(_t%d)); _t%d; })",
+                   to, ci, tl, ci, th, excl, ci, to, ci, to);
+        return;
+      }
+    }
+  }
+
   /* range value methods (evaluate the range once into a temp) */
   if (recv >= 0 && rt == TY_RANGE) {
     int block = nt_ref(nt, id, "block");
@@ -1790,7 +1827,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
     static const char *const rmeths[] = {
-      "to_a", "include?", "member?", "cover?", "sum", "min", "max",
+      "to_a", "include?", "member?", "cover?", "===", "sum", "min", "max",
       "first", "last", "size", "count", "begin", "end",
       "exclude_end?", "eql?", "minmax", NULL };
     int known = 0;
@@ -1803,7 +1840,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
       if (!strcmp(name, "to_a"))
         buf_printf(b, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", t, t, t);
-      else if (!strcmp(name, "include?") || !strcmp(name, "member?") || !strcmp(name, "cover?")) {
+      else if (!strcmp(name, "include?") || !strcmp(name, "member?") ||
+               !strcmp(name, "cover?") || !strcmp(name, "===")) {
         buf_printf(b, "sp_range_include(&_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (!strcmp(name, "first") || !strcmp(name, "min") || !strcmp(name, "begin"))
