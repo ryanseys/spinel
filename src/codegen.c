@@ -3928,7 +3928,8 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
      prelude (not available in this manual return path) and defer for now, as do
      float/poly/range/time, which don't fit the slot. */
   int ret_ptr = (ret == TY_STRING);
-  if (!proc_slot_is_direct(ret) && !ret_ptr) {
+  int ret_void = (ret == TY_VOID);  /* body's last expr has no value (e.g. puts) */
+  if (!proc_slot_is_direct(ret) && !ret_ptr && !ret_void) {
     free(params.v); free(used.v); free(locals.v); free(caps.v);
     unsupported(c, create, "proc with array/hash/object/float/poly return (later slice)");
     return;
@@ -4006,6 +4007,11 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
     buf_puts(pb, "  return (mrb_int)(uintptr_t)(");
     if (bn > 0) emit_expr(c, bb[bn - 1], pb); else buf_puts(pb, "0");
     buf_puts(pb, ");\n");
+  }
+  else if (ret_void) {
+    /* no usable value: run the body as plain statements, return nil (0) */
+    emit_stmts(c, body, pb, 1);
+    buf_puts(pb, "  return 0;\n");
   }
   else {
     emit_stmts_tail(c, body, pb, 1);
