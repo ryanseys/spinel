@@ -235,7 +235,7 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
   const char *rk = array_kind(restype);
   if (!rk) return 0;
 
-  const char *p0 = block_param_name(c, block, 0);
+  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
   int body = nt_ref(nt, block, "body");
   int bn = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -1170,7 +1170,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
   int body = nt_ref(nt, block, "body");
-  const char *p0 = block_param_name(c, block, 0);
+  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
   TyKind rt = comp_ntype(c, recv);
 
   /* n.times { |i| ... } */
@@ -1192,7 +1192,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   if ((!strcmp(name, "each") || !strcmp(name, "each_pair")) && ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
     if (!hn) return 0;
-    const char *p1 = block_param_name(c, block, 1);
+    const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_expr(c, recv, &rb);
@@ -1218,7 +1218,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (!strcmp(name, "each_with_index") && ty_is_array(rt)) {
     const char *k = array_kind(rt);
     if (!k) return 0;
-    const char *p1 = block_param_name(c, block, 1);
+    const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent);
@@ -1402,6 +1402,36 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (!strcmp(ty, "LocalVariableReadNode")) { buf_printf(b, "lv_%s", rename_local(nt_str(nt, id, "name"))); return; }
+  if (!strcmp(ty, "YieldNode")) {
+    /* yield used for its value: ({ bind block params; block body; }) where
+       the block body's last expression is the value */
+    if (g_block_id < 0) unsupported(c, id, "yield (no block in scope)");
+    int blk = g_block_id;
+    int bbody = nt_ref(nt, blk, "body");
+    int ya = nt_ref(nt, id, "arguments");
+    int yc = 0;
+    const int *yargs = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
+    Scope *bsc = comp_scope_of(c, blk);
+    buf_puts(b, "({ ");
+    for (int k = 0; ; k++) {
+      const char *bp = block_param_name(c, blk, k);
+      if (!bp) break;
+      buf_printf(b, "lv_%s = ", bp);
+      if (k < yc) emit_expr(c, yargs[k], b);  /* yield args: method scope (renames on) */
+      else {
+        LocalVar *bl = scope_local(bsc, bp);
+        TyKind bt = bl ? bl->type : TY_INT;
+        buf_puts(b, bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
+      }
+      buf_puts(b, "; ");
+    }
+    int sv = g_nren; g_nren = 0;        /* block body: call-site scope (renames off) */
+    int svb = g_block_id; g_block_id = -1;
+    emit_stmts(c, bbody, b, 0);          /* last bare-expr statement is the value */
+    g_nren = sv; g_block_id = svb;
+    buf_puts(b, "})");
+    return;
+  }
   if (!strcmp(ty, "SelfNode")) { buf_printf(b, "(*%s)", g_self); return; }
   if (!strcmp(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
@@ -2064,7 +2094,11 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   if (!strcmp(ty, "ReturnNode")) { emit_return(c, id, b, indent); return; }
   if (!strcmp(ty, "DefNode"))    { return; } /* emitted separately */
 
-  unsupported(c, id, "statement");
+  /* any remaining value expression as a bare statement (its value is used
+     only when this is the last statement of an inlined expr method) */
+  emit_indent(b, indent);
+  emit_expr(c, id, b);
+  buf_puts(b, ";\n");
 }
 
 /* Tail position: the value of this statement is the method's return value. */

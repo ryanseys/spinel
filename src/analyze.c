@@ -347,6 +347,35 @@ static TyKind infer_uncached(Compiler *c, int id) {
     }
     return ty_hash_of(kt, vt);
   }
+  if (!strcmp(ty, "YieldNode")) {
+    /* value of yield = the block body's value at a call site of this method */
+    int mi = (int)(comp_scope_of(c, id) - c->scopes);
+    for (int cid = 0; cid < nt->count; cid++) {
+      const char *cty = nt_type(nt, cid);
+      if (!cty || strcmp(cty, "CallNode")) continue;
+      int blk = nt_ref(nt, cid, "block");
+      if (blk < 0) continue;
+      const char *cn = nt_str(nt, cid, "name");
+      int crecv = nt_ref(nt, cid, "receiver");
+      int rmi = -1;
+      if (crecv < 0) {
+        rmi = comp_method_index(c, cn);
+        if (rmi < 0) {
+          Scope *cs = comp_scope_of(c, cid);
+          if (cs->class_id >= 0) rmi = comp_method_in_chain(c, cs->class_id, cn, NULL);
+        }
+      } else {
+        TyKind crt = infer_type(c, crecv);
+        if (ty_is_object(crt)) rmi = comp_method_in_chain(c, ty_object_class(crt), cn, NULL);
+      }
+      if (rmi != mi) continue;
+      int bb = nt_ref(nt, blk, "body");
+      int bn = 0;
+      const int *bd = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
+      return bn > 0 ? infer_type(c, bd[bn - 1]) : TY_NIL;
+    }
+    return TY_UNKNOWN;
+  }
   if (!strcmp(ty, "SuperNode") || !strcmp(ty, "ForwardingSuperNode")) {
     Scope *s = comp_scope_of(c, id);
     if (s->class_id < 0 || !s->name) return TY_UNKNOWN;
