@@ -1912,6 +1912,24 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* `arr[i] = v` in expression position: do the store, evaluate to the rhs
+     (Ruby []= returns the assigned value). The statement form is emitted
+     elsewhere; this covers rvalue chains like `b = arr[i] = v`. */
+  if (recv >= 0 && ty_is_array(rt) && !strcmp(name, "[]=") && argc == 2) {
+    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+    if (k) {
+      int t = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
+      buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_int _t%d = ", ti); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+      if (rt == TY_POLY_ARRAY) {
+        buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b);
+      }
+      else { emit_ctype(c, ty_array_elem(rt), b); buf_printf(b, " _t%d = ", tv); emit_expr(c, argv[1], b); }
+      buf_printf(b, "; sp_%sArray_set(_t%d, _t%d, _t%d); _t%d; })", k, t, ti, tv, tv);
+      return;
+    }
+  }
+
   /* array value methods */
   if (recv >= 0 && ty_is_array(rt)) {
     /* values_at(i, j, ...) -> fresh same-kind array of the picked elements
