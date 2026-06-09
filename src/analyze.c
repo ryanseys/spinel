@@ -514,6 +514,11 @@ static TyKind infer_call(Compiler *c, int id) {
           !strcmp(name, "find") || !strcmp(name, "detect"))
         return ty_array_elem(rt);  /* returns an element */
     }
+    /* grep/grep_v without a block filter by `pattern === e`, preserving the
+       receiver's array type. */
+    if ((!strcmp(name, "grep") || !strcmp(name, "grep_v")) &&
+        nt_ref(nt, id, "block") < 0 && argc == 1)
+      return rt;
     if (!strcmp(name, "[]")) {
       /* arr[range] / arr[start, len] -> a subarray; arr[i] -> an element */
       if (argc == 2) return rt;

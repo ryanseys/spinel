@@ -701,6 +701,85 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Emit the `pattern === elem` membership test for grep, given the element
+   bound to C variable `ev`. Returns 1 if the pattern kind is supported. */
+static int emit_grep_pred(Compiler *c, int pat, const char *ev, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int re = re_lit_index(c, pat);
+  if (re >= 0) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, %s)", re, ev); return 1; }
+  const char *pty = nt_type(nt, pat);
+  if (pty && !strcmp(pty, "RangeNode")) {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, pat, b);
+    buf_printf(b, "; sp_range_include(&_t%d, %s); })", tr, ev);
+    return 1;
+  }
+  if (pty && !strcmp(pty, "ConstantReadNode")) {
+    const char *cn = nt_str(nt, pat, "name");
+    if (!cn) return 0;
+    if (!strcmp(cn, "Integer") || !strcmp(cn, "Fixnum")) buf_printf(b, "(%s).tag == SP_TAG_INT", ev);
+    else if (!strcmp(cn, "String"))   buf_printf(b, "(%s).tag == SP_TAG_STR", ev);
+    else if (!strcmp(cn, "Float"))    buf_printf(b, "(%s).tag == SP_TAG_FLT", ev);
+    else if (!strcmp(cn, "Symbol"))   buf_printf(b, "(%s).tag == SP_TAG_SYM", ev);
+    else if (!strcmp(cn, "Numeric"))  buf_printf(b, "((%s).tag == SP_TAG_INT || (%s).tag == SP_TAG_FLT)", ev, ev);
+    else return 0;
+    return 1;
+  }
+  return 0;
+}
+
+/* grep(pattern) / grep_v(pattern) without a block: collect elements for which
+   `pattern === e` holds (or fails, for grep_v). Returns 1 if handled. */
+static int emit_grep_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || (strcmp(name, "grep") && strcmp(name, "grep_v"))) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;   /* block form unsupported */
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc != 1) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_array(rt)) return 0;
+  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  if (!k) return 0;
+  int pat = argv[0];
+
+  /* probe predicate support before emitting anything */
+  Buf probe; memset(&probe, 0, sizeof probe);
+  if (!emit_grep_pred(c, pat, "_e", &probe)) { free(probe.p); return 0; }
+  free(probe.p);
+
+  int neg = !strcmp(name, "grep_v");
+  TyKind et = ty_array_elem(rt);
+  int trecv = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
+
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  emit_ctype(c, rt, g_pre);
+  buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, tres, k);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "%s _t%d = sp_%sArray_get(_t%d, _t%d);\n", c_type_name(et), te, k, trecv, ti);
+  emit_indent(g_pre, g_indent + 1);
+  char ev[16]; snprintf(ev, sizeof ev, "_t%d", te);
+  buf_printf(g_pre, "if (%s(", neg ? "!" : "");
+  emit_grep_pred(c, pat, ev, g_pre);
+  buf_printf(g_pre, ")) sp_%sArray_push(_t%d, _t%d);\n", k, tres, te);
+  emit_indent(g_pre, g_indent);
+  buf_puts(g_pre, "}\n");
+
+  buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
 /* Emit the value for callee param `idx`: the provided arg node if any,
    else the param's default (a nil default becomes the type's default). */
 static void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
@@ -819,6 +898,7 @@ static void emit_dispatch(Compiler *c, int cid, const char *name,
 static void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_collect_expr(c, id, b)) return;
+  if (emit_grep_expr(c, id, b)) return;
   if (emit_minmax_by_expr(c, id, b)) return;
   if (emit_sortby_expr(c, id, b)) return;
   if (emit_inline_expr(c, id, b)) return;  /* value-returning yield method */
