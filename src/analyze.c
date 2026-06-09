@@ -1016,6 +1016,8 @@ static TyKind infer_call(Compiler *c, int id) {
     }
     /* array + (same kind) -> same kind */
     if (!strcmp(name, "+") && ty_is_array(rt) && a0 == rt) return rt;
+    /* array * int -> same array type (repeat) */
+    if (!strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) return rt;
     if (ty_is_numeric(rt) && ty_is_numeric(a0))
       return (rt == TY_FLOAT || a0 == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return TY_UNKNOWN;

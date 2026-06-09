@@ -2957,6 +2957,39 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* Array#* (repeat): arr * n  ->  new array with elements repeated n times. */
+  if (recv >= 0 && argc == 1 && !strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
+      comp_ntype(c, argv[0]) == TY_INT) {
+    int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp;
+    if (rt == TY_POLY_ARRAY) {
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_int _t%d = ", tn); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                    " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                    " sp_PolyArray_push(_t%d, _t%d->data[_t%d]); _t%d; })",
+                 ta, tn, tr, tr,
+                 ti, ti, tn, ti,
+                 tj, tj, ta, tj,
+                 tr, ta, tj, tr);
+    }
+    else {
+      const char *k = array_kind(rt);
+      buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_int _t%d = ", tn); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
+                    " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                    " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                    " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]); _t%d; })",
+                 k, ta, tn,
+                 k, tr, k, tr,
+                 ti, ti, tn, ti,
+                 tj, tj, ta, tj,
+                 k, tr, ta, ta, tj, tr);
+    }
+    return;
+  }
+
   if (recv >= 0 && argc == 1 && int_arith_fn(name) && !ty_is_object(rt) && !ty_is_array(rt)) {
     if (rt == TY_STRING && !strcmp(name, "+")) {
       buf_puts(b, "sp_str_concat(");
