@@ -1,0 +1,1 @@
+Spinel: instance_eval: a Proc passed with `&` cannot be rebound to the receiver (Spinel's Proc has no bound-self form); inline the block directly (`recv.instance_eval { ... }`)

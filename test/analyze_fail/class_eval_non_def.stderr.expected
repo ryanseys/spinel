@@ -1,0 +1,1 @@
+Spinel: class_eval on Box: block body has a statement that is not a `def` or `define_method` -- only method definitions are modeled

@@ -1,0 +1,1 @@
+Spinel: class_eval on Box: block takes parameters, which the class_eval reopen does not bind

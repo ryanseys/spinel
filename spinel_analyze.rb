@@ -3521,15 +3521,19 @@ class Compiler
         return "obj_" + @cls_names[@ieval_class_idxs[n]]
       end
     end
- # iexec direct-path lift: a heap receiver is inlined at the call site
- # and the call's value is the block's last expression, so type the call
- # by that expression (simple ctypes only -- array / hash / poly bodies
- # stay "void" and take the receiver-yielding comma-expr fallback, like
- # the ieval arm above). Computed on the fly to avoid a per-lift ivar.
+ # iexec direct-path lift: a heap (or value-type) receiver is always
+ # inlined at the call site (compile_iexec_inline), so the call's value
+ # is the block's last expression carrying its real type. Unlike the
+ # ieval arm -- whose lifted body is a typed sp_ieval_<N> function and so
+ # is restricted to simple return types -- the inline result temp can
+ # hold any type, including heap types (arrays / hashes) and obj_<C>.
+ # Mirror codegen's iexec_inline_rettype: report the real type and fall
+ # back only for a void / untypable body. Computed on the fly to avoid a
+ # per-lift ivar.
     if is_iexec_call_name(mname) == 1
       suffix = mname[11, mname.length - 11]
       rt = iexec_call_value_type(suffix.to_i)
-      if ieval_return_type_is_simple(rt) == 1
+      if rt != "" && rt != "void"
         return rt
       end
       return "void"
@@ -9038,6 +9042,14 @@ class Compiler
  # all reopens. Fixes #573.
     reconcile_class_includes
 
+ # Pass 1.8: desugar `Klass.class_eval do ... end` into a class reopen
+ # now that every class/module/include is registered. Runs before the
+ # top-level method/constant collection so the routed methods are part
+ # of the class tables for the rest of analysis. Instance methods are
+ # inherited via the parent-walk at lookup time, so ordering relative
+ # to propagate_inherited_class_methods does not matter here.
+    rewrite_class_eval_calls
+
  # Pass 2: top-level methods, constants, define_method
     stmts.each { |sid|
       if @nd_type[sid] == "DefNode"
@@ -9535,6 +9547,26 @@ class Compiler
       end
       return -1
     end
+    if @nd_type[recv] == "SelfNode"
+ # Explicit `self.instance_eval/instance_exec { }` inside a class method
+ # -- the same receiver as the implicit-self form, so resolve to the
+ # enclosing class.
+      if @current_class_idx >= 0
+        return @current_class_idx
+      end
+      return -1
+    end
+ # General fallback: any other receiver expression whose static type is
+ # an object type -- a method-return value (`mk().instance_exec { }`), an
+ # array element, etc. The specific arms above stay first so their
+ # bespoke resolution (which works even where infer_type can't, e.g. the
+ # top-level local_class map) is preferred; this only fires when they
+ # miss and a concrete class can still be inferred.
+    rt_rcir = infer_type(recv)
+    bt_rcir = base_type(rt_rcir)
+    if is_obj_type(bt_rcir) == 1
+      return find_class_idx(bt_rcir[4, bt_rcir.length - 4])
+    end
     -1
   end
 
@@ -9549,10 +9581,20 @@ class Compiler
     end
  # Prism stores both literal blocks (`{ ... }`) and proc-arg
  # references (`&block_var`) in @nd_block. Only the literal-block
- # form (BlockNode) is lifted; the proc-arg form (BlockArgumentNode)
- # is the trampoline-body shape that codegen's
- # is_instance_eval_trampoline picks up at the call site.
+ # form (BlockNode) is lifted. An explicit-receiver `&proc`
+ # (`recv.instance_eval(&p)`) cannot be inlined: the Proc would need
+ # `self` rebound to the receiver, but sp_Proc has no self parameter,
+ # so the call would otherwise silently miscompile -- reject it. The
+ # implicit-self proc-arg form is the trampoline-body shape codegen's
+ # is_instance_eval_trampoline picks up at the call site, so leave it.
     if @nd_type[blk] != "BlockNode"
+      if recv >= 0
+        iexec_reject(
+          "instance_eval",
+          "a Proc passed with `&` cannot be rebound to the receiver (Spinel's Proc has no bound-self form)",
+          "inline the block directly (`recv.instance_eval { ... }`)"
+        )
+      end
       return
     end
  # Lifted sp_ieval_<N> takes only `self`. Accept `{ }`, `{ || }`,
@@ -9637,6 +9679,14 @@ class Compiler
     @ieval_counter = @ieval_counter + 1
     @ieval_class_idxs.push(ci)
     @ieval_body_ids.push(body_id)
+ # Register ivar slots the block body assigns (`instance_eval { @x =
+ # ... }`) on the receiver's class. collect_ivars (Pass 1) scans only
+ # method bodies, never the lifted block, so an ivar first written inside
+ # the block would otherwise have no struct field and codegen would emit
+ # `self->iv_x` against a class that never declared it.
+    if ci >= 0 && body_id >= 0
+      scan_ivars(ci, body_id)
+    end
     @ieval_self_param_names.push(self_param_name)
     @ieval_extra_param_names.push(extra_param_names.join(";"))
  # Keep ci heap-allocated so block-body ivar writes propagate
@@ -9808,10 +9858,23 @@ class Compiler
         "pass a literal block (`recv.instance_exec { ... }`)"
       )
     end
- # Only the literal-block form is lifted; the `&proc` / trampoline-
- # body shape (BlockArgumentNode) is handled by codegen's call-site
- # inlining, so leave it for that path.
+ # The `&proc` form (BlockArgumentNode) forwards a runtime Proc. With an
+ # explicit receiver the splice would have to invoke that Proc with
+ # `self` rebound to the receiver, but sp_Proc carries no self parameter
+ # (self is baked into the Proc's capture when it is created), so there
+ # is no way to do it -- the call would otherwise fall through to generic
+ # dispatch and silently miscompile to a garbage value. Reject precisely.
+ # The implicit-self form (`instance_exec(*a, &b)` forwarding a method's
+ # own trailing block param) is the trampoline shape codegen inlines at
+ # the call site, so leave that for the codegen path.
     if @nd_type[blk] != "BlockNode"
+      if recv >= 0
+        iexec_reject(
+          "instance_exec",
+          "a Proc passed with `&` cannot be rebound to the receiver (Spinel's Proc has no bound-self form)",
+          "inline the block directly (`recv.instance_exec { ... }`)"
+        )
+      end
       return
     end
     ci = -1
@@ -9940,11 +10003,18 @@ class Compiler
  # array's element type; codegen reads the elements via the matching
  # sp_<Prefix>_get. Restricted to a uniform scalar element type so the
  # params get a concrete C type -- poly / object-array elements fall
- # through and bail (no lift), preserving prior behavior.
+ # through and bail (no lift), preserving prior behavior. A single
+ # splat arg (`instance_exec(*args) { |a, b| }`) spreads its source
+ # array across the params the same way -- resolve the SplatNode to
+ # its source so the element-type machinery applies unchanged.
     bp_types_str = ""
     auto_splat = 0
     if pos_arg_ids.length == 1 && bp_names.length >= 2 && kw_nodes.length == 0
-      arr_t = infer_type(pos_arg_ids[0])
+      splat_src = pos_arg_ids[0]
+      if @nd_type[splat_src] == "SplatNode"
+        splat_src = @nd_expression[splat_src]
+      end
+      arr_t = splat_src >= 0 ? infer_type(splat_src) : ""
       if is_array_type(arr_t) == 1
  # elem_type_of_array yields the c_type vocabulary (`string` /
  # `symbol`), matching what sp_<Prefix>_get returns; recording `str`
@@ -9964,15 +10034,19 @@ class Compiler
       end
     end
     if auto_splat == 0
-      if pos_arg_ids.length != bp_names.length
-        return
-      end
- # Type each positional block param from its corresponding call-site arg.
+ # Lenient arity (CRuby block semantics): bind each positional param to
+ # its call-site arg in order; a param with no matching arg binds nil
+ # (typed poly so codegen emits sp_box_nil()), and surplus args are
+ # ignored. Iterate over the params, not the args, so both the
+ # too-few and too-many shapes fall out of one loop.
       k = 0
-      while k < pos_arg_ids.length
-        t = iexec_arg_static_type(pos_arg_ids[k])
-        if t == ""
-          return
+      while k < bp_names.length
+        t = "poly"
+        if k < pos_arg_ids.length
+          t = iexec_arg_static_type(pos_arg_ids[k])
+          if t == ""
+            return
+          end
         end
         if k > 0
           bp_types_str = bp_types_str + "|"
@@ -10060,6 +10134,12 @@ class Compiler
     @iexec_counter = @iexec_counter + 1
     @iexec_class_idxs.push(ci)
     @iexec_body_ids.push(body_id)
+ # Register ivar slots the block body assigns (`instance_exec { @x =
+ # ... }`) on the receiver's class -- collect_ivars never scans the
+ # lifted block, so the slot would otherwise be missing (see ieval).
+    if ci >= 0 && body_id >= 0
+      scan_ivars(ci, body_id)
+    end
     @iexec_block_pnames.push(bp_names_str)
     @iexec_block_ptypes.push(bp_types_str)
     @iexec_block_param_ids.push(param_node_id)
@@ -14954,7 +15034,128 @@ class Compiler
         end
       end
     end
+    captured = define_method_captures_enclosing_local(blk, body_id)
+    if captured != ""
+      $stderr.puts "Spinel: define_method block captures the enclosing local '" + captured + "', which Spinel does not model (only the literal-unrolled `.each` form substitutes its loop variable)"
+      exit(1)
+    end
     append_cls_meth(ci, mname, params_str, ptypes_str, "int", body_id, "")
+  end
+
+ # Desugar `Klass.class_eval do ... end` (and `module_eval`) on a
+ # constant class into a class reopen: every `def` / `define_method`
+ # in the block body registers an instance method on the class through
+ # the same collectors the class-body walk uses, so codegen sees plain
+ # methods. The call site is renamed to a no-op sentinel (codegen emits
+ # nil) and the block detached, so the def bodies aren't compiled twice.
+ # Top-level only; a non-def/define_method body statement, block params
+ # (the class_exec arg-binding form), positional args, or a singleton
+ # `def self.x` are shapes the splice can't model -- reject precisely.
+  def rewrite_class_eval_calls
+    @classeval_counter = 0
+    stmts = get_body_stmts(@root_id)
+    si = 0
+    while si < stmts.length
+      sid = stmts[si]
+      if @nd_type[sid] == "CallNode"
+        cn = @nd_name[sid]
+        if cn == "class_eval" || cn == "module_eval"
+          rewrite_one_class_eval(sid)
+        end
+      end
+      si = si + 1
+    end
+  end
+
+  def rewrite_one_class_eval(nid)
+    recv = @nd_receiver[nid]
+    if recv < 0
+      return
+    end
+ # Only a constant receiver resolving to a registered class is a
+ # static reopen; an instance receiver or unknown constant is left
+ # for ordinary dispatch (no regression over today's behavior).
+    rt = @nd_type[recv]
+    if rt != "ConstantReadNode" && rt != "ConstantPathNode"
+      return
+    end
+    cname = const_ref_flat_name(recv)
+    if cname == ""
+      return
+    end
+    ci = find_class_idx(cname)
+    if ci < 0
+      return
+    end
+ # class_exec passes positional args to the block; a bare class_eval
+ # takes none.
+    args_id = @nd_arguments[nid]
+    if args_id >= 0 && get_args(args_id).length > 0
+      return
+    end
+    blk = @nd_block[nid]
+    if blk < 0 || @nd_type[blk] != "BlockNode"
+      return
+    end
+ # A parameterized block (`class_eval { |mod| }` / class_exec args)
+ # binds a value the reopen splice does not thread into the body.
+    if @nd_parameters[blk] >= 0
+      classeval_reject(cname, "block takes parameters, which the class_eval reopen does not bind")
+    end
+    body_id = @nd_body[blk]
+    body_stmts = get_stmts(body_id)
+ # Validate every statement first so a later reject never leaves the
+ # class half-populated with methods from an unmodelable body.
+    bi = 0
+    while bi < body_stmts.length
+      bs = body_stmts[bi]
+      bt = @nd_type[bs]
+      if bt == "DefNode"
+        if @nd_receiver[bs] >= 0
+          classeval_reject(cname, "defines a singleton method (`def self.x`), which the class_eval splice does not model")
+        end
+      elsif bt == "CallNode" && @nd_name[bs] == "define_method"
+ # ok: routed to collect_define_method_in_class below
+      else
+        classeval_reject(cname, "block body has a statement that is not a `def` or `define_method` -- only method definitions are modeled")
+      end
+      bi = bi + 1
+    end
+    bi = 0
+    while bi < body_stmts.length
+      bs = body_stmts[bi]
+      if @nd_type[bs] == "DefNode"
+        collect_class_method(ci, bs)
+ # collect_ivars already ran for this class during Pass 1, before
+ # the reopen added these methods, so a new ivar the body writes
+ # would have no slot. Scan the routed body now (mirrors the
+ # iexec-lift scan_ivars), matching collect_ivars's per-method scan.
+        dbody = @nd_body[bs]
+        if dbody >= 0
+          scan_ivars(ci, dbody)
+        end
+      else
+        collect_define_method_in_class(ci, bs)
+        dblk = @nd_block[bs]
+        if dblk >= 0 && @nd_body[dblk] >= 0
+          scan_ivars(ci, @nd_body[dblk])
+        end
+      end
+      bi = bi + 1
+    end
+ # Neutralize the call: rename to a no-op sentinel and detach the
+ # block. The renamed name + cleared block ride the IR as NM / NB
+ # records (see dump_analysis_buf), so codegen resumes with the call
+ # erased to nil.
+    n = @classeval_counter
+    @classeval_counter = @classeval_counter + 1
+    @nd_name[nid] = "__sp_classeval_" + n.to_s
+    @nd_block[nid] = -1
+  end
+
+  def classeval_reject(cname, reason)
+    $stderr.puts "Spinel: class_eval on " + cname + ": " + reason
+    exit(1)
   end
 
   def compile_time_invalid_name
@@ -15297,6 +15498,87 @@ class Compiler
     @meth_has_yield.push(0)
     @meth_rest_index.push(-1)
     @meth_kwrest_index.push(-1)
+    captured = define_method_captures_enclosing_local(blk, body_id)
+    if captured != ""
+      $stderr.puts "Spinel: define_method block captures the enclosing local '" + captured + "', which Spinel does not model (only the literal-unrolled `.each` form substitutes its loop variable)"
+      exit(1)
+    end
+  end
+
+ # A direct `define_method(:m) { ... }` body compiles as a standalone
+ # method, so it cannot reach a local from the enclosing class body or
+ # method -- only the literal-unrolled `.each` form substitutes its loop
+ # variable. A LocalVariableReadNode whose name is neither a block param
+ # nor bound within the body is therefore a capture of an enclosing local;
+ # return its name (or "" when the body is self-contained) so the caller
+ # rejects precisely instead of emitting undeclared-identifier C.
+  def define_method_captures_enclosing_local(blk, body_id)
+    if body_id < 0
+      return ""
+    end
+    bound = collect_define_method_body_params(blk)
+    collect_define_method_bound_names(body_id, bound)
+    scan_define_method_external_read(body_id, bound)
+  end
+
+  def collect_define_method_bound_names(nid, acc)
+    if nid < 0
+      return
+    end
+    t = @nd_type[nid]
+ # def/class/module open a fresh scope; their locals are unrelated.
+    if t == "DefNode" || t == "ClassNode" || t == "ModuleNode"
+      return
+    end
+    if t == "LocalVariableWriteNode" || t == "LocalVariableTargetNode" || t == "LocalVariableOperatorWriteNode" || t == "LocalVariableOrWriteNode" || t == "LocalVariableAndWriteNode"
+      acc.push(@nd_name[nid])
+    elsif t == "RequiredParameterNode" || t == "OptionalParameterNode" || t == "RestParameterNode" || t == "RequiredKeywordParameterNode" || t == "OptionalKeywordParameterNode" || t == "KeywordRestParameterNode" || t == "BlockParameterNode"
+      if @nd_name[nid] != ""
+        acc.push(@nd_name[nid])
+      end
+    end
+    children = []
+    push_child_ids(nid, children)
+    k = 0
+    while k < children.length
+      collect_define_method_bound_names(children[k], acc)
+      k = k + 1
+    end
+  end
+
+  def scan_define_method_external_read(nid, bound)
+    if nid < 0
+      return ""
+    end
+    t = @nd_type[nid]
+    if t == "DefNode" || t == "ClassNode" || t == "ModuleNode"
+      return ""
+    end
+    if t == "LocalVariableReadNode"
+      nm = @nd_name[nid]
+      j = 0
+      found = 0
+      while j < bound.length
+        if bound[j] == nm
+          found = 1
+        end
+        j = j + 1
+      end
+      if found == 0
+        return nm
+      end
+    end
+    children = []
+    push_child_ids(nid, children)
+    k = 0
+    while k < children.length
+      hit = scan_define_method_external_read(children[k], bound)
+      if hit != ""
+        return hit
+      end
+      k = k + 1
+    end
+    ""
   end
 
   def collect_module(nid)
@@ -35611,6 +35893,15 @@ class Compiler
  # the standard CallNode dump path -- only the renamed call name
  # and the cleared block ref need explicit records.
         if @nd_name[nm][0, 11] == "__sp_iexec_"
+          rec_buf.push("NM " + nm.to_s + " " + ir_escape(@nd_name[nm]) + "\n")
+          rec_buf.push("NB " + nm.to_s + " -1\n")
+        end
+      end
+ # class_eval reopen carry-over: the call name flipped to
+ # __sp_classeval_<N> and its block was detached. Codegen emits the
+ # sentinel as nil; the routed methods already ride the class tables.
+      if @nd_name[nm].length >= 15
+        if @nd_name[nm][0, 15] == "__sp_classeval_"
           rec_buf.push("NM " + nm.to_s + " " + ir_escape(@nd_name[nm]) + "\n")
           rec_buf.push("NB " + nm.to_s + " -1\n")
         end

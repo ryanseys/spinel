@@ -6945,6 +6945,19 @@ class Compiler
     0
   end
 
+ # A `class_eval do ... end` call neutralized by analyze's
+ # rewrite_class_eval_calls. Its methods were routed into the class
+ # tables; the call itself evaluates to nil.
+  def is_classeval_call_name(mname)
+    if mname.length <= 15
+      return 0
+    end
+    if mname[0, 15] == "__sp_classeval_"
+      return 1
+    end
+    0
+  end
+
  # Emit the C function call: `sp_iexec_<N>(<recv>, <arg0>, <arg1>, ...)`.
  # @nd_arguments[nid] still carries the positional args from
  # iexec_rewrite_call (block-arg was detached at the same time the
@@ -7158,11 +7171,19 @@ class Compiler
     splat_arr = ""
     splat_pfx = ""
     if pos_arg_ids.length == 1 && pnames.length >= 2 && kw_pnames.length == 0
-      arr_t_ix = infer_type(pos_arg_ids[0])
+ # `instance_exec(*args) { |a, b| }`: the splat source is the array to
+ # destructure. A directly-passed array (`instance_exec(arr) { ... }`)
+ # has no SplatNode wrapper and is used as-is. Mirrors the analyze-side
+ # auto-splat detection in iexec_rewrite_call.
+      splat_src_ix = pos_arg_ids[0]
+      if @nd_type[splat_src_ix] == "SplatNode"
+        splat_src_ix = @nd_expression[splat_src_ix]
+      end
+      arr_t_ix = splat_src_ix >= 0 ? infer_type(splat_src_ix) : ""
       if is_array_type(arr_t_ix) == 1
         splat_pfx = array_c_prefix(arr_t_ix)
         splat_arr = new_temp
-        emit("  " + c_type(arr_t_ix) + " " + splat_arr + " = " + compile_expr_gc_rooted(pos_arg_ids[0]) + ";")
+        emit("  " + c_type(arr_t_ix) + " " + splat_arr + " = " + compile_expr_gc_rooted(splat_src_ix) + ";")
         if @in_gc_scope == 1
           emit("  SP_GC_ROOT(" + splat_arr + ");")
         end
@@ -7210,6 +7231,13 @@ class Compiler
         elsif pi < pos_arg_ids.length
           val_c = compile_expr(pos_arg_ids[pi])
           pi = pi + 1
+        else
+ # Lenient arity: a positional param with no call-site arg binds nil.
+ # analyze typed it poly, so emit the boxed nil (a bare "0" is not a
+ # valid sp_RbVal).
+          if base_type(pt) == "poly"
+            val_c = "sp_box_nil()"
+          end
         end
         tname = pnames[k] + suffix
         emit("  " + c_type(pt) + " lv_" + tname + " = " + val_c + ";")
@@ -19398,6 +19426,10 @@ class Compiler
  # typed `self` argument.
     if is_ieval_call_name(mname) == 1
       return compile_ieval_call_expr(nid)
+    end
+ # Neutralized class_eval reopen (expression context): evaluates to nil.
+    if is_classeval_call_name(mname) == 1
+      return "0"
     end
  # Direct instance_exec block (expression context). Heap receivers
  # are inlined at the call site with a real return value (the block's
@@ -41050,6 +41082,11 @@ class Compiler
       emit("  " + compile_ieval_call(nid) + ";")
       return
     end
+ # Neutralized class_eval reopen (statement context): emits nothing --
+ # the methods were routed into the class tables by analyze.
+    if is_classeval_call_name(mname) == 1
+      return
+    end
  # Direct instance_exec block (statement context). Heap receivers
  # are inlined at the call site; value-typed receivers stay on the
  # void lift's `sp_iexec_<N>(...);` form.
@@ -53444,6 +53481,13 @@ class Compiler
         return
       end
     end
+    if lt == "BeginNode"
+ # compile_expr of a BeginNode yields no value, so a begin used as the
+ # captured tail expression would silently drop its result (ret_tmp
+ # keeps its default). Capture it through the "into" sibling instead.
+      compile_begin_into(last, ret_tmp, return_type)
+      return
+    end
     expr = compile_expr(last)
     last_t_cbi = infer_type(last)
     if base_type(return_type) == "bigint" && last_t_cbi == "int"
@@ -53521,6 +53565,92 @@ class Compiler
       emit("  }")
     end
     0
+  end
+
+ # Capture a begin/rescue/ensure expression's value into ret_tmp -- the
+ # "into" sibling of compile_begin_stmt. The begin (or else / rescue)
+ # body's last expression becomes the value; the ensure clause is
+ # replayed on both the normal and exception paths so a raise inside the
+ # body still runs it. rescue+ensure and retry fall back to the
+ # side-effect-only statement form (value left at ret_tmp's default),
+ # matching the method-level BeginNode arm in compile_body_return_inner.
+  def compile_begin_into(nid, ret_tmp, return_type)
+    rc_id = @nd_rescue_clause[nid]
+    ec_id = @nd_ensure_clause[nid]
+    if rc_id < 0 && ec_id < 0
+ # Bare begin..end: just the body's value.
+      compile_body_into(@nd_body[nid], ret_tmp, return_type)
+      return
+    end
+    has_retry_cbi = 0
+    if rc_id >= 0 && body_has_retry(@nd_body[rc_id]) == 1
+      has_retry_cbi = 1
+    end
+    if has_retry_cbi == 1 || (rc_id >= 0 && ec_id >= 0)
+ # The single-setjmp capture form can't safely replay ensure on every
+ # exit out of a rescue body; fall back to the statement form.
+      compile_begin_stmt(nid)
+      return
+    end
+    @needs_setjmp = 1
+    if ec_id >= 0
+ # ensure-only begin: capture the begin body's value, then replay the
+ # ensure body on both the normal and exception paths (re-raising to
+ # keep the exception propagating after the exception-path ensure).
+      @ensure_emit_depth = @ensure_emit_depth + 1
+      ens_cls = "_ensure_cls_" + @ensure_emit_depth.to_s
+      ens_msg = "_ensure_msg_" + @ensure_emit_depth.to_s
+      emit("  const char *" + ens_cls + " = (const char *)0;")
+      emit("  const char *" + ens_msg + " = (const char *)0;")
+      emit("  sp_exc_top++;")
+      emit("  if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {")
+      @indent = @indent + 1
+      @setjmp_depth = @setjmp_depth + 1
+      @ensure_stack.push(ec_id.to_s)
+      compile_body_into(@nd_body[nid], ret_tmp, return_type)
+      @ensure_stack.pop
+      emit("  sp_exc_top--;")
+      @indent = @indent - 1
+      @setjmp_depth = @setjmp_depth - 1
+      emit("  } else {")
+      @indent = @indent + 1
+      emit("  sp_exc_top--;")
+      emit("  " + ens_cls + " = (const char *)sp_last_exc_cls;")
+      emit("  " + ens_msg + " = sp_exc_msg[sp_exc_top];")
+      compile_stmts_body(@nd_body[ec_id])
+      emit("  sp_raise_cls(" + ens_cls + ", " + ens_msg + ");")
+      @indent = @indent - 1
+      emit("  }")
+      compile_stmts_body(@nd_body[ec_id])
+      @ensure_emit_depth = @ensure_emit_depth - 1
+      return
+    end
+ # begin..rescue[..else], no ensure, no retry: capture the begin (or
+ # else) body's value on the normal path, the rescue chain's on the
+ # exception path.
+    emit("  sp_exc_top++;")
+    @setjmp_depth = @setjmp_depth + 1
+    emit("  if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {")
+    @indent = @indent + 1
+    else_id = @nd_else_clause[nid]
+    if else_id >= 0
+      compile_stmts_body(@nd_body[nid])
+      else_body = @nd_body[else_id]
+      if else_body >= 0
+        compile_body_into(else_body, ret_tmp, return_type)
+      end
+    else
+      compile_body_into(@nd_body[nid], ret_tmp, return_type)
+    end
+    emit("  sp_exc_top--;")
+    @indent = @indent - 1
+    emit("  } else {")
+    @indent = @indent + 1
+    emit("  sp_exc_top--;")
+    compile_rescue_chain_into(rc_id, ret_tmp, return_type)
+    @indent = @indent - 1
+    emit("  }")
+    @setjmp_depth = @setjmp_depth - 1
   end
 
  # Wrapper: snapshots the narrow-stack depth, delegates to the
