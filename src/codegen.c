@@ -4666,6 +4666,13 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && comp_gvar(c, nm + 1)) { buf_printf(b, "gv_%s", nm + 1); return; }
     unsupported(c, id, "global variable read");
   }
+  if (!strcmp(ty, "NumberedReferenceReadNode")) {
+    /* $1..$9 -> the n-th capture of the last match (NULL when absent) */
+    long long n = nt_int(nt, id, "number", 0);
+    if (n >= 1 && n <= 9) buf_printf(b, "sp_re_captures[%lld]", n);
+    else buf_puts(b, "NULL");
+    return;
+  }
   if (!strcmp(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;

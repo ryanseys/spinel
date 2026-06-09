@@ -906,6 +906,7 @@ static TyKind infer_uncached(Compiler *c, int id) {
     return TY_UNKNOWN;
   }
   if (!strcmp(ty, "DefinedNode")) return TY_STRING;  /* a label string, or nil (NULL) */
+  if (!strcmp(ty, "NumberedReferenceReadNode")) return TY_STRING;  /* $1..$9: capture, or nil (NULL) */
   if (!strcmp(ty, "SelfNode")) {
     Scope *s = comp_scope_of(c, id);
     return s->class_id >= 0 ? ty_object(s->class_id) : TY_UNKNOWN;
