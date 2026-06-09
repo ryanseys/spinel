@@ -37789,6 +37789,19 @@ class Compiler
     end
     if t == "LocalVariableWriteNode"
       lname = @nd_name[nid]
+ # Recursive proc/lambda (`f = proc { ... f.call ... }`): declare the
+ # target as proc BEFORE compiling the RHS so the literal's body sees
+ # `f` in scope and captures it (letrec). The capture is by heap cell;
+ # because vref is recomputed after the RHS compile (below), the
+ # assignment writes the built proc into that same cell, so the
+ # recursive `f.call` inside resolves to it. Harmless for a
+ # non-recursive proc assignment (the body simply doesn't capture f).
+      lw_rhs0 = @nd_expression[nid]
+      if lw_rhs0 >= 0
+        if @nd_type[lw_rhs0] == "LambdaNode" || (@nd_type[lw_rhs0] == "CallNode" && (@nd_name[lw_rhs0] == "proc" || @nd_name[lw_rhs0] == "lambda") && @nd_block[lw_rhs0] >= 0)
+          declare_var(lname, "proc")
+        end
+      end
  # `var = method(:name)` (no receiver, top-level) is the legacy
  # static-alias path: the call_expr handler returns a `0`
  # placeholder, we record (lname, mref) here, and a later
@@ -38056,6 +38069,11 @@ class Compiler
         emit("  " + vref + " = NULL;")
       else
         val = compile_expr(@nd_expression[nid])
+ # Recompute vref after the RHS compile: a self-recursive proc literal
+ # heap-promotes its own target during compilation, so the write must
+ # now go through `(*_hcell_<name>)` (the captured cell) rather than the
+ # stale bare `lv_<name>`. No-op for every non-capturing RHS.
+        vref = fiber_var_ref(lname)
  # Wrap narrower hash RHS to match a wider *_poly_hash slot.
  # See widen_hash_assign / issue #614.
         val = widen_hash_assign(val, vt, rhs_t)
@@ -43004,6 +43022,26 @@ class Compiler
       end
       return
     end
+ # Operator/or/and-assign to a local (`c += 1`, `c ||= x`, `c &&= x`)
+ # both reads and writes the target. If the name resolves in an outer
+ # scope it's a captured free var (shared by reference); otherwise a
+ # body local. Without this arm the op-assign target is never seen, so
+ # an escaping `proc { c += 1 }` emits an undeclared `lv_c`.
+    if t == "LocalVariableOperatorWriteNode" || t == "LocalVariableOrWriteNode" || t == "LocalVariableAndWriteNode"
+      vn = @nd_name[nid]
+      if @nd_expression[nid] >= 0
+        scan_lambda_free_vars(@nd_expression[nid], params, locals, free_vars)
+      end
+      if not_in(vn, locals) == 1 && not_in(vn, params) == 1 && not_in(vn, free_vars) == 1
+        outer_t = find_var_type(vn)
+        if outer_t != ""
+          free_vars.push(vn)
+        else
+          locals.push(vn)
+        end
+      end
+      return
+    end
  # Recurse
     if @nd_body[nid] >= 0
       scan_lambda_free_vars(@nd_body[nid], params, locals, free_vars)
@@ -43757,8 +43795,17 @@ class Compiler
     saved_in_proc_body = @in_proc_body
     saved_proc_captures = @proc_captures
     saved_proc_capture_types = @proc_capture_types
-    saved_heap_hp_names_len = @heap_promoted_names.length
-    saved_heap_hp_cells_len = @heap_promoted_cells.length
+ # The proc/lambda body compiles into a SEPARATE C function, where the
+ # enclosing scope's heap-promoted cells (`_hcell_*`, locals of the
+ # enclosing function) are out of scope. Hide them for the body compile
+ # so a same-named param/local inside the body resolves to its own
+ # `lv_`/`(*_cap->...)` rather than an undeclared enclosing cell;
+ # captured vars are reached via `_cap`, not these cells. Restored after
+ # the body so the enclosing scope's post-proc references still see them.
+    saved_hp_names_pl = @heap_promoted_names
+    saved_hp_cells_pl = @heap_promoted_cells
+    @heap_promoted_names = "".split(",", -1)
+    @heap_promoted_cells = "".split(",", -1)
     saved_self_override_proc = @self_override
     if has_captures == 1
       @in_proc_body = 1
@@ -43916,12 +43963,11 @@ class Compiler
     @proc_captures = saved_proc_captures
     @proc_capture_types = saved_proc_capture_types
     @self_override = saved_self_override_proc
-    while @heap_promoted_names.length > saved_heap_hp_names_len
-      @heap_promoted_names.pop
-    end
-    while @heap_promoted_cells.length > saved_heap_hp_cells_len
-      @heap_promoted_cells.pop
-    end
+ # Restore the enclosing scope's heap-promoted cells (hidden during the
+ # body compile). The capture promotion below then registers the
+ # captured vars' cells on this restored list for the enclosing scope.
+    @heap_promoted_names = saved_hp_names_pl
+    @heap_promoted_cells = saved_hp_cells_pl
     @out_lines = save_out
 
     if has_captures == 1
