@@ -159,6 +159,21 @@ mrb_int sp_str_to_i_strict(const char *s) {
    ArgumentError on invalid input or unsupported base. Issue #887. */
 mrb_int sp_str_to_i_strict_base(const char *s, mrb_int base) {
   if (!s) sp_raise_cls("ArgumentError", "invalid value for Integer(): nil");
+  if (base == 0) {
+    /* auto-detect the base from the literal's prefix */
+    const char *q = s;
+    while (isspace((unsigned char)*q)) q++;
+    if (*q == '+' || *q == '-') q++;
+    if (*q == '0') {
+      char n = q[1];
+      if (n == 'x' || n == 'X') base = 16;
+      else if (n == 'b' || n == 'B') base = 2;
+      else if (n == 'o' || n == 'O') base = 8;
+      else if (n >= '0' && n <= '7') base = 8;
+      else base = 10;
+    }
+    else base = 10;
+  }
   if (base < 2 || base > 36) sp_raise_cls("ArgumentError", sp_sprintf("invalid radix %lld", (long long)base));
   const char *p = s;
   while (isspace((unsigned char)*p)) p++;
