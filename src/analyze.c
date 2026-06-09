@@ -1980,6 +1980,8 @@ static int infer_block_params(Compiler *c) {
       pt = TY_INT;
     else if (rt == TY_STRING && (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "upto")))
       pt = TY_STRING;
+    else if (rt == TY_STRING && (!strcmp(name, "gsub") || !strcmp(name, "sub")))
+      pt = TY_STRING;  /* block receives the matched substring */
     else if (rt == TY_STRING && !strcmp(name, "each_byte"))
       pt = TY_INT;
     else if ((!strcmp(name, "each") || !strcmp(name, "map") || !strcmp(name, "collect") ||

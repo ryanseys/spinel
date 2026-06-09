@@ -584,6 +584,60 @@ static int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* "str".gsub(/re/) { |m| repl } / sub as an expression: iterate the matches
+   of a regex literal, binding the block param to each matched substring and
+   appending its return value as the replacement. sub replaces only the first
+   match. Anchored patterns (^/$) are matched per-remainder, so this targets
+   the unanchored block forms. Returns 1 if handled. */
+static int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || (strcmp(name, "gsub") && strcmp(name, "sub"))) return 0;
+  int once = !strcmp(name, "sub");
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || comp_ntype(c, recv) != TY_STRING) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc != 1) return 0;
+  int reidx = re_lit_index(c, argv[0]);
+  if (reidx < 0) return 0;
+  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  int ts = ++g_tmp, tpos = ++g_tmp, tslen = ++g_tmp, tout = ++g_tmp,
+      tm = ++g_tmp, tms = ++g_tmp, tme = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "const char *_t%d = ", ts); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = 0;\n", tpos);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = (mrb_int)strlen(_t%d);\n", tslen, ts);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_String *_t%d = sp_String_new(\"\"); SP_GC_ROOT(_t%d);\n", tout, tout);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tpos, tslen);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = sp_re_match(sp_re_pat_%d, _t%d + _t%d);\n", tm, reidx, ts, tpos);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d < 0) { sp_String_append(_t%d, _t%d + _t%d); break; }\n", tm, tout, ts, tpos);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = sp_re_caps[0];\n", tms);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = sp_re_caps[1];\n", tme);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append(_t%d, sp_str_substr(_t%d + _t%d, 0, _t%d));\n", tout, ts, tpos, tms);
+  if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_str_substr(_t%d + _t%d, _t%d, _t%d - _t%d);\n", p0, ts, tpos, tms, tme, tms); }
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+  int save = g_indent; g_indent++;
+  Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append(_t%d, %s);\n", tout, vb.p ? vb.p : "\"\""); free(vb.p);
+  if (once) {
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append(_t%d, _t%d + _t%d + _t%d); break;\n", tout, ts, tpos, tme);
+  }
+  else {
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d == _t%d) { if (_t%d + _t%d < _t%d) sp_String_append(_t%d, sp_str_substr(_t%d + _t%d, _t%d, 1)); _t%d += _t%d + 1; }\n",
+               tme, tms, tpos, tme, tslen, tout, ts, tpos, tme, tpos, tme);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d += _t%d; }\n", tpos, tme);
+  }
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d->data", tout);
+  return 1;
+}
+
 /* inject(:op) / reduce(:op) / inject(&:op) / inject(init, :op) as an
    expression: fold the array with a symbol-named arithmetic operator. The
    block-fold form (inject { |a, e| ... }) is not handled here. Returns 1 if
@@ -1068,6 +1122,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_grep_expr(c, id, b)) return;
   if (emit_minmax_by_expr(c, id, b)) return;
   if (emit_bsearch_expr(c, id, b)) return;
+  if (emit_gsub_block_expr(c, id, b)) return;
   if (emit_inject_expr(c, id, b)) return;
   if (emit_sortby_expr(c, id, b)) return;
   if (emit_inline_expr(c, id, b)) return;  /* value-returning yield method */
