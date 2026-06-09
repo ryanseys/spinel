@@ -1241,7 +1241,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         const char *rty = nt_type(nt, recv);
         if (rty && !strcmp(rty, "ConstantReadNode")) {
           int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-          if (ci >= 0) { resolved = 1; yes = comp_cmethod_in_chain(c, ci, qm, NULL) >= 0; }
+          if (ci >= 0) {
+            resolved = 1;
+            yes = comp_cmethod_in_chain(c, ci, qm, NULL) >= 0;
+            /* a module also responds to its def'd (module_function) methods */
+            if (!yes) {
+              int dn = c->classes[ci].def_node;
+              const char *dt = dn >= 0 ? nt_type(nt, dn) : NULL;
+              if (dt && !strcmp(dt, "ModuleNode")) yes = comp_method_in_chain(c, ci, qm, NULL) >= 0;
+            }
+          }
         }
         else if (ty_is_object(rt)) {
           int cid = ty_object_class(rt);

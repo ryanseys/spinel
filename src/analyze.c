@@ -920,7 +920,7 @@ static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   int child = scope_idx;
   int child_class = class_id;
 
-  if (ty && !strcmp(ty, "ClassNode")) {
+  if (ty && (!strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode"))) {
     int cp = nt_ref(c->nt, id, "constant_path");
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
     if (cname && comp_class_index(c, cname) < 0) {
@@ -928,7 +928,7 @@ static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
       child_class = c->nclasses - 1;
     }
     else if (cname) {
-      child_class = comp_class_index(c, cname);  /* reopened class */
+      child_class = comp_class_index(c, cname);  /* reopened class/module */
     }
   }
   else if (ty && !strcmp(ty, "DefNode")) {
@@ -1562,6 +1562,42 @@ static int infer_default_param_types(Compiler *c) {
   return changed;
 }
 
+/* Methods that only Strings respond to -- definitive evidence that a
+   receiver is a String. (length/size/etc are shared with containers and so
+   are deliberately excluded to keep the inference conservative.) */
+static int is_string_only_method(const char *m) {
+  static const char *const set[] = {
+    "split", "strip", "lstrip", "rstrip", "chomp", "chop", "upcase",
+    "downcase", "capitalize", "swapcase", "gsub", "sub", "tr", "tr_s",
+    "squeeze", "scan", "start_with?", "end_with?", "each_char", "chars",
+    "center", "ljust", "rjust", "to_str", "encode", "unpack", "match?",
+    "partition", "rpartition", "succ", "hex", "oct", "codepoints", "scrub",
+    "crypt", "delete_prefix", "delete_suffix", "casecmp", "casecmp?",
+    "force_encoding", NULL };
+  for (int i = 0; set[i]; i++) if (!strcmp(m, set[i])) return 1;
+  return 0;
+}
+
+/* Infer a still-unknown parameter as String when the body calls a
+   String-only method on it (a param with no concrete-typed caller). */
+static int infer_string_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    const char *name = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (!name || recv < 0 || !is_string_only_method(name)) continue;
+    const char *rty = nt_type(nt, recv);
+    if (!rty || strcmp(rty, "LocalVariableReadNode")) continue;
+    Scope *s = comp_scope_of(c, id);
+    LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
+    if (lv && lv->is_param && lv->type == TY_UNKNOWN) { lv->type = TY_STRING; changed = 1; }
+  }
+  return changed;
+}
+
 static int infer_param_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -2174,6 +2210,7 @@ void analyze_program(Compiler *c) {
     int ch = 0;
     ch |= infer_write_types(c);
     ch |= infer_param_types(c);
+    ch |= infer_string_params(c);
     ch |= infer_default_param_types(c);
     ch |= infer_block_params(c);
     ch |= infer_for_index(c);
