@@ -7438,7 +7438,21 @@ char *codegen_program(const NodeTable *nt) {
       if (ci->nivars == 0) buf_puts(&b, "void");
       buf_puts(&b, ");\n");
     }
-    else buf_printf(&b, "static sp_%s *sp_%s_new();\n", ci->name, ci->name);
+    else {
+      int icid = i;
+      int init = comp_method_in_chain(c, i, "initialize", &icid);
+      if (init >= 0 && c->scopes[init].nparams > 0) {
+        buf_printf(&b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
+        Scope *s = &c->scopes[init];
+        for (int m = 0; m < s->nparams; m++) {
+          if (m) buf_puts(&b, ", ");
+          LocalVar *p = scope_local(s, s->pnames[m]);
+          emit_ctype(c, p ? p->type : TY_INT, &b);
+        }
+        buf_puts(&b, ");\n");
+      }
+      else buf_printf(&b, "static sp_%s *sp_%s_new(void);\n", ci->name, ci->name);
+    }
   }
   if (c->nscopes > 1 || c->nclasses > 0) buf_puts(&b, "\n");
 
