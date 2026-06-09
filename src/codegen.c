@@ -3595,14 +3595,16 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     int en = 0;
     const int *eb = else_stmts >= 0 ? nt_arr(nt, else_stmts, "body", &en) : NULL;
     if (tn == 1 && en == 1) {
+      TyKind res = comp_ntype(c, id);
       buf_puts(b, "(");
       if (is_unless) buf_puts(b, "!(");
       emit_cond(c, pred, b);
       if (is_unless) buf_puts(b, ")");
       buf_puts(b, " ? ");
-      emit_expr(c, tb[0], b);
+      /* a poly result with concrete-typed branches boxes each branch */
+      if (res == TY_POLY && comp_ntype(c, tb[0]) != TY_POLY) emit_boxed(c, tb[0], b); else emit_expr(c, tb[0], b);
       buf_puts(b, " : ");
-      emit_expr(c, eb[0], b);
+      if (res == TY_POLY && comp_ntype(c, eb[0]) != TY_POLY) emit_boxed(c, eb[0], b); else emit_expr(c, eb[0], b);
       buf_puts(b, ")");
       return;
     }
