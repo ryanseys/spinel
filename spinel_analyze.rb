@@ -4611,6 +4611,11 @@ class Compiler
       if rt_tp == "sym_int_hash" || rt_tp == "str_int_hash"
         return "proc"
       end
+ # Method#to_proc yields a callable sp_Proc backed by the method's
+ # trampoline, so the result dispatches like any proc.
+      if base_type(rt_tp) == "obj_Method"
+        return "proc"
+      end
     end
  # NilClass coercion methods. Issue #871. to_c / to_r skipped:
  # Complex / Rational unsupported.
@@ -6661,8 +6666,17 @@ class Compiler
     end
     if mname == "map"
       if recv >= 0
- # Declare bp inside a scope so infer_type sees the inner element type, not a shadowed outer local.
         blk = @nd_block[nid]
+ # `recv.map(&proc_var)`: a forwarded Proc block (block-arg wrapping a
+ # local), not a literal block, so there is no body to infer the element
+ # type from. Mirrors codegen's compile_map_forward_proc -- an
+ # int-element source with an int-returning proc yields an int_array.
+        if blk >= 0 && @nd_type[blk] == "BlockArgumentNode" && @nd_expression[blk] >= 0 && @nd_type[@nd_expression[blk]] == "LocalVariableReadNode"
+          if base_type(infer_type(recv)) == "int_array"
+            return "int_array"
+          end
+        end
+ # Declare bp inside a scope so infer_type sees the inner element type, not a shadowed outer local.
         if blk >= 0
           bbody = @nd_body[blk]
           if bbody >= 0
@@ -16583,18 +16597,25 @@ class Compiler
     @cls_includes.push("")
  # @name (string) carries the method's symbol name so Method#name
  # works; exposed as an attr_reader. Issue #960.
-    @cls_ivar_names.push("@self_obj;@fn_ptr;@name")
-    @cls_ivar_types.push("obj_Method;int;string")
-    @cls_ivar_init_definite.push("1;1;1")
-    @cls_ivar_observed_types.push("obj_Method;int;string")
+ # @arity (int) carries the bound method's CRuby-convention arity so
+ # Method#arity works on the value. @tramp (int) holds
+ # `(uintptr_t)&sp_mproc_<owner>_<mname>` — an array-ABI trampoline
+ # `(void *cap, mrb_int *args)` that adapts the method to the sp_Proc
+ # calling convention, letting `method(:m).to_proc` and `&method(:m)`
+ # reuse the existing sp_proc_call forwarding. 0 when the method is
+ # not proc-convertible (splat/keyword/block params — see codegen).
+    @cls_ivar_names.push("@self_obj;@fn_ptr;@name;@arity;@tramp")
+    @cls_ivar_types.push("obj_Method;int;string;int;int")
+    @cls_ivar_init_definite.push("1;1;1;1;1")
+    @cls_ivar_observed_types.push("obj_Method;int;string;int;int")
     @cls_ivar_nil_checked.push("")
-    @cls_ivar_rbs_types.push(";;")
+    @cls_ivar_rbs_types.push(";;;;")
     @cls_meth_names.push("initialize")
-    @cls_meth_params.push("self_obj,fn_ptr,name")
-    @cls_meth_ptypes.push("obj_Method,int,string")
+    @cls_meth_params.push("self_obj,fn_ptr,name,arity,tramp")
+    @cls_meth_ptypes.push("obj_Method,int,string,int,int")
     @cls_meth_returns.push("void")
     @cls_meth_bodies.push("-2")
-    @cls_meth_defaults.push("0,0,0")
+    @cls_meth_defaults.push("0,0,0,0,0")
     @cls_meth_ptypes_empty.push("")
  # `name` is dispatched explicitly for obj_Method recv (see codegen)
  # rather than as an attr_reader — registering it would make

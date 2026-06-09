@@ -3157,6 +3157,223 @@ class Compiler
     nil
   end
 
+ # CRuby-convention arity and proc-trampoline arg count for a method,
+ # derived from its already-collected param shape. `pnames` is the
+ # flattened param-name list (reqs, opts, kws, rest, posts, kwrest,
+ # block); `defaults` is the parallel list where a required param is
+ # "-1" and an optional/keyword param carries its default node id
+ # (>=0); `rest_index`/`kwrest_index` are the splat / `**kw` slot
+ # positions (-1 if absent). Returns `[arity, argc]`: `arity` is what
+ # Method#arity reports; `argc` is the number of positional mrb_int
+ # args an array-ABI trampoline passes, or -1 when the method is not
+ # proc-convertible (it has a splat, kwrest, or any defaulted/keyword
+ # param — those need argc-aware binding the uniform Method ABI can't
+ # express). TODO: required keywords and a named `&block` param aren't
+ # separable from leading required params here, so a method using them
+ # is treated as plain — its arity can be off by the block slot. Out
+ # of scope for the proc-convertible (plain required) cases this powers.
+  def method_arity_argc(pnames, defaults, rest_index, kwrest_index)
+    n = pnames.length
+    if n == 1 && pnames[0] == ""
+      n = 0
+    end
+    first_opt = n
+    di = 0
+    while di < defaults.length
+      if defaults[di] != "-1" && defaults[di] != ""
+        first_opt = di
+        di = defaults.length
+      else
+        di = di + 1
+      end
+    end
+    required = first_opt
+    if rest_index >= 0 && rest_index < required
+      required = rest_index
+    end
+    variadic = 0
+    if rest_index >= 0 || kwrest_index >= 0 || first_opt < n
+      variadic = 1
+    end
+    arity = required
+    argc = required
+    if variadic == 1
+      arity = -(required + 1)
+      argc = -1
+    end
+    [arity, argc]
+  end
+
+ # Emit (once) an array-ABI trampoline that adapts a user method to
+ # the sp_Proc calling convention `mrb_int fn(void *cap, mrb_int *args)`,
+ # so `method(:m).to_proc` / `&method(:m)` reuse sp_proc_call. `owner`
+ # is the defining class name ("" for a top-level method). The method
+ # is reached through the uniform Method ABI (args widened to mrb_int,
+ # return as mrb_int — `sp_Bigint *` in promote mode), exactly like the
+ # direct obj_Method#call dispatch, sourcing the `argc` positional args
+ # from args[]. For an instance method `cap` is the bound receiver; for
+ # a top-level method `cap` is unused. Buffered into @lambda_funcs so it
+ # lands after every method's forward declaration. Returns the C symbol.
+  def emit_method_trampoline(owner, mref, argc)
+    sym = sanitize_name(mref)
+    tname = (owner == "") ? ("sp_mproc__" + sym) : ("sp_mproc_" + owner + "_" + sym)
+    key = "@mproc@" + tname
+    k = 0
+    while k < @cls_method_adapters.length
+      if @cls_method_adapters[k] == key
+        return tname
+      end
+      k = k + 1
+    end
+    @cls_method_adapters.push(key)
+    target = (owner == "") ? ("sp_" + sym) : ("sp_" + owner + "_" + sym)
+    promote_abi = (@int_overflow_mode == "promote") ? 1 : 0
+    slot_c = "mrb_int"
+    if promote_abi == 1
+      @needs_bigint = 1
+      slot_c = "sp_Bigint *"
+    end
+    sig = (owner == "") ? "" : "void *"
+    call_args = (owner == "") ? "" : "(void *)cap"
+    j = 0
+    while j < argc
+      if sig != ""
+        sig = sig + ", "
+      end
+      sig = sig + slot_c
+      arg_v = "args[" + j.to_s + "]"
+      if promote_abi == 1
+        arg_v = "sp_bigint_new_int(args[" + j.to_s + "])"
+      end
+      if call_args != ""
+        call_args = call_args + ", "
+      end
+      call_args = call_args + arg_v
+      j = j + 1
+    end
+    if sig == ""
+      sig = "void"
+    end
+    ret_call = "((" + slot_c + " (*)(" + sig + "))(uintptr_t)&" + target + ")(" + call_args + ")"
+    if promote_abi == 1
+      ret_call = "sp_bigint_to_int(" + ret_call + ")"
+    end
+    @lambda_funcs << "static mrb_int "
+    @lambda_funcs << tname
+    @lambda_funcs << "(void *cap, mrb_int argc, mrb_int *args) {\n"
+    @lambda_funcs << "  (void)cap; (void)argc; (void)args;\n"
+    @lambda_funcs << "  return (mrb_int)("
+    @lambda_funcs << ret_call
+    @lambda_funcs << ");\n}\n"
+    tname
+  end
+
+ # Build the trailing `, arity, tramp` arguments for a sp_Method_new(...)
+ # call binding `mref` (owner == "" for a top-level method, else the
+ # defining class name). Computes the method's arity from its collected
+ # param shape and, when proc-convertible, emits the array-ABI
+ # trampoline and passes its address; otherwise tramp is 0.
+  def method_new_meta_args(owner, mref)
+    arity = 0
+    argc = -1
+    if owner == ""
+      mi = find_method_idx(mref)
+      if mi >= 0
+        pnames = @meth_param_names[mi].split(",", -1)
+        defaults = @meth_has_defaults[mi].split(",", -1)
+        info = method_arity_argc(pnames, defaults, method_rest_index(mi), method_kwrest_index(mi))
+        arity = info[0]
+        argc = info[1]
+      end
+    else
+      ci = find_class_idx(owner)
+      midx = cls_find_method_direct(ci, mref)
+      if midx >= 0
+        pnames = cls_meth_pnames_get(ci, midx)
+        dall = @cls_meth_defaults[ci].split("|", -1)
+        defaults = "".split(",", -1)
+        if midx < dall.length
+          defaults = dall[midx].split(",", -1)
+        end
+        info = method_arity_argc(pnames, defaults, cls_meth_rest_idx(owner, mref), -1)
+        arity = info[0]
+        argc = info[1]
+      end
+    end
+    tramp = "(mrb_int)0"
+    if argc >= 0
+      tname = emit_method_trampoline(owner, mref, argc)
+      tramp = "(mrb_int)(uintptr_t)&" + tname
+    end
+    ", (mrb_int)" + arity.to_s + ", " + tramp
+  end
+
+ # Like find_block_arg, but also accepts a block arg that is a Method
+ # object — `&method(:x)` (a CallNode) or `&m` where m holds a Method.
+ # The each/map forward path wraps such an arg into an sp_Proc via the
+ # method's baked trampoline (see forward_proc_c). find_block_arg stays
+ # narrow so its other consumers are unaffected.
+  def block_forward_inner(nid)
+    blk = @nd_block[nid]
+    if blk < 0
+      return -1
+    end
+    if @nd_type[blk] != "BlockArgumentNode"
+      return -1
+    end
+    inner = @nd_expression[blk]
+    if inner < 0
+      return -1
+    end
+    if @nd_type[inner] == "LocalVariableReadNode"
+      return inner
+    end
+    if base_type(infer_type(inner)) == "obj_Method"
+      return inner
+    end
+    -1
+  end
+
+ # C expression for the sp_Proc to forward at a block-forwarding call
+ # site: a proc/lambda var compiles directly; a Method object is wrapped
+ # into an sp_Proc through its baked array-ABI trampoline. The bound
+ # receiver becomes the proc's cap (scanned with sp_hashproc_cap_scan,
+ # the generic mark-the-cap-pointer scan; a top-level method's null cap
+ # is skipped by sp_Proc_scan).
+  def forward_proc_c(proc_inner)
+    if base_type(infer_type(proc_inner)) == "obj_Method"
+ # A no-receiver `&method(:sym)` at top level whose name resolves to
+ # no user-defined method can't be forwarded: there is no C function
+ # to trampoline into, and the uniform Method ABI doesn't cover
+ # Kernel/built-in methods. Erroring here turns a silent all-zeros
+ # result into a clear diagnostic. In a class body `method(:sym)`
+ # binds to self and is resolved at the receiver path, so this guard
+ # stays limited to the unambiguous top-level case.
+      if @nd_type[proc_inner] == "CallNode" && @nd_name[proc_inner] == "method" && @nd_receiver[proc_inner] < 0 && @current_class_idx < 0
+        margs = @nd_arguments[proc_inner]
+        if margs >= 0
+          maids = get_args(margs)
+          if maids.length >= 1
+            msym = @nd_content[maids[0]]
+            if msym == ""
+              msym = @nd_name[maids[0]]
+            end
+            if find_method_idx(msym) < 0
+              $stderr.puts "error: cannot forward method(:" + msym + ") as a block: no method named '" + msym + "' is defined (Kernel/built-in method objects are not proc-convertible)"
+              exit(1)
+            end
+          end
+        end
+      end
+      m = new_temp
+      emit("  sp_Method *" + m + " = " + compile_expr(proc_inner) + ";")
+      p = new_temp
+      emit("  sp_Proc *" + p + " = sp_proc_new_meta((void *)(uintptr_t)" + m + "->iv_tramp, (void *)" + m + "->iv_self_obj, sp_hashproc_cap_scan, " + m + "->iv_arity, FALSE, 0, NULL, NULL);")
+      return p
+    end
+    compile_expr(proc_inner)
+  end
+
  # Emit a one-off adapter that wraps `sp_<Klass>_cls_<mname>` so the
  # Method dispatch ABI `(void *self, mrb_int...)` works on a class
  # method (which has no self param). Idempotent: re-emitting the
@@ -19366,9 +19583,9 @@ class Compiler
             owner_cname = find_defining_class_name(find_class_idx(recv_cname), mref)
             rc = compile_expr(recv)
             if owner_cname != ""
-              return "sp_Method_new((sp_Method *)(" + rc + "), (mrb_int)(uintptr_t)&sp_" + owner_cname + "_" + sanitize_name(mref) + ", " + c_string_literal(mref) + ")"
+              return "sp_Method_new((sp_Method *)(" + rc + "), (mrb_int)(uintptr_t)&sp_" + owner_cname + "_" + sanitize_name(mref) + ", " + c_string_literal(mref) + method_new_meta_args(owner_cname, mref) + ")"
             else
-              return "sp_Method_new((sp_Method *)(" + rc + "), (mrb_int)0, " + c_string_literal(mref) + ")"
+              return "sp_Method_new((sp_Method *)(" + rc + "), (mrb_int)0, " + c_string_literal(mref) + ", (mrb_int)0, (mrb_int)0)"
             end
           end
  # Built-in array `<arr>.method(:op)`: emit a trampoline
@@ -19386,7 +19603,7 @@ class Compiler
             pfx_b = builtin_array_type_pfx(recv_t)
             adapter_name_b = "sp_" + pfx_b + "_" + sanitize_name(mref_b) + "_builtin_method_adapter"
             rc_b = compile_expr(recv)
-            return "sp_Method_new((sp_Method *)(" + rc_b + "), (mrb_int)(uintptr_t)&" + adapter_name_b + ", " + c_string_literal(mref_b) + ")"
+            return "sp_Method_new((sp_Method *)(" + rc_b + "), (mrb_int)(uintptr_t)&" + adapter_name_b + ", " + c_string_literal(mref_b) + ", (mrb_int)0, (mrb_int)0)"
           end
         end
       end
@@ -20020,6 +20237,21 @@ class Compiler
       if mname == "parameters"
         @needs_rb_value = 1
         return "sp_proc_parameters((sp_Proc *)" + rc + ")"
+      end
+    end
+
+ # Method#arity reads the arity baked into the Method object at
+ # creation (the CRuby-convention value computed from the bound
+ # method's param shape). Method#to_proc wraps the bound method in an
+ # sp_Proc through its baked array-ABI trampoline, so the result calls
+ # like any proc. TODO: Method#parameters not yet wired here.
+    if base_type(recv_type) == "obj_Method"
+      if mname == "arity"
+        return "((sp_Method *)(" + rc + "))->iv_arity"
+      end
+      if mname == "to_proc"
+        m_tp = new_temp
+        return "({ sp_Method *" + m_tp + " = (sp_Method *)(" + rc + "); sp_proc_new_meta((void *)(uintptr_t)" + m_tp + "->iv_tramp, (void *)" + m_tp + "->iv_self_obj, sp_hashproc_cap_scan, " + m_tp + "->iv_arity, FALSE, 0, NULL, NULL); })"
       end
     end
 
@@ -20861,9 +21093,9 @@ class Compiler
           if @current_class_idx >= 0
             owner_cname = find_defining_class_name(@current_class_idx, mref)
             if owner_cname != ""
-              return "sp_Method_new((sp_Method *)self, (mrb_int)(uintptr_t)&sp_" + owner_cname + "_" + sanitize_name(mref) + ", " + c_string_literal(mref) + ")"
+              return "sp_Method_new((sp_Method *)self, (mrb_int)(uintptr_t)&sp_" + owner_cname + "_" + sanitize_name(mref) + ", " + c_string_literal(mref) + method_new_meta_args(owner_cname, mref) + ")"
             else
-              return "sp_Method_new((sp_Method *)self, (mrb_int)0, " + c_string_literal(mref) + ")"
+              return "sp_Method_new((sp_Method *)self, (mrb_int)0, " + c_string_literal(mref) + ", (mrb_int)0, (mrb_int)0)"
             end
           end
  # Top-level `method(:sym)` — a real Method object so .class /
@@ -20873,9 +21105,9 @@ class Compiler
  # on those is unsupported, but .class / .name still work).
           mi_tl = find_method_idx(mref)
           if mi_tl >= 0
-            return "sp_Method_new((sp_Method *)0, (mrb_int)(uintptr_t)&sp_" + sanitize_name(mref) + ", " + c_string_literal(mref) + ")"
+            return "sp_Method_new((sp_Method *)0, (mrb_int)(uintptr_t)&sp_" + sanitize_name(mref) + ", " + c_string_literal(mref) + method_new_meta_args("", mref) + ")"
           end
-          return "sp_Method_new((sp_Method *)0, (mrb_int)0, " + c_string_literal(mref) + ")"
+          return "sp_Method_new((sp_Method *)0, (mrb_int)0, " + c_string_literal(mref) + ", (mrb_int)0, (mrb_int)0)"
         end
       end
       return "0"
@@ -30515,7 +30747,7 @@ class Compiler
                 owner_cm_name = @cls_names[owner_cm]
                 emit_cls_method_adapter(owner_cm, cm_ref)
                 adapter_name = "sp_" + owner_cm_name + "_" + sanitize_name(cm_ref) + "_cls_method_adapter"
-                return "sp_Method_new((sp_Method *)0, (mrb_int)(uintptr_t)&" + adapter_name + ", " + c_string_literal(cm_ref) + ")"
+                return "sp_Method_new((sp_Method *)0, (mrb_int)(uintptr_t)&" + adapter_name + ", " + c_string_literal(cm_ref) + ", (mrb_int)0, (mrb_int)0)"
               end
             end
           end
@@ -41779,6 +42011,14 @@ class Compiler
  # each with block
     if mname == "each" || mname == "each_entry" || (mname == "each_pair" && recv >= 0)
       if @nd_block[nid] >= 0
+ # Forwarded Proc block (`each(&blk)`): no literal body to inline --
+ # loop and call the proc per element. Falls through on element types
+ # the proc ABI can't carry yet.
+        if block_forward_inner(nid) >= 0
+          if compile_each_forward_proc(nid) == 1
+            return 1
+          end
+        end
  # For object types with yield-using each, use yield method call
         if recv >= 0
           ert = infer_type(recv)
@@ -46315,6 +46555,47 @@ class Compiler
     emit("  }")
   end
 
+ # `recv.each(&blk)` where the block is a forwarded Proc (a
+ # BlockArgumentNode wrapping a local), not a literal block. The
+ # literal-block path has no body to inline, so emit a loop invoking
+ # the proc per element via the standard sp_proc_call ABI (a 16-slot
+ # mrb_int compound literal). Handles int-element arrays only: the
+ # proc's param type is fixed when the proc literal is created
+ # (independent of this forwarding site) and defaults to int, so a
+ # string/symbol/object element would reach a body that mis-types its
+ # param. Those, plus float/poly, return 0 so the caller falls through
+ # (no regression -- forwarded-block each emits nothing for them today
+ # either). Lifting this needs proc-param inference from body usage.
+  def compile_each_forward_proc(nid)
+    recv = @nd_receiver[nid]
+    if recv < 0
+      return 0
+    end
+    proc_inner = block_forward_inner(nid)
+    if proc_inner < 0
+      return 0
+    end
+    rt = infer_type(recv)
+    if base_type(rt) != "int_array"
+      return 0
+    end
+    old_efp = @in_loop
+    @in_loop = 1
+    arr_tmp = new_temp
+    emit("  sp_IntArray *" + arr_tmp + " = " + compile_expr_gc_rooted(recv) + ";")
+    if @in_gc_scope == 1
+      emit("  SP_GC_ROOT(" + arr_tmp + ");")
+    end
+    proc_c = forward_proc_c(proc_inner)
+    i_tmp = new_temp
+    elem = "sp_IntArray_get(" + arr_tmp + ", " + i_tmp + ")"
+    emit("  for (mrb_int " + i_tmp + " = 0; " + i_tmp + " < " + arr_tmp + "->len; " + i_tmp + "++) {")
+    emit("    sp_proc_call((sp_Proc *)" + proc_c + ", 1, (mrb_int[]){" + elem + ", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});")
+    emit("  }")
+    @in_loop = old_efp
+    return 1
+  end
+
   def compile_each_block(nid)
     old = @in_loop
     @in_loop = 1
@@ -48245,7 +48526,45 @@ class Compiler
     end
   end
 
+ # `recv.map(&blk)` where the block is a forwarded Proc (a block-arg
+ # wrapping a local), not a literal block. Mirrors compile_each_forward_proc
+ # but collects each proc result into a new array. Handles an int-element
+ # source and an int-returning proc -> int_array result (the proc's return
+ # type is fixed at its creation and defaults to int). Other element types
+ # fall through (return "") to the existing path, no regression.
+  def compile_map_forward_proc(nid, proc_inner)
+    recv = @nd_receiver[nid]
+    if recv < 0
+      return ""
+    end
+    rt = infer_type(recv)
+    if base_type(rt) != "int_array"
+      return ""
+    end
+    @needs_gc = 1
+    src = new_temp
+    out = new_temp
+    i = new_temp
+    emit("  sp_IntArray *" + src + " = " + compile_expr_gc_rooted(recv) + ";")
+    emit("  SP_GC_ROOT(" + src + ");")
+    emit("  sp_IntArray *" + out + " = sp_IntArray_new();")
+    emit("  SP_GC_ROOT(" + out + ");")
+    proc_c = forward_proc_c(proc_inner)
+    emit("  for (mrb_int " + i + " = 0; " + i + " < " + src + "->len; " + i + "++) {")
+    emit("    sp_IntArray_push(" + out + ", sp_proc_call((sp_Proc *)" + proc_c + ", 1, (mrb_int[]){sp_IntArray_get(" + src + ", " + i + "), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));")
+    emit("  }")
+    out
+  end
+
   def compile_map_expr(nid, precomputed_rc = "")
+ # Forwarded Proc block (`map(&blk)`): no literal body to inline.
+    fp_inner = block_forward_inner(nid)
+    if fp_inner >= 0
+      fp_res = compile_map_forward_proc(nid, fp_inner)
+      if fp_res != ""
+        return fp_res
+      end
+    end
  # N.times.map { |i| ... } -> loop 0..N-1 building an array
     recv_n = @nd_receiver[nid]
     if recv_n >= 0 && @nd_type[recv_n] == "CallNode" && @nd_name[recv_n] == "times" && @nd_block[recv_n] < 0
