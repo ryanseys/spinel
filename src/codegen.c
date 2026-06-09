@@ -3881,6 +3881,10 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
   }
   if (!strcmp(ty, "GlobalVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");
+    /* predefined punctuation globals: $/ is the record separator "\n"; $! / $; /
+       $, read nil (spinel doesn't honor the split/print-sep defaults) */
+    if (nm && !strcmp(nm, "$/")) { emit_str_literal(b, "\n"); return; }
+    if (nm && (!strcmp(nm, "$!") || !strcmp(nm, "$;") || !strcmp(nm, "$,"))) { buf_puts(b, "0"); return; }
     if (nm && comp_gvar(c, nm + 1)) { buf_printf(b, "gv_%s", nm + 1); return; }
     unsupported(c, id, "global variable read");
   }

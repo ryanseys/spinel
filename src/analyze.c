@@ -812,6 +812,9 @@ static TyKind infer_uncached(Compiler *c, int id) {
   }
   if (!strcmp(ty, "GlobalVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");
+    /* predefined punctuation globals: $/ defaults to "\n"; $! / $; / $, read nil */
+    if (nm && !strcmp(nm, "$/")) return TY_STRING;
+    if (nm && (!strcmp(nm, "$!") || !strcmp(nm, "$;") || !strcmp(nm, "$,"))) return TY_NIL;
     LocalVar *lv = nm ? comp_gvar(c, nm + 1) : NULL;
     return lv ? lv->type : TY_UNKNOWN;
   }
