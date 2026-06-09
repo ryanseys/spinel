@@ -4443,10 +4443,20 @@ static int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_ex
     }
   }
   else {
-    TyKind rt = comp_ntype(c, recv);     /* instance method */
-    if (!ty_is_object(rt)) return 0;
-    recv_class = ty_object_class(rt);
-    mi = comp_method_in_chain(c, recv_class, name, NULL);
+    TyKind rt = comp_ntype(c, recv);
+    const char *rty = nt_type(nt, recv);
+    if (rty && !strcmp(rty, "ConstantReadNode")) {
+      /* Cls.method with a yield block: look up as a class method */
+      const char *cname = nt_str(nt, recv, "name");
+      int ci = cname ? comp_class_index(c, cname) : -1;
+      if (ci < 0) return 0;
+      mi = comp_cmethod_in_chain(c, ci, name, NULL);
+    }
+    else if (ty_is_object(rt)) {
+      recv_class = ty_object_class(rt);
+      mi = comp_method_in_chain(c, recv_class, name, NULL);
+    }
+    else return 0;
   }
   (void)implicit_self;
   if (mi < 0) return 0;
@@ -4477,7 +4487,7 @@ static int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_ex
   if (as_expr) buf_puts(b, "({\n");
   else { emit_indent(b, indent); buf_puts(b, "{\n"); }
   /* instance method: bind self to the receiver (a pointer) */
-  if (recv >= 0) {
+  if (recv >= 0 && recv_class >= 0) {
     int st = ++g_tmp;
     emit_indent(b, indent + 1);
     buf_printf(b, "sp_%s *_t%d = ", c->classes[recv_class].name, st);
@@ -4515,7 +4525,21 @@ static int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_ex
     buf_puts(b, ";\n");
   }
 
-  emit_stmts(c, m->body, b, din);
+  if (as_expr) {
+    /* Use a result var so the tail uses assignment, not `return`, in the
+       GCC statement-expression ({ ... result_var; }) context. */
+    TyKind rt = comp_ntype(c, id);
+    int rtag = ++g_tmp;
+    char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
+    emit_indent(b, din); emit_ctype(c, rt, b);
+    buf_printf(b, " _t%d = %s;\n", rtag, default_value(rt));
+    const char *sv_rv = g_result_var; g_result_var = rvbuf;
+    int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
+    emit_stmts_tail(c, m->body, b, din);
+    g_result_var = sv_rv; g_result_poly = sp;
+    emit_indent(b, din); buf_printf(b, "_t%d;\n", rtag);
+  }
+  else emit_stmts(c, m->body, b, din);
   if (as_expr) { emit_indent(b, indent); buf_puts(b, "})"); }
   else { emit_indent(b, indent); buf_puts(b, "}\n"); }
 
@@ -5087,7 +5111,7 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
   }
   if (!strcmp(ty, "LocalVariableReadNode")) { emit_local_ref(c, id, nt_str(nt, id, "name"), b); return; }
   if (!strcmp(ty, "YieldNode")) {
-    if (g_block_id < 0) unsupported(c, id, "yield (no block in scope)");
+    if (g_block_id < 0) { buf_puts(b, "SP_INT_NIL"); return; }  /* no block: yield is nil */
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1);
     return;
   }
@@ -5705,6 +5729,18 @@ static void emit_cond(Compiler *c, int id, Buf *b) {
   if (t == TY_INT)   { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != SP_INT_NIL)"); return; }
   if (t == TY_FLOAT) { buf_puts(b, "(!sp_float_is_nil("); emit_expr(c, id, b); buf_puts(b, "))"); return; }
   if (t == TY_SYMBOL) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return; }
+  /* &block parameter used as condition — same semantics as block_given? */
+  if (t == TY_UNKNOWN) {
+    const char *nty = nt_type(c->nt, id);
+    if (nty && !strcmp(nty, "LocalVariableReadNode")) {
+      const char *nm = nt_str(c->nt, id, "name");
+      Scope *s = nm ? comp_scope_of(c, id) : NULL;
+      if (s && s->blk_param && nm && !strcmp(s->blk_param, nm)) {
+        buf_puts(b, g_block_id >= 0 ? "1" : "0");
+        return;
+      }
+    }
+  }
   if (t != TY_BOOL) unsupported(c, id, "condition (non-bool)");
   emit_expr(c, id, b);
 }
@@ -6175,7 +6211,7 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   if (!ty) unsupported(c, id, "statement (no type)");
 
   if (!strcmp(ty, "YieldNode")) {
-    if (g_block_id < 0) unsupported(c, id, "yield (no block in scope)");
+    if (g_block_id < 0) return;  /* inlined without block: yield is dead code */
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0);
     return;
   }
