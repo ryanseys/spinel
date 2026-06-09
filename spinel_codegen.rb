@@ -10155,7 +10155,7 @@ class Compiler
     emit_raw("static const char*sp_SymIntHash_json(sp_SymIntHash*h) __attribute__((unused));")
     emit_raw("static const char*sp_SymIntHash_json(sp_SymIntHash*h){sp_String*o=sp_String_new(\"{\");SP_GC_ROOT(o);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(o,\",\");sp_String_append(o,sp_json_str(sp_sym_to_s(h->order[i])));sp_String_append(o,\":\");sp_String_append(o,sp_int_to_s(sp_SymIntHash_get(h,h->order[i])));}}sp_String_append(o,\"}\");return o->data;}")
  # Hash#to_proc lookup fn — `cap` is the hash, args[0] the symbol key.
-    emit_raw("static mrb_int sp_SymIntHash_proc_fn(void*cap,mrb_int*args){return sp_SymIntHash_get((sp_SymIntHash*)cap,(sp_sym)args[0]);}")
+    emit_raw("static mrb_int sp_SymIntHash_proc_fn(void*cap,mrb_int argc,mrb_int*args){(void)argc;return sp_SymIntHash_get((sp_SymIntHash*)cap,(sp_sym)args[0]);}")
  # sym_array.tally — emitted alongside sp_SymIntHash because the
  # helper depends on the typedef. sym_array storage is sp_IntArray
  # (sym ids stored as mrb_int); cast each element to sp_sym for the
@@ -15557,7 +15557,7 @@ class Compiler
  # synthesized `args[0]` read happens even for zero-arity blocks,
  # and reading from NULL is undefined (locally elided by the
  # optimizer; CI gcc/clang/macos all segfaulted on it).
-      emit_raw("  { mrb_int _ax_args[16] = {0}; for (mrb_int _ax = sp_at_exit_count - 1; _ax >= 0; _ax--) sp_proc_call(sp_at_exit_hooks[_ax], _ax_args); }")
+      emit_raw("  { mrb_int _ax_args[16] = {0}; for (mrb_int _ax = sp_at_exit_count - 1; _ax >= 0; _ax--) sp_proc_call(sp_at_exit_hooks[_ax], 0, _ax_args); }")
     end
     emit_raw("  return 0;")
     emit_raw("}")
@@ -15909,7 +15909,7 @@ class Compiler
  # yield's inferred type (cached from analyze's ctor-yield-ret) so
  # a string-returning block flows into @ivar.push as const char *.
     if t == "YieldNode" && @ctor_blk_var != ""
-      raw_yc = "sp_proc_call(" + @ctor_blk_var + ", (mrb_int[]){" + compile_proc_call_args(nid) + "})"
+      raw_yc = "sp_proc_call(" + @ctor_blk_var + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + compile_proc_call_args(nid) + "})"
       yt_yc = infer_type(nid)
       if yt_yc == "int" || yt_yc == "bool" || yt_yc == "" || yt_yc == "void" || yt_yc == "nil"
         return raw_yc
@@ -15926,7 +15926,7 @@ class Compiler
  # forwarded proc literal (`countdown(n - 1) { yield }`). Same
  # value-carrying mrb_int ABI + type-aware cast as the ctor arm above.
     if t == "YieldNode" && current_method_is_lowered? == 1
-      raw_ly = "sp_proc_call(" + fiber_var_ref("__yblk__") + ", (mrb_int[]){" + compile_proc_call_args(nid) + "})"
+      raw_ly = "sp_proc_call(" + fiber_var_ref("__yblk__") + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + compile_proc_call_args(nid) + "})"
       yt_ly = infer_type(nid)
       if yt_ly == "int" || yt_ly == "bool" || yt_ly == "" || yt_ly == "void" || yt_ly == "nil" || yt_ly == "float"
         return raw_ly
@@ -19671,7 +19671,7 @@ class Compiler
  # whole chain is typed "curried" (sp_Proc *), so cast the mrb_int
  # back to the pointer for assignment / further application; a final
  # int result is printed via the curried puts arm's (long long) cast.
-            return "(sp_Proc *)(uintptr_t)(sp_proc_call((sp_Proc *)" + compile_expr(recv) + ", (mrb_int[]){" + compile_proc_call_args(nid) + "}))"
+            return "(sp_Proc *)(uintptr_t)(sp_proc_call((sp_Proc *)" + compile_expr(recv) + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + compile_proc_call_args(nid) + "}))"
           end
         end
       end
@@ -21385,7 +21385,7 @@ class Compiler
  # mrb_int result back to the lambda's recorded return type --
  # the same convention as a `proc {}` `.call`.
       ca = compile_proc_call_args(nid)
-      call_expr = "sp_proc_call(" + rc + ", (mrb_int[]){" + ca + "})"
+      call_expr = "sp_proc_call(" + rc + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca + "})"
       return proc_call_unbox(call_expr, ret_type)
     end
     ""
@@ -21495,7 +21495,7 @@ class Compiler
  # an undeclared `lv_blk` inside the proc fn. Outside a capture
  # context fiber_var_ref returns `lv_<name>`, so non-captured calls
  # are unchanged.
-          return proc_call_unbox("sp_proc_call(" + fiber_var_ref(rname) + ", (mrb_int[]){" + ca + "})", lambda_var_ret_type(rname))
+          return proc_call_unbox("sp_proc_call(" + fiber_var_ref(rname) + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca + "})", lambda_var_ret_type(rname))
         end
       end
 
@@ -21510,14 +21510,14 @@ class Compiler
         if ca_anon == ""
           ca_anon = "0"
         end
-        return "sp_proc_call(" + compile_expr(recv) + ", (mrb_int[]){" + ca_anon + "})"
+        return "sp_proc_call(" + compile_expr(recv) + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca_anon + "})"
       end
     end
     rt = infer_type(recv)
     if rt == "proc"
       ca = compile_proc_call_args(nid)
       rc = compile_expr_gc_rooted(recv)
-      return "sp_proc_call(" + rc + ", (mrb_int[]){" + ca + "})"
+      return "sp_proc_call(" + rc + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca + "})"
     end
     ""
   end
@@ -33335,7 +33335,7 @@ class Compiler
       if ca == ""
         ca = "0"
       end
-      proc_c = "sp_proc_call((sp_Proc *)" + recv_tmp + ".v.p, (mrb_int[]){" + ca + "})"
+      proc_c = "sp_proc_call((sp_Proc *)" + recv_tmp + ".v.p, " + arg_compiled.length.to_s + ", (mrb_int[]){" + ca + "})"
       if is_poly_ret == 1
         proc_rhs = "sp_box_int(" + proc_c + ")"
       elsif base_type(result_t) == "bigint"
@@ -43318,6 +43318,93 @@ class Compiler
     s
   end
 
+ # argc-aware param prologue for a proc/lambda fn body, given the call
+ # node. Supersedes proc_fn_args_unpack for structured params: a lambda
+ # gets a strict arity check (ArgumentError outside [req, req+opt] with
+ # no rest), and a trailing splat (`|*a|`) collects args[fixed..argc)
+ # into an Array. Required/optional positional params bind exactly as
+ # the flat unpack did (args[i]); optional defaults and proc missing
+ # -> nil are layered on separately. Falls back to the flat unpack for
+ # numbered params, post-splat params, or no structured param node.
+  def proc_fn_args_bind(nid, bps, pts, lambda_flag)
+    inner = callable_inner_params_node(nid)
+    if inner < 0 || @nd_type[inner] == "NumberedParametersNode"
+      return "  (void)argc;\n" + proc_fn_args_unpack(bps, pts)
+    end
+    reqs = parse_id_list(@nd_requireds[inner])
+    opts = parse_id_list(@nd_optionals[inner])
+    posts = parse_id_list(@nd_posts[inner])
+    rest = @nd_rest[inner]
+    has_rest = 0
+    if rest >= 0 && @nd_type[rest] == "RestParameterNode"
+      has_rest = 1
+    end
+    if posts.length > 0
+      return "  (void)argc;\n" + proc_fn_args_unpack(bps, pts)
+    end
+    nfixed = reqs.length + opts.length
+    s = "  (void)argc;\n"
+    if lambda_flag == 1
+      rrk = "FALSE"
+      if has_rest == 1
+        rrk = "TRUE"
+      end
+      s = s + "  sp_proc_lambda_arity_check(argc, " + reqs.length.to_s + ", " + opts.length.to_s + ", " + rrk + ");\n"
+    end
+    bk = 0
+    while bk < nfixed && bk < bps.length
+      ct = "mrb_int"
+      expr = "args[" + bk.to_s + "]"
+      if bk < pts.length && pts[bk] != "" && pts[bk] != "int"
+        ct = c_type(pts[bk])
+        expr = "(" + ct + ")(uintptr_t)args[" + bk.to_s + "]"
+      end
+      if bk >= reqs.length
+ # Optional param (`|a, b=10|`): bind the supplied arg when argc
+ # covers this slot, otherwise the declared default. Default exprs
+ # are compiled here (out of the popped body scope), so literal /
+ # constant defaults are supported; a default referencing an earlier
+ # param is out of scope. Issue tracked for the rare case.
+        oi = bk - reqs.length
+        def_c = "0"
+        if oi < opts.length
+          def_id = @nd_expression[opts[oi]]
+          if def_id >= 0
+            def_c = compile_expr(def_id)
+          end
+        end
+        s = s + "  " + ct + " lv_" + bps[bk] + " = (argc > " + bk.to_s + ") ? (" + ct + ")(" + expr + ") : (" + ct + ")(" + def_c + ");\n"
+      else
+        s = s + "  " + ct + " lv_" + bps[bk] + " = " + expr + ";\n"
+      end
+      bk = bk + 1
+    end
+    if has_rest == 1
+      rname = @nd_name[rest]
+      if rname != ""
+        @needs_int_array = 1
+        s = s + "  sp_IntArray *lv_" + rname + " = sp_IntArray_new();\n"
+        s = s + "  for (mrb_int _spi = " + nfixed.to_s + "; _spi < argc; _spi++) sp_IntArray_push(lv_" + rname + ", args[_spi]);\n"
+      end
+    end
+    s
+  end
+
+ # Real argument count (capped at the 16-slot ABI) for a proc `.call`
+ # site, used as the `argc` passed to sp_proc_call so the proc fn can
+ # tell supplied args from zero-padding.
+  def proc_call_argc(nid)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return "0"
+    end
+    n = get_args(args_id).length
+    if n > 16
+      n = 16
+    end
+    n.to_s
+  end
+
  # Hash.new { |hash, key| ... } default block. Lowered to a dedicated
  # C fn `sp_RbVal (*)(sp_StrPolyHash *self, const char *key)` with the
  # params typed (hash: str_poly_hash, key: string) so the body's use
@@ -43690,11 +43777,25 @@ class Compiler
     if blk_param_types != ""
       pts = blk_param_types.split("|", -1)
     end
+ # A trailing splat param (`|*a|`) is bound to an Array collecting the
+ # surplus args, so the body must see it as int_array, not the int
+ # default (otherwise `a.sum` mis-dispatches on int).
+    rest_pname = ""
+    inner_pl = callable_inner_params_node(nid)
+    if inner_pl >= 0 && @nd_type[inner_pl] != "NumberedParametersNode"
+      rest_pl = @nd_rest[inner_pl]
+      if rest_pl >= 0 && @nd_type[rest_pl] == "RestParameterNode"
+        rest_pname = @nd_name[rest_pl]
+      end
+    end
     di = 0
     while di < bps.length
       pt = "int"
       if di < pts.length && pts[di] != ""
         pt = pts[di]
+      end
+      if rest_pname != "" && bps[di] == rest_pname
+        pt = "int_array"
       end
       declare_var(bps[di], pt)
       di = di + 1
@@ -43858,8 +43959,8 @@ class Compiler
       @lambda_funcs << "}\n"
       @lambda_funcs << "static mrb_int "
       @lambda_funcs << fname
-      @lambda_funcs << "(void *_cap_raw, mrb_int *args) {\n"
-      @lambda_funcs << proc_fn_args_unpack(bps, pts)
+      @lambda_funcs << "(void *_cap_raw, mrb_int argc, mrb_int *args) {\n"
+      @lambda_funcs << proc_fn_args_bind(nid, bps, pts, lambda_flag)
       @lambda_funcs << "  "
       @lambda_funcs << cap_name
       @lambda_funcs << " *_cap = ("
@@ -43928,9 +44029,9 @@ class Compiler
  # with NULL cap and NULL scan.
     @lambda_funcs << "static mrb_int "
     @lambda_funcs << fname
-    @lambda_funcs << "(void *_cap, mrb_int *args) {\n"
+    @lambda_funcs << "(void *_cap, mrb_int argc, mrb_int *args) {\n"
     @lambda_funcs << "  (void)_cap;\n"
-    @lambda_funcs << proc_fn_args_unpack(bps, pts)
+    @lambda_funcs << proc_fn_args_bind(nid, bps, pts, lambda_flag)
     if body_stmts != ""
       @lambda_funcs << body_stmts
     end
@@ -45700,6 +45801,33 @@ class Compiler
     reqs = parse_id_list(@nd_requireds[inner])
     if idx < reqs.length
       return @nd_name[reqs[idx]]
+    end
+ # Optionals, then a trailing splat, then post-splat requireds — in
+ # the same order collect_params_str / proc_metadata_args use, so a
+ # caller iterating get_block_param sees every positional param (not
+ # just the leading requireds). Lets compile_proc_literal declare and
+ # bind `|a, b=10|` and `|*a|`. (The compiler's own blocks use only
+ # requireds, so this stays fixpoint-neutral for self-compilation.)
+    idx2 = idx - reqs.length
+    opts = parse_id_list(@nd_optionals[inner])
+    if idx2 < opts.length
+      return @nd_name[opts[idx2]]
+    end
+    idx3 = idx2 - opts.length
+    rest = @nd_rest[inner]
+    if rest >= 0 && @nd_type[rest] == "RestParameterNode"
+      if idx3 == 0
+        rn = @nd_name[rest]
+        if rn == ""
+          rn = "__anon_rest"
+        end
+        return rn
+      end
+      idx3 = idx3 - 1
+    end
+    posts = parse_id_list(@nd_posts[inner])
+    if idx3 < posts.length
+      return @nd_name[posts[idx3]]
     end
     ""
   end
@@ -50260,7 +50388,7 @@ class Compiler
  # Lowered self-recursive yield method: a statement-position `yield`
  # (value discarded) still calls the synthetic __yblk__ proc.
     if current_method_is_lowered? == 1
-      emit("  sp_proc_call(" + fiber_var_ref("__yblk__") + ", (mrb_int[]){" + compile_proc_call_args(nid) + "});")
+      emit("  sp_proc_call(" + fiber_var_ref("__yblk__") + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + compile_proc_call_args(nid) + "});")
       return
     end
     args_id = @nd_arguments[nid]
@@ -50299,6 +50427,9 @@ class Compiler
         k = k + 1
       end
     end
+ # Real yield arg count before padding — the argc the fallback proc
+ # call below reports so a block can tell supplied args from padding.
+    yield_real_argc = emitted.length
  # Pad to the enclosing method's max yield arity so the call matches
  # the function-pointer signature emitted by yield_params_suffix.
  # Bigint slots need `sp_bigint_new_int(0)` not raw `0` so the
@@ -50319,7 +50450,7 @@ class Compiler
     if @current_method_block_param != ""
       bp = "lv_" + @current_method_block_param
       emit("  if (_block) _block(" + emitted.join(", ") + ", _benv);")
-      emit("  else if (" + bp + ") sp_proc_call(" + bp + ", (mrb_int[]){" + emitted.join(", ") + "});")
+      emit("  else if (" + bp + ") sp_proc_call(" + bp + ", " + yield_real_argc.to_s + ", (mrb_int[]){" + emitted.join(", ") + "});")
     else
       emit("  if (_block) _block(" + emitted.join(", ") + ", _benv);")
     end

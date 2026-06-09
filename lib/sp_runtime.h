@@ -1915,7 +1915,7 @@ static const char*sp_PtrArray_inspect(sp_PtrArray*a){if(!a)return "[]";sp_String
    when values are inspectable as one-liners — match CRuby). */
 static const char*sp_StrIntHash_inspect(sp_StrIntHash*h){sp_String*s=sp_String_new("{");if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s,"=>");sp_String_append(s,sp_int_to_s(sp_StrIntHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
 /* Hash#to_proc lookup fn — cap is the hash, args[0] the string key. */
-static mrb_int sp_StrIntHash_proc_fn(void *cap, mrb_int *args) { return sp_StrIntHash_get((sp_StrIntHash *)cap, (const char *)(uintptr_t)args[0]); }
+static mrb_int sp_StrIntHash_proc_fn(void *cap, mrb_int argc, mrb_int *args) { (void)argc; return sp_StrIntHash_get((sp_StrIntHash *)cap, (const char *)(uintptr_t)args[0]); }
 static const char*sp_StrStrHash_inspect(sp_StrStrHash*h){sp_String*s=sp_String_new("{");if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s,"=>");sp_String_append(s,sp_str_inspect(sp_StrStrHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
 static const char*sp_IntStrHash_inspect(sp_IntStrHash*h){sp_String*s=sp_String_new("{");if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(h->order[i]));sp_String_append(s,"=>");sp_String_append(s,sp_str_inspect(sp_IntStrHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
 static const char*sp_IntIntHash_inspect(sp_IntIntHash*h){sp_String*s=sp_String_new("{");if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(h->order[i]));sp_String_append(s,"=>");sp_String_append(s,sp_int_to_s(sp_IntIntHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
@@ -4160,7 +4160,15 @@ static sp_Proc *sp_proc_new_meta(void *fn, void *cap, void (*cap_scan)(void *), 
 static sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *)) { return sp_proc_new_meta(fn, cap, cap_scan, 0, FALSE, 0, NULL, NULL); }
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
-static mrb_int sp_proc_call(sp_Proc *p, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int *))p->fn)(p->cap, noargs); } return ((mrb_int (*)(void *, mrb_int *))p->fn)(p->cap, args); }
+static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }
+/* Lambda strict-arity check. A lambda raises ArgumentError when the
+   argument count is outside [req, req+opt] (no upper bound with a rest
+   param). Procs are lenient and never call this. The message text is
+   not byte-compared (stderr is discarded); the load-bearing effect is
+   aborting execution exactly where CRuby's ArgumentError would. */
+static void sp_proc_lambda_arity_check(mrb_int argc, mrb_int req, mrb_int opt, mrb_bool has_rest) {
+  if (argc < req || (!has_rest && argc > req + opt)) sp_raise_cls("ArgumentError", "wrong number of arguments");
+}
 static sp_PolyArray *sp_proc_parameters(sp_Proc *p) { sp_PolyArray *r = sp_PolyArray_new(); if (!p || p->param_count <= 0 || !p->param_kinds) return r; SP_GC_ROOT(r); for (mrb_int i = 0; i < p->param_count; i++) { sp_PolyArray *pair = sp_PolyArray_new(); sp_PolyArray_push(pair, sp_box_sym(p->param_kinds[i])); if (p->param_names && p->param_names[i] >= 0) sp_PolyArray_push(pair, sp_box_sym(p->param_names[i])); sp_PolyArray_push(r, sp_box_poly_array(pair)); } return r; }
 
 /* Proc#<< / Proc#>> composition. The composed proc captures the two
@@ -4169,14 +4177,15 @@ static sp_PolyArray *sp_proc_parameters(sp_Proc *p) { sp_PolyArray *r = sp_PolyA
    swaps the operands so `(f >> g).call(x)` == g(f(x)). */
 typedef struct { sp_Proc *outer; sp_Proc *inner; } sp_ProcCompose;
 static void sp_proc_compose_scan(void *p) { sp_ProcCompose *c = (sp_ProcCompose *)p; if (c->outer) sp_gc_mark(c->outer); if (c->inner) sp_gc_mark(c->inner); }
-static mrb_int sp_proc_compose_fn(void *cap, mrb_int *args) {
+static mrb_int sp_proc_compose_fn(void *cap, mrb_int argc, mrb_int *args) {
+  (void)argc;
   sp_ProcCompose *c = (sp_ProcCompose *)cap;
   mrb_int inner_args[16] = {0};
   if (args) inner_args[0] = args[0];
-  mrb_int mid = sp_proc_call(c->inner, inner_args);
+  mrb_int mid = sp_proc_call(c->inner, 1, inner_args);
   mrb_int outer_args[16] = {0};
   outer_args[0] = mid;
-  return sp_proc_call(c->outer, outer_args);
+  return sp_proc_call(c->outer, 1, outer_args);
 }
 static sp_Proc *sp_proc_compose(sp_Proc *outer, sp_Proc *inner) {
   sp_ProcCompose *c = (sp_ProcCompose *)sp_gc_alloc(sizeof(sp_ProcCompose), NULL, sp_proc_compose_scan);
@@ -4192,7 +4201,7 @@ static sp_Proc *sp_proc_compose(sp_Proc *outer, sp_Proc *inner) {
    GC-tracked: the cap-scan marks the target so it stays reachable. */
 typedef struct { sp_Proc *target; mrb_int arity; mrb_int nhave; mrb_int have[16]; } sp_ProcCurry;
 static void sp_proc_curry_scan(void *p) { sp_ProcCurry *c = (sp_ProcCurry *)p; if (c->target) sp_gc_mark(c->target); }
-static mrb_int sp_proc_curry_fn(void *cap, mrb_int *args);
+static mrb_int sp_proc_curry_fn(void *cap, mrb_int argc, mrb_int *args);
 static sp_Proc *sp_proc_curry_make(sp_Proc *target, mrb_int arity, const mrb_int *have, mrb_int nhave) {
   sp_ProcCurry *c = (sp_ProcCurry *)sp_gc_alloc(sizeof(sp_ProcCurry), NULL, sp_proc_curry_scan);
   c->target = target;
@@ -4201,7 +4210,8 @@ static sp_Proc *sp_proc_curry_make(sp_Proc *target, mrb_int arity, const mrb_int
   for (mrb_int i = 0; i < nhave && i < 16; i++) c->have[i] = have[i];
   return sp_proc_new_meta((void *)sp_proc_curry_fn, c, sp_proc_curry_scan, arity - c->nhave, TRUE, 0, NULL, NULL);
 }
-static mrb_int sp_proc_curry_fn(void *cap, mrb_int *args) {
+static mrb_int sp_proc_curry_fn(void *cap, mrb_int argc, mrb_int *args) {
+  (void)argc;
   sp_ProcCurry *c = (sp_ProcCurry *)cap;
   mrb_int next[16] = {0};
   mrb_int n = c->nhave;
@@ -4209,7 +4219,7 @@ static mrb_int sp_proc_curry_fn(void *cap, mrb_int *args) {
   if (n < 16) next[n] = args ? args[0] : 0;
   n = n + 1;
   if (n < c->arity) return (mrb_int)(uintptr_t)sp_proc_curry_make(c->target, c->arity, next, n);
-  return sp_proc_call(c->target, next);
+  return sp_proc_call(c->target, c->arity, next);
 }
 static sp_Proc *sp_proc_curry(sp_Proc *f, mrb_int arity) {
   mrb_int none[16] = {0};
