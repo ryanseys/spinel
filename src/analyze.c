@@ -1696,11 +1696,21 @@ static int infer_write_types(Compiler *c) {
     else continue;
 
     TyKind before = *slot;
-    if (is_push || kt == TY_INT) {
-      /* array (a known string's `<<` is append, not push -- don't pollute) */
+    if (is_push) {
+      /* explicit push/append: definitely array */
       if (vt == TY_UNKNOWN) continue;
       if (*slot != TY_UNKNOWN && !ty_is_array(*slot)) continue;
       *slot = ty_unify(*slot, ty_array_of(vt));
+    }
+    else if (kt == TY_INT) {
+      /* int key []=: if slot already array, leave it; otherwise infer int-keyed hash */
+      if (vt == TY_UNKNOWN) continue;
+      if (*slot != TY_UNKNOWN && ty_is_array(*slot)) continue;
+      if (*slot != TY_UNKNOWN && !ty_is_hash(*slot)) continue;
+      TyKind hv = ty_hash_of(TY_INT, vt);
+      if (hv == TY_UNKNOWN) continue;
+      if (*slot != TY_UNKNOWN && *slot != hv) continue;
+      *slot = hv;
     }
     else if (kt == TY_STRING) {
       if (vt == TY_UNKNOWN) continue;

@@ -4491,11 +4491,25 @@ static void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, in
     }
     buf_puts(b, as_expr ? "; " : ";\n");
   }
-  int sv = g_nren; g_nren = 0;
+  /* Save the outer rename table (entries 0..sv-1) before clearing, because
+     any nested inline inside the block body writes at index 0 and up,
+     corrupting the outer entries. */
+  int sv = g_nren;
+  char sv_ren_from[MAX_RENAME][96], sv_ren_to[MAX_RENAME][112];
+  for (int _ri = 0; _ri < sv; _ri++) {
+    memcpy(sv_ren_from[_ri], g_ren_from[_ri], sizeof g_ren_from[0]);
+    memcpy(sv_ren_to[_ri],   g_ren_to[_ri],   sizeof g_ren_to[0]);
+  }
+  g_nren = 0;
   int svb = g_block_id; g_block_id = -1;
   const char *svbpn = g_block_param_name; g_block_param_name = NULL;
   emit_stmts(c, bbody, b, as_expr ? 0 : indent);
-  g_nren = sv; g_block_id = svb; g_block_param_name = svbpn;
+  g_nren = sv;
+  for (int _ri = 0; _ri < sv; _ri++) {
+    memcpy(g_ren_from[_ri], sv_ren_from[_ri], sizeof g_ren_from[0]);
+    memcpy(g_ren_to[_ri],   sv_ren_to[_ri],   sizeof g_ren_to[0]);
+  }
+  g_block_id = svb; g_block_param_name = svbpn;
   if (as_expr) buf_puts(b, "})");
 }
 
@@ -5692,28 +5706,76 @@ static void emit_case(Compiler *c, int id, Buf *b, int indent) {
     for (int j = 0; j < wc; j++) {
       if (j) buf_puts(b, " || ");
       if (pred >= 0) {
-        int reidx = re_lit_index(c, conds[j]);
-        if (reidx >= 0 && pt == TY_STRING) {
-          buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d)", reidx, t);
-        }
-        else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
-          /* `when lo..hi` is range membership, not equality */
-          int tr = ++g_tmp;
-          buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
-          buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
-        }
-        else if (eq_family(pt) && eq_family(comp_ntype(c, conds[j])) && eq_family(pt) != eq_family(comp_ntype(c, conds[j]))) {
-          /* a when value of a different comparable family never matches */
-          buf_puts(b, "0");
-        }
-        else if (pt == TY_STRING) {
-          buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
-        }
-        else if (pt == TY_POLY) {
-          buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")");
+        /* `when *arr` — array membership test */
+        if (nt_type(nt, conds[j]) && !strcmp(nt_type(nt, conds[j]), "SplatNode")) {
+          int inner = nt_ref(nt, conds[j], "expression");
+          TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+          int ta = ++g_tmp;
+          if (at == TY_INT_ARRAY) {
+            buf_printf(b, "({ sp_IntArray *_t%d = ", ta); emit_expr(c, inner, b);
+            buf_printf(b, "; _t%d && sp_IntArray_include(_t%d, _t%d); })", ta, ta, t);
+          }
+          else if (at == TY_STR_ARRAY) {
+            buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_expr(c, inner, b);
+            buf_printf(b, "; _t%d && sp_StrArray_include(_t%d, _t%d); })", ta, ta, t);
+          }
+          else if (at == TY_FLOAT_ARRAY) {
+            buf_printf(b, "({ sp_FloatArray *_t%d = ", ta); emit_expr(c, inner, b);
+            buf_printf(b, "; _t%d && sp_FloatArray_include(_t%d, _t%d); })", ta, ta, t);
+          }
+          else if (at == TY_POLY_ARRAY) {
+            buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, inner, b);
+            buf_printf(b, "; _t%d && sp_PolyArray_include(_t%d, ", ta, ta);
+            emit_boxed(c, pred, b);
+            buf_puts(b, "); })");
+          }
+          else {
+            buf_puts(b, "0 /* unsupported splat type */");
+          }
         }
         else {
-          buf_printf(b, "(_t%d == ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
+          const char *cnty = nt_type(nt, conds[j]);
+          /* RationalNode: `when 0r` — matches integer iff denominator==1 */
+          if (cnty && !strcmp(cnty, "RationalNode")) {
+            const char *rnum = nt_str(nt, conds[j], "rat_num");
+            const char *rden = nt_str(nt, conds[j], "rat_den");
+            long long den = rden ? atoll(rden) : 1;
+            long long num = rnum ? atoll(rnum) : 0;
+            if (den == 1) buf_printf(b, "(_t%d == %lldLL)", t, num);
+            else buf_puts(b, "0");
+          }
+          /* ImaginaryNode: `when 0i` — Complex(0,imag); integer matches only if imag==0 */
+          else if (cnty && !strcmp(cnty, "ImaginaryNode")) {
+            int numnode = nt_ref(nt, conds[j], "numeric");
+            long long imval = numnode >= 0 ? (long long)nt_int(nt, numnode, "value", 0) : -1;
+            if (imval == 0) buf_printf(b, "(_t%d == 0LL)", t);
+            else buf_puts(b, "0");
+          }
+          else {
+          int reidx = re_lit_index(c, conds[j]);
+          if (reidx >= 0 && pt == TY_STRING) {
+            buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d)", reidx, t);
+          }
+          else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
+            /* `when lo..hi` is range membership, not equality */
+            int tr = ++g_tmp;
+            buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
+            buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
+          }
+          else if (eq_family(pt) && eq_family(comp_ntype(c, conds[j])) && eq_family(pt) != eq_family(comp_ntype(c, conds[j]))) {
+            /* a when value of a different comparable family never matches */
+            buf_puts(b, "0");
+          }
+          else if (pt == TY_STRING) {
+            buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
+          }
+          else if (pt == TY_POLY) {
+            buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")");
+          }
+          else {
+            buf_printf(b, "(_t%d == ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
+          }
+          } /* close else { int reidx... } */
         }
       }
       else {
@@ -6165,6 +6227,12 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) ivt = c->classes[sc].ivar_types[iv]; }
     int ven = 0;
     int v_empty_array = vty && !strcmp(vty, "ArrayNode") && (nt_arr(nt, v, "elements", &ven), ven == 0);
+    int v_empty_hash = 0;
+    if (!v_empty_array && vty) {
+      int hen = 0;
+      if (!strcmp(vty, "HashNode") || !strcmp(vty, "KeywordHashNode"))
+        v_empty_hash = (nt_arr(nt, v, "elements", &hen), hen == 0);
+    }
     if (vty && !strcmp(vty, "NilNode")) {
       if (ivt == TY_RANGE) buf_puts(b, "(sp_Range){0}");
       else if (ivt == TY_POLY) buf_puts(b, "sp_box_nil()");
@@ -6172,6 +6240,11 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     }
     else if (v_empty_array && ivt == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
     else if (v_empty_array && array_kind(ivt)) buf_printf(b, "sp_%sArray_new()", array_kind(ivt));
+    else if (v_empty_hash && ty_is_hash(ivt)) {
+      const char *hcn = ty_hash_cname(ivt);
+      if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
+      else emit_expr(c, v, b);
+    }
     else if (ivt == TY_POLY && comp_ntype(c, v) != TY_POLY) {
       /* a poly ivar slot needs a boxed RHS */
       emit_boxed(c, v, b);
