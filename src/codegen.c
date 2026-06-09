@@ -507,6 +507,64 @@ static int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* hash.transform_keys { |k| nk } / transform_values { |v| nv }: rebuild the
+   hash applying the block to every key (or value), keeping the other half.
+   Returns 1 if handled. */
+static int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || (strcmp(name, "transform_keys") && strcmp(name, "transform_values"))) return 0;
+  int keys = !strcmp(name, "transform_keys");
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  const char *shn = ty_hash_cname(rt);
+  if (!shn) return 0;
+  TyKind dt = comp_ntype(c, id);
+  const char *dhn = ty_hash_cname(dt);
+  if (!dhn) return 0;
+  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  TyKind skt = ty_hash_key(rt), svt = ty_hash_val(rt);
+  TyKind dvt = ty_hash_val(dt);
+  int ts = ++g_tmp, td = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);  /* recv preludes flush to g_pre first */
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", ts); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+  emit_indent(g_pre, g_indent); emit_ctype(c, dt, g_pre); buf_printf(g_pre, " _t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);\n", td, dhn, td);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ts, ti);
+  emit_indent(g_pre, g_indent + 1); emit_ctype(c, skt, g_pre); buf_printf(g_pre, " _t%d = _t%d->order[_t%d];\n", tk, ts, ti);
+  if (p0) {
+    emit_indent(g_pre, g_indent + 1);
+    if (keys) buf_printf(g_pre, "lv_%s = _t%d;\n", p0, tk);
+    else buf_printf(g_pre, "lv_%s = sp_%sHash_get(_t%d, _t%d);\n", p0, shn, ts, tk);
+  }
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+  int save = g_indent; g_indent++;
+  Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+  TyKind bret = comp_ntype(c, bb[bn - 1]);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sHash_set(_t%d, ", dhn, td);
+  if (keys) {
+    /* new key = block result; value carried over (box if dst value is poly) */
+    buf_puts(g_pre, vb.p ? vb.p : "0"); buf_puts(g_pre, ", ");
+    if (dvt == TY_POLY && svt != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); char g[64]; snprintf(g, sizeof g, "sp_%sHash_get(_t%d, _t%d)", shn, ts, tk); emit_boxed_text(c, svt, g, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+    else buf_printf(g_pre, "sp_%sHash_get(_t%d, _t%d)", shn, ts, tk);
+  }
+  else {
+    /* key carried over; new value = block result (box if dst value is poly) */
+    buf_printf(g_pre, "_t%d, ", tk);
+    if (dvt == TY_POLY && bret != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb.p ? vb.p : "", &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+    else buf_puts(g_pre, vb.p ? vb.p : "0");
+  }
+  buf_puts(g_pre, ");\n"); free(vb.p);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", td);
+  return 1;
+}
+
 /* (lo..hi).bsearch { |x| cond } in find-minimum mode: binary search for the
    smallest member where the block is truthy, or nil (the SP_INT_NIL sentinel)
    when none qualifies. Loop in the statement prelude; value is the result.
@@ -1122,6 +1180,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_grep_expr(c, id, b)) return;
   if (emit_minmax_by_expr(c, id, b)) return;
   if (emit_bsearch_expr(c, id, b)) return;
+  if (emit_transform_hash_expr(c, id, b)) return;
   if (emit_gsub_block_expr(c, id, b)) return;
   if (emit_inject_expr(c, id, b)) return;
   if (emit_sortby_expr(c, id, b)) return;

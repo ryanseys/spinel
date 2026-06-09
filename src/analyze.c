@@ -682,6 +682,20 @@ static TyKind infer_call(Compiler *c, int id) {
         return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
       }
       if (block >= 0 && (!strcmp(name, "select") || !strcmp(name, "filter") || !strcmp(name, "reject"))) return rt;
+      if (block >= 0 && !strcmp(name, "transform_keys")) {
+        int body = nt_ref(nt, block, "body");
+        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        TyKind nkt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+        TyKind r = ty_hash_of(nkt, ty_hash_val(rt));
+        return r != TY_UNKNOWN ? r : rt;
+      }
+      if (block >= 0 && !strcmp(name, "transform_values")) {
+        int body = nt_ref(nt, block, "body");
+        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        TyKind nvt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+        TyKind r = ty_hash_of(ty_hash_key(rt), nvt);
+        return r != TY_UNKNOWN ? r : rt;
+      }
     }
     if (!strcmp(name, "merge") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
         !strcmp(name, "replace")) return rt;
@@ -2075,6 +2089,16 @@ static int infer_block_params(Compiler *c) {
       LocalVar *kp = scope_local_intern(fs, p0); kp->is_block_param = 1;
       TyKind km = ty_unify(kp->type, ty_hash_key(rt));
       if (km != kp->type) { kp->type = km; changed = 1; }
+      continue;
+    }
+
+    /* hash.transform_keys { |k| } binds key; transform_values { |v| } value */
+    if ((!strcmp(name, "transform_keys") || !strcmp(name, "transform_values")) && ty_is_hash(rt)) {
+      Scope *hs = comp_scope_of(c, block);
+      LocalVar *vp = scope_local_intern(hs, p0); vp->is_block_param = 1;
+      TyKind want = !strcmp(name, "transform_keys") ? ty_hash_key(rt) : ty_hash_val(rt);
+      TyKind vm = ty_unify(vp->type, want);
+      if (vm != vp->type) { vp->type = vm; changed = 1; }
       continue;
     }
 
