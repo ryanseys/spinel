@@ -769,8 +769,9 @@ static TyKind infer_call(Compiler *c, int id) {
     if (nt_type(nt, pr) && !strcmp(nt_type(nt, pr), "CallNode") &&
         nt_str(nt, pr, "name") && !strcmp(nt_str(nt, pr, "name"), "to_a"))
       pr = nt_ref(nt, pr, "receiver");
-    if (pr >= 0 && nt_type(nt, pr) && !strcmp(nt_type(nt, pr), "CallNode") &&
-        nt_str(nt, pr, "name") && !strcmp(nt_str(nt, pr, "name"), "product"))
+    if (pr >= 0 && nt_type(nt, pr) && !strcmp(nt_type(nt, pr), "CallNode") && nt_str(nt, pr, "name") &&
+        (!strcmp(nt_str(nt, pr, "name"), "product") || !strcmp(nt_str(nt, pr, "name"), "slice_before") ||
+         !strcmp(nt_str(nt, pr, "name"), "slice_after")))
       return TY_STRING;
   }
 

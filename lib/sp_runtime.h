@@ -1990,6 +1990,10 @@ static const char*sp_IntIntHash_inspect(sp_IntIntHash*h){sp_String*s=sp_String_n
    type is one of the four built-in T_array shapes, recurse into the
    matching primitive inspect . */
 static const char*sp_IntArrayPtrArray_inspect(sp_PtrArray*a){sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_IntArray_inspect((sp_IntArray*)a->data[i]));}sp_String_append(s,"]");return s->data;}
+/* Array#slice_before(delim): start a new chunk before each element == delim. */
+static sp_PtrArray*sp_IntArray_slice_before(sp_IntArray*a,mrb_int d){sp_PtrArray*out=sp_PtrArray_new();if(!a)return out;sp_IntArray*cur=sp_IntArray_new();for(mrb_int i=0;i<a->len;i++){mrb_int e=a->data[a->start+i];if(e==d&&cur->len>0){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}sp_IntArray_push(cur,e);}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
+/* Array#slice_after(delim): end a chunk after each element == delim. */
+static sp_PtrArray*sp_IntArray_slice_after(sp_IntArray*a,mrb_int d){sp_PtrArray*out=sp_PtrArray_new();if(!a)return out;sp_IntArray*cur=sp_IntArray_new();for(mrb_int i=0;i<a->len;i++){mrb_int e=a->data[a->start+i];sp_IntArray_push(cur,e);if(e==d){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
 /* Issue #742: Array#combination(k) on int_array -- emit all
    k-element ordered combinations as a PtrArray of IntArrays. */
 static void sp_int_combination_recur(sp_IntArray*src,mrb_int start,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=start;i<=src->len-k;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_combination_recur(src,i+1,k-1,acc,out);acc->len--;}}

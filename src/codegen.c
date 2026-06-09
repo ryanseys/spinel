@@ -792,21 +792,32 @@ static int emit_product_inspect_expr(Compiler *c, int id, Buf *b) {
       nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "to_a"))
     recv = nt_ref(nt, recv, "receiver");
   if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "CallNode")) return 0;
-  if (!nt_str(nt, recv, "name") || strcmp(nt_str(nt, recv, "name"), "product")) return 0;
+  const char *m = nt_str(nt, recv, "name");
+  if (!m) return 0;
+  int is_product = !strcmp(m, "product");
+  int is_slice = !strcmp(m, "slice_before") || !strcmp(m, "slice_after");
+  if (!is_product && !is_slice) return 0;
   int pr = nt_ref(nt, recv, "receiver");
   int pargs = nt_ref(nt, recv, "arguments");
   int pac = 0; const int *pav = pargs >= 0 ? nt_arr(nt, pargs, "arguments", &pac) : NULL;
   if (pr < 0 || pac != 1) return 0;
   if (comp_ntype(c, pr) != TY_INT_ARRAY) return 0;
-  /* the other operand is an int_array or an empty array literal */
-  TyKind at = comp_ntype(c, pav[0]);
-  int empty_lit = nt_type(nt, pav[0]) && !strcmp(nt_type(nt, pav[0]), "ArrayNode") &&
-                  ({ int en = 0; nt_arr(nt, pav[0], "elements", &en); en == 0; });
-  if (at != TY_INT_ARRAY && !empty_lit) return 0;
-  buf_puts(b, "sp_IntArrayPtrArray_inspect(sp_IntArray_product(");
-  emit_expr(c, pr, b); buf_puts(b, ", ");
-  if (empty_lit) buf_puts(b, "sp_IntArray_new()"); else emit_expr(c, pav[0], b);
-  buf_puts(b, "))");
+  if (is_product) {
+    /* the other operand is an int_array or an empty array literal */
+    TyKind at = comp_ntype(c, pav[0]);
+    int empty_lit = nt_type(nt, pav[0]) && !strcmp(nt_type(nt, pav[0]), "ArrayNode") &&
+                    ({ int en = 0; nt_arr(nt, pav[0], "elements", &en); en == 0; });
+    if (at != TY_INT_ARRAY && !empty_lit) return 0;
+    buf_puts(b, "sp_IntArrayPtrArray_inspect(sp_IntArray_product(");
+    emit_expr(c, pr, b); buf_puts(b, ", ");
+    if (empty_lit) buf_puts(b, "sp_IntArray_new()"); else emit_expr(c, pav[0], b);
+    buf_puts(b, "))");
+    return 1;
+  }
+  /* slice_before / slice_after with an int delimiter */
+  if (comp_ntype(c, pav[0]) != TY_INT) return 0;
+  buf_printf(b, "sp_IntArrayPtrArray_inspect(sp_IntArray_%s(", m);
+  emit_expr(c, pr, b); buf_puts(b, ", "); emit_expr(c, pav[0], b); buf_puts(b, "))");
   return 1;
 }
 
