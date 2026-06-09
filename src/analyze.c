@@ -825,6 +825,9 @@ static TyKind infer_call(Compiler *c, int id) {
       return (rt == TY_FLOAT || a0 == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return TY_UNKNOWN;
   }
+  if (recv >= 0 && argc == 1 && !strcmp(name, "<=>") &&
+      ((ty_is_numeric(rt) && ty_is_numeric(a0)) || (rt == TY_STRING && a0 == TY_STRING)))
+    return TY_INT;
   if (recv >= 0 && argc == 1 && is_cmp_op(name)) {
     if (!strcmp(name, "<=>")) return TY_INT;
     return TY_BOOL;
@@ -2068,6 +2071,21 @@ static int infer_block_params(Compiler *c) {
       LocalVar *lp = scope_local_intern(comp_scope_of(c, block), p0); lp->is_block_param = 1;
       TyKind m = ty_unify(lp->type, rt);
       if (m != lp->type) { lp->type = m; changed = 1; }
+      continue;
+    }
+
+    /* array.sort/min/max/minmax { |a, b| cmp } -- a comparator block binds
+       both parameters to the element type */
+    if ((!strcmp(name, "sort") || !strcmp(name, "min") || !strcmp(name, "max") ||
+         !strcmp(name, "minmax")) && ty_is_array(rt)) {
+      Scope *cs = comp_scope_of(c, block);
+      for (int pj = 0; pj < 2; pj++) {
+        const char *pn = block_param_name(c, block, pj);
+        if (!pn) continue;
+        LocalVar *lp = scope_local_intern(cs, pn); lp->is_block_param = 1;
+        TyKind m = ty_unify(lp->type, ty_array_elem(rt));
+        if (m != lp->type) { lp->type = m; changed = 1; }
+      }
       continue;
     }
 

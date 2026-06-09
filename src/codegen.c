@@ -847,6 +847,108 @@ static int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* sort { |a, b| a <=> b } as an expression: stable bubble sort of a copy,
+   ordered by the comparator block (which yields the <=> sign). Returns 1 if
+   handled. */
+static int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  if (strcmp(name, "sort")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_array(rt)) return 0;
+  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  if (!k) return 0;
+  TyKind et = ty_array_elem(rt);
+  const char *p0 = block_param_name(c, block, 0);
+  const char *p1 = block_param_name(c, block, 1);
+  if (!p0 || !p1) return 0;
+  p0 = rename_local(p0); p1 = rename_local(p1);
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1 || comp_ntype(c, bb[bn - 1]) != TY_INT) return 0;
+  int trv = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+  buf_printf(g_pre, " _t%d = sp_%sArray_slice(_t%d, 0, sp_%sArray_length(_t%d));\n", tr, k, trv, k, trv);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, tr);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d - 1; _t%d++)\n", ti, ti, tn, ti);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d - 1 - _t%d; _t%d++) {\n", tj, tj, tn, ti, tj);
+  emit_indent(g_pre, g_indent + 2); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d);\n", ta, k, tr, tj);
+  emit_indent(g_pre, g_indent + 2); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d + 1);\n", tb, k, tr, tj);
+  int save = g_indent; g_indent += 2;
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d; lv_%s = _t%d;\n", p0, ta, p1, tb);
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+  Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = save;
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "if ((%s) > 0) { sp_%sArray_set(_t%d, _t%d, _t%d); sp_%sArray_set(_t%d, _t%d + 1, _t%d); }\n",
+             cb.p ? cb.p : "0", k, tr, tj, tb, k, tr, tj, ta); free(cb.p);
+  emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tr);
+  return 1;
+}
+
+/* min / max / minmax { |a, b| a <=> b } as an expression: a single scan
+   tracking the extreme(s) under the comparator block. min/max yield one
+   element; minmax yields a fresh [min, max]. Returns 1 if handled. */
+static int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int is_min = !strcmp(name, "min"), is_max = !strcmp(name, "max"), is_mm = !strcmp(name, "minmax");
+  if (!is_min && !is_max && !is_mm) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_array(rt)) return 0;
+  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  if (!k) return 0;
+  TyKind et = ty_array_elem(rt);
+  const char *p0 = block_param_name(c, block, 0);
+  const char *p1 = block_param_name(c, block, 1);
+  if (!p0 || !p1) return 0;
+  p0 = rename_local(p0); p1 = rename_local(p1);
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1 || comp_ntype(c, bb[bn - 1]) != TY_INT) return 0;
+  int trv = ++g_tmp, tn = ++g_tmp, tmin = ++g_tmp, tmax = ++g_tmp, ti = ++g_tmp, te = ++g_tmp, tres = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, trv);
+  emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
+  buf_printf(g_pre, " _t%d = _t%d > 0 ? sp_%sArray_get(_t%d, 0) : %s;\n", tmin, tn, k, trv, et == TY_RANGE ? "(sp_Range){0}" : default_value(et));
+  emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = _t%d;\n", tmax, tmin);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 1; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+  emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d);\n", te, k, trv, ti);
+  int save = g_indent; g_indent++;
+  if (is_min || is_mm) {
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d; lv_%s = _t%d;\n", p0, te, p1, tmin);
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+    Buf cm; memset(&cm, 0, sizeof cm); emit_expr(c, bb[bn - 1], &cm);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "if ((%s) < 0) _t%d = _t%d;\n", cm.p ? cm.p : "0", tmin, te); free(cm.p);
+  }
+  if (is_max || is_mm) {
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d; lv_%s = _t%d;\n", p0, te, p1, tmax);
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+    Buf cx; memset(&cx, 0, sizeof cx); emit_expr(c, bb[bn - 1], &cx);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "if ((%s) > 0) _t%d = _t%d;\n", cx.p ? cx.p : "0", tmax, te); free(cx.p);
+  }
+  g_indent = save;
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  if (is_min) { buf_printf(b, "_t%d", tmin); return 1; }
+  if (is_max) { buf_printf(b, "_t%d", tmax); return 1; }
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_new();\n", tres, k);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (_t%d > 0) { sp_%sArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, _t%d); }\n", tn, k, tres, tmin, k, tres, tmax);
+  buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
 /* map/select/reject/filter as an expression: build a result array via a
    loop emitted into the statement prelude; the expression value is the
    temp array. Returns 1 if handled. */
@@ -1215,6 +1317,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_predicate_expr(c, id, b)) return;
   if (emit_grep_expr(c, id, b)) return;
   if (emit_minmax_by_expr(c, id, b)) return;
+  if (emit_sort_cmp_expr(c, id, b)) return;
+  if (emit_minmax_cmp_expr(c, id, b)) return;
   if (emit_bsearch_expr(c, id, b)) return;
   if (emit_sum_block_expr(c, id, b)) return;
   if (emit_transform_hash_expr(c, id, b)) return;
@@ -2039,6 +2143,23 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, argv[0], b);
     buf_puts(b, ")");
     return;
+  }
+
+  if (recv >= 0 && argc == 1 && !strcmp(name, "<=>")) {
+    TyKind at = comp_ntype(c, argv[0]);
+    if (ty_is_numeric(rt) && ty_is_numeric(at)) {
+      int ta = ++g_tmp, tb = ++g_tmp;
+      buf_puts(b, "({ "); emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b);
+      buf_puts(b, "; "); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tb); emit_expr(c, argv[0], b);
+      buf_printf(b, "; (_t%d > _t%d) - (_t%d < _t%d); })", ta, tb, ta, tb);
+      return;
+    }
+    if (rt == TY_STRING && at == TY_STRING) {
+      int tc = ++g_tmp;
+      buf_printf(b, "({ int _t%d = strcmp(", tc); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      buf_printf(b, "); (_t%d > 0) - (_t%d < 0); })", tc, tc);
+      return;
+    }
   }
 
   if (recv >= 0 && argc == 1 &&
