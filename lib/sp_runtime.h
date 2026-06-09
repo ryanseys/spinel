@@ -3704,6 +3704,25 @@ static mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
 static volatile int sp_catch_top = 0;
 static void sp_throw(const char *tag, mrb_int val) { int i = sp_catch_top - 1; while (i >= 0) { if (strcmp(sp_catch_tag[i], tag) == 0) { sp_catch_val[i] = val; sp_catch_top = i + 1; longjmp(sp_catch_stack[i], 1); } i--; } fprintf(stderr, "uncaught throw: %s\n", tag); exit(1); }
 
+/* Non-local return: a `return` inside a non-lambda Proc returns from the
+   method that lexically created the Proc (Ruby's block-return semantics),
+   not just from the Proc body. Each such home method declares a frame `_pf`
+   in its prologue (setjmp); a Proc created in that method records `&_pf` as
+   home_pframe at the creation site (codegen knows the home lexically, so no
+   runtime frame stack is needed and recursion/nesting stay correct — each
+   call has its own `_pf`). sp_proc_call stashes the callee's home_pframe
+   into sp_preturn_cur for the duration of the call, so the Proc body's
+   `return` longjmps to the right frame even across other framed methods.
+   value carries the returned mrb_int (pointer/float returns round-trip
+   through it, matching the proc-fn ABI). A return whose home frame is gone
+   (escaped Proc) is Ruby's LocalJumpError. */
+typedef struct sp_preturn_frame { jmp_buf buf; mrb_int value; } sp_preturn_frame;
+static sp_preturn_frame *sp_preturn_cur = NULL;
+static SP_NORETURN void sp_preturn_fire(mrb_int v) {
+  if (sp_preturn_cur) { sp_preturn_cur->value = v; longjmp(sp_preturn_cur->buf, 1); }
+  sp_raise_cls("LocalJumpError", "unexpected return");
+}
+
 /* Kernel#sleep with sub-second precision. Argument is seconds as a
    double so `sleep(0.5)` actually waits 500ms; the legacy `sleep((unsigned)0.5)`
    cast truncated to 0 and returned immediately. POSIX uses
@@ -4154,13 +4173,16 @@ static sp_PtrArray *sp_PtrArray_slice_bang(sp_PtrArray *a, mrb_int from, mrb_int
   return r;
 }
 
-typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); mrb_int arity; mrb_bool lambda_p; mrb_int param_count; const sp_sym *param_kinds; const sp_sym *param_names; } sp_Proc;
+typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); mrb_int arity; mrb_bool lambda_p; mrb_int param_count; const sp_sym *param_kinds; const sp_sym *param_names; void *home_pframe; } sp_Proc;
 static void sp_Proc_scan(void *p) { sp_Proc *pr = (sp_Proc *)p; if (pr->cap && pr->cap_scan) pr->cap_scan(pr->cap); }
-static sp_Proc *sp_proc_new_meta(void *fn, void *cap, void (*cap_scan)(void *), mrb_int arity, mrb_bool lambda_p, mrb_int param_count, const sp_sym *param_kinds, const sp_sym *param_names) { sp_Proc *p = (sp_Proc *)sp_gc_alloc(sizeof(sp_Proc), NULL, sp_Proc_scan); p->fn = fn; p->cap = cap; p->cap_scan = cap_scan; p->arity = arity; p->lambda_p = lambda_p; p->param_count = param_count; p->param_kinds = param_kinds; p->param_names = param_names; return p; }
+/* home_pframe defaults to NULL; codegen sets it to the enclosing method's
+   `&_pf` at the creation site for a non-lambda Proc that may do a non-local
+   return. A lambda's `return` is local, so it never longjmps regardless. */
+static sp_Proc *sp_proc_new_meta(void *fn, void *cap, void (*cap_scan)(void *), mrb_int arity, mrb_bool lambda_p, mrb_int param_count, const sp_sym *param_kinds, const sp_sym *param_names) { sp_Proc *p = (sp_Proc *)sp_gc_alloc(sizeof(sp_Proc), NULL, sp_Proc_scan); p->fn = fn; p->cap = cap; p->cap_scan = cap_scan; p->arity = arity; p->lambda_p = lambda_p; p->param_count = param_count; p->param_kinds = param_kinds; p->param_names = param_names; p->home_pframe = NULL; return p; }
 static sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *)) { return sp_proc_new_meta(fn, cap, cap_scan, 0, FALSE, 0, NULL, NULL); }
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
-static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }
+static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; sp_preturn_frame *sp_saved_pframe = sp_preturn_cur; sp_preturn_cur = (sp_preturn_frame *)p->home_pframe; mrb_int sp_pr_ret; if (!args) { mrb_int noargs[16] = {0}; sp_pr_ret = ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } else { sp_pr_ret = ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); } sp_preturn_cur = sp_saved_pframe; return sp_pr_ret; }
 /* Lambda strict-arity check. A lambda raises ArgumentError when the
    argument count is outside [req, req+opt] (no upper bound with a rest
    param). Procs are lenient and never call this. The message text is

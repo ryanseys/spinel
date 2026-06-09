@@ -472,6 +472,10 @@ class Compiler
  # the body, each ensure body is replayed (innermost-first) before
  # the C `return`, so writebacks in `ensure` execute on early return.
     @ensure_stack = "".split(",", -1)
+ # Body id of the method whose return types are being collected, so an
+ # explicit `return <procvar>.call` can resolve the proc's value type
+ # from the proc literal assigned within that body. -1 outside the scan.
+    @return_scan_body_id = -1
  # Number of `sp_exc_top++` pushes emitted along the static
  # fall-through path leading to the current emit point but not
  # yet matched by an emitted `sp_exc_top--`. An early `return`
@@ -3611,6 +3615,12 @@ class Compiler
     if mname == "call" || mname == "[]"
       if recv >= 0
         rt = infer_type(recv)
+ # `proc { :x }.call` / `-> { ... }.call` on a literal receiver:
+ # the value type is the literal body's type, not the int slot.
+        plit_cr = proc_literal_ret_type(recv)
+        if plit_cr != "" && plit_cr != "int"
+          return plit_cr
+        end
         if rt == "lambda"
           if @nd_type[recv] == "LocalVariableReadNode"
             lrt = lambda_var_ret_type(@nd_name[recv])
@@ -24686,6 +24696,125 @@ class Compiler
     0
   end
 
+ # Return type of a proc/lambda *literal* node (`-> { }`, `proc { }`,
+ # `lambda { }`) = the type of its body's last statement, or "" when the
+ # node isn't a literal callable. Lets `proc { :x }.call` and a method
+ # whose tail is `<procvar>.call` infer the real value type rather than
+ # defaulting to int (the proc-fn ABI's mrb_int slot).
+  def proc_literal_ret_type(node)
+    if node < 0
+      return ""
+    end
+    t = @nd_type[node]
+    body = -1
+    non_lambda = 0
+    if t == "LambdaNode"
+      body = @nd_body[node]
+    elsif t == "CallNode" && @nd_receiver[node] < 0 && (@nd_name[node] == "proc" || @nd_name[node] == "lambda")
+      if @nd_name[node] == "proc"
+        non_lambda = 1
+      end
+      blk = @nd_block[node]
+      if blk >= 0
+        body = @nd_body[blk]
+      end
+    end
+    if body < 0
+      return ""
+    end
+    bs = get_stmts(body)
+    if bs.length == 0
+      return ""
+    end
+ # Declare the Proc's params (nilable for a non-lambda Proc, whose
+ # required params may be unsupplied -> nil) so a body like `[a, b]`
+ # infers the same poly_array codegen builds, keeping `.call` typing in
+ # sync. Lambdas have strict arity (non-nil) and need no override.
+    push_scope
+    if non_lambda == 1
+      pidx = 0
+      while pidx < 8
+        pn = get_block_param(node, pidx)
+        if pn == ""
+          pidx = 8
+        else
+          if pn != "_"
+            declare_var(pn, "int?")
+          end
+          pidx = pidx + 1
+        end
+      end
+    end
+    rt = infer_type(bs.last)
+    pop_scope
+    rt
+  end
+
+ # Return type of `<vname>.call` resolved by finding the proc/lambda
+ # literal assigned to `vname` within `body_id` (first assignment wins,
+ # matching the codegen lambda-ret table). "" when no such literal.
+  def proc_var_literal_ret_type(vname, body_id)
+    if body_id < 0
+      return ""
+    end
+    stmts = get_stmts(body_id)
+    i = 0
+    while i < stmts.length
+      s = stmts[i]
+      if @nd_type[s] == "LocalVariableWriteNode" && @nd_name[s] == vname
+        plt = proc_literal_ret_type(@nd_expression[s])
+        if plt != ""
+          return plt
+        end
+      end
+      i = i + 1
+    end
+    ""
+  end
+
+ # Record `lname`'s proc-body return type when it is assigned a proc/lambda
+ # literal (first assignment wins), for the scan_locals parallel table.
+  def scan_record_proc_ret(lname, expr)
+    plit = proc_literal_ret_type(expr)
+    if plit != "" && not_in(lname, @scan_proc_ret_names) == 1
+      @scan_proc_ret_names.push(lname)
+      @scan_proc_ret_types.push(plit)
+    end
+  end
+
+ # Resolve the type of a `<proc>.call` RHS for a local's type: a literal
+ # receiver resolves directly; a proc-variable receiver resolves via the
+ # scan_locals parallel table built from earlier proc-literal assignments.
+ # Returns `default_t` unchanged when it is already concrete or the RHS
+ # isn't a proc call.
+  def scan_resolve_proc_call_type(expr, default_t)
+    if default_t != "" && default_t != "int"
+      return default_t
+    end
+    if expr < 0 || @nd_type[expr] != "CallNode" || @nd_name[expr] != "call" || @nd_receiver[expr] < 0
+      return default_t
+    end
+    r = @nd_receiver[expr]
+    if @nd_type[r] == "LocalVariableReadNode"
+      vn = @nd_name[r]
+      i = 0
+      while i < @scan_proc_ret_names.length
+        if @scan_proc_ret_names[i] == vn
+          if @scan_proc_ret_types[i] != "" && @scan_proc_ret_types[i] != "int"
+            return @scan_proc_ret_types[i]
+          end
+        end
+        i = i + 1
+      end
+      return default_t
+    end
+    plit = proc_literal_ret_type(r)
+    if plit != "" && plit != "int"
+      return plit
+    end
+    default_t
+  end
+
   def infer_body_return(body_id)
  # An empty method body -- whether the parser yields no body node
  # (body_id < 0) or an empty statement list -- implicitly returns nil
@@ -24700,7 +24829,10 @@ class Compiler
     end
  # Collect all explicit return types
     types = "".split(",", -1)
+    saved_rsb = @return_scan_body_id
+    @return_scan_body_id = body_id
     collect_return_types_nid(body_id, types)
+    @return_scan_body_id = saved_rsb
  # Push sibling-scope narrows from preceding guards so the
  # implicit-return type sees the narrowed local types. Without
  # this, `def f; h = s.index(...); return -1 if h.nil?; h+1; end`
@@ -24739,6 +24871,21 @@ class Compiler
       promoted_lr = empty_array_promotion_for(elem_acc_lr)
       if promoted_lr != ""
         last_type = promoted_lr
+      end
+    end
+ # A `<proc>.call` tail returns the proc body's value type, not the
+ # int the proc-fn ABI slot defaults to. Resolve a literal receiver
+ # directly and a local-variable receiver via its in-body assignment.
+    if @nd_type[last_id] == "CallNode" && @nd_name[last_id] == "call" && @nd_receiver[last_id] >= 0
+      pcr_recv = @nd_receiver[last_id]
+      pcr_t = ""
+      if @nd_type[pcr_recv] == "LocalVariableReadNode"
+        pcr_t = proc_var_literal_ret_type(@nd_name[pcr_recv], body_id)
+      else
+        pcr_t = proc_literal_ret_type(pcr_recv)
+      end
+      if pcr_t != "" && pcr_t != "int"
+        last_type = pcr_t
       end
     end
     types.push(last_type)
@@ -24796,7 +24943,25 @@ class Compiler
           return
         end
         if arg_ids.length > 0
-          types.push(infer_type(arg_ids[0]))
+          rt_cr = infer_type(arg_ids[0])
+          a0_cr = arg_ids[0]
+ # `return <proc>.call` returns the proc body's value type, not the
+ # int slot. Resolve a literal receiver directly and a local-variable
+ # receiver via its proc-literal assignment in the scanned body, so
+ # analyze and codegen agree on the method's return type.
+          if (rt_cr == "" || rt_cr == "int") && @nd_type[a0_cr] == "CallNode" && @nd_name[a0_cr] == "call" && @nd_receiver[a0_cr] >= 0
+            r0_cr = @nd_receiver[a0_cr]
+            pcr_cr = ""
+            if @nd_type[r0_cr] == "LocalVariableReadNode"
+              pcr_cr = proc_var_literal_ret_type(@nd_name[r0_cr], @return_scan_body_id)
+            else
+              pcr_cr = proc_literal_ret_type(r0_cr)
+            end
+            if pcr_cr != "" && pcr_cr != "int"
+              rt_cr = pcr_cr
+            end
+          end
+          types.push(rt_cr)
           return
         end
       end
@@ -32409,6 +32574,12 @@ class Compiler
  # a fresh (empty) names array.
     if names.length == 0
       @scan_literal_flags = "".split(",", -1)
+ # Parallel name->proc-body-return-type tracking, populated when a local
+ # is assigned a proc/lambda literal and consulted when a sibling local
+ # is assigned `<procvar>.call`, so `x = pr.call; x` types x by the proc's
+ # value type instead of the int the proc-fn ABI slot defaults to.
+      @scan_proc_ret_names = "".split(",", -1)
+      @scan_proc_ret_types = "".split(",", -1)
  # Parallel to `names`: "1" if every write to this local so far was
  # an empty `[]` literal — used to defer the array element type
  # until first `push` . A subsequent write with a
@@ -32684,10 +32855,11 @@ class Compiler
     end
     if @nd_type[nid] == "LocalVariableWriteNode"
       lname = @nd_name[nid]
+      scan_record_proc_ret(lname, @nd_expression[nid])
       if not_in(lname, names) == 1
         if not_in(lname, params) == 1
           names.push(lname)
-          types.push(infer_type(@nd_expression[nid]))
+          types.push(scan_resolve_proc_call_type(@nd_expression[nid], infer_type(@nd_expression[nid])))
           if is_literal_value_expr(@nd_expression[nid]) == 1
             @scan_literal_flags.push("1")
           else
@@ -32712,7 +32884,7 @@ class Compiler
       else
         if not_in(lname, params) == 1
  # Check if type changed
-          at = infer_type(@nd_expression[nid])
+          at = scan_resolve_proc_call_type(@nd_expression[nid], infer_type(@nd_expression[nid]))
  # Concrete (non-empty) array overwrite clears the deferred
  # element-type flag — a `[1,2,3]` write commits to int_array.
           if is_empty_array_literal(@nd_expression[nid]) == 0

@@ -553,6 +553,18 @@ class Compiler
     @in_proc_body = 0
     @proc_captures = "".split(",", -1)
     @proc_capture_types = "".split(",", -1)
+ # Non-local return: 1 while compiling a non-lambda Proc body (its `return`
+ # is a non-local return to the home method, emitted as sp_preturn_fire).
+ # @current_method_has_preturn_frame is 1 while emitting a method that
+ # lexically owns such a Proc, so its prologue declares the setjmp frame
+ # and its returns restore sp_preturn_top.
+    @proc_nonlocal_return = 0
+    @current_method_has_preturn_frame = 0
+ # Body id of the method whose body is currently being emitted, so an
+ # in-method `<procvar>.call` resolves the proc's value type from that
+ # body's assignment rather than the name-keyed (collision-prone) global
+ # lambda-ret table. -1 outside a method body.
+    @current_method_body_id = -1
 
  # Fiber support
     @fiber_counter = 0
@@ -604,6 +616,9 @@ class Compiler
     @in_proc_body = 0
     @proc_captures = "".split(",", -1)
     @proc_capture_types = "".split(",", -1)
+    @proc_nonlocal_return = 0
+    @current_method_has_preturn_frame = 0
+    @current_method_body_id = -1
 
  # Inline-rename map for compile_yield_method_call_stmt / _expr.
     @inline_rename_map_from = nil
@@ -4119,9 +4134,16 @@ class Compiler
       if cmp_mname == "call" || cmp_mname == "[]"
         cmp_recv = @nd_receiver[nid]
         if cmp_recv >= 0 && @nd_type[cmp_recv] == "LocalVariableReadNode"
-          lrt = lambda_var_ret_type(@nd_name[cmp_recv])
+          lrt = proc_var_ret_type_resolved(@nd_name[cmp_recv])
           if lrt != ""
             return lrt
+          end
+        end
+ # Direct literal receiver: `proc { :x }.call`.
+        if cmp_recv >= 0
+          plit_cr = proc_literal_ret_type(cmp_recv)
+          if plit_cr != "" && plit_cr != "int"
+            return plit_cr
           end
         end
       end
@@ -6905,7 +6927,7 @@ class Compiler
           emit_gc_root_for_expr("self", "obj_" + cname)
         end
       end
-      compile_body_return(bid, ret_type)
+      compile_method_body_return(bid, ret_type)
     end
     pop_scope
 
@@ -7439,7 +7461,7 @@ class Compiler
           k = k + 1
         end
       end
-      compile_body_return(bid, "void")
+      compile_method_body_return(bid, "void")
     end
     pop_scope
 
@@ -13746,7 +13768,7 @@ class Compiler
           j = j + 1
         end
       end
-      compile_body_return(bid, rt)
+      compile_method_body_return(bid, rt)
     end
 
     pop_scope
@@ -13823,7 +13845,7 @@ class Compiler
           j = j + 1
         end
       end
-      compile_body_return(bid, rt)
+      compile_method_body_return(bid, rt)
     end
 
     pop_scope
@@ -14319,7 +14341,7 @@ class Compiler
           j = j + 1
         end
       end
-      compile_body_return(bid, @meth_return_types[mi])
+      compile_method_body_return(bid, @meth_return_types[mi])
     end
 
     rt = @meth_return_types[mi]
@@ -21495,7 +21517,7 @@ class Compiler
  # an undeclared `lv_blk` inside the proc fn. Outside a capture
  # context fiber_var_ref returns `lv_<name>`, so non-captured calls
  # are unchanged.
-          return proc_call_unbox("sp_proc_call(" + fiber_var_ref(rname) + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca + "})", lambda_var_ret_type(rname))
+          return proc_call_unbox("sp_proc_call(" + fiber_var_ref(rname) + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca + "})", proc_var_ret_type_resolved(rname))
         end
       end
 
@@ -21510,14 +21532,14 @@ class Compiler
         if ca_anon == ""
           ca_anon = "0"
         end
-        return "sp_proc_call(" + compile_expr(recv) + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca_anon + "})"
+        return proc_call_unbox("sp_proc_call(" + compile_expr(recv) + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca_anon + "})", proc_literal_ret_type(recv))
       end
     end
     rt = infer_type(recv)
     if rt == "proc"
       ca = compile_proc_call_args(nid)
       rc = compile_expr_gc_rooted(recv)
-      return "sp_proc_call(" + rc + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca + "})"
+      return proc_call_unbox("sp_proc_call(" + rc + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca + "})", proc_literal_ret_type(recv))
     end
     ""
   end
@@ -40745,6 +40767,36 @@ class Compiler
   end
 
   def compile_return_stmt(nid)
+ # Inside a non-lambda Proc body, `return` is a non-local return to the
+ # home method: fire a longjmp to its setjmp frame rather than returning
+ # from the Proc's own C function. The value rides the mrb_int slot the
+ # same way the proc-fn tail coerces it; the home frame's recovery cast
+ # restores the declared return type. `return a, b` (tuple) can't ride
+ # the slot, so it falls through to the normal path below.
+    if @proc_nonlocal_return == 1
+      pnl_args = @nd_arguments[nid]
+      pnl_ids = []
+      if pnl_args >= 0
+        pnl_ids = get_args(pnl_args)
+      end
+      if pnl_ids.length <= 1
+        pnl_v = "0"
+        if pnl_ids.length == 1
+          pnl_v = compile_expr(pnl_ids[0])
+          pnl_t = infer_type(pnl_ids[0])
+          if base_type(pnl_t) == "bigint"
+            @needs_bigint = 1
+            pnl_v = "sp_bigint_to_int((sp_Bigint *)(" + pnl_v + "))"
+          elsif type_is_pointer(pnl_t) == 1 || base_type(pnl_t) == "ptr"
+            pnl_v = "(mrb_int)(uintptr_t)(" + pnl_v + ")"
+          elsif base_type(pnl_t) == "float"
+            pnl_v = "*(mrb_int *)&(mrb_float){" + pnl_v + "}"
+          end
+        end
+        emit("  sp_preturn_fire(" + pnl_v + ");")
+        return
+      end
+    end
     args_id = @nd_arguments[nid]
     if args_id >= 0
       arg_ids = get_args(args_id)
@@ -43241,6 +43293,74 @@ class Compiler
     ""
   end
 
+ # Resolve `<vname>.call`'s return type: prefer the current method body's
+ # own assignment (collision-free across methods), falling back to the
+ # name-keyed global table (top-level / pre-scanned vars).
+  def proc_var_ret_type_resolved(vname)
+    if @current_method_body_id >= 0
+      t = proc_var_literal_ret_type(vname, @current_method_body_id)
+      if t != ""
+        return t
+      end
+    end
+    lambda_var_ret_type(vname)
+  end
+
+ # Return type of a proc/lambda *literal* node (`-> { }`, `proc { }`,
+ # `lambda { }`) = the type of its body's last statement, or "" when the
+ # node isn't a literal callable. Lets a direct `proc { :x }.call` unbox
+ # its mrb_int result back to the real value type (the var form already
+ # resolves through the lambda-ret table).
+  def proc_literal_ret_type(node)
+    if node < 0
+      return ""
+    end
+    t = @nd_type[node]
+    body = -1
+    non_lambda = 0
+    if t == "LambdaNode"
+      body = @nd_body[node]
+    elsif t == "CallNode" && @nd_receiver[node] < 0 && (@nd_name[node] == "proc" || @nd_name[node] == "lambda")
+      if @nd_name[node] == "proc"
+        non_lambda = 1
+      end
+      blk = @nd_block[node]
+      if blk >= 0
+        body = @nd_body[blk]
+      end
+    end
+    if body < 0
+      return ""
+    end
+    bs = get_stmts(body)
+    if bs.length == 0
+      return ""
+    end
+ # Declare the Proc's params (nilable for a non-lambda Proc, whose
+ # required params may be unsupplied -> nil) so a body like `[a, b]`
+ # infers the same poly_array that codegen builds, keeping the `.call`
+ # return type in sync. get_block_param enumerates a `proc { }` block's
+ # params; lambdas have strict arity (non-nil) and need no override.
+    push_scope
+    if non_lambda == 1
+      pidx = 0
+      while pidx < 8
+        pn = get_block_param(node, pidx)
+        if pn == ""
+          pidx = 8
+        else
+          if pn != "_"
+            declare_var(pn, "int?")
+          end
+          pidx = pidx + 1
+        end
+      end
+    end
+    rt = infer_type(bs.last)
+    pop_scope
+    rt
+  end
+
  # Required-parameter count of a LambdaNode -- the arity used to size
  # a `Proc#curry`. Optional / rest params are not modelled here.
   def lambda_node_arity(lnid)
@@ -43757,6 +43877,11 @@ class Compiler
     saved_in_proc_body = @in_proc_body
     saved_proc_captures = @proc_captures
     saved_proc_capture_types = @proc_capture_types
+ # A non-lambda Proc body's `return` is a non-local return to the home
+ # method; a lambda's is local. Set unconditionally (independent of
+ # captures) so even a capture-free `proc { return v }` lowers correctly.
+    saved_proc_nonlocal = @proc_nonlocal_return
+    @proc_nonlocal_return = lambda_flag == 1 ? 0 : 1
     saved_heap_hp_names_len = @heap_promoted_names.length
     saved_heap_hp_cells_len = @heap_promoted_cells.length
     saved_self_override_proc = @self_override
@@ -43843,6 +43968,15 @@ class Compiler
                 body_stmts = @out_lines.join(10.chr) + 10.chr
                 @out_lines = "".split(",", -1)
               end
+ # A non-lambda Proc's tail `return` is a non-local return: route it
+ # through compile_stmt so compile_return_stmt emits sp_preturn_fire
+ # (control leaves via longjmp, so the Proc fn's own `return bexpr`
+ # default value is never used). Without this arm the `elsif lt !=
+ # "void"` below would mis-handle the ReturnNode as an expression.
+            elsif last_t == "ReturnNode"
+              compile_stmt(bs[k])
+              body_stmts = @out_lines.join(10.chr) + 10.chr
+              @out_lines = "".split(",", -1)
             elsif lt != "void"
               body_stmts = @out_lines.join(10.chr) + 10.chr
               @out_lines = "".split(",", -1)
@@ -43913,6 +44047,7 @@ class Compiler
     end
     pop_scope
     @in_proc_body = saved_in_proc_body
+    @proc_nonlocal_return = saved_proc_nonlocal
     @proc_captures = saved_proc_captures
     @proc_capture_types = saved_proc_capture_types
     @self_override = saved_self_override_proc
@@ -44022,7 +44157,7 @@ class Compiler
         emit("  " + cap_ptr + "->" + captures[k] + " = " + local_cells[k] + ";")
         k = k + 1
       end
-      return "sp_proc_new_meta(" + fname + ", " + cap_ptr + ", " + cap_scan_name + ", " + meta_args + ")"
+      return maybe_wrap_proc_home("sp_proc_new_meta(" + fname + ", " + cap_ptr + ", " + cap_scan_name + ", " + meta_args + ")", lambda_flag)
     end
 
  # No captures: file-scope function with unused cap arg, sp_proc_new
@@ -44038,7 +44173,20 @@ class Compiler
     @lambda_funcs << "  return "
     @lambda_funcs << bexpr
     @lambda_funcs << ";\n}\n"
-    return "sp_proc_new_meta(" + fname + ", NULL, NULL, " + meta_args + ")"
+    return maybe_wrap_proc_home("sp_proc_new_meta(" + fname + ", NULL, NULL, " + meta_args + ")", lambda_flag)
+  end
+
+ # Record the enclosing framed method's setjmp frame on a non-lambda Proc
+ # at its creation site, so a non-local `return` in its body longjmps to
+ # the right method. A statement-expression keeps this an rvalue usable
+ # wherever the bare sp_proc_new_meta(...) call was. No-op for lambdas and
+ # for Procs created outside a framed method.
+  def maybe_wrap_proc_home(creation_expr, lambda_flag)
+    if @current_method_has_preturn_frame == 1 && lambda_flag == 0
+      tmp = new_temp
+      return "({ sp_Proc *" + tmp + " = " + creation_expr + "; " + tmp + "->home_pframe = &_pf; " + tmp + "; })"
+    end
+    creation_expr
   end
 
   def compile_bracket_assign(nid)
@@ -53124,6 +53272,152 @@ class Compiler
     while @type_narrow_names.length > narrow_baseline_cbr
       pop_type_narrow
     end
+  end
+
+ # 1 iff `nid` is a `lambda { }` / `Lambda.new { }` call (a lambda whose
+ # `return` is local). `->{}` is a LambdaNode handled directly by the
+ # scan, not here.
+  def is_lambda_call(nid)
+    if @nd_type[nid] != "CallNode"
+      return 0
+    end
+    if @nd_receiver[nid] < 0 && @nd_name[nid] == "lambda"
+      return 1
+    end
+    if @nd_name[nid] == "new" && @nd_receiver[nid] >= 0 && @nd_name[@nd_receiver[nid]] == "Lambda"
+      return 1
+    end
+    0
+  end
+
+ # 1 iff this method body lexically owns a non-lambda Proc/block whose body
+ # contains a bare `return` -- i.e. a non-local return targets this method,
+ # so its prologue must declare the setjmp frame `_pf`. A `return` directly
+ # in the method body (not inside any block) is an ordinary return and does
+ # not require a frame.
+  def method_owns_returning_proc(body_id)
+    scan_returning_proc(body_id, 0)
+  end
+
+  def scan_returning_proc(nid, in_nl_proc)
+    if nid < 0
+      return 0
+    end
+    t = @nd_type[nid]
+ # def/class/module and lambdas are separate return targets: a `return`
+ # inside them does not target this method.
+    if t == "DefNode" || t == "ClassNode" || t == "ModuleNode" || t == "LambdaNode"
+      return 0
+    end
+    if t == "ReturnNode"
+      return in_nl_proc
+    end
+    if t == "CallNode"
+      recv = @nd_receiver[nid]
+      if recv >= 0 && scan_returning_proc(recv, in_nl_proc) == 1
+        return 1
+      end
+      aid = @nd_arguments[nid]
+      if aid >= 0
+        aa = get_args(aid)
+        ai2 = 0
+        while ai2 < aa.length
+          if scan_returning_proc(aa[ai2], in_nl_proc) == 1
+            return 1
+          end
+          ai2 = ai2 + 1
+        end
+      end
+ # The block child opens a non-lambda Proc scope unless the call builds
+ # a lambda; a `return` inside that block targets this method.
+      blk = @nd_block[nid]
+      if blk >= 0 && @nd_type[blk] == "BlockNode" && is_lambda_call(nid) == 0
+        if scan_returning_proc(@nd_body[blk], 1) == 1
+          return 1
+        end
+      end
+      return 0
+    end
+    children = []
+    push_child_ids(nid, children)
+    k = 0
+    while k < children.length
+      if scan_returning_proc(children[k], in_nl_proc) == 1
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
+ # The home method's setjmp recovery returns the longjmp'd mrb_int value,
+ # cast back to the declared return type (the inverse of the proc-fn-ABI
+ # round-trip the non-local `return` applied). Tuple/poly returns can't ride
+ # the slot, so such methods aren't framed (preturn_return_type_ok).
+  def preturn_return_type_ok(rt)
+    if rt == "poly" || is_tuple_type(rt) == 1
+      return 0
+    end
+    1
+  end
+
+  def preturn_recover_value(rt)
+    if base_type(rt) == "float"
+      return "*(mrb_float *)&_pf.value"
+    end
+    if type_is_pointer(rt) == 1 || base_type(rt) == "ptr"
+      return "(" + c_type(rt) + ")(uintptr_t)_pf.value"
+    end
+    "_pf.value"
+  end
+
+ # Method-function-top wrapper: emit the non-local-return frame prologue
+ # when this method owns a returning Proc, then compile the body. Used only
+ # at genuine C-function tops (not the recursive tail-branch expansions that
+ # also call compile_body_return), so `_pf` is declared exactly once.
+  def compile_method_body_return(body_id, return_type)
+    framed = 0
+    if body_id >= 0 && preturn_return_type_ok(return_type) == 1 && method_owns_returning_proc(body_id) == 1
+      framed = 1
+    end
+    saved_framed = @current_method_has_preturn_frame
+    @current_method_has_preturn_frame = framed
+    if framed == 1
+      emit("  sp_preturn_frame _pf;")
+      if return_type == "void"
+        emit("  if (setjmp(_pf.buf)) { return; }")
+      else
+        emit("  if (setjmp(_pf.buf)) { return " + preturn_recover_value(return_type) + "; }")
+      end
+    end
+    saved_cmb = @current_method_body_id
+    @current_method_body_id = body_id
+    compile_body_return(body_id, return_type)
+    @current_method_body_id = saved_cmb
+    @current_method_has_preturn_frame = saved_framed
+  end
+
+ # Return type of `<vname>.call` resolved from the proc/lambda literal
+ # assigned to `vname` within `body_id` (first assignment wins). "" when
+ # no such literal. Per-method-body so same-named proc vars in different
+ # methods resolve independently, unlike the name-keyed global table.
+  def proc_var_literal_ret_type(vname, body_id)
+    if body_id < 0
+      return ""
+    end
+    stmts = get_stmts(body_id)
+    i = 0
+    while i < stmts.length
+      s = stmts[i]
+      if @nd_type[s] == "LocalVariableWriteNode" && @nd_name[s] == vname
+        plt = proc_literal_ret_type(@nd_expression[s])
+        if plt != ""
+          return plt
+        end
+      end
+      i = i + 1
+    end
+    ""
   end
 
  # `--int-overflow=promote` widens return slots to bigint while
