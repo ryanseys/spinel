@@ -4475,7 +4475,11 @@ class Compiler
  # CallNode whose actual emit is bigint shows up here as et2=int
  # while a sibling LV read sees et=bigint -- recognize the pair
  # as compatible instead of widening to poly_array.
-          if @int_overflow_mode == "promote" && (et == "int" || et == "bigint") && (et2 == "int" || et2 == "bigint")
+          if base_type(et) == "int" && base_type(et2) == "int"
+ # `int` + `int?` share IntArray storage -- nil rides SP_INT_NIL, which
+ # the inspect/render path shows as `nil`. Don't widen to poly_array.
+ # Mirrors spinel_analyze.rb's mixed-element compatibility check.
+          elsif @int_overflow_mode == "promote" && (et == "int" || et == "bigint") && (et2 == "int" || et2 == "bigint")
  # compatible; continue
           else
             return "poly_array"
@@ -17791,6 +17795,12 @@ class Compiler
               if it == "int"
                 fmt = fmt + "%lld"
                 arg_exprs.push("(long long)" + compile_expr(inner))
+              elsif it == "int?"
+ # CRuby renders `"#{nil}"` as "". An int? value carrying SP_INT_NIL
+ # (a missing splat / proc param) interpolates empty; any other value
+ # renders as the integer. Statement-expression evaluates once.
+                fmt = fmt + "%s"
+                arg_exprs.push("({ mrb_int _ii = " + compile_expr(inner) + "; _ii == SP_INT_NIL ? \"\" : sp_int_to_s(_ii); })")
               elsif it == "bigint"
  # promote-mode interpolation of an Integer LV: route
  # through sp_bigint_to_s so the displayed value is the
@@ -21506,10 +21516,11 @@ class Compiler
  # receiver expression and feeds it to sp_proc_call, using the same
  # arg-array packing convention.
       if infer_type(recv) == "proc"
-        ca_anon = compile_call_args(nid)
-        if ca_anon == ""
-          ca_anon = "0"
-        end
+ # compile_proc_call_args (not compile_call_args) so the compound
+ # literal is padded to 16 zero slots: a proc body that binds more
+ # params than the call supplies reads `args[i]` past the supplied
+ # arity, which would otherwise be past-the-end stack garbage.
+        ca_anon = compile_proc_call_args(nid)
         return "sp_proc_call(" + compile_expr(recv) + ", " + proc_call_argc(nid) + ", (mrb_int[]){" + ca_anon + "})"
       end
     end
@@ -34263,6 +34274,15 @@ class Compiler
     if nullable == 1 && at == "float"
       return "({ mrb_float _bv = " + val + "; sp_float_is_nil(_bv) ? sp_box_nil() : sp_box_float(_bv); })"
     end
+ # int? / symbol? boxing: the SP_INT_NIL sentinel becomes nil, any other
+ # value boxes as the underlying type. Without this an absent splat / proc
+ # param (SP_INT_NIL) would box as a real integer instead of nil.
+    if nullable == 1 && at == "int"
+      return "({ mrb_int _bv = " + val + "; (_bv == SP_INT_NIL) ? sp_box_nil() : sp_box_int(_bv); })"
+    end
+    if nullable == 1 && at == "symbol"
+      return "({ mrb_int _bv = " + val + "; (_bv == SP_INT_NIL) ? sp_box_nil() : sp_box_sym((sp_sym)_bv); })"
+    end
     if nullable == 1 && is_nullable_pointer_type(raw_at) == 1
       if at == "string"
         return "sp_box_nullable_str(" + val + ")"
@@ -43263,6 +43283,18 @@ class Compiler
     -1
   end
 
+ # Nilable form of a type (`int` -> `int?`); already-nilable / poly / empty
+ # pass through. Used to type a non-lambda Proc's possibly-unsupplied param.
+  def nilable_form(t)
+    if t == "" || t == "poly"
+      return t
+    end
+    if is_nullable_type(t) == 1
+      return t
+    end
+    t + "?"
+  end
+
  # Unbox an `sp_proc_call(...)` result (declared mrb_int) back to the
  # proc's recorded return type. The proc-fn ABI round-trips pointer
  # bodies through `(mrb_int)(uintptr_t)`, so a string/array/hash/obj
@@ -43374,6 +43406,15 @@ class Compiler
           end
         end
         s = s + "  " + ct + " lv_" + bps[bk] + " = (argc > " + bk.to_s + ") ? (" + ct + ")(" + expr + ") : (" + ct + ")(" + def_c + ");\n"
+      elsif lambda_flag == 0
+ # Non-lambda Proc required param: lenient arity, so an unsupplied
+ # arg is nil (the type's nil sentinel) rather than past-the-end
+ # garbage. Lambdas are strict (arity-checked above) and bind directly.
+        nil_pt = "int"
+        if bk < pts.length && pts[bk] != "" && pts[bk] != "int"
+          nil_pt = pts[bk]
+        end
+        s = s + "  " + ct + " lv_" + bps[bk] + " = (argc > " + bk.to_s + ") ? (" + ct + ")(" + expr + ") : (" + ct + ")(" + c_default_val(nilable_form(nil_pt)) + ");\n"
       else
         s = s + "  " + ct + " lv_" + bps[bk] + " = " + expr + ";\n"
       end
@@ -43781,8 +43822,10 @@ class Compiler
  # surplus args, so the body must see it as int_array, not the int
  # default (otherwise `a.sum` mis-dispatches on int).
     rest_pname = ""
+    reqs_count_pl = 0
     inner_pl = callable_inner_params_node(nid)
     if inner_pl >= 0 && @nd_type[inner_pl] != "NumberedParametersNode"
+      reqs_count_pl = parse_id_list(@nd_requireds[inner_pl]).length
       rest_pl = @nd_rest[inner_pl]
       if rest_pl >= 0 && @nd_type[rest_pl] == "RestParameterNode"
         rest_pname = @nd_name[rest_pl]
@@ -43796,6 +43839,13 @@ class Compiler
       end
       if rest_pname != "" && bps[di] == rest_pname
         pt = "int_array"
+ # A standalone non-lambda Proc (no projected block-param types, i.e. a
+ # `proc { }` likely reached via `.call`) has lenient arity: a required
+ # param may be unsupplied and bound to nil, so the body sees it nilable.
+ # Forwarded blocks carry projected types and are always filled, so they
+ # keep their concrete element type.
+      elsif lambda_flag == 0 && blk_param_types == "" && di < reqs_count_pl
+        pt = nilable_form(pt)
       end
       declare_var(bps[di], pt)
       di = di + 1
@@ -50740,11 +50790,47 @@ class Compiler
  # expression that holds the block body's last value. Emits the
  # block-param assignment and the block body's non-last stmts as
  # side effects.
+ # Ruby's block-arg auto-splat: a method that yields a single Array to a
+ # block declaring two or more params destructures the array across the
+ # params (`yield [1,2]` to `{ |a,b| }` binds a=1, b=2). Detect the shape
+ # at the yield site, evaluate the array once, and bind each param to an
+ # element (out-of-range params take their type default, matching the
+ # nil-fill semantics). Returns 1 when handled so the caller skips its
+ # one-arg-per-param binding/padding. Analyze types each param as the
+ # array's element type (block_param_type_at autosplat arm), so the
+ # element value's C type matches the declared `lv_<param>` slot.
+  def yield_autosplat_bind(aids, bp_names, map_from, map_to)
+    if aids.length != 1 || bp_names.length < 2
+      return 0
+    end
+    at = infer_type(aids[0])
+    if is_array_type(at) == 0
+      return 0
+    end
+    pfx = array_c_prefix(at)
+    arr_tmp = new_temp
+    emit("  sp_" + pfx + " *" + arr_tmp + " = " + compile_expr_remap(aids[0], map_from, map_to) + ";")
+    i = 0
+    while i < bp_names.length
+      bp_t = find_var_type(bp_names[i])
+      getv = "sp_" + pfx + "_get(" + arr_tmp + ", " + i.to_s + ")"
+      emit("  lv_" + bp_names[i] + " = (" + i.to_s + " < " + arr_tmp + "->len) ? " + getv + " : " + c_default_val(bp_t) + ";")
+      i = i + 1
+    end
+    1
+  end
+
   def compile_yield_inline_expr(yield_nid, blk, bp_names, map_from, map_to)
     args_id_ye = @nd_arguments[yield_nid]
-    assigned_ye = 0
+    aids_ye = []
     if args_id_ye >= 0
       aids_ye = get_args(args_id_ye)
+    end
+    assigned_ye = 0
+    if yield_autosplat_bind(aids_ye, bp_names, map_from, map_to) == 1
+      assigned_ye = bp_names.length
+    end
+    if assigned_ye == 0 && args_id_ye >= 0
       kye = 0
       while kye < aids_ye.length
         if kye < bp_names.length
@@ -50822,9 +50908,15 @@ class Compiler
  # (which trips a -Wint-conversion on Windows when an if-branch's
  # tail call to compile_stmt becomes the function's implicit return).
     args_id_yic = @nd_arguments[yield_nid]
-    assigned_yic = 0
+    aids_yic = []
     if args_id_yic >= 0
       aids_yic = get_args(args_id_yic)
+    end
+    assigned_yic = 0
+    if yield_autosplat_bind(aids_yic, bp_names, map_from, map_to) == 1
+      assigned_yic = bp_names.length
+    end
+    if assigned_yic == 0 && args_id_yic >= 0
       kyic = 0
       while kyic < aids_yic.length
         if kyic < bp_names.length
@@ -50924,9 +51016,15 @@ class Compiler
     if t == "YieldNode"
  # Replace yield with the block body
       args_id = @nd_arguments[nid]
-      assigned = 0
+      aids = []
       if args_id >= 0
         aids = get_args(args_id)
+      end
+      assigned = 0
+      if yield_autosplat_bind(aids, bp_names, map_from, map_to) == 1
+        assigned = bp_names.length
+      end
+      if assigned == 0 && args_id >= 0
         k = 0
         while k < aids.length
           if k < bp_names.length

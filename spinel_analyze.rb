@@ -33685,35 +33685,61 @@ class Compiler
                       ybid_628 = @meth_body_ids[mi_628]
                       if ybid_628 >= 0
                         arity_628 = method_yield_arity(mi_628)
+ # Auto-splat: a single Array yielded to a block with two or more
+ # params is destructured across the params (Ruby's block-arg
+ # protocol); type each param as the array's element type so codegen
+ # binds `lv_p = arr[i]` at the yield site. Mirrors the
+ # block_param_type_at autosplat arm.
+                        if arity_628 == 1 && get_block_param(nid, 1) != ""
+                          yas_628 = "".split(",", -1)
+                          yas_628.push("")
+                          push_scope
+                          yan_628 = "".split(",", -1)
+                          yat_628 = "".split(",", -1)
+                          scan_locals(ybid_628, yan_628, yat_628, "".split(",", -1))
+                          yk_628 = 0
+                          while yk_628 < yan_628.length
+                            declare_var(yan_628[yk_628], yat_628[yk_628])
+                            yk_628 = yk_628 + 1
+                          end
+                          body_yield_arg_types(ybid_628, yas_628)
+                          pop_scope
+                          if yas_628.length > 0 && is_array_type(yas_628[0]) == 1
+                            types.push(autosplat_param_type(yas_628[0], bk, ybid_628))
+                            pushed_block_param_628 = 1
+                          end
+                        end
  # Block param past the number of args the method's `yield`
  # actually passes is never filled; Ruby gives it nil. Type as
  # int? so codegen pads with SP_INT_NIL and .inspect/.nil?
  # dispatch correctly. Use the true argc (a bare `yield` passes
  # 0, even though the C-signature arity floors to 1). Issue #997.
-                        if bk >= method_yield_min_argc(mi_628)
+                        if pushed_block_param_628 == 0 && bk >= method_yield_min_argc(mi_628)
                           types.push("int?")
                           pushed_block_param_628 = 1
                         end
-                        ytypes_628 = "".split(",", -1)
-                        ka_628 = 0
-                        while ka_628 < arity_628
-                          ytypes_628.push("")
-                          ka_628 = ka_628 + 1
-                        end
-                        push_scope
-                        yl_names_628 = "".split(",", -1)
-                        yl_types_628 = "".split(",", -1)
-                        scan_locals(ybid_628, yl_names_628, yl_types_628, "".split(",", -1))
-                        yj_628 = 0
-                        while yj_628 < yl_names_628.length
-                          declare_var(yl_names_628[yj_628], yl_types_628[yj_628])
-                          yj_628 = yj_628 + 1
-                        end
-                        body_yield_arg_types(ybid_628, ytypes_628)
-                        pop_scope
-                        if bk < ytypes_628.length && ytypes_628[bk] != "" && ytypes_628[bk] != "int"
-                          types.push(ytypes_628[bk])
-                          pushed_block_param_628 = 1
+                        if pushed_block_param_628 == 0
+                          ytypes_628 = "".split(",", -1)
+                          ka_628 = 0
+                          while ka_628 < arity_628
+                            ytypes_628.push("")
+                            ka_628 = ka_628 + 1
+                          end
+                          push_scope
+                          yl_names_628 = "".split(",", -1)
+                          yl_types_628 = "".split(",", -1)
+                          scan_locals(ybid_628, yl_names_628, yl_types_628, "".split(",", -1))
+                          yj_628 = 0
+                          while yj_628 < yl_names_628.length
+                            declare_var(yl_names_628[yj_628], yl_types_628[yj_628])
+                            yj_628 = yj_628 + 1
+                          end
+                          body_yield_arg_types(ybid_628, ytypes_628)
+                          pop_scope
+                          if bk < ytypes_628.length && ytypes_628[bk] != "" && ytypes_628[bk] != "int"
+                            types.push(ytypes_628[bk])
+                            pushed_block_param_628 = 1
+                          end
                         end
                       end
                     end
@@ -34964,6 +34990,78 @@ class Compiler
     end
   end
 
+ # When `nid`'s body has a `yield <Array literal>` (single arg, no splat),
+ # return that literal's element count, so autosplat can type a block param
+ # past the array length as nilable (Ruby fills missing splat params with
+ # nil). -1 when the yielded arg isn't a fixed-length Array literal. Stops
+ # at nested defs.
+  def yield_single_array_literal_len(nid)
+    if nid < 0
+      return -1
+    end
+    if @nd_type[nid] == "YieldNode"
+      if @nd_arguments[nid] >= 0
+        yargs = get_args(@nd_arguments[nid])
+        if yargs.length == 1 && @nd_type[yargs[0]] == "ArrayNode"
+          elems = parse_id_list(@nd_elements[yargs[0]])
+          ei = 0
+          while ei < elems.length
+            if @nd_type[elems[ei]] == "SplatNode"
+              return -1
+            end
+            ei = ei + 1
+          end
+          return elems.length
+        end
+      end
+      return -1
+    end
+    if @nd_type[nid] == "DefNode"
+      return -1
+    end
+    cs2 = []
+    push_child_ids(nid, cs2)
+    k2 = 0
+    while k2 < cs2.length
+      r2 = yield_single_array_literal_len(cs2[k2])
+      if r2 >= 0
+        return r2
+      end
+      k2 = k2 + 1
+    end
+    -1
+  end
+
+ # Nilable form of a scalar/pointer element type (`int` -> `int?`), for an
+ # autosplat param that may be absent. Already-nilable types pass through.
+  def nilable_elem_type(t)
+    if t == "" || t == "poly"
+      return t
+    end
+    if is_nullable_type(t) == 1
+      return t
+    end
+    t + "?"
+  end
+
+ # Type of autosplat param `pi` for a block that destructures the array
+ # type `arr_type` yielded by method index `mi`: the element type when the
+ # param is within the yielded literal's length, nilable beyond it (missing
+ # -> nil). Non-literal yields fall back to the element type for all params.
+  def autosplat_param_type(arr_type, pi, body_id)
+    elem = elem_type_of_array(arr_type)
+    ylen = yield_single_array_literal_len(body_id)
+    if ylen < 0
+ # Non-literal yielded array: its length isn't known at compile time, so
+ # any param could be past the end -> nilable (missing splat -> nil).
+      return nilable_elem_type(elem)
+    end
+    if pi >= ylen
+      return nilable_elem_type(elem)
+    end
+    elem
+  end
+
   def cls_method_has_yield(ci, midx)
     ystr = @cls_meth_has_yield[ci].split(";", -1)
     if midx < ystr.length
@@ -36051,6 +36149,36 @@ class Compiler
         end
         @needs_rb_value = 1
         return "poly"
+      end
+    end
+ # Auto-splat: a method that yields a single Array to a block with two
+ # or more params destructures the array (Ruby's block-arg protocol).
+ # Type each param as the array's element type so codegen's destructure
+ # binds `lv_p = arr[i]` at the yield site. Without this param 0 takes
+ # the whole-array type and param 1+ falls to int?, so `a + b` (etc.)
+ # dispatches on the wrong types and the typed array flows into an int.
+    if recv < 0 && get_block_param(call_nid, 1) != ""
+      mi_as = find_method_idx(mname)
+      if mi_as >= 0 && mi_as < @meth_has_yield.length && @meth_has_yield[mi_as] == 1
+        ybid_as = @meth_body_ids[mi_as]
+        if ybid_as >= 0 && method_yield_arity(mi_as) == 1
+          yt_as = "".split(",", -1)
+          yt_as.push("")
+          push_scope
+          yn_as = "".split(",", -1)
+          ytp_as = "".split(",", -1)
+          scan_locals(ybid_as, yn_as, ytp_as, "".split(",", -1))
+          zz_as = 0
+          while zz_as < yn_as.length
+            declare_var(yn_as[zz_as], ytp_as[zz_as])
+            zz_as = zz_as + 1
+          end
+          body_yield_arg_types(ybid_as, yt_as)
+          pop_scope
+          if yt_as.length > 0 && is_array_type(yt_as[0]) == 1
+            return autosplat_param_type(yt_as[0], pi, ybid_as)
+          end
+        end
       end
     end
  # No-recv call to a user-defined top-level method that uses yield:

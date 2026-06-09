@@ -1891,7 +1891,7 @@ static inline const char *sp_File_path(sp_File *f) { return f && f->path ? f->pa
    emits a 0 placeholder that flows into `.inspect`, and dereferencing
    a->len would segfault. Rendering "[]" stops the crash and degrades to
    the same shape as the empty-array case. */
-static const char*sp_IntArray_inspect(sp_IntArray*a){if(!a)return "[]";sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(a->data[a->start+i]));}sp_String_append(s,"]");return s->data;}
+static const char*sp_IntArray_inspect(sp_IntArray*a){if(!a)return "[]";sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");mrb_int _e=a->data[a->start+i];sp_String_append(s,_e==SP_INT_NIL?"nil":sp_int_to_s(_e));}sp_String_append(s,"]");return s->data;}
 static const char*sp_FloatArray_inspect(sp_FloatArray*a){if(!a)return "[]";sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_float_inspect(a->data[i]));}sp_String_append(s,"]");return s->data;}
 /* Array#join for float arrays -- each element via the Ruby-faithful
    sp_float_to_s ("1.0", not "1"). Mirrors sp_IntArray_join exactly: build in a
