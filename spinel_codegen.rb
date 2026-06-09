@@ -5584,10 +5584,10 @@ class Compiler
       return "sp_PolyArray *"
     end
     if t == "lambda"
-      return "sp_Val *"
+      return "sp_Proc *"
     end
     if t == "curried"
-      return "sp_Val *"
+      return "sp_Proc *"
     end
     if is_obj_type(t) == 1
       cname = t[4, t.length - 4]
@@ -19647,7 +19647,7 @@ class Compiler
           ar_cur = lambda_node_arity(recv)
         end
         if ar_cur > 0
-          return "sp_lam_curry(" + compile_expr(recv) + ", " + ar_cur.to_s + ")"
+          return "sp_proc_curry((sp_Proc *)" + compile_expr(recv) + ", " + ar_cur.to_s + ")"
         end
       end
       r = compile_lambda_call_expr(nid, mname, recv)
@@ -19655,17 +19655,23 @@ class Compiler
         return r
       end
     end
- # Curried proc (from Proc#curry): each `[]`/`call` supplies one
- # argument and yields another curried value (or the final result)
- # as an sp_Val *, never unboxed -- the runtime tag carries whether
- # it is a partial proc or the materialised value.
+ # Curried proc (from Proc#curry): an sp_Proc whose curry-fn accumulates
+ # one argument per `[]`/`call`. Each application packs its single arg
+ # into the proc-call arg array; short of arity the runtime returns a
+ # fresh curried sp_Proc (a pointer in the mrb_int slot), at arity it
+ # returns the target's int result.
     if rt == "curried"
       if mname == "[]" || mname == "call"
         args_id_cur = @nd_arguments[nid]
         if args_id_cur >= 0
           a_cur = get_args(args_id_cur)
           if a_cur.length >= 1
-            return "sp_lam_call(" + compile_expr(recv) + ", " + wrap_as_sp_val(a_cur[0]) + ")"
+ # A curried `[]`/`call` returns either a partial (a fresh curried
+ # sp_Proc, boxed in the mrb_int slot) or the final int result. The
+ # whole chain is typed "curried" (sp_Proc *), so cast the mrb_int
+ # back to the pointer for assignment / further application; a final
+ # int result is printed via the curried puts arm's (long long) cast.
+            return "(sp_Proc *)(uintptr_t)(sp_proc_call((sp_Proc *)" + compile_expr(recv) + ", (mrb_int[]){" + compile_proc_call_args(nid) + "}))"
           end
         end
       end
@@ -20002,17 +20008,18 @@ class Compiler
       end
     end
 
- # Proc introspection.
-    if recv_type == "proc"
+ # Proc introspection. Arrow lambdas are sp_Proc values too, so they
+ # share the same arity / lambda? / parameters metadata accessors.
+    if recv_type == "proc" || recv_type == "lambda"
       if mname == "arity"
-        return "sp_proc_arity(" + rc + ")"
+        return "sp_proc_arity((sp_Proc *)" + rc + ")"
       end
       if mname == "lambda?"
-        return "sp_proc_lambda_p(" + rc + ")"
+        return "sp_proc_lambda_p((sp_Proc *)" + rc + ")"
       end
       if mname == "parameters"
         @needs_rb_value = 1
-        return "sp_proc_parameters(" + rc + ")"
+        return "sp_proc_parameters((sp_Proc *)" + rc + ")"
       end
     end
 
@@ -21372,37 +21379,14 @@ class Compiler
       ret_type = lambda_var_ret_type(@nd_name[recv])
     end
     if mname == "[]" || mname == "call"
-      call_expr = ""
-      args_id = @nd_arguments[nid]
-      if args_id >= 0
-        aargs = get_args(args_id)
- # multi-arg lambda dispatch. Pick `sp_lam_callN`
- # based on the number of args; up to arity-4 covered. Beyond
- # that, fall back to single-arg (caller is on its own).
-        if aargs.length == 1
-          ac = wrap_as_sp_val(aargs.first)
-          call_expr = "sp_lam_call(" + rc + ", " + ac + ")"
-        elsif aargs.length == 2
-          a0 = wrap_as_sp_val(aargs[0])
-          a1 = wrap_as_sp_val(aargs[1])
-          call_expr = "sp_lam_call2(" + rc + ", " + a0 + ", " + a1 + ")"
-        elsif aargs.length == 3
-          a0 = wrap_as_sp_val(aargs[0])
-          a1 = wrap_as_sp_val(aargs[1])
-          a2 = wrap_as_sp_val(aargs[2])
-          call_expr = "sp_lam_call3(" + rc + ", " + a0 + ", " + a1 + ", " + a2 + ")"
-        elsif aargs.length == 4
-          a0 = wrap_as_sp_val(aargs[0])
-          a1 = wrap_as_sp_val(aargs[1])
-          a2 = wrap_as_sp_val(aargs[2])
-          a3 = wrap_as_sp_val(aargs[3])
-          call_expr = "sp_lam_call4(" + rc + ", " + a0 + ", " + a1 + ", " + a2 + ", " + a3 + ")"
-        end
-      end
-      if call_expr == ""
-        call_expr = "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
-      end
-      return lam_unbox(call_expr, ret_type)
+ # Arrow lambdas are sp_Proc values. Pack the call args into a
+ # 16-slot mrb_int compound literal (pointer args boxed via
+ # (mrb_int)(uintptr_t), scalars passed directly) and unbox the
+ # mrb_int result back to the lambda's recorded return type --
+ # the same convention as a `proc {}` `.call`.
+      ca = compile_proc_call_args(nid)
+      call_expr = "sp_proc_call(" + rc + ", (mrb_int[]){" + ca + "})"
+      return proc_call_unbox(call_expr, ret_type)
     end
     ""
   end
@@ -22691,10 +22675,10 @@ class Compiler
     if mname == "<<"
       lt = infer_type(recv)
  # Proc#<< / lambda compose: `(f << g).call(x)` == f(g(x)).
- # recv is outer, arg is inner. The two proc representations
- # (sp_Val * lambda vs sp_Proc * block-proc) compose separately.
+ # recv is outer, arg is inner. Both lambdas and block procs are
+ # sp_Proc values, so they share sp_proc_compose.
       if lt == "lambda"
-        return "sp_lam_compose(" + compile_expr(recv) + ", " + compile_arg0(nid) + ")"
+        return "sp_proc_compose((sp_Proc *)" + compile_expr(recv) + ", (sp_Proc *)" + compile_arg0(nid) + ")"
       end
       if lt == "proc"
         return "sp_proc_compose((sp_Proc *)" + compile_expr(recv) + ", (sp_Proc *)" + compile_arg0(nid) + ")"
@@ -22803,7 +22787,7 @@ class Compiler
  # Proc#>> / lambda then-compose: `(f >> g).call(x)` == g(f(x)).
  # recv is inner, arg is outer (swapped from <<).
       if lt_shr == "lambda"
-        return "sp_lam_compose(" + compile_arg0(nid) + ", " + compile_expr(recv) + ")"
+        return "sp_proc_compose((sp_Proc *)" + compile_arg0(nid) + ", (sp_Proc *)" + compile_expr(recv) + ")"
       end
       if lt_shr == "proc"
         return "sp_proc_compose((sp_Proc *)" + compile_arg0(nid) + ", (sp_Proc *)" + compile_expr(recv) + ")"
@@ -43279,23 +43263,6 @@ class Compiler
     -1
   end
 
-  def lam_box(expr, vtype)
-    bt = base_type(vtype)
-    if bt == "string"
-      return "sp_lam_int((mrb_int)" + expr + ")"
-    end
-    if bt == "float"
-      return "sp_lam_int(*(mrb_int*)&(mrb_float){" + expr + "})"
-    end
-    if bt == "bool"
-      return "sp_lam_bool(" + expr + ")"
-    end
-    if bt == "nil" || bt == "void"
-      return "&sp_lam_nil_val"
-    end
-    "sp_lam_int(" + expr + ")"
-  end
-
  # Unbox an `sp_proc_call(...)` result (declared mrb_int) back to the
  # proc's recorded return type. The proc-fn ABI round-trips pointer
  # bodies through `(mrb_int)(uintptr_t)`, so a string/array/hash/obj
@@ -43309,576 +43276,25 @@ class Compiler
     if bt == "string" || bt == "mutable_str"
       return "(const char *)(uintptr_t)(" + call_expr + ")"
     end
+ # A float body is returned through the mrb_int slot as its raw bits
+ # (see compile_proc_literal's float-return coercion). Reinterpret the
+ # integer bits back to mrb_float here.
+    if bt == "float"
+      return "*(mrb_float *)&(mrb_int){" + call_expr + "}"
+    end
     if type_is_pointer(ret_type) == 1
       return "(" + c_type(ret_type) + ")(uintptr_t)(" + call_expr + ")"
     end
     call_expr
   end
 
-  def lam_unbox(expr, vtype)
-    bt = base_type(vtype)
-    if bt == "string"
-      return "(const char*)sp_lam_to_int(" + expr + ")"
-    end
-    if bt == "float"
-      return "*(mrb_float*)&(mrb_int){sp_lam_to_int(" + expr + ")}"
-    end
-    if bt == "bool"
-      return "(" + expr + ")->u.bval"
-    end
-    if bt == "nil" || bt == "void"
-      return "(sp_lam_to_int(" + expr + "), 0)"
-    end
-    "sp_lam_to_int(" + expr + ")"
-  end
-
-  def compile_lambda_body_expr(nid, params, captures)
- # Compile an expression inside a lambda body, replacing:
- # - param refs with lv_param (local)
- # - captured var refs with self->captures[i]
-    if nid < 0
-      return "&sp_lam_nil_val"
-    end
-    t = @nd_type[nid]
-    if t == "LocalVariableReadNode"
-      vn = @nd_name[nid]
- # Check param
-      if not_in(vn, params) == 0
-        return "lv_" + vn
-      end
- # Check captures
-      ci = 0
-      while ci < captures.length
-        if captures[ci] == vn
-          ct = ""
-          if ci < @lambda_capture_cell_types.length
-            ct = @lambda_capture_cell_types[ci]
-          end
-          if ct != ""
- # Typed cell capture: dereference and box
-            deref = "*(" + c_type(ct) + "*)self->captures[" + ci.to_s + "]"
-            return lam_box(deref, ct)
-          end
-          return "self->captures[" + ci.to_s + "]"
-        end
-        ci = ci + 1
-      end
-      return "lv_" + vn
-    end
-    if t == "LocalVariableWriteNode"
-      vn = @nd_name[nid]
-      val = compile_lambda_body_expr(@nd_expression[nid], params, captures)
- # Check if capture
-      ci = 0
-      while ci < captures.length
-        if captures[ci] == vn
-          ct = ""
-          if ci < @lambda_capture_cell_types.length
-            ct = @lambda_capture_cell_types[ci]
-          end
-          if ct != ""
- # Typed cell capture: unbox and store
-            cptr = "*(" + c_type(ct) + "*)self->captures[" + ci.to_s + "]"
-            return "(" + cptr + " = " + lam_unbox(val, ct) + ", " + val + ")"
-          end
-          return "(self->captures[" + ci.to_s + "] = " + val + ")"
-        end
-        ci = ci + 1
-      end
-      emit("  sp_Val *lv_" + vn + " = " + val + ";")
-      return "lv_" + vn
-    end
-    if t == "IntegerNode"
-      return "sp_lam_int(" + @nd_value[nid].to_s + ")"
-    end
-    if t == "TrueNode"
-      return "sp_lam_bool(TRUE)"
-    end
-    if t == "FalseNode"
-      return "sp_lam_bool(FALSE)"
-    end
-    if t == "NilNode"
-      return "&sp_lam_nil_val"
-    end
-    if t == "StringNode"
- # Box the string pointer through the sp_Val int slot (lam_box) so a
- # string-returning arrow lambda round-trips its value; the matching
- # lam_unbox at the .call site casts it back. Previously stubbed to 0.
-      return lam_box(compile_expr(nid), "string")
-    end
-    if t == "ConstantReadNode"
-      cname = @nd_name[nid]
-      ci = find_const_idx(cname)
-      if ci >= 0
-        return "cst_" + cname
-      end
-      return "&sp_lam_nil_val"
-    end
-    if t == "LambdaNode"
-      return compile_lambda_expr(nid)
-    end
-    if t == "CallNode"
-      mname = @nd_name[nid]
-      recv = @nd_receiver[nid]
- # f[arg] -> sp_lam_call(f, arg)
-      if mname == "[]"
-        if recv >= 0
-          rc = compile_lambda_body_expr(recv, params, captures)
-          args_id = @nd_arguments[nid]
-          if args_id >= 0
-            aargs = get_args(args_id)
-            if aargs.length > 0
-              ac = compile_lambda_body_expr(aargs.first, params, captures)
-              return "sp_lam_call(" + rc + ", " + ac + ")"
-            end
-          end
-          return "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
-        end
-      end
- # f.call(arg) -> sp_lam_call(f, arg)
-      if mname == "call"
-        if recv >= 0
-          rc = compile_lambda_body_expr(recv, params, captures)
-          args_id = @nd_arguments[nid]
-          if args_id >= 0
-            aargs = get_args(args_id)
-            if aargs.length > 0
-              ac = compile_lambda_body_expr(aargs.first, params, captures)
-              return "sp_lam_call(" + rc + ", " + ac + ")"
-            end
-          end
-          return "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
-        end
-      end
- # No receiver: bare function call
-      if recv < 0
-        if mname == "+"
-          return "sp_lam_int(0)"
-        end
-        mi = find_method_idx(mname)
-        if mi >= 0
-          ca = ""
-          args_id = @nd_arguments[nid]
-          if args_id >= 0
-            aargs = get_args(args_id)
-            k = 0
-            while k < aargs.length
-              if k > 0
-                ca = ca + ", "
-              end
-              ca = ca + compile_lambda_body_expr(aargs[k], params, captures)
-              k = k + 1
-            end
-          end
-          return "sp_" + sanitize_name(mname) + "(" + ca + ")"
-        end
-      end
- # Arithmetic on sp_Val (+ operator)
-      if mname == "+"
-        if recv >= 0
-          rc = compile_lambda_body_expr(recv, params, captures)
-          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
-          return "sp_lam_int(sp_lam_to_int(" + rc + ") + sp_lam_to_int(" + ac + "))"
-        end
-      end
- # more numeric ops on sp_Val so multi-arg lambda
- # bodies like `->(a, b, c) { a * b * c }` lower correctly.
-      if mname == "-"
-        if recv >= 0
-          rc = compile_lambda_body_expr(recv, params, captures)
-          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
-          return "sp_lam_int(sp_lam_to_int(" + rc + ") - sp_lam_to_int(" + ac + "))"
-        end
-      end
-      if mname == "*"
-        if recv >= 0
-          rc = compile_lambda_body_expr(recv, params, captures)
-          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
-          return "sp_lam_int(sp_lam_to_int(" + rc + ") * sp_lam_to_int(" + ac + "))"
-        end
-      end
-      if mname == "/"
-        if recv >= 0
-          rc = compile_lambda_body_expr(recv, params, captures)
-          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
-          return "sp_lam_int(sp_idiv(sp_lam_to_int(" + rc + "), sp_lam_to_int(" + ac + ")))"
-        end
-      end
-      if mname == "%"
-        if recv >= 0
-          rc = compile_lambda_body_expr(recv, params, captures)
-          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
-          return "sp_lam_int(sp_imod(sp_lam_to_int(" + rc + "), sp_lam_to_int(" + ac + ")))"
-        end
-      end
-      if mname == "<" || mname == ">" || mname == "<=" || mname == ">=" || mname == "==" || mname == "!="
-        if recv >= 0
-          rc = compile_lambda_body_expr(recv, params, captures)
-          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
-          return "sp_lam_bool(sp_lam_to_int(" + rc + ") " + mname + " sp_lam_to_int(" + ac + "))"
-        end
-      end
-      return "&sp_lam_nil_val"
-    end
-    if t == "IfNode"
-      pred = compile_lambda_body_expr(@nd_predicate[nid], params, captures)
-      body = @nd_body[nid]
-      bexpr = "&sp_lam_nil_val"
-      if body >= 0
-        bs = get_stmts(body)
-        if bs.length > 0
-          bexpr = compile_lambda_body_expr(bs.last, params, captures)
-        end
-      end
-      ec = @nd_else_clause[nid]
-      eexpr = "&sp_lam_nil_val"
-      if ec >= 0
-        ebs = get_stmts(@nd_body[ec])
-        if ebs.length > 0
-          eexpr = compile_lambda_body_expr(ebs[ebs.length - 1], params, captures)
-        end
-      end
-      return "(" + pred + " ? " + bexpr + " : " + eexpr + ")"
-    end
-    "&sp_lam_nil_val"
-  end
-
-  def wrap_as_sp_val(nid)
-    at = infer_type(nid)
-    if at == "lambda"
-      return compile_expr(nid)
-    end
-    if at == "int"
-      return "sp_lam_int(" + compile_expr(nid) + ")"
-    end
-    if at == "bool"
-      return "sp_lam_bool(" + compile_expr(nid) + ")"
-    end
-    if @nd_type[nid] == "NilNode"
-      return "&sp_lam_nil_val"
-    end
- # Default: try to compile as expression
-    compile_expr(nid)
-  end
-
   def compile_lambda_expr(nid)
     @needs_lambda = 1
- # Collect ALL formal params, not just the first . The
- # legacy single-`pname` path still drives the typed-caps emit
- # block below (it only handles single-arg lambdas with typed
- # captures); multi-arg flows through the sp_Val* path which now
- # honours `param_arr.length`.
-    param_arr = "".split(",", -1)
-    params_id = @nd_parameters[nid]
-    if params_id >= 0
-      reqs = parse_id_list(@nd_requireds[params_id])
-      pi = 0
-      while pi < reqs.length
-        param_arr.push(@nd_name[reqs[pi]])
-        pi = pi + 1
-      end
-    end
-    pname = ""
-    if param_arr.length > 0
-      pname = param_arr[0]
-    end
-
-    body = @nd_body[nid]
- # Find free variables (captures)
-    free_vars = "".split(",", -1)
-    locals = "".split(",", -1)
-    if body >= 0
-      scan_lambda_free_vars(body, param_arr, locals, free_vars)
-    end
-
- # Generate lambda function
-    lam_id = @lambda_counter
-    @lambda_counter = @lambda_counter + 1
-    fname = "_lam_" + lam_id.to_s
-
- # Compute capture cell types (before body compilation)
-    cap_cell_types = "".split(",", -1)
-    k = 0
-    while k < free_vars.length
-      fv = free_vars[k]
-      cell = heap_promoted_cell(fv)
-      if cell == "" && @in_fiber_body == 1 && fiber_capture_index(fv) >= 0
-        cell = "_cap->" + fv
-      end
- # Regular locals will be heap-promoted (not lambda params/captures)
-      if cell == "" && not_in(fv, @lambda_params) == 1
-        is_enclosing_cap = 0
-        ci = 0
-        while ci < @lambda_captures.length
-          if @lambda_captures[ci] == fv
-            is_enclosing_cap = 1
-          end
-          ci = ci + 1
-        end
-        if is_enclosing_cap == 0
-          vt = find_var_type(fv)
-          if vt != "" && vt != "lambda"
-            cell = "will_promote"
-          end
-        end
-      end
-      if cell != ""
-        cap_cell_types.push(find_var_type(fv))
-      else
-        cap_cell_types.push("")
-      end
-      k = k + 1
-    end
-
- # Check if we have typed cell captures (need regular compiler path)
-    has_typed_caps = 0
-    k = 0
-    while k < cap_cell_types.length
-      if cap_cell_types[k] != ""
-        has_typed_caps = 1
-      end
-      k = k + 1
-    end
-
- # Get body expression
-    bexpr = "&sp_lam_nil_val"
-    if body >= 0
-      bs = get_stmts(body)
-      if bs.length > 0 && has_typed_caps == 1
- # Typed captures: compile body using regular compiler
-        save_out = @out_lines
-        save_indent = @indent
-        save_hp_names_len = @heap_promoted_names.length
-        save_hp_cells_len = @heap_promoted_cells.length
-        @out_lines = "".split(",", -1)
-        @indent = 1
-
-        push_scope
- # Declare parameter with proper type
-        if pname != ""
-          ptype = infer_type(bs.last)
-          if ptype == ""
-            ptype = "int"
-          end
-          declare_var(pname, "int")
-        end
- # Set up cell pointer locals for typed captures
-        k = 0
-        while k < free_vars.length
-          if cap_cell_types[k] != ""
-            ct = c_type(cap_cell_types[k])
-            cell_local = "_lc_" + free_vars[k]
-            emit("  " + ct + " *" + cell_local + " = (" + ct + "*)self->captures[" + k.to_s + "];")
-            @heap_promoted_names.push(free_vars[k])
-            @heap_promoted_cells.push(cell_local)
-            declare_var(free_vars[k], cap_cell_types[k])
-          end
-          k = k + 1
-        end
- # Declare body-local variables. Read precomputed scan_locals
- # output (cached by analyze, keyed by body bid; analyze's
- # exclusion is the block's syntactic params). free_vars are
- # not part of analyze's exclusion, so filter them here so
- # captured-by-name vars stay outer-scoped instead of getting
- # a fresh lv_<name> shadow declaration.
-        lnames = "".split(",", -1)
-        ltypes = "".split(",", -1)
-        sn_lb = @nd_scope_names[body]
-        if sn_lb != ""
-          raw_n = sn_lb.split("|", -1)
-          raw_t = @nd_scope_types[body].split("|", -1)
-          rk = 0
-          while rk < raw_n.length
-            keep = 1
-            fvi = 0
-            while fvi < free_vars.length
-              if free_vars[fvi] == raw_n[rk]
-                keep = 0
-              end
-              fvi = fvi + 1
-            end
-            if keep == 1
-              lnames.push(raw_n[rk])
-              ltypes.push(raw_t[rk])
-            end
-            rk = rk + 1
-          end
-        end
-        lk = 0
-        while lk < lnames.length
-          declare_var(lnames[lk], ltypes[lk])
-          emit("  " + c_type(ltypes[lk]) + " lv_" + lnames[lk] + " = " + c_default_val(ltypes[lk]) + ";")
-          lk = lk + 1
-        end
- # Compile body statements
-        i = 0
-        while i < bs.length - 1
-          compile_stmt(bs[i])
-          i = i + 1
-        end
-        last = bs.last
-        last_type = infer_type(last)
-        if @nd_type[last] == "LocalVariableWriteNode" || @nd_type[last] == "LocalVariableOperatorWriteNode"
-          compile_stmt(last)
-        end
-        last_val = compile_expr(last)
-
-        pop_scope
-        body_stmts = @out_lines.join(10.chr) + 10.chr
-        @out_lines = save_out
-        @indent = save_indent
- # Restore heap promoted
-        while @heap_promoted_names.length > save_hp_names_len
-          @heap_promoted_names.pop
-        end
-        while @heap_promoted_cells.length > save_hp_cells_len
-          @heap_promoted_cells.pop
-        end
-
- # Build lambda function with typed body
-        @lambda_funcs <<"static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) {\n"
-        if pname != ""
-          @lambda_funcs << "  mrb_int lv_"
-          @lambda_funcs << pname
-          @lambda_funcs << " = sp_lam_to_int(arg);\n"
-        end
-        @lambda_funcs << body_stmts
-        @lambda_funcs << 10.chr
-        bexpr = lam_box(last_val, last_type)
-        @lambda_funcs << "  return "
-        @lambda_funcs << bexpr
-        @lambda_funcs << ";\n}\n\n"
-      elsif bs.length > 0
- # No typed captures: use sp_Val* lambda body compiler
-        save_out = @out_lines
-        save_params = @lambda_params
-        save_captures = @lambda_captures
-        save_cell_types = @lambda_capture_cell_types
-        @out_lines = "".split(",", -1)
-        @lambda_params = param_arr
-        @lambda_captures = free_vars
-        @lambda_capture_cell_types = cap_cell_types
-        si = 0
-        while si < bs.length - 1
-          side_expr = compile_lambda_body_expr(bs[si], param_arr, free_vars)
-          emit("  " + side_expr + ";")
-          si = si + 1
-        end
-        bexpr = compile_lambda_body_expr(bs.last, param_arr, free_vars)
-        body_stmts = @out_lines.join(10.chr) + 10.chr
-        @out_lines = save_out
-        @lambda_params = save_params
-        @lambda_captures = save_captures
-        @lambda_capture_cell_types = save_cell_types
-
- # emit signature with one sp_Val* per param so
- # multi-arg `->(a, b) { a + b }` works. The runtime
- # sp_lam_call2 / _3 / _4 cast the fn ptr to the matching arity.
-        sig_args = "sp_Val *self"
-        decls = ""
-        pi_s = 0
-        while pi_s < param_arr.length
-          sig_args = sig_args + ", sp_Val *_arg" + pi_s.to_s
-          decls = decls + "  sp_Val *lv_" + param_arr[pi_s] + " = _arg" + pi_s.to_s + ";\n"
-          pi_s = pi_s + 1
-        end
-        if param_arr.length == 0
-          sig_args = sig_args + ", sp_Val *arg"
-        end
-        if body_stmts != ""
-          @lambda_funcs <<"static sp_Val *" + fname + "(" + sig_args + ") {\n"
-          @lambda_funcs <<decls
-          @lambda_funcs <<"  (void)self;\n"
-          if param_arr.length == 0
-            @lambda_funcs <<"  (void)arg;\n"
-          end
-          @lambda_funcs <<body_stmts + 10.chr
-          @lambda_funcs <<"  return " + bexpr + ";\n"
-          @lambda_funcs <<"}\n\n"
-        else
-          @lambda_funcs <<"static sp_Val *" + fname + "(" + sig_args + ") {\n"
-          @lambda_funcs <<decls
-          @lambda_funcs <<"  (void)self;\n"
-          if param_arr.length == 0
-            @lambda_funcs <<"  (void)arg;\n"
-          end
-          @lambda_funcs <<"  return " + bexpr + ";\n"
-          @lambda_funcs <<"}\n\n"
-        end
-      else
-        @lambda_funcs <<"static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) { (void)self; (void)arg; return &sp_lam_nil_val; }\n\n"
-      end
-    else
-      @lambda_funcs <<"static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) { (void)self; (void)arg; return &sp_lam_nil_val; }\n\n"
-    end
-
- # Build the closure creation expression
-    if free_vars.length > 0
- # Heap-promote regular locals that need cell captures
-      k = 0
-      while k < free_vars.length
-        if cap_cell_types[k] != "" && heap_promoted_cell(free_vars[k]) == ""
-          fv = free_vars[k]
- # Skip if it's a fiber capture (already has cell) or lambda context
-          if @in_fiber_body == 0 || fiber_capture_index(fv) < 0
-            if not_in(fv, @heap_promoted_names) == 1
-              ct = c_type(cap_cell_types[k])
-              cell = "_hcell_" + fv + "_l" + lam_id.to_s
-              emit("  " + ct + " *" + cell + " = (" + ct + "*)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
-              emit("  *" + cell + " = " + fiber_var_ref(fv) + ";")
-              @heap_promoted_names.push(fv)
-              @heap_promoted_cells.push(cell)
-            end
-          end
-        end
-        k = k + 1
-      end
-      tmp = new_temp
- # Cast multi-arg fn ptr to sp_fn_t for storage; sp_lam_callN
- # casts back to the matching arity at the call site ().
-      emit("  sp_Val *" + tmp + " = sp_lam_proc((sp_fn_t)(uintptr_t)" + fname + ", " + free_vars.length.to_s + ");")
-      k = 0
-      while k < free_vars.length
-        fv = free_vars[k]
-        if cap_cell_types[k] != ""
- # Heap-promoted or fiber-captured: store cell pointer cast to sp_Val*
-          cell = heap_promoted_cell(fv)
-          if cell == "" && @in_fiber_body == 1 && fiber_capture_index(fv) >= 0
-            cell = "_cap->" + fv
-          end
-          emit("  " + tmp + "->captures[" + k.to_s + "] = (sp_Val*)" + cell + ";")
-        else
- # Check if it's a param or capture of enclosing lambda (sp_Val* world)
-          is_lam_ctx = 0
-          if not_in(fv, @lambda_params) == 0
-            is_lam_ctx = 1
-            emit("  " + tmp + "->captures[" + k.to_s + "] = lv_" + fv + ";")
-          else
-            ci = 0
-            while ci < @lambda_captures.length
-              if @lambda_captures[ci] == fv
-                is_lam_ctx = 1
-                emit("  " + tmp + "->captures[" + k.to_s + "] = self->captures[" + ci.to_s + "];")
-              end
-              ci = ci + 1
-            end
-          end
-          if is_lam_ctx == 0
- # Regular local: should have been heap-promoted already
-            cell = heap_promoted_cell(fv)
-            if cell != ""
-              emit("  " + tmp + "->captures[" + k.to_s + "] = (sp_Val*)" + cell + ";")
-            else
-              emit("  " + tmp + "->captures[" + k.to_s + "] = " + fiber_var_ref(fv) + ";")
-            end
-          end
-        end
-        k = k + 1
-      end
-      return tmp
-    else
-      return "sp_lam_proc((sp_fn_t)(uintptr_t)" + fname + ", 0)"
-    end
+ # Arrow lambdas (`->(a,b){}`) are first-class sp_Proc values, sharing
+ # the proc machinery. lambda_flag 1 sets lambda_p = true and the "req"
+ # param kinds. compile_proc_literal sources the params/body off the
+ # LambdaNode directly via callable_block_node / callable_inner_params_node.
+    return compile_proc_literal(nid, "", 1)
   end
 
  # Build the proc-fn body prelude that unpacks the args array passed
@@ -44100,8 +43516,45 @@ class Compiler
     ""
   end
 
-  def compile_proc_literal(nid, blk_param_types = "", lambda_flag = 0)
+ # The callable's body/params layout differs between an arrow lambda
+ # (`->(a,b){}` is a LambdaNode whose @nd_parameters / @nd_body hang
+ # directly off the node) and a block proc (`proc {}` / `lambda {}`,
+ # where the BlockNode is @nd_block[nid] and params/body hang off that).
+ # These two helpers normalise the two shapes so the shared proc
+ # machinery works for both. For a block the returned node is the same
+ # as before (the BlockNode), so proc codegen stays byte-identical.
+  def callable_block_node(nid)
+    if @nd_type[nid] == "LambdaNode"
+      return nid
+    end
+    @nd_block[nid]
+  end
+
+ # The inner ParametersNode / NumberedParametersNode (the node carrying
+ # @nd_requireds) for either callable shape, or -1 when there are none.
+ # LambdaNode: @nd_parameters[nid] is the ParametersNode directly.
+ # Block: @nd_parameters[block] is a BlockParametersNode wrapping the
+ # ParametersNode (or a NumberedParametersNode, which IS the inner node).
+  def callable_inner_params_node(nid)
+    if @nd_type[nid] == "LambdaNode"
+      return @nd_parameters[nid]
+    end
     blk = @nd_block[nid]
+    if blk < 0
+      return -1
+    end
+    bp = @nd_parameters[blk]
+    if bp < 0
+      return -1
+    end
+    if @nd_type[bp] == "NumberedParametersNode"
+      return bp
+    end
+    @nd_parameters[bp]
+  end
+
+  def compile_proc_literal(nid, blk_param_types = "", lambda_flag = 0)
+    blk = callable_block_node(nid)
     if blk < 0
       if lambda_flag == 1
         return "sp_proc_new_meta(NULL, NULL, NULL, 0, TRUE, 0, NULL, NULL)"
@@ -44276,6 +43729,19 @@ class Compiler
               @out_lines = "".split(",", -1)
               bexpr = fiber_var_ref(@nd_name[bs[k]])
               bexpr_t_proc = find_var_type(@nd_name[bs[k]])
+ # An explicit `return <expr>` as an arrow lambda's tail. Lambda
+ # return is local, so the lambda's value IS the returned expression;
+ # emit it as bexpr instead of a method-level return. (Proc `return`
+ # is non-local and stays on the compile_stmt path, so this is gated
+ # on lambda_flag to keep proc codegen byte-identical.)
+            elsif lambda_flag == 1 && last_t == "ReturnNode"
+              ra = get_args(@nd_arguments[bs[k]])
+              if ra.length > 0
+                bexpr = compile_expr(ra[0])
+                bexpr_t_proc = infer_type(ra[0])
+                body_stmts = @out_lines.join(10.chr) + 10.chr
+                @out_lines = "".split(",", -1)
+              end
             elsif lt != "void"
               body_stmts = @out_lines.join(10.chr) + 10.chr
               @out_lines = "".split(",", -1)
@@ -44338,6 +43804,11 @@ class Compiler
  # but still needs the same mrb_int round-trip in the proc-fn ABI.
     elsif type_is_pointer(bexpr_t_proc) == 1 || base_type(bexpr_t_proc) == "ptr"
       bexpr = "(mrb_int)(uintptr_t)(" + bexpr + ")"
+ # A float body returns through the mrb_int slot as its raw bits; the
+ # matching reinterpret at the `.call` site (proc_call_unbox) casts it
+ # back. Without this a float-returning lambda truncated to an int.
+    elsif base_type(bexpr_t_proc) == "float"
+      bexpr = "*(mrb_int *)&(mrb_float){" + bexpr + "}"
     end
     pop_scope
     @in_proc_body = saved_in_proc_body
@@ -45795,8 +45266,9 @@ class Compiler
       return
     end
     if at == "curried"
- # A fully-applied curried proc materialises to its (int) result.
-      emit("  printf(\"%lld" + bsl_n + "\", (long long)sp_lam_to_int(" + val + "));")
+ # A fully-applied curried proc materialises to its (int) result --
+ # sp_proc_call returns the mrb_int directly.
+      emit("  printf(\"%lld" + bsl_n + "\", (long long)(" + val + "));")
       return
     end
     if at == "bool"
@@ -45959,8 +45431,9 @@ class Compiler
         next
       end
       if at == "curried"
- # A fully-applied curried proc materialises to its (int) result.
-        emit("  printf(\"%lld" + bsl_n + "\", (long long)sp_lam_to_int(" + val + "));")
+ # A fully-applied curried proc materialises to its (int) result --
+ # sp_proc_call returns the mrb_int directly.
+        emit("  printf(\"%lld" + bsl_n + "\", (long long)(" + val + "));")
         k = k + 1
         next
       end
@@ -46212,24 +45685,16 @@ class Compiler
   end
 
   def get_block_param(nid, idx)
-    blk = @nd_block[nid]
-    if blk < 0
+    inner = callable_inner_params_node(nid)
+    if inner < 0
       return ""
     end
-    params = @nd_parameters[blk]
-    if params < 0
-      return ""
-    end
- # NumberedParametersNode ({ _1 + _2 }): params is the node itself,
- # and @nd_value holds the maximum (1 for _1, 2 for _2, etc.).
-    if @nd_type[params] == "NumberedParametersNode"
-      if idx < @nd_value[params]
+ # NumberedParametersNode ({ _1 + _2 }): the node itself carries the
+ # max in @nd_value (1 for _1, 2 for _2, etc.).
+    if @nd_type[inner] == "NumberedParametersNode"
+      if idx < @nd_value[inner]
         return "_" + (idx + 1).to_s
       end
-      return ""
-    end
-    inner = @nd_parameters[params]
-    if inner < 0
       return ""
     end
     reqs = parse_id_list(@nd_requireds[inner])
@@ -46243,59 +45708,53 @@ class Compiler
     kinds = "".split(",", -1)
     names = "".split(",", -1)
     arity = 0
-    blk = @nd_block[nid]
-    if blk >= 0
-      params = @nd_parameters[blk]
-      if params >= 0
-        req_kind = lambda_flag == 1 ? "req" : "opt"
-        if @nd_type[params] == "NumberedParametersNode"
-          n = @nd_value[params]
-          arity = n
-          k_np = 0
-          while k_np < n
+    inner = callable_inner_params_node(nid)
+    if inner >= 0
+      req_kind = lambda_flag == 1 ? "req" : "opt"
+      if @nd_type[inner] == "NumberedParametersNode"
+        n = @nd_value[inner]
+        arity = n
+        k_np = 0
+        while k_np < n
+          kinds.push(req_kind)
+          names.push("_" + (k_np + 1).to_s)
+          k_np = k_np + 1
+        end
+      else
+        reqs = parse_id_list(@nd_requireds[inner])
+        opts = parse_id_list(@nd_optionals[inner])
+        posts = parse_id_list(@nd_posts[inner])
+        min_required = reqs.length + posts.length
+        k = 0
+        while k < reqs.length
+          kinds.push(req_kind)
+          names.push(@nd_name[reqs[k]])
+          k = k + 1
+        end
+        k = 0
+        while k < opts.length
+          kinds.push("opt")
+          names.push(@nd_name[opts[k]])
+          k = k + 1
+        end
+        rest = @nd_rest[inner]
+        has_rest = 0
+        if rest >= 0 && @nd_type[rest] == "RestParameterNode"
+          has_rest = 1
+          kinds.push("rest")
+          names.push(@nd_name[rest])
+        end
+        k = 0
+        while k < posts.length
+          if @nd_type[posts[k]] == "RequiredParameterNode"
             kinds.push(req_kind)
-            names.push("_" + (k_np + 1).to_s)
-            k_np = k_np + 1
+            names.push(@nd_name[posts[k]])
           end
-        else
-          inner = @nd_parameters[params]
-          if inner >= 0
-            reqs = parse_id_list(@nd_requireds[inner])
-            opts = parse_id_list(@nd_optionals[inner])
-            posts = parse_id_list(@nd_posts[inner])
-            min_required = reqs.length + posts.length
-            k = 0
-            while k < reqs.length
-              kinds.push(req_kind)
-              names.push(@nd_name[reqs[k]])
-              k = k + 1
-            end
-            k = 0
-            while k < opts.length
-              kinds.push("opt")
-              names.push(@nd_name[opts[k]])
-              k = k + 1
-            end
-            rest = @nd_rest[inner]
-            has_rest = 0
-            if rest >= 0 && @nd_type[rest] == "RestParameterNode"
-              has_rest = 1
-              kinds.push("rest")
-              names.push(@nd_name[rest])
-            end
-            k = 0
-            while k < posts.length
-              if @nd_type[posts[k]] == "RequiredParameterNode"
-                kinds.push(req_kind)
-                names.push(@nd_name[posts[k]])
-              end
-              k = k + 1
-            end
-            arity = min_required
-            if has_rest == 1 || (lambda_flag == 1 && opts.length > 0)
-              arity = -(min_required + 1)
-            end
-          end
+          k = k + 1
+        end
+        arity = min_required
+        if has_rest == 1 || (lambda_flag == 1 && opts.length > 0)
+          arity = -(min_required + 1)
         end
       end
     end
@@ -49316,7 +48775,7 @@ class Compiler
         emit("  SP_GC_ROOT(" + tmp_arr + ");")
         emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_IntArray_length(" + rc + "); " + tmp_i + "++) {")
         if bp_is_lambda == 1
-          emit("    sp_Val * lv_" + bp1 + " = (sp_Val *)sp_IntArray_get(" + rc + ", " + tmp_i + ");")
+          emit("    sp_Proc * lv_" + bp1 + " = (sp_Proc *)sp_IntArray_get(" + rc + ", " + tmp_i + ");")
         else
           emit("    mrb_int lv_" + bp1 + " = sp_IntArray_get(" + rc + ", " + tmp_i + ");")
         end
@@ -49346,7 +48805,7 @@ class Compiler
         emit("  SP_GC_ROOT(" + tmp_arr + ");")
         emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_IntArray_length(" + rc + "); " + tmp_i + "++) {")
         if bp_is_lambda == 1
-          emit("    sp_Val * lv_" + bp1 + " = (sp_Val *)sp_IntArray_get(" + rc + ", " + tmp_i + ");")
+          emit("    sp_Proc * lv_" + bp1 + " = (sp_Proc *)sp_IntArray_get(" + rc + ", " + tmp_i + ");")
         else
           emit("    mrb_int lv_" + bp1 + " = sp_IntArray_get(" + rc + ", " + tmp_i + ");")
         end
@@ -49397,7 +48856,7 @@ class Compiler
         emit("  SP_GC_ROOT(" + tmp_arr + ");")
         emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_IntArray_length(" + rc + "); " + tmp_i + "++) {")
         if bp_is_lambda == 1
-          emit("    sp_Val * lv_" + bp1 + " = (sp_Val *)sp_IntArray_get(" + rc + ", " + tmp_i + ");")
+          emit("    sp_Proc * lv_" + bp1 + " = (sp_Proc *)sp_IntArray_get(" + rc + ", " + tmp_i + ");")
         else
           emit("    mrb_int lv_" + bp1 + " = sp_IntArray_get(" + rc + ", " + tmp_i + ");")
         end
@@ -52862,7 +52321,7 @@ class Compiler
  # carried pointer back. Because the ABI is unchanged, distinct literal
  # blocks at different call sites coexist. (The carried pointer is
  # GC-safe for immediate use; a result held across an allocation can be
- # collected -- a known #1362 limitation shared with the lam_box path.)
+ # collected -- a known #1362 limitation.)
   def block_param_call_type(nid)
     blk = @nd_block[nid]
     if blk < 0
@@ -54019,15 +53478,9 @@ class Compiler
         end
       end
       if expr_type == "lambda"
-        if return_type == "int"
-          emit("  return sp_lam_to_int(" + val + ");")
-        else
-          if return_type == "bool"
-            emit("  return (" + val + ")->u.bval;")
-          else
-            emit("  return " + val + ";")
-          end
-        end
+ # A lambda value is an sp_Proc *; the method's return type is the
+ # same pointer, so pass it through directly.
+        emit("  return " + val + ";")
       elsif expr_type == "poly" && base_type(return_type) == "bigint"
  # poly bitop helpers / dispatchers can return sp_RbVal with
  # SP_TAG_INT into a bigint-promoted return slot. Unbox + rebox.

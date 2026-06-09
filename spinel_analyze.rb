@@ -3593,7 +3593,7 @@ class Compiler
       return r
     end
 
- # Proc#curry yields a curried proc (sp_Val *). Applying it via
+ # Proc#curry yields a curried proc (an sp_Proc *). Applying it via
  # []/call gives another curried value or the final result; the whole
  # chain stays typed "curried" since static arity tracking that would
  # let us pinpoint the final application lives only in codegen.
@@ -7729,7 +7729,7 @@ class Compiler
  # Method call on poly
     if recv >= 0
       rt = infer_type(recv)
-      if rt == "proc"
+      if rt == "proc" || rt == "lambda"
         if mname == "arity"
           return "int"
         end
@@ -30156,18 +30156,34 @@ class Compiler
     if params < 0
       return
     end
+    if @nd_type[params] == "NumberedParametersNode"
+      collect_inner_param_sym_names(local, params, lambda_flag)
+      return
+    end
+    collect_inner_param_sym_names(local, @nd_parameters[params], lambda_flag)
+  end
+
+ # An arrow lambda's ParametersNode hangs directly off the LambdaNode
+ # (one layer, vs a block's two), so collect its param names from there.
+  def collect_lambda_param_sym_names(local, lnid)
+    collect_inner_param_sym_names(local, @nd_parameters[lnid], 1)
+  end
+
+ # Collect the param-name and kind-marker symbols from an inner
+ # ParametersNode / NumberedParametersNode (the node carrying
+ # @nd_requireds), shared by the block-proc and arrow-lambda callers.
+  def collect_inner_param_sym_names(local, inner, lambda_flag)
     kind_req = lambda_flag == 1 ? "req" : "opt"
     collect_sym_name_into(local, kind_req)
-    if @nd_type[params] == "NumberedParametersNode"
+    if inner < 0
+      return
+    end
+    if @nd_type[inner] == "NumberedParametersNode"
       k_np = 0
-      while k_np < @nd_value[params]
+      while k_np < @nd_value[inner]
         collect_sym_name_into(local, "_" + (k_np + 1).to_s)
         k_np = k_np + 1
       end
-      return
-    end
-    inner = @nd_parameters[params]
-    if inner < 0
       return
     end
     reqs = parse_id_list(@nd_requireds[inner])
@@ -30226,6 +30242,13 @@ class Compiler
       end
       if t == "BlockNode"
         collect_proc_param_sym_names(local, i, 0)
+      end
+ # An arrow lambda is a first-class sp_Proc with "req" param kinds and
+ # its param names as metadata; register both as static symbols so the
+ # emitted _sp_proc_param_kinds/_names arrays resolve to SPS_ constants
+ # rather than the non-constant sp_sym_intern fallback.
+      if t == "LambdaNode"
+        collect_lambda_param_sym_names(local, i)
       end
  # Also collect "literal".to_sym / .intern receivers so the
  # static-intern optimization can resolve them to SPS_ constants.
