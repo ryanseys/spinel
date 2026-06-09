@@ -5,9 +5,9 @@
 
 /* ---- string unescape (mirrors node_table_loader.rb#unescape_str) ---- */
 
-static char *unescape_dup(const char *s, size_t len) {
+static char *unescape_dup(const char *s, size_t len, size_t *out_len) {
   char *out = malloc(len + 1);
-  if (!out) return NULL;
+  if (!out) { if (out_len) *out_len = 0; return NULL; }
   size_t o = 0;
   size_t i = 0;
   while (i < len) {
@@ -38,6 +38,7 @@ static char *unescape_dup(const char *s, size_t len) {
     }
   }
   out[o] = '\0';
+  if (out_len) *out_len = o;
   return out;
 }
 
@@ -64,10 +65,11 @@ static void node_set_type(SpNode *nd, const char *type, size_t len) {
   nd->type = dup_n(type, len);
 }
 
-static void node_add_str(SpNode *nd, const char *key, size_t klen, char *val /*owned*/) {
+static void node_add_str(SpNode *nd, const char *key, size_t klen, char *val /*owned*/, size_t vlen) {
   ensure_cap((void **)&nd->s, &nd->cs, nd->ns + 1, sizeof(SpStrField));
   nd->s[nd->ns].key = dup_n(key, klen);
   nd->s[nd->ns].val = val;
+  nd->s[nd->ns].val_len = vlen;
   nd->ns++;
 }
 
@@ -183,7 +185,7 @@ NodeTable *nt_load_text(const char *text) {
         }
         else if (tok_eq(parts[0], "SOURCE_FILE")) {
           /* path is parts[1] plus possibly value; emitted as one token */
-          nt->source_file = unescape_dup(parts[1].p, parts[1].len);
+          nt->source_file = unescape_dup(parts[1].p, parts[1].len, NULL);
         }
         else {
           /* N/S/I/F/R/A all carry a node id in parts[1] */
@@ -228,8 +230,9 @@ NodeTable *nt_load_text(const char *text) {
       else if (np >= 3) {
         Tok field = parts[2];
         if (tag == 'S') {
-          char *uv = unescape_dup(val ? val : "", val ? vlen : 0);
-          node_add_str(nd, field.p, field.len, uv);
+          size_t uvlen = 0;
+          char *uv = unescape_dup(val ? val : "", val ? vlen : 0, &uvlen);
+          node_add_str(nd, field.p, field.len, uv, uvlen);
         }
         else if (tag == 'I') {
           node_add_int(nd, field.p, field.len, parse_ll(val ? val : "", val ? vlen : 0));
@@ -290,6 +293,14 @@ const char *nt_str(const NodeTable *nt, int id, const char *key) {
   for (int j = 0; j < nd->ns; j++)
     if (strcmp(nd->s[j].key, key) == 0) return nd->s[j].val;
   return NULL;
+}
+
+size_t nt_str_len(const NodeTable *nt, int id, const char *key) {
+  const SpNode *nd = node_at(nt, id);
+  if (!nd) return 0;
+  for (int j = 0; j < nd->ns; j++)
+    if (strcmp(nd->s[j].key, key) == 0) return nd->s[j].val_len;
+  return 0;
 }
 
 long long nt_int(const NodeTable *nt, int id, const char *key, long long dflt) {

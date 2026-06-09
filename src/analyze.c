@@ -592,7 +592,21 @@ static TyKind infer_call(Compiler *c, int id) {
       }
       return ty_array_elem(rt);
     }
-    if (!strcmp(name, "inject") || !strcmp(name, "reduce")) return ty_array_elem(rt);
+    if (!strcmp(name, "inject") || !strcmp(name, "reduce")) {
+      /* When an init argument is provided, the return type matches the init type. */
+      if (argc > 0 && argv) {
+        TyKind it = infer_type(c, argv[0]);
+        if (it != TY_UNKNOWN) return it;
+      }
+      /* Block body last expression determines the return type when available. */
+      int blk = nt_ref(nt, id, "block");
+      if (blk >= 0) {
+        int body = nt_ref(nt, blk, "body");
+        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        if (bn > 0) { TyKind bt = infer_type(c, bb[bn - 1]); if (bt != TY_UNKNOWN) return bt; }
+      }
+      return ty_array_elem(rt);
+    }
     if (!strcmp(name, "tally") && argc == 0) {
       if (rt == TY_INT_ARRAY) return TY_INT_INT_HASH;
       if (rt == TY_STR_ARRAY) return TY_STR_INT_HASH;
@@ -639,6 +653,27 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "[]=") && argc == 3)            return a0 != TY_UNKNOWN ? a0 : rt;
     if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && rt == TY_POLY_ARRAY)
       return TY_POLY_ARRAY;  /* the matching sub-array, or nil (NULL ptr) */
+    if (!strcmp(name, "to_h") && argc == 0 && block < 0) {
+      /* Infer hash type from the first pair element of an array literal */
+      if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode")) {
+        int en = 0; const int *els = nt_arr(nt, recv, "elements", &en);
+        if (en > 0 && nt_type(nt, els[0]) && !strcmp(nt_type(nt, els[0]), "ArrayNode")) {
+          int en2 = 0; const int *els2 = nt_arr(nt, els[0], "elements", &en2);
+          if (en2 >= 2) {
+            TyKind kt = infer_type(c, els2[0]);
+            TyKind vt = infer_type(c, els2[1]);
+            if (kt == TY_SYMBOL) return TY_SYM_POLY_HASH;
+            if (kt == TY_STRING) {
+              TyKind h = ty_hash_of(TY_STRING, vt);
+              return h != TY_UNKNOWN ? h : TY_STR_POLY_HASH;
+            }
+            TyKind h = ty_hash_of(kt, vt);
+            if (h != TY_UNKNOWN) return h;
+          }
+        }
+      }
+      return TY_SYM_POLY_HASH;
+    }
   }
 
   /* exception receiver methods */
@@ -827,6 +862,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "upto") && argc == 1) return TY_STR_ARRAY;  /* blockless: materialized sequence */
     if (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "each_byte")) return TY_STRING;
     if (!strcmp(name, "bytes") || !strcmp(name, "codepoints")) return TY_INT_ARRAY;
+    if (!strcmp(name, "unpack") && argc == 1) return TY_POLY_ARRAY;
     if (!strcmp(name, "chars")) return TY_STR_ARRAY;
     if (!strcmp(name, "gsub") || !strcmp(name, "sub") || !strcmp(name, "tr") ||
         !strcmp(name, "center") || !strcmp(name, "ljust") || !strcmp(name, "rjust"))
@@ -2448,7 +2484,7 @@ static int infer_block_params(Compiler *c) {
 
     /* array.sort/min/max/minmax { |a, b| cmp } -- a comparator block binds
        both parameters to the element type */
-    if ((!strcmp(name, "sort") || !strcmp(name, "min") || !strcmp(name, "max") ||
+    if ((!strcmp(name, "sort") || !strcmp(name, "sort!") || !strcmp(name, "min") || !strcmp(name, "max") ||
          !strcmp(name, "minmax")) && ty_is_array(rt)) {
       Scope *cs = comp_scope_of(c, block);
       for (int pj = 0; pj < 2; pj++) {

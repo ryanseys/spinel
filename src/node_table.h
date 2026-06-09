@@ -17,7 +17,7 @@
 
 #include <stddef.h>
 
-typedef struct { char *key; char *val; }       SpStrField;
+typedef struct { char *key; char *val; size_t val_len; } SpStrField;
 typedef struct { char *key; long long val; }    SpIntField;
 typedef struct { char *key; int ref; }          SpRefField;
 typedef struct { char *key; int *ids; int n; }  SpArrField;
@@ -49,6 +49,7 @@ void nt_free(NodeTable *nt);
    given defaults so callers can walk freely without bounds checks. */
 const char *nt_type(const NodeTable *nt, int id);          /* NULL if unset */
 const char *nt_str(const NodeTable *nt, int id, const char *key);   /* NULL */
+size_t      nt_str_len(const NodeTable *nt, int id, const char *key); /* 0 if absent */
 long long   nt_int(const NodeTable *nt, int id, const char *key, long long dflt);
 int         nt_ref(const NodeTable *nt, int id, const char *key);   /* -1 */
 const int  *nt_arr(const NodeTable *nt, int id, const char *key, int *out_n); /* NULL,0 */

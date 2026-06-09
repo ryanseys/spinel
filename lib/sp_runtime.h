@@ -461,6 +461,12 @@ static inline void sp_str_set_len(char *s, size_t len) {
   }
 }
 
+static const char *sp_str_from_bytes(const char *data, size_t len) {
+  char *s = sp_str_alloc(len);
+  if (data) memcpy(s, data, len);
+  s[len] = 0;
+  return s;
+}
 static const char *sp_str_dup_external(const char *s) {
   if (!s) return NULL;
   size_t n = strlen(s);
