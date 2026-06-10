@@ -1738,7 +1738,7 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     buf_puts(g_pre, "{\n");
     emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "sp_RbVal lv_%s = sp_poly_arr_get(_t%d, _t%d);\n",
+    buf_printf(g_pre, "sp_RbVal lv_%s = sp_poly_arr_get_hash(_t%d, _t%d);\n",
                p0p ? p0p : "_dummy", trecv2, ti2);
     for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
     int saveIndent2 = g_indent; g_indent = g_indent + 2;
@@ -4412,7 +4412,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         return;
       }
       if (at == TY_INT) {
-        buf_puts(b, "sp_poly_arr_get("); emit_expr(c, recv, b);
+        buf_puts(b, "sp_poly_arr_get_hash("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
@@ -5451,7 +5451,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
             else {
               buf_printf(b, " mrb_int _t%d = ", tk);
               emit_expr(c, argv[di], b);
-              buf_printf(b, "; _t%d = sp_poly_arr_get(_t%d, _t%d);", tr, tr, tk);
+              buf_printf(b, "; _t%d = sp_poly_arr_get_hash(_t%d, _t%d);", tr, tr, tk);
             }
           }
           buf_printf(b, " _t%d; })", tr);
@@ -5886,7 +5886,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else {
-        for (int di = argc - 1; di >= 1; di--) buf_printf(b, "sp_poly_arr_get(");
+        for (int di = argc - 1; di >= 1; di--) buf_printf(b, "sp_poly_arr_get_hash(");
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         for (int di = 1; di < argc; di++) { buf_puts(b, ", "); emit_expr(c, argv[di], b); buf_puts(b, ")"); }
       }
@@ -6015,13 +6015,13 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         }
         else {
           /* multi-step: box the array as sp_RbVal, then chain sp_poly_arr_get */
-          buf_printf(b, "sp_poly_arr_get(");
+          buf_printf(b, "sp_poly_arr_get_hash(");
           /* first step: box the typed array as obj, then get element i */
           int is_int = (rt == TY_INT_ARRAY);
           (void)is_int;
           /* build chain from innermost outward */
           for (int di = argc - 1; di >= 1; di--) {
-            buf_printf(b, "sp_poly_arr_get(");
+            buf_printf(b, "sp_poly_arr_get_hash(");
           }
           /* first access: typed get then box */
           buf_printf(b, "sp_box_obj(");
@@ -8044,7 +8044,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
     emit_indent(b, indent + 1);
-    buf_printf(b, "lv_%s = sp_poly_arr_get(_t%d, _t%d);\n", p0, ta, ti);
+    buf_printf(b, "lv_%s = sp_poly_arr_get_hash(_t%d, _t%d);\n", p0, ta, ti);
     emit_stmts(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
@@ -8843,10 +8843,10 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
       buf_puts(b, "; ");
       if (kt2 == TY_INT) {
         buf_printf(b, "mrb_int _t%d = ", tb2); emit_expr(c, iav[0], b); buf_puts(b, "; ");
-        buf_printf(b, "sp_RbVal _t%d = sp_poly_arr_get(_t%d, _t%d);", tc2, ta2, tb2);
+        buf_printf(b, "sp_RbVal _t%d = sp_poly_arr_get_hash(_t%d, _t%d);", tc2, ta2, tb2);
         buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
         emit_boxed(c, iv, b);
-        buf_printf(b, "; sp_poly_arr_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+        buf_printf(b, "; sp_poly_arr_set_hash(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
       }
       else if (kt2 == TY_STRING) {
         buf_printf(b, "const char *_t%d = ", tb2); emit_expr(c, iav[0], b); buf_puts(b, "; ");
@@ -10355,13 +10355,13 @@ static void emit_for(Compiler *c, int id, Buf *b, int indent) {
                     scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
         emit_indent(b, indent + 2);
         if (vt == TY_INT || vt == TY_UNKNOWN)
-          buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_arr_get(_t%d, %d));\n", lnm, tv, i);
+          buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_arr_get_hash(_t%d, %d));\n", lnm, tv, i);
         else if (vt == TY_FLOAT)
-          buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_arr_get(_t%d, %d));\n", lnm, tv, i);
+          buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_arr_get_hash(_t%d, %d));\n", lnm, tv, i);
         else if (vt == TY_STRING)
-          buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_arr_get(_t%d, %d));\n", lnm, tv, i);
+          buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_arr_get_hash(_t%d, %d));\n", lnm, tv, i);
         else
-          buf_printf(b, "lv_%s = sp_poly_arr_get(_t%d, %d);\n", lnm, tv, i);
+          buf_printf(b, "lv_%s = sp_poly_arr_get_hash(_t%d, %d);\n", lnm, tv, i);
       }
       emit_stmts(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
@@ -11416,7 +11416,7 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
           if (!strcmp(lty, "LocalVariableTargetNode")) {
             const char *lnm = nt_str(nt, lefts[i], "name");
             emit_indent(b, indent);
-            buf_printf(b, "lv_%s = sp_poly_arr_get(_t%d, %dLL);\n", lnm, tarr, i);
+            buf_printf(b, "lv_%s = sp_poly_arr_get_hash(_t%d, %dLL);\n", lnm, tarr, i);
           }
           else if (!strcmp(lty, "InstanceVariableTargetNode") &&
                    rt_scope_p && rt_scope_p->class_id >= 0) {
@@ -11426,7 +11426,7 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
             if (iv_rt < 0) continue;
             TyKind ivt = c->classes[rt_scope_p->class_id].ivar_types[iv_rt];
             emit_indent(b, indent);
-            char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_poly_arr_get(_t%d, %dLL)", tarr, i);
+            char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_poly_arr_get_hash(_t%d, %dLL)", tarr, i);
             if (rt_scope_p->is_cmethod)
               buf_printf(b, "civ_%s_%s = ", c->classes[rt_scope_p->class_id].name, ivnm + 1);
             else

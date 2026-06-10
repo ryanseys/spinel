@@ -3784,6 +3784,27 @@ static sp_RbVal sp_PolyPolyHash_get(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return s
 static void sp_PolyPolyHash_set(sp_PolyPolyHash*h,sp_RbVal k,sp_RbVal v){if(h->len*2>=h->cap)sp_PolyPolyHash_grow(h);mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->occ[idx]=TRUE;h->order[h->len]=idx;h->len++;}
 static mrb_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 static mrb_int sp_PolyPolyHash_length(sp_PolyPolyHash*h){return h->len;}
+/* poly_arr_get/set for PolyPolyHash with integer index key. */
+static sp_RbVal sp_poly_arr_get_hash(sp_RbVal a, mrb_int i) {
+  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_POLY_POLY_HASH)
+    return sp_PolyPolyHash_get((sp_PolyPolyHash*)a.v.p, sp_box_int(i));
+  return sp_poly_arr_get(a, i);
+}
+static sp_RbVal sp_poly_arr_set_hash(sp_RbVal v, mrb_int idx, sp_RbVal val) {
+  if (v.tag != SP_TAG_OBJ) return val;
+  switch (v.cls_id) {
+    case SP_BUILTIN_INT_ARRAY:  sp_IntArray_set((sp_IntArray*)v.v.p, idx,
+                                                val.tag == SP_TAG_INT ? val.v.i : (mrb_int)val.v.f); break;
+    case SP_BUILTIN_FLT_ARRAY:  sp_FloatArray_set((sp_FloatArray*)v.v.p, idx,
+                                                   val.tag == SP_TAG_FLT ? val.v.f : (mrb_float)val.v.i); break;
+    case SP_BUILTIN_STR_ARRAY:  sp_StrArray_set((sp_StrArray*)v.v.p, idx,
+                                                 val.tag == SP_TAG_STR ? val.v.s : NULL); break;
+    case SP_BUILTIN_POLY_ARRAY: sp_PolyArray_set((sp_PolyArray*)v.v.p, idx, val); break;
+    case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash*)v.v.p, sp_box_int(idx), val); break;
+    default: break;
+  }
+  return val;
+}
 /* poly_val[str_key] = val: runtime dispatch for poly recv `[]=` with string key. */
 static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
   if (v.tag != SP_TAG_OBJ) return val;
