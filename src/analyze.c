@@ -2370,6 +2370,20 @@ static int infer_write_types(Compiler *c) {
       /* any expression returning a typed array: assign element types to targets */
       if (value >= 0) {
         TyKind st = infer_type(c, value);
+        /* poly RHS: destructure gives poly elements */
+        if (st == TY_POLY || st == TY_POLY_ARRAY) {
+          Scope *ms_poly = comp_scope_of(c, id);
+          for (int i = 0; i < ln; i++) {
+            const char *lty_p = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
+            if (!strcmp(lty_p, "LocalVariableTargetNode")) {
+              const char *lnm_p = nt_str(nt, lefts[i], "name");
+              LocalVar *lv_p = lnm_p ? scope_local(ms_poly, lnm_p) : NULL;
+              if (!lv_p || lv_p->is_param || lv_p->is_block_param) continue;
+              TyKind mg_p = ty_unify(lv_p->type, TY_POLY);
+              if (mg_p != lv_p->type) { lv_p->type = mg_p; changed = 1; }
+            }
+          }
+        }
         if (ty_is_array(st)) {
           TyKind elem = ty_array_elem(st);
           int rn2 = 0;
@@ -4056,6 +4070,10 @@ void analyze_program(Compiler *c) {
     for (int iv = 0; iv < cl->nivars; iv++)
       if (cl->ivar_types[iv] == TY_UNKNOWN) cl->ivar_types[iv] = TY_POLY;
   }
+  /* Post-backstop: re-run write type inference so multi-write locals whose
+     RHS chains through a now-typed ivar (e.g. @h[bank][idx] where @h was
+     just promoted from UNKNOWN to POLY) get their types resolved. */
+  infer_write_types(c);
   /* recompute returns: a method returning such a param is now poly */
   for (int iter = 0; iter < 8; iter++) if (!infer_return_types(c)) break;
 

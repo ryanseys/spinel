@@ -11156,6 +11156,46 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         }
         return;
       }
+      /* poly RHS: destructure with sp_poly_arr_get */
+      if (st == TY_POLY) {
+        int tarr = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_RbVal _t%d = ", tarr); emit_expr(c, value, b); buf_puts(b, ";\n");
+        emit_indent(b, indent);
+        buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", tarr);
+        Scope *rt_scope_p = comp_scope_of(c, id);
+        for (int i = 0; i < ln; i++) {
+          const char *lty = nt_type(nt, lefts[i]);
+          if (!lty) continue;
+          if (!strcmp(lty, "LocalVariableTargetNode")) {
+            const char *lnm = nt_str(nt, lefts[i], "name");
+            emit_indent(b, indent);
+            buf_printf(b, "lv_%s = sp_poly_arr_get(_t%d, %dLL);\n", lnm, tarr, i);
+          }
+          else if (!strcmp(lty, "InstanceVariableTargetNode") &&
+                   rt_scope_p && rt_scope_p->class_id >= 0) {
+            const char *ivnm = nt_str(nt, lefts[i], "name");
+            if (!ivnm) continue;
+            int iv_rt = comp_ivar_index(&c->classes[rt_scope_p->class_id], ivnm);
+            if (iv_rt < 0) continue;
+            TyKind ivt = c->classes[rt_scope_p->class_id].ivar_types[iv_rt];
+            emit_indent(b, indent);
+            char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_poly_arr_get(_t%d, %dLL)", tarr, i);
+            if (rt_scope_p->is_cmethod)
+              buf_printf(b, "civ_%s_%s = ", c->classes[rt_scope_p->class_id].name, ivnm + 1);
+            else
+              buf_printf(b, "%s->iv_%s = ", g_self, ivnm + 1);
+            if (ivt != TY_POLY) {
+              Buf bx; memset(&bx, 0, sizeof bx);
+              emit_unbox_text(c, ivt, get_expr, &bx);
+              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+            }
+            else buf_puts(b, get_expr);
+            buf_puts(b, ";\n");
+          }
+        }
+        return;
+      }
       unsupported(c, id, "multiple assignment");
     }
     if (rest_nid < 0 && en < ln + rn) { unsupported(c, id, "multiple assignment"); return; }
