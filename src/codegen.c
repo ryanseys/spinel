@@ -10121,6 +10121,48 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent);
         buf_printf(b, "gv_%s = _t%d;\n", rn2, tmps[i]);
       }
+      else if (lty && !strcmp(lty, "IndexTargetNode")) {
+        int recv_id = nt_ref(nt, lefts[i], "receiver");
+        int idx_args = nt_ref(nt, lefts[i], "arguments");
+        int idx_argc = 0;
+        const int *idx_argv = idx_args >= 0 ? nt_arr(nt, idx_args, "arguments", &idx_argc) : NULL;
+        if (recv_id < 0 || idx_argc < 1) { unsupported(c, id, "multiple assignment index target"); continue; }
+        TyKind recv_t = comp_ntype(c, recv_id);
+        emit_indent(b, indent);
+        if (ty_is_array(recv_t)) {
+          const char *k = (recv_t == TY_POLY_ARRAY) ? "Poly" : array_kind(recv_t);
+          if (!k) k = "Int";
+          buf_printf(b, "sp_%sArray_set(", k);
+          emit_expr(c, recv_id, b); buf_puts(b, ", ");
+          emit_expr(c, idx_argv[0], b); buf_puts(b, ", ");
+          if (recv_t == TY_POLY_ARRAY) {
+            TyKind valt = comp_ntype(c, els[i]);
+            char tmp_expr[32]; snprintf(tmp_expr, sizeof tmp_expr, "_t%d", tmps[i]);
+            Buf bxi; memset(&bxi, 0, sizeof bxi);
+            emit_boxed_text(c, valt, tmp_expr, &bxi);
+            buf_puts(b, bxi.p ? bxi.p : "sp_box_nil()"); free(bxi.p);
+          }
+          else buf_printf(b, "_t%d", tmps[i]);
+          buf_puts(b, ");\n");
+        }
+        else if (ty_is_hash(recv_t)) {
+          const char *hn = ty_hash_cname(recv_t);
+          if (!hn) { unsupported(c, id, "multiple assignment hash index target unknown kind"); continue; }
+          buf_printf(b, "sp_%sHash_set(", hn);
+          emit_expr(c, recv_id, b); buf_puts(b, ", ");
+          emit_expr(c, idx_argv[0], b); buf_puts(b, ", ");
+          if (recv_t == TY_SYM_POLY_HASH || recv_t == TY_STR_POLY_HASH || recv_t == TY_POLY_POLY_HASH) {
+            TyKind valt = comp_ntype(c, els[i]);
+            char tmp_expr2[32]; snprintf(tmp_expr2, sizeof tmp_expr2, "_t%d", tmps[i]);
+            Buf bxi2; memset(&bxi2, 0, sizeof bxi2);
+            emit_boxed_text(c, valt, tmp_expr2, &bxi2);
+            buf_puts(b, bxi2.p ? bxi2.p : "sp_box_nil()"); free(bxi2.p);
+          }
+          else buf_printf(b, "_t%d", tmps[i]);
+          buf_puts(b, ");\n");
+        }
+        else { unsupported(c, id, "multiple assignment index target non-array/hash"); }
+      }
       else if (lty && !strcmp(lty, "ClassVariableTargetNode")) {
         const char *cnm = nt_str(nt, lefts[i], "name");
         if (!cnm || cnm[0] != '@' || cnm[1] != '@') { unsupported(c, id, "multiple assignment class variable target"); continue; }
