@@ -987,7 +987,7 @@ static TyKind infer_call(Compiler *c, int id) {
     }
     if (!strcmp(name, "index") || !strcmp(name, "to_i") || !strcmp(name, "count") ||
         !strcmp(name, "oct") || !strcmp(name, "ord") || !strcmp(name, "casecmp") ||
-        !strcmp(name, "bytesize")) return TY_INT;
+        !strcmp(name, "bytesize") || !strcmp(name, "setbyte") || !strcmp(name, "getbyte")) return TY_INT;
     if (!strcmp(name, "scrub") || !strcmp(name, "crypt")) return TY_STRING;
     if (!strcmp(name, "rindex")) return TY_INT;
     if (!strcmp(name, "partition") || !strcmp(name, "rpartition")) return TY_STR_ARRAY;

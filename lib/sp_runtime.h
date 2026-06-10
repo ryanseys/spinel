@@ -1834,6 +1834,14 @@ static const char*sp_str_dup(const char*s){if(!s)return NULL;size_t l=strlen(s);
      0xff        -> rodata literal (frozen -> FrozenError)
      other       -> FFI / unknown provenance, treated as frozen
    Returns the byte value (CRuby setbyte return). */
+static inline mrb_int sp_str_getbyte(const char *s, mrb_int i) {
+  if (!s) return 0;
+  mrb_int bl = (mrb_int)sp_str_byte_len(s);
+  if (i < 0) i += bl;
+  if (i < 0 || i >= bl) return 0;
+  return (mrb_int)(unsigned char)s[i];
+}
+
 static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
   if (!s) {
     sp_raise_cls("FrozenError", "can't modify frozen String");

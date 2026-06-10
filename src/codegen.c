@@ -2992,8 +2992,15 @@ static void emit_call(Compiler *c, int id, Buf *b) {
        !strcmp(name, "dup") || !strcmp(name, "clone"))) {
     int args = nt_ref(nt, id, "arguments");
     int argc0 = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc0);
-    /* hash dup/clone requires a deep copy -- skip the identity shortcut */
-    if (argc0 == 0 && !ty_is_hash(recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN)) { emit_expr(c, recv, b); return; }
+    /* hash and string dup/clone require deep copies -- skip the identity shortcut for them */
+    TyKind recv_t = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    int is_dup_clone = !strcmp(name, "dup") || !strcmp(name, "clone");
+    if (argc0 == 0 && !ty_is_hash(recv_t) && !(recv_t == TY_STRING && is_dup_clone)) {
+      emit_expr(c, recv, b); return;
+    }
+    if (argc0 == 0 && recv_t == TY_STRING && is_dup_clone) {
+      buf_puts(b, "sp_str_dup_external("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
   }
 
   /* then / yield_self: pass receiver to block, return block result */
@@ -6571,7 +6578,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       else if (!strcmp(name, "chomp"))      buf_printf(b, "sp_str_chomp(%s)", r);
       else if (!strcmp(name, "chop"))       buf_printf(b, "sp_str_chop(%s)", r);
-      else if (!strcmp(name, "to_s") || !strcmp(name, "to_str") || !strcmp(name, "dup") || !strcmp(name, "clone")) buf_puts(b, r);
+      else if (!strcmp(name, "to_s") || !strcmp(name, "to_str")) buf_puts(b, r);
+      else if ((!strcmp(name, "dup") || !strcmp(name, "clone")) && argc == 0) buf_printf(b, "sp_str_dup_external(%s)", r);
       else if (!strcmp(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
       else if (!strcmp(name, "empty?"))     buf_printf(b, "(sp_str_length(%s) == 0)", r);
       else if (!strcmp(name, "include?") && argc == 1) {
@@ -6673,6 +6681,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "casecmp?") && argc == 1) { buf_printf(b, "(sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ") == 0)"); }
       else if (!strcmp(name, "byteslice") && argc == 2) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "byteslice") && argc == 1) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
+      else if (!strcmp(name, "setbyte") && argc == 2) { buf_printf(b, "sp_str_setbyte(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "getbyte") && argc == 1) { buf_printf(b, "sp_str_getbyte(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
       else if (!strcmp(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "squeeze") && argc >= 2) {
