@@ -801,6 +801,15 @@ static TyKind infer_call(Compiler *c, int id) {
       if (!strcmp(name, "to_f")) return TY_FLOAT;
       if (!strcmp(name, "[]") && argc == 1) return TY_POLY;  /* boxed array element access */
       if (!strcmp(name, "dig") && argc >= 1) return TY_POLY;
+      {
+        int blk = nt_ref(nt, id, "block");
+        if (blk >= 0 && (!strcmp(name, "map") || !strcmp(name, "collect"))) {
+          int body = nt_ref(nt, blk, "body");
+          int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+          TyKind et = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+          return et != TY_UNKNOWN ? ty_array_of(et) : TY_POLY_ARRAY;
+        }
+      }
       /* poly method dispatch: unify the return type over every class that
          defines `name` (the runtime cls_id picks the impl). */
       TyKind r = TY_UNKNOWN; int found = 0;

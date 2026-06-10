@@ -5733,9 +5733,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return;
       }
-      if (!strcmp(name, "join") && rt == TY_STR_ARRAY && argc == 1) {
-        buf_puts(b, "sp_StrArray_join("); emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      if (!strcmp(name, "join") && argc <= 1) {
+        buf_printf(b, "sp_%sArray_join(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (argc == 1) emit_expr(c, argv[0], b); else buf_puts(b, "\"\"");
+        buf_puts(b, ")");
         return;
       }
       if ((!strcmp(name, "inspect") || !strcmp(name, "to_s")) && argc == 0) {
