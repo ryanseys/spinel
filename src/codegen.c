@@ -3213,15 +3213,32 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   }
 
   /* frozen? on numeric/symbol scalars: always frozen in Ruby semantics.
-     TY_STRING is excluded -- dup/String.new produce unfrozen strings so
-     string frozen-ness cannot be determined statically. */
+     TY_STRING uses a runtime check because dup/String.new produce unfrozen strings. */
   if (recv >= 0 && argc == 0 && !strcmp(name, "frozen?")) {
     TyKind frt = comp_ntype(c, recv);
-    if (frt == TY_INT || frt == TY_FLOAT || frt == TY_SYMBOL || frt == TY_BOOL || frt == TY_NIL
-        || frt == TY_STRING) {
+    if (frt == TY_INT || frt == TY_FLOAT || frt == TY_SYMBOL || frt == TY_BOOL || frt == TY_NIL) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
       return;
     }
+    if (frt == TY_STRING) {
+      buf_puts(b, "sp_str_is_frozen_val("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
+  }
+
+  /* TY_STRING freeze: update the variable to the frozen copy and return it */
+  if (recv >= 0 && argc == 0 && !strcmp(name, "freeze") && comp_ntype(c, recv) == TY_STRING) {
+    const char *rtyf = nt_type(nt, recv);
+    int assignable_f = rtyf && (!strcmp(rtyf, "LocalVariableReadNode") || !strcmp(rtyf, "InstanceVariableReadNode"));
+    if (assignable_f) {
+      buf_puts(b, "({ ");
+      emit_expr(c, recv, b); buf_puts(b, " = sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, "); ");
+      emit_expr(c, recv, b); buf_puts(b, "; })");
+    }
+    else {
+      buf_puts(b, "sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, ")");
+    }
+    return;
   }
 
   /* identity methods -> the receiver itself */
@@ -3410,9 +3427,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       const char *cn = nt_str(nt, recv, "name");
       if (cn && !strcmp(cn, "String")) {
-        /* String.new / String.new(s) */
-        if (argc == 1) emit_expr(c, argv[0], b);
-        else buf_puts(b, "(&(\"\\xff\")[1])");
+        /* String.new / String.new(s): always create a mutable heap copy */
+        if (argc == 1) { buf_puts(b, "sp_str_dup_external("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else buf_puts(b, "sp_str_dup_external((&(\"\\xff\")[1]))");
         return;
       }
       if (cn && !strcmp(cn, "Object") && argc == 0) {
@@ -7525,6 +7542,8 @@ static int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         int arg = chain[j];
         TyKind at = comp_ntype(c, arg);
         emit_indent(b, indent);
+        buf_puts(b, "sp_str_check_mutable("); emit_expr(c, cur, b); buf_puts(b, ");\n");
+        emit_indent(b, indent);
         emit_expr(c, cur, b); buf_puts(b, " = sp_str_concat(");
         emit_expr(c, cur, b); buf_puts(b, ", ");
         if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")"); }
@@ -7581,14 +7600,17 @@ static int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       return 1;
     }
     if (assignable && !strcmp(name, "replace") && argc == 1) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = "); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
       return 1;
     }
     if (assignable && !strcmp(name, "prepend") && argc == 1) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ");\n");
       return 1;
     }
     if (assignable && !strcmp(name, "clear") && argc == 0) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = (&(\"\\xff\")[1]);\n");
       return 1;
     }
@@ -7596,6 +7618,7 @@ static int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       /* insert(i, x): s[0,i] + x + s[i..]. A negative i counts from the end
          and inserts after that character (i += len + 1). */
       int ti = ++g_tmp;
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent);
       buf_printf(b, "{ mrb_int _t%d = ", ti); emit_expr(c, argv[0], b);
       buf_printf(b, "; if (_t%d < 0) _t%d += (mrb_int)sp_str_length(", ti, ti); emit_expr(c, recv, b); buf_printf(b, ") + 1; ");
@@ -11079,6 +11102,23 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
               buf_puts(b, " } }\n");
               return;
             }
+          }
+        }
+      }
+    }
+    /* TY_STRING .freeze as a statement: reassign lv to frozen copy */
+    {
+      const char *fnm = nt_str(nt, id, "name");
+      int frcv = nt_ref(nt, id, "receiver");
+      if (frcv >= 0 && fnm && !strcmp(fnm, "freeze") && comp_ntype(c, frcv) == TY_STRING) {
+        const char *rty2 = nt_type(nt, frcv);
+        if (rty2 && (!strcmp(rty2, "LocalVariableReadNode") || !strcmp(rty2, "InstanceVariableReadNode"))) {
+          int fargs = nt_ref(nt, id, "arguments");
+          int fac = 0; if (fargs >= 0) nt_arr(nt, fargs, "arguments", &fac);
+          if (fac == 0) {
+            emit_indent(b, indent);
+            emit_expr(c, frcv, b); buf_puts(b, " = sp_str_freeze_val("); emit_expr(c, frcv, b); buf_puts(b, ");\n");
+            return;
           }
         }
       }

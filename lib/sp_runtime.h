@@ -1891,6 +1891,38 @@ static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
   return v;
 }
 
+/* 0xf1 = heap string frozen by an explicit .freeze call.
+   Unlike 0xff (rodata literal) this marker lives in a malloc'd buffer
+   so sp_str_freeze_val can set it.  The frozen? predicate and mutation
+   guards check for 0xf1; plain rodata 0xff literals are NOT reported
+   as frozen (they behave as immutable value-semantics objects). */
+static inline mrb_bool sp_str_is_frozen_val(const char *s) {
+  if (!s) return TRUE;
+  return ((const unsigned char *)s)[-1] == 0xf1;
+}
+static inline const char *sp_str_freeze_val(const char *s) {
+  if (!s) return s;
+  unsigned char m = ((const unsigned char *)s)[-1];
+  if (m == 0xfe || m == 0xfc) {
+    ((unsigned char *)s)[-1] = 0xf1;
+    return s;
+  }
+  if (m == 0xff || m == 0xf1 || m != 0xfd) {
+    /* rodata literal or already frozen: copy to heap and freeze */
+    if (m == 0xf1) return s;  /* already heap-frozen */
+    size_t n = strlen(s);
+    char *r = sp_str_alloc(n);
+    memcpy(r, s, n);
+    ((unsigned char *)r)[-1] = 0xf1;
+    return r;
+  }
+  return s;
+}
+static void __attribute__((noinline,cold)) sp_raise_frozen_string(void){sp_raise_cls("FrozenError","can't modify frozen String");}
+static inline void sp_str_check_mutable(const char *s) {
+  if (sp_str_is_frozen_val(s)) sp_raise_frozen_string();
+}
+
 typedef struct{char*data;int64_t len;int64_t cap;}sp_String;
 /* Per-mutable-string freeze flag rides in the GC header alongside
    `marked`. sp_String_freeze sets it; the in-place mutators below
