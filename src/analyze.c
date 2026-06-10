@@ -1851,6 +1851,8 @@ static int infer_global_const_types(Compiler *c) {
       const char *vty = nt_type(nt, value);
       int en = 0;
       const int *els = (vty && !strcmp(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
+      int rn_count = 0;
+      nt_arr(nt, id, "rights", &rn_count);
       for (int i = 0; i < ln; i++) {
         const char *lty2 = nt_type(nt, lefts[i]);
         if (!lty2 || strcmp(lty2, "GlobalVariableTargetNode")) continue;
@@ -1862,6 +1864,28 @@ static int infer_global_const_types(Compiler *c) {
         if (vt2 == TY_NIL || vt2 == TY_UNKNOWN) continue;
         TyKind merged2 = ty_unify(glv->type, vt2);
         if (merged2 != glv->type) { glv->type = merged2; changed = 1; }
+      }
+      /* handle splat-rest global target (*$rest = ...) */
+      int rest_nid2 = nt_ref(nt, id, "rest");
+      if (rest_nid2 >= 0) {
+        const char *rsty2 = nt_type(nt, rest_nid2);
+        int rest_inner2 = (rsty2 && !strcmp(rsty2, "SplatNode")) ? nt_ref(nt, rest_nid2, "expression") : -1;
+        const char *rinty2 = rest_inner2 >= 0 ? nt_type(nt, rest_inner2) : NULL;
+        if (rinty2 && !strcmp(rinty2, "GlobalVariableTargetNode")) {
+          const char *gnm2 = nt_str(nt, rest_inner2, "name");
+          const char *rn3 = gnm2 ? comp_resolve_gvar(c, gnm2 + 1) : NULL;
+          LocalVar *glv2 = rn3 ? comp_gvar(c, rn3) : NULL;
+          if (glv2 && els) {
+            TyKind rest_elem = TY_UNKNOWN;
+            for (int i = ln; i < en - rn_count; i++)
+              rest_elem = ty_unify(rest_elem, infer_type(c, els[i]));
+            TyKind rest_arr_t = (rest_elem != TY_UNKNOWN) ? ty_array_of(rest_elem) : TY_UNKNOWN;
+            if (rest_arr_t != TY_UNKNOWN) {
+              TyKind merged3 = ty_unify(glv2->type, rest_arr_t);
+              if (merged3 != glv2->type) { glv2->type = merged3; changed = 1; }
+            }
+          }
+        }
       }
       continue;
     }

@@ -9840,13 +9840,19 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     int rest_nid = nt_ref(nt, id, "rest");
     int rest_inner = -1;
     const char *rest_var = NULL;
+    const char *rest_gvar = NULL;  /* global variable name (without $) for *$rest */
     if (rest_nid >= 0) {
       const char *rsty = nt_type(nt, rest_nid);
       if (rsty && !strcmp(rsty, "SplatNode"))
         rest_inner = nt_ref(nt, rest_nid, "expression");
-      if (rest_inner >= 0 && nt_type(nt, rest_inner) &&
-          !strcmp(nt_type(nt, rest_inner), "LocalVariableTargetNode"))
-        rest_var = nt_str(nt, rest_inner, "name");
+      if (rest_inner >= 0 && nt_type(nt, rest_inner)) {
+        if (!strcmp(nt_type(nt, rest_inner), "LocalVariableTargetNode"))
+          rest_var = nt_str(nt, rest_inner, "name");
+        else if (!strcmp(nt_type(nt, rest_inner), "GlobalVariableTargetNode")) {
+          const char *gnm_r = nt_str(nt, rest_inner, "name");
+          if (gnm_r) rest_gvar = comp_resolve_gvar(c, gnm_r + 1);
+        }
+      }
     }
     if (!els) {
       /* scalar RHS (`a, b = 1`): the first target takes the value, the rest
@@ -10112,6 +10118,24 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       }
       emit_indent(b, indent);
       buf_printf(b, "lv_%s = _t%d;\n", rest_var, tr);
+    }
+    if (rest_gvar && comp_gvar(c, rest_gvar)) {
+      int rstart = ln, rend = en - rn;
+      if (rend < rstart) rend = rstart;
+      LocalVar *glv_r = comp_gvar(c, rest_gvar);
+      TyKind rest_arr_t = glv_r ? glv_r->type : TY_INT_ARRAY;
+      if (!ty_is_array(rest_arr_t)) rest_arr_t = TY_INT_ARRAY;
+      const char *k = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
+      if (!k) k = "Int";
+      int tr = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
+      for (int i = rstart; i < rend; i++) {
+        emit_indent(b, indent);
+        buf_printf(b, "sp_%sArray_push(_t%d, _t%d);\n", k, tr, tmps[i]);
+      }
+      emit_indent(b, indent);
+      buf_printf(b, "gv_%s = _t%d;\n", rest_gvar, tr);
     }
     /* assign rights (post-splat fixed targets) */
     for (int j = 0; j < rn; j++) {
