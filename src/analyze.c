@@ -316,6 +316,18 @@ static TyKind infer_call(Compiler *c, int id) {
     if (recv >= 0 && call_op && !strcmp(call_op, "&.") && rt == TY_NIL) return TY_NIL;
   }
 
+  /* nil receiver: type inference for NilClass methods */
+  if (recv >= 0 && rt == TY_NIL) {
+    if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
+    if (!strcmp(name, "nil?") || !strcmp(name, "is_a?") || !strcmp(name, "kind_of?") ||
+        !strcmp(name, "instance_of?")) return TY_BOOL;
+    if (!strcmp(name, "to_i") || !strcmp(name, "to_int")) return TY_INT;
+    if (!strcmp(name, "to_f") || !strcmp(name, "to_r")) return TY_FLOAT;
+    if (!strcmp(name, "to_a")) return TY_POLY_ARRAY;
+    if (!strcmp(name, "to_h")) return TY_SYM_POLY_HASH;
+    if (!strcmp(name, "respond_to?")) return TY_BOOL;
+  }
+
   /* an empty array literal used directly as a receiver (`[].flatten`) has no
      usage to fold an element type from; treat it as an empty poly array so
      array methods dispatch instead of falling through to unresolved. */
@@ -1660,6 +1672,10 @@ static TyKind infer_call(Compiler *c, int id) {
   if (!strcmp(name, "===") && argc == 1 && recv >= 0 &&
       nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "RegularExpressionNode"))
     return TY_BOOL;
+  /* Class.===(obj) is always bool */
+  if (!strcmp(name, "===") && argc == 1 && recv >= 0 &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode"))
+    return TY_BOOL;
 
   if ((!strcmp(name, "-@") || !strcmp(name, "+@")) && recv >= 0 && argc == 0)
     return ty_is_numeric(rt) ? rt : rt == TY_POLY ? TY_POLY : TY_UNKNOWN;
@@ -1932,7 +1948,10 @@ static TyKind infer_uncached(Compiler *c, int id) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *lv = nm ? comp_const(c, nm) : NULL;
     if (lv) return lv->type;
-    if (nm && !strcmp(nm, "RUBY_DESCRIPTION")) return TY_STRING;
+    if (nm && (!strcmp(nm, "RUBY_DESCRIPTION") || !strcmp(nm, "RUBY_VERSION") ||
+               !strcmp(nm, "RUBY_PLATFORM") || !strcmp(nm, "RUBY_ENGINE") ||
+               !strcmp(nm, "RUBY_ENGINE_VERSION") || !strcmp(nm, "RUBY_RELEASE_DATE") ||
+               !strcmp(nm, "RUBY_REVISION") || !strcmp(nm, "RUBY_COPYRIGHT"))) return TY_STRING;
     if (nm && !strcmp(nm, "ARGV")) return TY_STR_ARRAY;
     return TY_UNKNOWN;
   }
@@ -4112,6 +4131,24 @@ static int infer_hash_params(Compiler *c) {
         want = TY_STR_POLY_HASH;
       else if (!strcmp(kty, "SymbolNode"))
         want = TY_SYM_POLY_HASH;
+      if (want == TY_UNKNOWN) continue;
+      lv->type = want; changed = 1;
+      continue;
+    }
+    /* []=: infer hash variant from key + value types */
+    if (!strcmp(name, "[]=")) {
+      int args = nt_ref(nt, id, "arguments");
+      int an = 0;
+      const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an < 2) continue;
+      TyKind kt2 = infer_type(c, argv[0]);
+      TyKind vt2 = infer_type(c, argv[1]);
+      TyKind want = TY_UNKNOWN;
+      if (kt2 == TY_STRING) {
+        want = (vt2 == TY_STRING) ? TY_STR_STR_HASH : TY_STR_POLY_HASH;
+      }
+      else if (kt2 == TY_SYMBOL) want = TY_SYM_POLY_HASH;
+      else if (kt2 == TY_INT)    want = TY_POLY_POLY_HASH;
       if (want == TY_UNKNOWN) continue;
       lv->type = want; changed = 1;
       continue;
