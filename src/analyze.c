@@ -2491,6 +2491,7 @@ static void process_include_body(Compiler *c, int ci, int body_node) {
         dst->nrequired = src->nrequired;
         dst->rest_idx = src->rest_idx;
         if (src->blk_param) dst->blk_param = strdup(src->blk_param);
+        src->is_transplanted_source = 1;
         /* Copy parameter names and defaults. */
         dst->nparams = src->nparams;
         if (src->nparams > 0) {
@@ -2507,7 +2508,20 @@ static void process_include_body(Compiler *c, int ci, int body_node) {
               lv->is_param = 1;
             }
           }
-          src->is_transplanted_source = 1;
+        }
+        /* Scan source body for ivar accesses and register them in the
+           destination class so codegen's struct layout includes them. */
+        for (int id2 = 0; id2 < nt->count; id2++) {
+          if (c->nscope[id2] != ms) continue;
+          const char *bty = nt_type(nt, id2);
+          if (!bty) continue;
+          if (!strcmp(bty, "InstanceVariableWriteNode") ||
+              !strcmp(bty, "InstanceVariableReadNode") ||
+              !strcmp(bty, "InstanceVariableOperatorWriteNode") ||
+              !strcmp(bty, "InstanceVariableOrWriteNode")) {
+            const char *ivnm = nt_str(nt, id2, "name");
+            if (ivnm) comp_ivar_intern(&c->classes[ci], ivnm);
+          }
         }
       }
     }
@@ -5086,30 +5100,35 @@ void analyze_program(Compiler *c) {
      (e.g. a never-called method with an uninferrable param). */
   compute_reachable(c);
 
-  /* Post-fixpoint: scope copies created by register_includes have pnames but no
-     locals (since nscope still maps body nodes to the original scope). Find each
-     such copy and transplant the finalized locals + return type from the source. */
+  /* Post-fixpoint: propagate include-copy param types back to the source
+     scope so the final infer_type scan (which uses comp_scope_of, mapping
+     body nodes to the ORIGINAL scope) sees the correctly-typed params.
+     Without this, LocalVariableReadNodes inside the body get TY_UNKNOWN
+     because the source scope's params were never updated (no direct calls
+     go through it). */
   for (int ci = 0; ci < c->nscopes; ci++) {
-    Scope *s = &c->scopes[ci];
-    if (!s->name || s->nparams == 0 || s->nlocals > 0) continue;
-    /* Has params but no locals: a copy whose params were never registered. */
-    for (int si = 0; si < c->nscopes; si++) {
-      if (si == ci) continue;
-      Scope *src = &c->scopes[si];
-      if (!src->name || strcmp(src->name, s->name)) continue;
-      if (src->body != s->body || src->nlocals == 0) continue;
-      if (src->nparams != s->nparams) continue;
-      if (!scope_local(src, s->pnames[0])) continue;
-      s->nlocals = src->nlocals;
-      s->clocals = src->nlocals;
-      s->locals = malloc(sizeof(LocalVar) * (size_t)src->nlocals);
-      for (int l = 0; l < src->nlocals; l++) {
-        s->locals[l] = src->locals[l];
-        s->locals[l].name = src->locals[l].name ? strdup(src->locals[l].name) : NULL;
+    Scope *copy = &c->scopes[ci];
+    if (!copy->name || !copy->is_transplanted_source || copy->nparams == 0) continue;
+    /* This is a transplanted SOURCE: find copies (same body, different class_id,
+       params registered and typed) and unify their param types back here. */
+    for (int k = 0; k < c->nscopes; k++) {
+      if (k == ci) continue;
+      Scope *dst = &c->scopes[k];
+      if (!dst->name || strcmp(dst->name, copy->name)) continue;
+      if (dst->body != copy->body || dst->nparams != copy->nparams) continue;
+      if (!dst->is_transplanted_source) {
+        /* dst is a copy: unify its param types into the source */
+        for (int p = 0; p < copy->nparams; p++) {
+          if (!copy->pnames[p]) continue;
+          LocalVar *slv = scope_local(copy, copy->pnames[p]);
+          LocalVar *dlv = scope_local(dst,  dst->pnames[p]);
+          if (!slv || !dlv || dlv->type == TY_UNKNOWN) continue;
+          TyKind mg = ty_unify(slv->type, dlv->type);
+          if (mg != slv->type) slv->type = mg;
+        }
+        if (dst->ret != TY_UNKNOWN && copy->ret == TY_UNKNOWN)
+          copy->ret = dst->ret;
       }
-      s->ret = src->ret;
-      s->ret_proc_ret = src->ret_proc_ret;
-      break;
     }
   }
 
