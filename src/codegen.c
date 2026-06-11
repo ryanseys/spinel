@@ -116,6 +116,7 @@ static int       g_ensure_depth = 0;
 static Buf g_procs;
 static Buf g_proc_protos;
 static int g_proc_counter = 0;
+static int g_needs_proc_poly_retslot = 0; /* any proc returns TY_POLY via _sp_proc_poly_ret */
 
 /* Static regex-literal table: each distinct (source, flags) pair compiles once
    to an sp_re_pat_<i> global initialized in sp_re_init(). */
@@ -3805,9 +3806,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       (!strcmp(name, "call") || !strcmp(name, "()") || !strcmp(name, "[]"))) {
     TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
     int unbox_ptr = proc_slot_is_ptr(rty);
-    int unbox_poly = (rty == TY_POLY);       /* sp_proc_call → mrb_int; box into sp_RbVal */
+    int unbox_poly = (rty == TY_POLY);
     if (unbox_ptr) { buf_puts(b, "("); emit_ctype(c, rty, b); buf_puts(b, ")(uintptr_t)("); }
-    if (unbox_poly) buf_puts(b, "sp_box_int(");
+    /* poly return: proc stores result in _sp_proc_poly_ret; read it back after the call */
+    if (unbox_poly) buf_puts(b, "((void)");
     buf_puts(b, "sp_proc_call(");
     emit_expr(c, recv, b);
     buf_puts(b, ", (mrb_int[16]){");
@@ -3819,7 +3821,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
     buf_puts(b, "})");
     if (unbox_ptr) buf_puts(b, ")");
-    if (unbox_poly) buf_puts(b, ")");
+    if (unbox_poly) buf_puts(b, ", _sp_proc_poly_ret)");
     return;
   }
 
@@ -15223,15 +15225,17 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   TyKind ret = TY_NIL;
   { int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     if (bn > 0) ret = comp_ntype(c, bb[bn - 1]); }
-  /* The proc fn returns mrb_int (the ABI); a string return is laundered through
-     (mrb_int)(uintptr_t). Array/hash/object returns construct via the statement
-     prelude (not available in this manual return path) and defer for now, as do
-     float/poly/range/time, which don't fit the slot. */
-  int ret_ptr = (ret == TY_STRING);
+  /* The proc fn returns mrb_int (the ABI); heap-pointer values (strings,
+     arrays, hashes, objects) are laundered through (mrb_int)(uintptr_t).
+     TY_POLY values are stored in _sp_proc_poly_ret (file-static sp_RbVal)
+     before return; the call site reads it back.
+     Float/range/time don't fit the slot and defer. */
+  int ret_ptr = proc_slot_is_ptr(ret);
   int ret_void = (ret == TY_VOID);  /* body's last expr has no value (e.g. puts) */
-  if (!proc_slot_is_direct(ret) && !ret_ptr && !ret_void) {
+  int ret_poly = (ret == TY_POLY);
+  if (!proc_slot_is_direct(ret) && !ret_ptr && !ret_void && !ret_poly) {
     free(params.v); free(used.v); free(locals.v); free(caps.v);
-    unsupported(c, create, "proc with array/hash/object/float/poly return (later slice)");
+    unsupported(c, create, "proc with float/range/time return (later slice)");
     return;
   }
 
@@ -15272,11 +15276,11 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   /* Save every emission global: the proc body is a fresh function context. */
   Buf *sv_pre = g_pre; int sv_indent = g_indent, sv_nren = g_nren, sv_block = g_block_id;
   const char *sv_bpn = g_block_param_name, *sv_self = g_self, *sv_rv = g_result_var;
-  TyKind sv_rt = g_ret_type;
+  TyKind sv_rt = g_ret_type; int sv_rp = g_result_poly;
   const char *sv_cap_struct = g_cap_struct; NameSet *sv_cap_names = g_cap_names;
   int sv_ensure_depth = g_ensure_depth;
   g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_param_name = NULL;
-  g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0;
+  g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
   char cap_struct_name[32] = "";
   if (ncap > 0) { snprintf(cap_struct_name, sizeof cap_struct_name, "_proc_cap_%d", pid); g_cap_struct = cap_struct_name; g_cap_names = &caps; }
   else { g_cap_struct = NULL; g_cap_names = NULL; }
@@ -15303,12 +15307,36 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   }
   if (ret_ptr) {
     /* launder a heap-pointer return through the mrb_int slot: emit the body's
-       leading statements, then `return (mrb_int)(uintptr_t)(<value>)`. */
+       leading statements, then a prelude-wrapped `return (mrb_int)(uintptr_t)(<value>)`.
+       The last expression may itself need a prelude (e.g. array allocation), so wrap
+       emit_expr in a temporary prelude buffer that drains before the return line. */
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], pb, 1);
-    buf_puts(pb, "  return (mrb_int)(uintptr_t)(");
-    if (bn > 0) emit_expr(c, bb[bn - 1], pb); else buf_puts(pb, "0");
-    buf_puts(pb, ");\n");
+    if (bn > 0) {
+      Buf rpre = {0}, rval = {0};
+      Buf *sv_rpre = g_pre; int sv_rind = g_indent;
+      g_pre = &rpre; g_indent = 1;
+      emit_expr(c, bb[bn - 1], &rval);
+      g_pre = sv_rpre; g_indent = sv_rind;
+      if (rpre.p) buf_puts(pb, rpre.p);
+      buf_puts(pb, "  return (mrb_int)(uintptr_t)(");
+      if (rval.p) buf_puts(pb, rval.p);
+      buf_puts(pb, ");\n");
+      free(rpre.p); free(rval.p);
+    }
+    else buf_puts(pb, "  return 0;\n");
+  }
+  else if (ret_poly) {
+    /* Store the sp_RbVal result in the file-static _sp_proc_poly_ret slot;
+       the call site reads it back after sp_proc_call returns. */
+    if (!g_needs_proc_poly_retslot) {
+      g_needs_proc_poly_retslot = 1;
+      buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_ret;\n");
+    }
+    g_result_var = "_sp_proc_poly_ret"; g_result_poly = 1;
+    emit_stmts_tail(c, body, pb, 1);
+    g_result_var = NULL; g_result_poly = 0;
+    buf_puts(pb, "  return 0;\n");
   }
   else if (ret_void) {
     /* no usable value: run the body as plain statements, return nil (0) */
@@ -15324,6 +15352,7 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
+  g_result_poly = sv_rp;
 
   if (ncap == 0) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, %s)",
@@ -15993,6 +16022,7 @@ char *codegen_program(const NodeTable *nt) {
   free(g_procs.p); free(g_proc_protos.p);
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
+  g_needs_proc_poly_retslot = 0;
 
   comp_free(c);
   return b.p;
