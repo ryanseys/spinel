@@ -2213,12 +2213,25 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
               }
               if (block_param_is_multi(c, block, 0)) {
                 int lc_wi = block_param_multi_count(c, block, 0);
+                Scope *bsc_wi = comp_scope_of(c, block);
+                TyKind elem_ty_wi = ty_array_elem(arr_wi);
                 for (int li = 0; li < lc_wi; li++) {
                   const char *ln = block_param_multi_leaf(c, block, 0, li);
                   if (!ln) continue;
+                  const char *lnr = rename_local(ln);
+                  LocalVar *lvw = bsc_wi ? scope_local(bsc_wi, ln) : NULL;
+                  TyKind lv_ty_wi = lvw ? lvw->type : TY_UNKNOWN;
                   emit_indent(g_pre, g_indent + 1);
-                  buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n",
-                             rename_local(ln), kwi, ta_wi, ti_wi, li);
+                  if (lv_ty_wi == TY_POLY && elem_ty_wi != TY_POLY && elem_ty_wi != TY_UNKNOWN) {
+                    char esw[64];
+                    snprintf(esw, sizeof esw, "sp_%sArray_get(_t%d, _t%d + %d)", kwi, ta_wi, ti_wi, li);
+                    Buf bxw; memset(&bxw, 0, sizeof bxw); emit_boxed_text(c, elem_ty_wi, esw, &bxw);
+                    buf_printf(g_pre, "lv_%s = %s;\n", lnr, bxw.p ? bxw.p : esw); free(bxw.p);
+                  }
+                  else {
+                    buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n",
+                               lnr, kwi, ta_wi, ti_wi, li);
+                  }
                 }
               }
               else {
@@ -7474,6 +7487,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _tv%d; })", ts3);
       return;
     }
+    if (k && rhs_ty == TY_POLY && rt == TY_POLY_ARRAY) {
+      /* poly_array recv + poly src (array at runtime): copy src elements to recv[start..] */
+      int ta4 = ++g_tmp, tst4 = ++g_tmp, tsrc4 = ++g_tmp, tlen4 = ++g_tmp, tj4 = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", ta4); emit_expr(c, recv, b); buf_puts(b, ";");
+      buf_printf(b, " mrb_int _t%d = ", tst4); emit_expr(c, argv[0], b); buf_puts(b, ";");
+      buf_printf(b, " sp_RbVal _t%d = ", tsrc4); emit_expr(c, argv[2], b); buf_puts(b, ";");
+      buf_printf(b, " mrb_int _t%d = sp_poly_arr_len(_t%d);", tlen4, tsrc4);
+      buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)", tj4, tj4, tlen4, tj4);
+      buf_printf(b, " sp_PolyArray_set(_t%d, _t%d + _t%d, sp_poly_arr_get(_t%d, _t%d));", ta4, tst4, tj4, tsrc4, tj4);
+      buf_printf(b, " _t%d; })", tsrc4);
+      return;
+    }
     if (k && !ty_is_array(rhs_ty)) {
       /* scalar RHS: set element at start index and return the scalar value */
       int ta2 = ++g_tmp, ti2 = ++g_tmp, tv2 = ++g_tmp;
@@ -9840,7 +9865,15 @@ static void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, in
     const char *bpr = rename_local(bp);
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", bpr);
-    if (k < yc) emit_expr(c, yargs[k], b);
+    if (k < yc) {
+      LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
+      TyKind bt = bl ? bl->type : TY_UNKNOWN;
+      TyKind at = comp_ntype(c, yargs[k]);
+      if (bt == TY_POLY && at != TY_POLY && at != TY_UNKNOWN)
+        emit_boxed(c, yargs[k], b);
+      else
+        emit_expr(c, yargs[k], b);
+    }
     else {
       LocalVar *bl = scope_local(bsc, bp);
       TyKind bt = bl ? bl->type : TY_INT;

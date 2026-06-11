@@ -4530,6 +4530,25 @@ static int infer_block_params(Compiler *c) {
           TyKind m = ty_unify(lv->type, infer_type(c, yargs[k]));
           if (m != lv->type) { lv->type = m; changed = 1; }
         }
+        /* Params beyond the first yield's arity might still be nil if there
+           are other yields with fewer args. Find the min yield arity. */
+        int min_yc = yc;
+        for (int _yi = 0; _yi < nt->count; _yi++) {
+          if (!nt_type(nt, _yi) || strcmp(nt_type(nt, _yi), "YieldNode")) continue;
+          if (c->nscope[_yi] != mi) continue;
+          int _ya = nt_ref(nt, _yi, "arguments");
+          int _yc = 0;
+          if (_ya >= 0) nt_arr(nt, _ya, "arguments", &_yc);
+          if (_yc < min_yc) min_yc = _yc;
+        }
+        /* Block params at index >= min_yc can receive nil — widen to poly. */
+        for (int k = min_yc; ; k++) {
+          const char *bp = block_param_name(c, block, k);
+          if (!bp) break;
+          LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
+          TyKind m = ty_unify(lv->type, TY_POLY);
+          if (m != lv->type) { lv->type = m; changed = 1; }
+        }
         continue;
       }
     }
