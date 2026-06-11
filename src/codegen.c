@@ -74,6 +74,9 @@ static int g_class_body_id = -1;
 /* Class id of the scope currently being emitted (-1 if none). Used to resolve
    implicit self calls in included-module methods to the including class. */
 static int g_emitting_class_id = -1;
+/* When inside an instance_eval block, the class id of the receiver (-1 outside).
+   Used so InstanceVariableReadNode/WriteNode use g_self->iv_X instead of civ_Toplevel_X. */
+static int g_ie_class_id = -1;
 /* While emitting a rescue handler: the C var names holding the caught
    exception's class/message, so a bare `raise` can re-raise. */
 static const char *g_rescue_cls = NULL, *g_rescue_msg = NULL;
@@ -4402,6 +4405,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, " _t%d;\n", tres);
       char selfbuf[64]; snprintf(selfbuf, sizeof selfbuf, "_t%d", tr);
       const char *saved_self2 = g_self; g_self = selfbuf;
+      int saved_ie = g_ie_class_id; g_ie_class_id = cls_id;
       if (ie_bn > 0) {
         for (int j = 0; j < ie_bn - 1; j++) emit_stmt(c, ie_bb[j], g_pre, g_indent);
         Buf vb; memset(&vb, 0, sizeof vb);
@@ -4417,6 +4421,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         }
         free(vb.p);
       }
+      g_ie_class_id = saved_ie;
       g_self = saved_self2;
       buf_printf(b, "_t%d", tres);
       return;
@@ -5869,10 +5874,25 @@ static void emit_call(Compiler *c, int id, Buf *b) {
 
   /* nil receiver: nil.inspect -> "nil", nil.to_s -> "", nil.nil? -> true.
      Evaluate the receiver for side effects, then yield the constant. */
-  if (recv >= 0 && rt == TY_NIL && argc == 0) {
-    if (!strcmp(name, "inspect")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"nil\"))"); return; }
-    if (!strcmp(name, "to_s"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"\"))"); return; }
-    if (!strcmp(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
+  if (recv >= 0 && rt == TY_NIL) {
+    if (argc == 0 && !strcmp(name, "inspect")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"nil\"))"); return; }
+    if (argc == 0 && !strcmp(name, "to_s"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"\"))"); return; }
+    if (argc == 0 && !strcmp(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
+    if (argc == 0 && !strcmp(name, "to_i"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)0)"); return; }
+    if (argc == 0 && !strcmp(name, "to_f"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0.0)"); return; }
+    if (argc == 0 && !strcmp(name, "to_r"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_float)0.0)"); return; }
+    if (argc == 0 && !strcmp(name, "to_a"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_PolyArray_new())"); return; }
+    if (argc == 0 && !strcmp(name, "to_h"))    {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), sp_SymPolyHash_new())");
+      return;
+    }
+    if (argc == 1 && (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
+      const char *cn = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode") ? nt_str(nt, argv[0], "name") : NULL;
+      int yes = cn ? (!strcmp(cn, "NilClass") || !strcmp(name, "instance_of?") ? !strcmp(cn, "NilClass") : (!strcmp(cn, "Object") || !strcmp(cn, "BasicObject"))) : 0;
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
+      return;
+    }
   }
 
   /* encoding.name -> the encoding name string */
@@ -6101,6 +6121,36 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     buf_puts(b, (!strcmp(name, "all?") || !strcmp(name, "none?")) ? "1" : "0");
     return;
+  }
+
+  /* Class.===(obj): equivalent to obj.is_a?(Class). Receiver is a class constant. */
+  if (recv >= 0 && argc == 1 && !strcmp(name, "===") &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode")) {
+    const char *cn = nt_str(nt, recv, "name");
+    if (cn) {
+      TyKind at2 = comp_ntype(c, argv[0]);
+      int yes = ty_matches_class(at2, cn, 0);
+      if (yes >= 0) {
+        buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yes);
+        return;
+      }
+      /* arg type is poly or unknown: runtime tag check */
+      if (at2 == TY_POLY) {
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, argv[0], b); buf_printf(b, "; ");
+        char v[32]; snprintf(v, sizeof v, "_t%d", tv);
+        if (!strcmp(cn, "Integer") || !strcmp(cn, "Fixnum")) buf_printf(b, "%s.tag == SP_TAG_INT", v);
+        else if (!strcmp(cn, "String"))   buf_printf(b, "%s.tag == SP_TAG_STR", v);
+        else if (!strcmp(cn, "Float"))    buf_printf(b, "%s.tag == SP_TAG_FLT", v);
+        else if (!strcmp(cn, "Symbol"))   buf_printf(b, "%s.tag == SP_TAG_SYM", v);
+        else if (!strcmp(cn, "NilClass")) buf_printf(b, "%s.tag == SP_TAG_NIL", v);
+        else if (!strcmp(cn, "Numeric"))  buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_FLT)", v, v);
+        else if (!strcmp(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", v, v, v);
+        else buf_printf(b, "0");
+        buf_puts(b, "; })");
+        return;
+      }
+    }
   }
 
   /* `===` on a scalar comparable (bool/int/float/string/symbol) is case
@@ -11054,6 +11104,8 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     char ref2e[300];
     if (cws && cws->is_cmethod && cid2 >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_%s_%s", c->classes[cid2].name, nm + 1);
+    else if (cid2 < 0 && g_ie_class_id >= 0)
+      snprintf(ref2e, sizeof ref2e, "%s->iv_%s", g_self, nm + 1);
     else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", nm + 1);
     else
@@ -11253,6 +11305,9 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     Scope *cs = comp_scope_of(c, id);
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       buf_printf(b, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);  /* module/class-level ivar */
+    else if (cs && cs->class_id < 0 && g_ie_class_id >= 0)
+      /* inside instance_eval block: access ivar via receiver pointer */
+      buf_printf(b, "%s->iv_%s", g_self, nm + 1);
     else if (cs && cs->class_id < 0) {
       /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
       int tl = comp_class_index(c, "Toplevel");
@@ -11387,6 +11442,13 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
       return;
     }
     if (nm && !strcmp(nm, "RUBY_DESCRIPTION")) { buf_puts(b, "SPL(\"spinel\")"); return; }
+    if (nm && !strcmp(nm, "RUBY_VERSION"))     { buf_puts(b, "SPL(\"3.2.0\")"); return; }
+    if (nm && !strcmp(nm, "RUBY_ENGINE"))      { buf_puts(b, "SPL(\"ruby\")"); return; }
+    if (nm && !strcmp(nm, "RUBY_ENGINE_VERSION")) { buf_puts(b, "SPL(\"3.2.0\")"); return; }
+    if (nm && !strcmp(nm, "RUBY_PLATFORM"))    { buf_puts(b, "sp_ruby_platform_str()"); return; }
+    if (nm && !strcmp(nm, "RUBY_RELEASE_DATE")) { buf_puts(b, "SPL(\"2023-03-30\")"); return; }
+    if (nm && !strcmp(nm, "RUBY_REVISION"))    { buf_puts(b, "SPL(\"0\")"); return; }
+    if (nm && !strcmp(nm, "RUBY_COPYRIGHT"))   { buf_puts(b, "SPL(\"ruby - Copyright (C) 1993-2023 Yukihiro Matsumoto\")"); return; }
     if (nm && !strcmp(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
     /* unregistered or untyped constant: emit a runtime NameError raise */
     if (nm && comp_class_index(c, nm) < 0)
@@ -13446,9 +13508,14 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     const char *nm = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
     Scope *cws = comp_scope_of(c, id);
+    /* Ivar write inside instance_eval block: access ivar via receiver pointer. */
+    if (cws && cws->class_id < 0 && !cws->is_cmethod && g_ie_class_id >= 0) {
+      emit_indent(b, indent);
+      buf_printf(b, "%s->iv_%s = ", g_self, nm + 1);
+    }
     /* Ivar write in a class/module body (outside any def): write to the
        module-level civ_ variable. */
-    if (cws && cws->class_id < 0 && !cws->is_cmethod && g_class_body_id >= 0) {
+    else if (cws && cws->class_id < 0 && !cws->is_cmethod && g_class_body_id >= 0) {
       emit_indent(b, indent);
       buf_printf(b, "civ_%s_%s = ", c->classes[g_class_body_id].name, nm + 1);
     }
