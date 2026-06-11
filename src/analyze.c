@@ -1254,7 +1254,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "shift") && argc == 0) return ty_array_elem(rt);
     if (!strcmp(name, "slice!") && argc == 2) return rt;  /* removed subarray */
     if (!strcmp(name, "[]=") && argc == 2)            return ty_array_elem(rt);
-    if (!strcmp(name, "[]=") && argc == 3)            return a0 != TY_UNKNOWN ? a0 : rt;
+    if (!strcmp(name, "[]=") && argc == 3)            return infer_type(c, argv[2]);
     if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && rt == TY_POLY_ARRAY)
       return TY_POLY_ARRAY;  /* the matching sub-array, or nil (NULL ptr) */
     if (!strcmp(name, "to_h") && argc == 0 && block < 0) {
@@ -3711,6 +3711,26 @@ static int infer_write_types(Compiler *c) {
       int iv = inm ? comp_ivar_index(ci, inm) : -1;
       if (iv < 0) continue;
       slot = &ci->ivar_types[iv];
+      /* If the slot is TY_UNKNOWN but has a direct non-empty InstanceVariableWriteNode
+         (e.g. @buf = [nil]*7), skip usage-driven promotion — infer_ivar_types will
+         set the correct type from the direct assignment. Without this guard,
+         @buf[0] = -1 in the first fixpoint iteration promotes @buf to an int hash
+         before @buf = [nil]*7 has been processed, causing ty_unify to widen to TY_POLY. */
+      if (*slot == TY_UNKNOWN && inm) {
+        int has_typed_write = 0;
+        for (int _wi = 0; _wi < nt->count && !has_typed_write; _wi++) {
+          if (!nt_type(nt, _wi) || strcmp(nt_type(nt, _wi), "InstanceVariableWriteNode")) continue;
+          const char *_wnm = nt_str(nt, _wi, "name");
+          if (!_wnm || strcmp(_wnm, inm)) continue;
+          Scope *_ws = comp_scope_of(c, _wi);
+          if (!_ws || _ws->class_id != s->class_id) continue;
+          int _wval = nt_ref(nt, _wi, "value");
+          if (_wval < 0) continue;
+          TyKind _wt = infer_type(c, _wval);
+          if (_wt != TY_UNKNOWN && _wt != TY_NIL) has_typed_write = 1;
+        }
+        if (has_typed_write) continue;
+      }
     }
     else if (is_push && rty && !strcmp(rty, "CallNode")) {
       /* `getter_method << x` where getter returns @ivar: trace through
