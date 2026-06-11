@@ -77,6 +77,9 @@ static int g_emitting_class_id = -1;
 /* While emitting a rescue handler: the C var names holding the caught
    exception's class/message, so a bare `raise` can re-raise. */
 static const char *g_rescue_cls = NULL, *g_rescue_msg = NULL;
+/* When inside a rescue handler that can `retry`, holds the goto label for the
+   retry target (just before `sp_exc_top++`). NULL otherwise. */
+static const char *g_retry_label = NULL;
 /* When set, tail positions assign to this var instead of `return`ing
    (used to give a begin/rescue a value). */
 static const char *g_result_var = NULL;
@@ -5626,6 +5629,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(cn, "Numeric"))  buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_FLT)", v, v);
       else if (!strcmp(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", v, v, v);
       else if (!strcmp(cn, "Hash"))     buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -13 && %s.cls_id >= -20)", v, v, v);
+      else if (!strcmp(cn, "Encoding")) buf_printf(b, "%s.tag == SP_TAG_ENCODING", v);
       else {
         int cid = comp_class_index(c, cn);
         int exact = !strcmp(name, "instance_of?");
@@ -5654,11 +5658,13 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     if (!strcmp(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
   }
 
-  /* <str>.encoding.name -> the encoding name (the poly encoding's to_s) */
-  if (!strcmp(name, "name") && argc == 0 && recv >= 0 && comp_ntype(c, recv) == TY_POLY &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "encoding")) {
-    buf_puts(b, "sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+  /* encoding.name -> the encoding name string */
+  if (!strcmp(name, "name") && argc == 0 && recv >= 0 && comp_ntype(c, recv) == TY_POLY) {
+    const char *rty2 = nt_type(nt, recv);
+    int is_enc = (rty2 && !strcmp(rty2, "SourceEncodingNode")) ||
+                 (rty2 && !strcmp(rty2, "CallNode") &&
+                  nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "encoding"));
+    if (is_enc) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
   }
 
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
@@ -10439,7 +10445,7 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (!strcmp(ty, "SourceEncodingNode")) {
-    buf_puts(b, "SPL(\"UTF-8\")"); return;
+    buf_puts(b, "sp_box_encoding(sp_encoding_utf8())"); return;
   }
   if (!strcmp(ty, "RegularExpressionNode")) {
     int ri = re_lit_index(c, id);
@@ -12358,6 +12364,23 @@ static int rescue_is_catchall_name(const char *n) {
                !strcmp(n, "RuntimeError"));
 }
 
+/* Return 1 if the subtree at id contains a RetryNode (not crossing DefNode). */
+static int subtree_has_retry(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  if (!strcmp(ty, "DefNode")) return 0;
+  if (!strcmp(ty, "RetryNode")) return 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (subtree_has_retry(nt, ch)) return 1; }
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) if (subtree_has_retry(nt, ids[k])) return 1;
+  }
+  return 0;
+}
+
 /* Emit one rescue clause (and its `subsequent` chain) inside the handler
    branch. Frame counter `fr` makes the saved cls/msg vars unique. */
 static void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *resultvar) {
@@ -12542,7 +12565,17 @@ static void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resu
     return;
   }
 
-  /* No ensure (or ensure depth limit reached): original structure. */
+  /* No ensure (or ensure depth limit reached): original structure.
+     When the rescue handler contains `retry`, wrap with a goto label so retry
+     can restart the body. */
+  int has_retry = (rescue >= 0) && subtree_has_retry(c->nt, rescue);
+  int rl = has_retry ? ++g_tmp : -1;
+  char retry_label[32]; retry_label[0] = 0;
+  if (has_retry) snprintf(retry_label, sizeof retry_label, "_retry_%d", rl);
+  if (has_retry) buf_printf(b, "%s:;\n", retry_label);
+  const char *saved_retry = g_retry_label;
+  if (has_retry) g_retry_label = retry_label;
+
   emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
   emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
   /* body value is the begin value only when there is no else clause */
@@ -12572,6 +12605,7 @@ static void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resu
   if (rescue >= 0) emit_rescue(c, rescue, b, indent + 1, fr, resultvar);
   if (ensure_stmts >= 0) emit_stmts(c, ensure_stmts, b, indent + 1);
   emit_indent(b, indent); buf_puts(b, "}\n");
+  g_retry_label = saved_retry;
 }
 
 /* Wrap a line-emitting statement so any expression preludes are flushed
@@ -13731,6 +13765,11 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   if (!strcmp(ty, "BreakNode"))  { emit_indent(b, indent); buf_puts(b, "break;\n"); return; }
   if (!strcmp(ty, "NextNode"))   { emit_indent(b, indent); buf_puts(b, "continue;\n"); return; }
   if (!strcmp(ty, "RedoNode"))   { emit_indent(b, indent); buf_puts(b, "continue;\n"); return; }
+  if (!strcmp(ty, "RetryNode")) {
+    if (g_retry_label) { emit_indent(b, indent); buf_printf(b, "goto %s;\n", g_retry_label); }
+    else unsupported(c, id, "retry (outside rescue)");
+    return;
+  }
   if (!strcmp(ty, "CaseNode"))   { emit_case(c, id, b, indent); return; }
   if (!strcmp(ty, "BeginNode"))  { emit_begin(c, id, b, indent, NULL); return; }
   if (!strcmp(ty, "RescueModifierNode")) {

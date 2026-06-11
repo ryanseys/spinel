@@ -364,6 +364,17 @@ static TyKind infer_call(Compiler *c, int id) {
       nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "class"))
     return TY_STRING;
 
+  /* __ENCODING__.name / .to_s / .inspect -> the encoding name string */
+  if (recv >= 0 && argc == 0 &&
+      (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SourceEncodingNode"))
+    return TY_STRING;
+  /* <enc>.encoding.name -> the encoding name string */
+  if (recv >= 0 && argc == 0 && !strcmp(name, "name") && rt == TY_POLY &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "encoding"))
+    return TY_STRING;
+
   /* Module.singleton_writer= / Module.singleton_reader */
   if (recv >= 0 && nt_type(nt, recv) &&
       (!strcmp(nt_type(nt, recv), "ConstantReadNode") ||
@@ -1711,7 +1722,7 @@ static TyKind infer_uncached(Compiler *c, int id) {
   if (!strcmp(ty, "StringNode"))              return TY_STRING;
   if (!strcmp(ty, "SourceFileNode"))          return TY_STRING;
   if (!strcmp(ty, "SourceLineNode"))          return TY_INT;
-  if (!strcmp(ty, "SourceEncodingNode"))      return TY_STRING;
+  if (!strcmp(ty, "SourceEncodingNode"))      return TY_POLY;
   if (!strcmp(ty, "RegularExpressionNode") ||
       !strcmp(ty, "InterpolatedRegularExpressionNode")) return TY_REGEX;
   if (!strcmp(ty, "InterpolatedStringNode"))  return TY_STRING;
