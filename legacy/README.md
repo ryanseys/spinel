@@ -8,3 +8,9 @@ This directory holds the current Ruby implementation of Spinel.
 - `node_table_loader.rb`: AST loader used by the Ruby backend
 
 The active compiler migration work should happen in `src/`.
+
+This tree is a regression oracle only. `make legacy` / `make bootstrap`
+build it entirely under `build/legacy/` (binaries + bootstrap
+intermediates); nothing here is installed. Drive it with the
+`../spinel-legacy` script. The normal C build never touches this
+directory.

@@ -38,8 +38,6 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-PARSE_STAMP   := build/stamps/spinel_parse.c.stamp
-
 .PHONY: all parse spinelc legacy bootstrap codegen regexp rbs_extract rbs-test \
         analyze-fail-test test test-run clean-test-results regen-rbs-expected \
         regen-expected bench optcarrot gate check gate-legs gate-test gate-bench \
@@ -117,7 +115,7 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 
 parse: spinel_parse$(EXE)
 
-spinel_parse$(EXE): $(PARSE_STAMP) $(PRISM_LIB)
+spinel_parse$(EXE): spinel_parse.c $(PRISM_LIB)
 	$(CC) $(CFLAGS) -I$(PRISM_INC) spinel_parse.c $(PRISM_LIB) -lm -o $@
 
 # ---- C compiler (src/) ----
@@ -492,15 +490,13 @@ gate-optcarrot:
 PREFIX   ?= /usr/local
 SPNLDIR   = $(PREFIX)/lib/spinel
 
-install: all legacy
+# Install the C compiler only. The legacy Ruby compiler is a local
+# regression oracle (build/legacy/, `make legacy`/`bootstrap`) and is not
+# shipped — `spinel-legacy` stays in the source tree for comparison.
+install: all
 	install -d $(SPNLDIR)/lib
 	install -m 755 spinel                $(SPNLDIR)/
-	install -m 755 spinel_parse$(EXE)    $(SPNLDIR)/
-	install -m 755 spinel_analyze$(EXE)  $(SPNLDIR)/
-	install -m 755 spinel_codegen$(EXE)  $(SPNLDIR)/
-	install -m 644 legacy/node_table_loader.rb  $(SPNLDIR)/
-	install -m 644 legacy/spinel_analyze.rb     $(SPNLDIR)/
-	install -m 644 legacy/spinel_codegen.rb     $(SPNLDIR)/
+	install -m 755 $(SPINELC)            $(SPNLDIR)/spinelc$(EXE)
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/
 	install -m 644 lib/sp_types.h        $(SPNLDIR)/lib/
@@ -521,6 +517,9 @@ uninstall:
 
 # ---- Clean ----
 
+# `rm -rf build/` also wipes build/legacy (the legacy compiler's binaries
+# and bootstrap intermediates). Only the root-level C artifacts need an
+# explicit rm; the legacy binaries no longer live at the repo root.
 clean:
 	rm -rf build/
-	rm -f spinel_parse$(EXE) spinel_analyze$(EXE) spinel_codegen$(EXE) spinel_rbs_extract$(EXE)
+	rm -f spinel_parse$(EXE) spinel_rbs_extract$(EXE)

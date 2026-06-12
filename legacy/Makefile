@@ -1,7 +1,7 @@
 # Legacy Ruby compiler — bootstrap + self-host fixpoint oracle.
 #
 # This builds the self-hosted Ruby analyzer/codegen binaries
-# (spinel_analyze / spinel_codegen, at the repo root) by interpreting the
+# (build/legacy/spinel_analyze / spinel_codegen) by interpreting the
 # compiler on its own source through CRuby, then verifies the self-host
 # fixpoint. The C compiler in ../src is the primary product; this tree is
 # kept as a regression oracle and for IR-diff / .expected regeneration.
@@ -11,15 +11,33 @@
 # the parent Makefile's `bootstrap` / `legacy` targets delegate here.
 
 ROOT  := ..
-BUILD := $(ROOT)/build
+BUILD := $(ROOT)/build/legacy
 include $(ROOT)/common.mk
 
 .PHONY: all legacy bootstrap bootstrap-fixpoint codegen root-build \
         analyze-fail-test clean
 
+# ---- Content stamps ----
+# Downstream bootstrap rules depend on `$(BUILD)/stamps/foo.stamp` instead
+# of `foo` directly, so `touch foo` (or a git checkout of identical content)
+# doesn't invalidate the slow self-host bootstrap. The stamp advances only
+# when content actually changes; FORCE re-checks cheaply each run. This
+# machinery is legacy-only; the normal C build depends on sources directly.
+$(BUILD)/stamps:
+	@mkdir -p $@
+
+FORCE:
+
+$(BUILD)/stamps/%.stamp: FORCE | $(BUILD)/stamps
+	@cmp -s $* $@ 2>/dev/null || cp $* $@
+
+# Without .PRECIOUS make would delete these as pattern-rule intermediates,
+# recreating them with fresh mtimes next run.
+.PRECIOUS: $(BUILD)/stamps/%.stamp
+
 # Default: the two CRuby-round compiler binaries.
 all: legacy
-legacy: $(ROOT)/spinel_analyze$(EXE) $(ROOT)/spinel_codegen$(EXE)
+legacy: $(BUILD)/spinel_analyze$(EXE) $(BUILD)/spinel_codegen$(EXE)
 codegen: legacy
 
 # Build the parser + runtime in the parent tree before we use them.
@@ -59,27 +77,27 @@ $(BUILD)/analyze1.c: $(BUILD)/analyze.ast $(BUILD)/analyze.ir $(SRC_STAMPS)
 $(BUILD)/codegen1.c: $(BUILD)/codegen.ast $(BUILD)/codegen.ir $(SRC_STAMPS)
 	$(BOOTSTRAP_RUBY) spinel_codegen.rb $(BUILD)/codegen.ast $(BUILD)/codegen.ir $@
 
-$(ROOT)/spinel_analyze$(EXE): $(BUILD)/analyze1.c | root-build
+$(BUILD)/spinel_analyze$(EXE): $(BUILD)/analyze1.c | root-build
 	$(CC) $(BOOTSTRAP_CFLAGS) -I$(ROOT)/lib $(BUILD)/analyze1.c $(SP_RT_LIB) $(LDFLAGS) -lm -o $@
 
-$(ROOT)/spinel_codegen$(EXE): $(BUILD)/codegen1.c | root-build
+$(BUILD)/spinel_codegen$(EXE): $(BUILD)/codegen1.c | root-build
 	$(CC) $(BOOTSTRAP_CFLAGS) -I$(ROOT)/lib $(BUILD)/codegen1.c $(SP_RT_LIB) $(LDFLAGS) -lm -o $@
 
 # ---- Self-host fixpoint (round 2 == round 3) ----
 # Round 2: the gen-1 binaries recompile each source into bin2_*; round 3:
 # bin2_* recompile again and we assert byte equality of both IR and C.
 
-$(BUILD)/analyze2.ir: $(BUILD)/analyze.ast $(ROOT)/spinel_analyze$(EXE)
-	$(ROOT)/spinel_analyze$(EXE) $(BUILD)/analyze.ast $@
-$(BUILD)/analyze2.c: $(BUILD)/analyze.ast $(BUILD)/analyze2.ir $(ROOT)/spinel_codegen$(EXE)
-	$(ROOT)/spinel_codegen$(EXE) $(BUILD)/analyze.ast $(BUILD)/analyze2.ir $@
+$(BUILD)/analyze2.ir: $(BUILD)/analyze.ast $(BUILD)/spinel_analyze$(EXE)
+	$(BUILD)/spinel_analyze$(EXE) $(BUILD)/analyze.ast $@
+$(BUILD)/analyze2.c: $(BUILD)/analyze.ast $(BUILD)/analyze2.ir $(BUILD)/spinel_codegen$(EXE)
+	$(BUILD)/spinel_codegen$(EXE) $(BUILD)/analyze.ast $(BUILD)/analyze2.ir $@
 $(BUILD)/bin2_analyze$(EXE): $(BUILD)/analyze2.c
 	$(CC) $(BOOTSTRAP_CFLAGS) -I$(ROOT)/lib $(BUILD)/analyze2.c $(SP_RT_LIB) $(LDFLAGS) -lm -o $@
 
-$(BUILD)/codegen2.ir: $(BUILD)/codegen.ast $(ROOT)/spinel_analyze$(EXE)
-	$(ROOT)/spinel_analyze$(EXE) $(BUILD)/codegen.ast $@
-$(BUILD)/codegen2.c: $(BUILD)/codegen.ast $(BUILD)/codegen2.ir $(ROOT)/spinel_codegen$(EXE)
-	$(ROOT)/spinel_codegen$(EXE) $(BUILD)/codegen.ast $(BUILD)/codegen2.ir $@
+$(BUILD)/codegen2.ir: $(BUILD)/codegen.ast $(BUILD)/spinel_analyze$(EXE)
+	$(BUILD)/spinel_analyze$(EXE) $(BUILD)/codegen.ast $@
+$(BUILD)/codegen2.c: $(BUILD)/codegen.ast $(BUILD)/codegen2.ir $(BUILD)/spinel_codegen$(EXE)
+	$(BUILD)/spinel_codegen$(EXE) $(BUILD)/codegen.ast $(BUILD)/codegen2.ir $@
 $(BUILD)/bin2_codegen$(EXE): $(BUILD)/codegen2.c
 	$(CC) $(BOOTSTRAP_CFLAGS) -I$(ROOT)/lib $(BUILD)/codegen2.c $(SP_RT_LIB) $(LDFLAGS) -lm -o $@
 
@@ -94,15 +112,15 @@ $(BUILD)/codegen3.c: $(BUILD)/codegen.ast $(BUILD)/codegen3.ir $(BUILD)/bin2_cod
 
 # bootstrap: the CRuby-seeded self-host fixpoint AUTHORITY (CI/release).
 # Verifies round2 == round3 byte-for-byte, then promotes bin2 to the
-# repo-root binaries.
+# build/legacy binaries.
 bootstrap: bootstrap-fixpoint
 bootstrap-fixpoint: $(BUILD)/analyze3.c $(BUILD)/codegen3.c
 	@diff $(BUILD)/analyze2.ir $(BUILD)/analyze3.ir > /dev/null && echo "analyze.rb: IR fixpoint OK" || (echo "BOOTSTRAP FAILED: analyze.rb IR diverged" && exit 1)
 	@diff $(BUILD)/analyze2.c  $(BUILD)/analyze3.c  > /dev/null && echo "analyze.rb: C fixpoint OK"  || (echo "BOOTSTRAP FAILED: analyze.rb C diverged"  && exit 1)
 	@diff $(BUILD)/codegen2.ir $(BUILD)/codegen3.ir > /dev/null && echo "codegen.rb: IR fixpoint OK" || (echo "BOOTSTRAP FAILED: codegen.rb IR diverged" && exit 1)
 	@diff $(BUILD)/codegen2.c  $(BUILD)/codegen3.c  > /dev/null && echo "codegen.rb: C fixpoint OK"  || (echo "BOOTSTRAP FAILED: codegen.rb C diverged"  && exit 1)
-	cp $(BUILD)/bin2_analyze$(EXE) $(ROOT)/spinel_analyze$(EXE)
-	cp $(BUILD)/bin2_codegen$(EXE) $(ROOT)/spinel_codegen$(EXE)
+	cp $(BUILD)/bin2_analyze$(EXE) $(BUILD)/spinel_analyze$(EXE)
+	cp $(BUILD)/bin2_codegen$(EXE) $(BUILD)/spinel_codegen$(EXE)
 
 # ---- Analyze-fail fixtures ----
 # Programs intentionally rejected during the analyze phase: they cover
@@ -110,7 +128,7 @@ bootstrap-fixpoint: $(BUILD)/analyze3.c $(BUILD)/codegen3.c
 # exercise the legacy analyzer's diagnostics, so they live here.
 ANALYZE_FAIL_TESTS := $(sort $(wildcard $(ROOT)/test/analyze_fail/*.rb))
 
-analyze-fail-test: $(ROOT)/spinel_analyze$(EXE) | root-build
+analyze-fail-test: $(BUILD)/spinel_analyze$(EXE) | root-build
 	@mkdir -p $(BUILD)/analyze-fail-results
 	@fail=0; n=0; \
 	for f in $(ANALYZE_FAIL_TESTS); do \
@@ -124,7 +142,7 @@ analyze-fail-test: $(ROOT)/spinel_analyze$(EXE) | root-build
 	    cat "$$tmpdir/parse.err"; \
 	    fail=1; rm -rf "$$tmpdir"; continue; \
 	  fi; \
-	  if $(ROOT)/spinel_analyze$(EXE) "$$ast" "$$ir" >/dev/null 2>"$$err"; then \
+	  if $(BUILD)/spinel_analyze$(EXE) "$$ast" "$$ir" >/dev/null 2>"$$err"; then \
 	    echo "analyze-fail FAIL: $$bn (analyze succeeded)"; \
 	    fail=1; rm -rf "$$tmpdir"; continue; \
 	  fi; \
@@ -146,7 +164,7 @@ analyze-fail-test: $(ROOT)/spinel_analyze$(EXE) | root-build
 	echo "Analyze-fail tests: $$n pass"; \
 	if [ $$fail -ne 0 ]; then exit 1; fi
 
-# The bootstrap intermediates live in the shared ../build; `make -C ..
-# clean` wipes them. This target just drops the produced binaries.
+# All legacy artifacts live under ../build/legacy; `make -C .. clean`
+# wipes the whole ../build tree. This target just drops the binaries.
 clean:
-	rm -f $(ROOT)/spinel_analyze$(EXE) $(ROOT)/spinel_codegen$(EXE)
+	rm -f $(BUILD)/spinel_analyze$(EXE) $(BUILD)/spinel_codegen$(EXE)

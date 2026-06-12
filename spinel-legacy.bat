@@ -1,5 +1,8 @@
 @echo off
-rem Spinel AOT Compiler - Ruby to native binary (Windows)
+rem Spinel AOT Compiler (LEGACY Ruby backend) - Ruby to native binary (Windows)
+rem
+rem Drives the legacy self-hosted codegen built under build\legacy\ by
+rem `make legacy`. The primary compiler is the C `spinel` driver.
 rem
 rem Usage:
 rem   spinel app.rb                  - compiles to .\app.exe
@@ -23,7 +26,7 @@ if "%DIR:~-1%"=="\" set "DIR=%DIR:~0,-1%"
 set "PARSE_RB=%DIR%\spinel_parse.rb"
 set "PARSE_BIN=%DIR%\spinel_parse.exe"
 set "CODEGEN_RB=%DIR%\legacy\spinel_codegen.rb"
-set "CODEGEN_BIN=%DIR%\spinel_codegen.exe"
+set "CODEGEN_BIN=%DIR%\build\legacy\spinel_codegen.exe"
 
 set "SOURCE="
 set "OUTPUT="

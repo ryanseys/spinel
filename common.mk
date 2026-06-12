@@ -95,21 +95,5 @@ ifeq ($(YJIT),1)
   BOOTSTRAP_RUBY := $(BOOTSTRAP_RUBY) --yjit
 endif
 
-# ---- Content stamps ----
-# Downstream rules depend on `$(BUILD)/stamps/foo.stamp` instead of `foo`
-# directly, so `touch foo` (or a git checkout of identical content) doesn't
-# invalidate bootstrap/test targets. The stamp advances only when content
-# actually changes; FORCE re-checks cheaply each run.
-BUILD ?= build
-
-$(BUILD)/stamps:
-	@mkdir -p $@
-
-FORCE:
-
-$(BUILD)/stamps/%.stamp: FORCE | $(BUILD)/stamps
-	@cmp -s $* $@ 2>/dev/null || cp $* $@
-
-# Without .PRECIOUS make would delete these as pattern-rule intermediates,
-# recreating them with fresh mtimes next run.
-.PRECIOUS: $(BUILD)/stamps/%.stamp
+# Content stamps are a legacy-bootstrap concern only; the rule lives in
+# legacy/Makefile now. The normal C build depends on its sources directly.

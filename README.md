@@ -81,9 +81,15 @@ RUBY
 ./spinel app.rb -o myapp     # compiles to ./myapp
 ./spinel app.rb -c           # generates app.c only
 ./spinel app.rb -S           # prints C to stdout
-./spinel app.rb --rbs sig    # seed inference from .rbs files under sig/
-./spinel app.rb --int-overflow=promote   # overflow promotes to Bigint (CRuby-compatible)
+./spinel -E app.rb a b c     # compile, run with ARGV=[a, b, c], discard binary
+./spinel -e 'puts 42'        # compile inline source
+./spinel app.rb --int-overflow=wrap   # +/-/* wrap silently instead of raising
 ```
+
+`./spinel` drives the C compiler (`build/spinelc`). The legacy Ruby
+backend is kept as a regression oracle and has its own driver,
+`./spinel-legacy`, which additionally supports `--rbs DIR` (RBS-seeded
+inference) and the `--emit-rbs` / `--emit-types` analysis modes.
 
 #### Integer overflow
 
@@ -477,11 +483,16 @@ make deps         # fetch libprism into vendor/prism (one-time)
 make              # build the C compiler (parser + regexp library + spinelc)
 make test         # run the feature tests (always a fresh run)
 make bench        # run benchmarks vs CRuby
-make legacy       # build the legacy Ruby compiler (analyze + codegen)
+make legacy       # build the legacy Ruby compiler into build/legacy/
 make bootstrap    # legacy self-host fixpoint check (4-way), in legacy/
-sudo make install # install to /usr/local (spinel in PATH)
+sudo make install # install the C compiler to /usr/local (spinel in PATH)
 make clean        # remove build artifacts
 ```
+
+The legacy Ruby backend builds entirely under `build/legacy/` (binaries
+and bootstrap intermediates) and is never installed — it is a local
+regression oracle, driven by `./spinel-legacy`. The normal build never
+touches the `legacy/` source tree.
 
 Override install prefix: `make install PREFIX=$HOME/.local`
 
