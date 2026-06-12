@@ -401,6 +401,16 @@ static inline mrb_int sp_process_ppid(void) {
 #endif
 }
 
+static inline double sp_process_clock_gettime(void) {
+#if defined(CLOCK_MONOTONIC)
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+#else
+  return 0.0;
+#endif
+}
+
 /* ---- Encoding runtime ----
    Spinel currently assumes UTF-8 source and string data. Keep Encoding
    as a tiny value type so `__ENCODING__` and `String#encoding` can

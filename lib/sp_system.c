@@ -158,7 +158,12 @@ int sp_system_args(int argc, const char *const *argv) {
     return FALSE;
   }
   if (pid == 0) {
-    execvp(argv[0], (char * const *)argv);
+    if (argc == 1) {
+      execl("/bin/sh", "sh", "-c", argv[0], (char *)NULL);
+    }
+    else {
+      execvp(argv[0], (char * const *)argv);
+    }
     _exit(127);
   }
   int status = 0;

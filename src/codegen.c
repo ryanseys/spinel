@@ -5431,6 +5431,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Process")) {
     if (!strcmp(name, "pid") && argc == 0) { buf_puts(b, "((mrb_int)getpid())"); return; }
     if (!strcmp(name, "ppid") && argc == 0) { buf_puts(b, "sp_process_ppid()"); return; }
+    if (!strcmp(name, "clock_gettime") && argc >= 1) {
+      buf_puts(b, "sp_process_clock_gettime()"); return;
+    }
   }
 
   /* Integer.sqrt(n) -> integer square root (exact, Newton's method) */
@@ -12404,6 +12407,10 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
       if (!strcmp(nm, "SEPARATOR"))      { buf_puts(b, "\"/\""); return; }
       if (!strcmp(nm, "PATH_SEPARATOR")) { buf_puts(b, "\":\""); return; }
       if (!strcmp(nm, "ALT_SEPARATOR"))  { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
+    }
+    if (par_nmc && !strcmp(par_nmc, "Process") && nm) {
+      if (!strcmp(nm, "CLOCK_MONOTONIC")) { buf_puts(b, "((mrb_int)1)"); return; }
+      if (!strcmp(nm, "CLOCK_REALTIME"))  { buf_puts(b, "((mrb_int)0)"); return; }
     }
     if (par_nmc && !strcmp(par_nmc, "Integer") && nm &&
         (!strcmp(nm, "MAX") || !strcmp(nm, "MIN"))) {
