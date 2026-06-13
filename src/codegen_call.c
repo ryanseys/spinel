@@ -3812,9 +3812,23 @@ else {
       buf_puts(b, ", "); emit_expr(c, argv[0], b);
     }
     else if (at == TY_INT) {
-      emit_expr(c, recv, b);
-      buf_puts(b, " = sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      /* widen_and_set only returns a *different* boxed value when an IntArray is
+         promoted to a PolyArray; otherwise it mutates in place. We can only
+         write the result back when the receiver is a simple assignable lvalue
+         (a local or ivar). For a computed receiver (e.g. @nmt_mem[bank][idx]=v,
+         where the receiver is itself an array element), drop the write-back and
+         rely on in-place mutation. */
+      const char *rcvty = nt_type(nt, recv);
+      int recv_is_lvalue = rcvty && (!strcmp(rcvty, "LocalVariableReadNode") ||
+                                     !strcmp(rcvty, "InstanceVariableReadNode"));
+      if (recv_is_lvalue) {
+        emit_expr(c, recv, b);
+        buf_puts(b, " = sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
+      }
+      else {
+        buf_puts(b, "sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
+      }
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
     }
     else {
       buf_printf(b, "sp_poly_set_poly("); emit_expr(c, recv, b);
@@ -3952,6 +3966,8 @@ else {
     if (rt == TY_INT) { buf_puts(b, "(2*("); emit_expr(c, recv, b); buf_puts(b, ")+1)"); }
     else if (rt == TY_SYMBOL) { buf_puts(b, "((mrb_int)("); emit_expr(c, recv, b); buf_puts(b, ")*2)"); }
     else if (rt == TY_BOOL || rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); }
+    /* a boxed value: its identity is the boxed payload (heap pointer / int) */
+    else if (rt == TY_POLY) { buf_puts(b, "((mrb_int)(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, ").v.p)"); }
     else { buf_puts(b, "((mrb_int)(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, "))"); }
     return;
   }
