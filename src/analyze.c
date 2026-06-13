@@ -1490,7 +1490,9 @@ void analyze_program(Compiler *c) {
     int scalar = 1;
     for (int j = 0; j < ci->nivars; j++) {
       TyKind t = ci->ivar_types[j];
-      if (t != TY_INT && t != TY_FLOAT && t != TY_BOOL) { scalar = 0; break; }
+      /* int/float/bool need no GC; string fields are heap pointers but get
+         GC-rooted per value-type local (the field slot is a stable root). */
+      if (t != TY_INT && t != TY_FLOAT && t != TY_BOOL && t != TY_STRING) { scalar = 0; break; }
     }
     if (!scalar) continue;
     int has_sub = 0;

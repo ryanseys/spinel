@@ -176,6 +176,14 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
   buf_printf(b, " lv_%s = %s;\n", lv->name, init);
   if (t == TY_POLY) buf_printf(b, "    SP_GC_ROOT_RBVAL(lv_%s);\n", lv->name);
   else if (root && !comp_ty_value_obj(c, t)) buf_printf(b, "    SP_GC_ROOT(lv_%s);\n", lv->name);
+  else if (comp_ty_value_obj(c, t)) {
+    /* a value-type local lives on the stack; root each heap-pointer (string)
+       field so its referent survives GC. The field slot is a stable root. */
+    ClassInfo *vc = &c->classes[ty_object_class(t)];
+    for (int i = 0; i < vc->nivars; i++)
+      if (vc->ivar_types[i] == TY_STRING)
+        buf_printf(b, "    SP_GC_ROOT(lv_%s.iv_%s);\n", lv->name, vc->ivars[i] + 1);
+  }
   free(cty.p);
 }
 
