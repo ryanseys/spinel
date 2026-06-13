@@ -4080,6 +4080,7 @@ static mrb_int sp_poly_arr_len_ex(sp_RbVal a) {
     case SP_BUILTIN_STR_POLY_HASH: return ((sp_StrPolyHash *)a.v.p)->len;
     case SP_BUILTIN_SYM_POLY_HASH: return ((sp_SymPolyHash *)a.v.p)->len;
     case SP_BUILTIN_POLY_POLY_HASH: return ((sp_PolyPolyHash *)a.v.p)->len;
+    case SP_BUILTIN_RANGE: { sp_Range *r = (sp_Range *)a.v.p; mrb_int n = r->last - r->first + (r->excl ? 0 : 1); return n > 0 ? n : 0; }
     default: return sp_poly_arr_len(a);
   }
 }
@@ -4092,6 +4093,7 @@ static sp_RbVal sp_poly_each_elem(sp_RbVal a, mrb_int i) {
     case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
     case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_POLY_ARRAY:
       return sp_poly_arr_get(a, i);
+    case SP_BUILTIN_RANGE: { sp_Range *r = (sp_Range *)a.v.p; return sp_box_int(r->first + i); }
     case SP_BUILTIN_STR_INT_HASH: {
       sp_StrIntHash *h = (sp_StrIntHash*)a.v.p;
       if (!h || i < 0 || i >= h->len) return sp_box_nil();

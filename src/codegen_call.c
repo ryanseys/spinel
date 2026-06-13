@@ -759,15 +759,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
     free(rb.p);
   }
 
-  /* `poly_val << x`: runtime dispatch via sp_poly_shl (handles IntArray,
-     StrArray, PolyArray, etc. boxed in sp_RbVal). Returns the receiver. */
+  /* `poly_val << x`: runtime dispatch via sp_poly_shl. For an array receiver it
+     appends and returns the (same) array; for an integer it returns the shifted
+     value. Use sp_poly_shl's RESULT -- returning the receiver would discard the
+     shift (e.g. peek16's `hi << 8`). */
   if (recv >= 0 && !strcmp(name, "<<") && argc == 1 &&
       comp_ntype(c, recv) == TY_POLY) {
     int t = ++g_tmp;
     buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", t); emit_expr(c, recv, b); buf_puts(b, "; ");
     buf_printf(b, "sp_poly_shl(_t%d, ", t);
     emit_boxed(c, argv[0], b);
-    buf_printf(b, "); _t%d; })", t);
+    buf_puts(b, "); })");
     return;
   }
   /* poly_val >> int / poly_val & int / | / ^ : unbox recv to int, apply op */

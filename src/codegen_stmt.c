@@ -2726,6 +2726,38 @@ else {
             emit_indent(b, indent);
             buf_printf(b, "cst_%s = sp_%sArray_get(_t%d, %dLL);\n", cnm_rt, k, tarr, i);
           }
+          /* setter target (`obj.attr = elem`): invoke the writer method so a
+             custom writer (e.g. CPU#next_frame_clock= setting @clk_frame) runs.
+             Without this the target was silently skipped (optcarrot's
+             `@vclk, @hclk_target, @cpu.next_frame_clock = BOOT_FRAME`). */
+          else if (!strcmp(lty, "CallTargetNode")) {
+            const char *setnm = nt_str(nt, lefts[i], "name");
+            int crecv = nt_ref(nt, lefts[i], "receiver");
+            size_t snl = setnm ? strlen(setnm) : 0;
+            if (!setnm || snl < 2 || setnm[snl - 1] != '=' || crecv < 0) { unsupported(c, id, "multiple assignment call target"); continue; }
+            TyKind crt = comp_ntype(c, crecv);
+            if (!ty_is_object(crt)) { unsupported(c, id, "multiple assignment call target non-object"); continue; }
+            int crc = ty_object_class(crt);
+            int cdef = -1;
+            int wmi = comp_method_in_chain(c, crc, setnm, &cdef);
+            char get_expr[80]; snprintf(get_expr, sizeof get_expr, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+            emit_indent(b, indent);
+            if (wmi >= 0 && cdef >= 0) {
+              /* real writer method */
+              LocalVar *wp = c->scopes[wmi].nparams >= 1 ? scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[0]) : NULL;
+              TyKind pt = wp ? wp->type : elem;
+              buf_printf(b, "sp_%s_%s((sp_%s *)", c->classes[cdef].name, mc(c->scopes[wmi].name), c->classes[cdef].name);
+              emit_expr(c, crecv, b); buf_puts(b, ", ");
+              if (pt == TY_POLY && elem != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, elem, get_expr, &bx); buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+              else buf_puts(b, get_expr);
+              buf_puts(b, ");\n");
+            }
+            else {
+              /* attr_writer convention: name matches the backing ivar */
+              char base[256]; memcpy(base, setnm, snl - 1); base[snl - 1] = '\0';
+              buf_puts(b, "("); emit_expr(c, crecv, b); buf_printf(b, ")->iv_%s = %s;\n", base, get_expr);
+            }
+          }
         }
         if (rest_var) {
           Scope *rscope = comp_scope_of(c, id);
