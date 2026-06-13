@@ -7425,7 +7425,13 @@ else {
       else if (!strcmp(name, "byteslice") && argc == 2) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "byteslice") && argc == 1) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else if (!strcmp(name, "setbyte") && argc == 2) { buf_printf(b, "sp_str_setbyte(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "getbyte") && argc == 1) { buf_printf(b, "sp_str_getbyte(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "getbyte") && argc == 1) {
+        /* inline to a direct byte load (matches the legacy generator): the
+           per-byte sp_str_getbyte call recomputes the string length and bounds
+           every iteration, which the C compiler can't hoist across an aliasing
+           setbyte. An out-of-range index reads adjacent bytes (as in legacy). */
+        buf_printf(b, "((mrb_int)(unsigned char)(%s)[", r); emit_int_expr(c, argv[0], b); buf_puts(b, "])");
+      }
       else if (!strcmp(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
       else if (!strcmp(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "squeeze") && argc >= 2) {
