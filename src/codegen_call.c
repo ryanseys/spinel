@@ -1804,7 +1804,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         /* auto-splat: a single array arg spread across N>=2 params. Evaluate
            the array once, then bind each param to its element. */
         int as_arr = 0; const char *as_kind = NULL;
-        if (is_exec && iac == 1 && npar >= 2) {
+        /* mixed-args trampoline: bind params to the trampoline body's args. */
+        int tramp_argc = ie_tramp ? ie_tramp_effective_argc(c, id) : -1;
+        if (tramp_argc < 0 && is_exec && iac == 1 && npar >= 2) {
           TyKind a0 = comp_ntype(c, iav[0]);
           if (ty_is_array(a0)) {
             as_kind = (a0 == TY_POLY_ARRAY) ? "Poly" : array_kind(a0);
@@ -1822,6 +1824,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "lv_%s = ", rename_local(pn));
           if (as_kind) buf_printf(g_pre, "sp_%sArray_get(_t%d, %d)", as_kind, as_arr, p);
+          else if (tramp_argc >= 0) {
+            int an = ie_tramp_effective_arg(c, id, p);
+            Buf eb; memset(&eb, 0, sizeof eb);
+            if (an >= 0) emit_expr(c, an, &eb); else buf_puts(&eb, "0");
+            buf_puts(g_pre, eb.p ? eb.p : "0"); free(eb.p);
+          }
           else if (is_exec) { if (p < iac) emit_expr(c, iav[p], g_pre); else buf_puts(g_pre, "0"); }
           else buf_printf(g_pre, "_t%d", tr);  /* instance_eval yields self */
           buf_puts(g_pre, ";\n");

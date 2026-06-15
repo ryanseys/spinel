@@ -1949,9 +1949,13 @@ int infer_block_params(Compiler *c) {
     int inner = nt_ref(nt, pn, "parameters");
     int pnode = inner >= 0 ? inner : pn;
     int rnp = 0; const int *reqs = nt_arr(nt, pnode, "requireds", &rnp);
+    /* mixed-args trampoline (`instance_exec(x, @base, 7, &b)`): bind each block
+       param to the trampoline body's arg (caller arg substituted for a
+       trampoline param read), not the caller's args. */
+    int tramp_argc = strcmp(cname, "instance_exec") ? ie_tramp_effective_argc(c, id) : -1;
     /* auto-splat: a single array arg destructured across N>=2 params binds
        each to the element type. */
-    if (iac == 1 && rnp >= 2) {
+    if (tramp_argc < 0 && iac == 1 && rnp >= 2) {
       TyKind a0 = infer_type(c, iav[0]);
       if (ty_is_array(a0)) {
         TyKind et = ty_array_elem(a0);
@@ -1964,10 +1968,12 @@ int infer_block_params(Compiler *c) {
         continue;
       }
     }
-    for (int k = 0; k < rnp && k < iac; k++) {
+    for (int k = 0; k < rnp; k++) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
-      TyKind at = infer_type(c, iav[k]);
+      int an = tramp_argc >= 0 ? ie_tramp_effective_arg(c, id, k) : (k < iac ? iav[k] : -1);
+      if (an < 0) continue;
+      TyKind at = infer_type(c, an);
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
       if (at != TY_UNKNOWN && lv->type != at) { lv->type = at; changed = 1; }
     }

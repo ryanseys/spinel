@@ -443,6 +443,61 @@ int ie_call_kwhash(Compiler *c, int id) {
   return (lty && !strcmp(lty, "KeywordHashNode")) ? av[ac - 1] : -1;
 }
 
+/* For a call `recv.m(cargs) { ... }` to an instance_exec trampoline
+   `def m(p..., &b); instance_exec(tbody..., &b); end`, the node to bind/emit
+   for the block's p-th parameter: the p-th trampoline-body arg, with a read of
+   one of the trampoline's own positional params rewritten to the matching
+   caller argument. Returns -1 when out of range, when not such a trampoline, or
+   when tbody uses a splat (the existing 1:1 forwarding path handles that).
+   ie_tramp_effective_argc returns the tbody arg count (or -1 to bail). */
+static int ie_tramp_body_args(Compiler *c, int caller_id, const int **tav_out, Scope **ms_out) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, caller_id, "receiver");
+  if (recv < 0) return -1;
+  TyKind rt = infer_type(c, recv);
+  if (!ty_is_object(rt)) return -1;
+  const char *nm = nt_str(nt, caller_id, "name");
+  int mi = nm ? comp_method_in_chain(c, ty_object_class(rt), nm, NULL) : -1;
+  if (mi < 0) return -1;
+  Scope *ms = &c->scopes[mi];
+  if (ms->body < 0) return -1;
+  int bn = 0; const int *bb = nt_arr(nt, ms->body, "body", &bn);
+  if (bn != 1 || !bb) return -1;
+  int targs = nt_ref(nt, bb[0], "arguments");
+  int tac = 0; const int *tav = targs >= 0 ? nt_arr(nt, targs, "arguments", &tac) : NULL;
+  for (int i = 0; i < tac; i++) {
+    const char *aty = nt_type(nt, tav[i]);
+    if (aty && !strcmp(aty, "SplatNode")) return -1;  /* forwarding path handles splat */
+  }
+  if (tav_out) *tav_out = tav;
+  if (ms_out) *ms_out = ms;
+  return tac;
+}
+
+int ie_tramp_effective_argc(Compiler *c, int caller_id) {
+  return ie_tramp_body_args(c, caller_id, NULL, NULL);
+}
+
+int ie_tramp_effective_arg(Compiler *c, int caller_id, int p) {
+  const NodeTable *nt = c->nt;
+  const int *tav = NULL; Scope *ms = NULL;
+  int tac = ie_tramp_body_args(c, caller_id, &tav, &ms);
+  if (tac < 0 || p < 0 || p >= tac) return -1;
+  int arg = tav[p];
+  const char *aty = nt_type(nt, arg);
+  if (aty && !strcmp(aty, "LocalVariableReadNode")) {
+    const char *an = nt_str(nt, arg, "name");
+    for (int j = 0; j < ms->nparams; j++) {
+      if (ms->pnames[j] && an && !strcmp(ms->pnames[j], an)) {
+        int cargs = nt_ref(nt, caller_id, "arguments");
+        int cac = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cac) : NULL;
+        return j < cac ? cav[j] : -1;
+      }
+    }
+  }
+  return arg;  /* ivar / literal / other: evaluated in the rebound-self context */
+}
+
 /* (Re)build the instance_eval/exec node→class map from current receiver types. */
 void build_ie_map(Compiler *c) {
   const NodeTable *nt = c->nt;

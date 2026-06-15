@@ -29,6 +29,12 @@ int ie_implicit_self_class(Compiler *c, int id);
 int ie_call_kwhash(Compiler *c, int id);
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name);
 
+/* instance_exec trampoline body-arg resolution (mixed local/ivar/literal args):
+   effective arg count, and the node to bind/emit for the p-th block param
+   (caller arg substituted for a trampoline param read). -1 to bail. */
+int ie_tramp_effective_argc(Compiler *c, int caller_id);
+int ie_tramp_effective_arg(Compiler *c, int caller_id, int p);
+
 /* Returns 1 if the idx-th required param is a MultiTargetNode (tuple destructure). */
 int block_param_is_multi(Compiler *c, int block, int idx);
 
