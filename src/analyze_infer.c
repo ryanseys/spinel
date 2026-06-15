@@ -399,6 +399,8 @@ TyKind infer_call(Compiler *c, int id) {
                  ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
   if (!ie_kind && recv >= 0 && ty_is_object(rt) && nt_ref(nt, id, "block") >= 0)
     ie_kind = comp_trampoline_kind(c, ty_object_class(rt), name, NULL) != 0;
+  /* receiverless instance_eval/exec inside an instance method resolves to self */
+  if (!ie_kind && recv < 0 && ie_implicit_self_class(c, id) >= 0) ie_kind = 1;
   if (ie_kind) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {

@@ -1912,8 +1912,12 @@ int infer_block_params(Compiler *c) {
     const char *cname = nt_str(nt, id, "name");
     if (!cname) continue;
     int xrecv = nt_ref(nt, id, "receiver");
-    if (xrecv < 0) continue;
-    if (strcmp(cname, "instance_exec")) {
+    if (xrecv < 0) {
+      /* receiverless instance_exec inside an instance method: params still
+         take the call-site arg types; the receiver (self) is irrelevant here. */
+      if (strcmp(cname, "instance_exec") || ie_implicit_self_class(c, id) < 0) continue;
+    }
+    else if (strcmp(cname, "instance_exec")) {
       TyKind xrt = infer_type(c, xrecv);
       if (!ty_is_object(xrt) ||
           comp_trampoline_kind(c, ty_object_class(xrt), cname, NULL) != 2) continue;

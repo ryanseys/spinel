@@ -1740,11 +1740,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   int ie_direct = recv >= 0 && (!strcmp(name, "instance_eval") || !strcmp(name, "instance_exec"));
   int ie_tramp = 0;
+  /* receiverless instance_eval/exec inside an instance method: self is the
+     receiver. Lower it like a direct call with self aliased into the temp. */
+  int ie_self_cls = -1;
+  if (!ie_direct && recv < 0) {
+    ie_self_cls = ie_implicit_self_class(c, id);
+    if (ie_self_cls >= 0) ie_direct = 1;
+  }
   if (!ie_direct && recv >= 0 && nt_ref(nt, id, "block") >= 0 && ty_is_object(comp_ntype(c, recv)))
     ie_tramp = comp_trampoline_kind(c, ty_object_class(comp_ntype(c, recv)), name, NULL);
   if (ie_direct || ie_tramp) {
     int blk = nt_ref(nt, id, "block");
-    TyKind rtype = comp_ntype(c, recv);
+    TyKind rtype = ie_self_cls >= 0 ? ty_object(ie_self_cls) : comp_ntype(c, recv);
     if (blk >= 0 && ty_is_object(rtype) &&
         (ie_tramp || comp_method_in_chain(c, ty_object_class(rtype), name, NULL) < 0)) {
       int blk_body = nt_ref(nt, blk, "body");
@@ -1753,7 +1760,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       TyKind body_ty = ie_bn > 0 ? comp_ntype(c, ie_bb[ie_bn - 1]) : TY_NIL;
       int scalar_res = is_scalar_ret(body_ty) && body_ty != TY_VOID && body_ty != TY_NIL && body_ty != TY_UNKNOWN;
       int tr = ++g_tmp, tres = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      Buf rb; memset(&rb, 0, sizeof rb);
+      if (ie_self_cls >= 0) buf_puts(&rb, g_self);  /* implicit self */
+      else emit_expr(c, recv, &rb);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_%s *_t%d = %s;\n", c->classes[cls_id].name, tr, rb.p ? rb.p : "NULL");
       free(rb.p);

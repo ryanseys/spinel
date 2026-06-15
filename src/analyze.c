@@ -395,6 +395,26 @@ void mark_ie_subtree(Compiler *c, int node, int cls) {
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, node, i, &n); for (int k = 0; k < n; k++) mark_ie_subtree(c, ids[k], cls); }
 }
 
+/* For a receiverless instance_eval/exec CallNode with a literal block inside
+   an instance method, the receiver is self (CRuby resolves it to
+   self.instance_exec). Return that class index, else -1. The literal-block
+   requirement (a BlockNode, not a `&b` BlockArgumentNode) keeps this distinct
+   from a trampoline body's `instance_exec(args, &b)`, which codegen lowers via
+   its own trampoline detector. */
+int ie_implicit_self_class(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_ref(nt, id, "receiver") >= 0) return -1;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || (strcmp(nm, "instance_eval") && strcmp(nm, "instance_exec"))) return -1;
+  int blk = nt_ref(nt, id, "block");
+  if (blk < 0) return -1;
+  const char *bty = nt_type(nt, blk);
+  if (!bty || strcmp(bty, "BlockNode")) return -1;
+  Scope *s = comp_scope_of(c, id);
+  if (!s || s->class_id < 0 || s->is_cmethod) return -1;
+  return s->class_id;
+}
+
 /* (Re)build the instance_eval/exec node→class map from current receiver types. */
 void build_ie_map(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -407,13 +427,21 @@ void build_ie_map(Compiler *c) {
     if (!nm) continue;
     int recv = nt_ref(nt, id, "receiver");
     int blk = nt_ref(nt, id, "block");
-    if (recv < 0 || blk < 0) continue;
-    TyKind rt = infer_type(c, recv);
-    if (!ty_is_object(rt)) continue;
-    int cls = ty_object_class(rt);
-    if (strcmp(nm, "instance_eval") && strcmp(nm, "instance_exec")) {
-      /* not a direct instance_eval/exec: maybe a trampoline method on `cls`? */
-      if (!comp_trampoline_kind(c, cls, nm, NULL)) continue;
+    if (blk < 0) continue;
+    int cls;
+    if (recv < 0) {
+      /* receiverless instance_eval/exec inside an instance method: self. */
+      cls = ie_implicit_self_class(c, id);
+      if (cls < 0) continue;
+    }
+    else {
+      TyKind rt = infer_type(c, recv);
+      if (!ty_is_object(rt)) continue;
+      cls = ty_object_class(rt);
+      if (strcmp(nm, "instance_eval") && strcmp(nm, "instance_exec")) {
+        /* not a direct instance_eval/exec: maybe a trampoline method on `cls`? */
+        if (!comp_trampoline_kind(c, cls, nm, NULL)) continue;
+      }
     }
     int body = nt_ref(nt, blk, "body");
     if (body >= 0) mark_ie_subtree(c, body, cls);

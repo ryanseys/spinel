@@ -21,6 +21,9 @@ TyKind infer_type(Compiler *c, int id);
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
 
+/* Class index when a receiverless instance_eval/exec resolves to self, else -1. */
+int ie_implicit_self_class(Compiler *c, int id);
+
 /* Returns 1 if the idx-th required param is a MultiTargetNode (tuple destructure). */
 int block_param_is_multi(Compiler *c, int block, int idx);
 
