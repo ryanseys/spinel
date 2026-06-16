@@ -417,7 +417,12 @@ static inline double sp_process_clock_gettime(void) {
    as a tiny value type so `__ENCODING__` and `String#encoding` can
    answer Ruby's Encoding-shaped protocol without carrying full
    transcoding state. */
-static inline sp_Encoding sp_encoding_utf8(void){return(sp_Encoding){"UTF-8"};}
+/* The name is a spinel rodata-literal string (0xff marker prefix), not a bare
+   C literal: it flows into sp_str_hash / sp_str_byte_len etc. as a hash key
+   and String value, all of which read the marker byte at s[-1]. A bare literal
+   has no controlled preceding byte, so that read is a global-buffer-overflow
+   (ASAN-caught) and could spuriously hit the heap-header cache path (#282). */
+static inline sp_Encoding sp_encoding_utf8(void){return(sp_Encoding){&("\xff" "UTF-8")[1]};}
 static inline const char*sp_encoding_name(sp_Encoding e){return e.name?e.name:sp_str_empty;}
 static inline const char*sp_encoding_inspect(sp_Encoding e){return sp_sprintf("#<Encoding:%s>",sp_encoding_name(e));}
 static inline mrb_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an=sp_encoding_name(a);const char*bn=sp_encoding_name(b);return strcmp(an,bn)==0;}
