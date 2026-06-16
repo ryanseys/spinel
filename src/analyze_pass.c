@@ -1904,6 +1904,107 @@ static int forwarding_yield_target(Compiler *c, int mi, int depth) {
   return forwarding_yield_target(c, t, depth + 1);
 }
 
+/* Single-element-arg array iterators: those whose first block parameter is
+   bound to the element (so a `&blk` forwarded to them types its first param
+   from the receiver's element type). Excludes index/memo/accumulator shapes
+   (each_with_index, each_with_object, reduce/inject) and sub-array shapes
+   (each_slice, each_cons) where the first param is not the element. */
+static int is_elem_arg_iter(const char *nm) {
+  if (!nm) return 0;
+  return !strcmp(nm, "each") || !strcmp(nm, "map") || !strcmp(nm, "collect") ||
+         !strcmp(nm, "select") || !strcmp(nm, "reject") || !strcmp(nm, "filter") ||
+         !strcmp(nm, "find") || !strcmp(nm, "detect") || !strcmp(nm, "find_all") ||
+         !strcmp(nm, "sort_by") || !strcmp(nm, "min_by") || !strcmp(nm, "max_by") ||
+         !strcmp(nm, "count") || !strcmp(nm, "sum") || !strcmp(nm, "flat_map") ||
+         !strcmp(nm, "filter_map") || !strcmp(nm, "partition") || !strcmp(nm, "group_by") ||
+         !strcmp(nm, "any?") || !strcmp(nm, "all?") || !strcmp(nm, "none?") ||
+         !strcmp(nm, "one?") || !strcmp(nm, "take_while") || !strcmp(nm, "drop_while") ||
+         !strcmp(nm, "reverse_each") || !strcmp(nm, "each_entry") || !strcmp(nm, "find_index");
+}
+
+/* If method scope `si` forwards its &block param to `recv.<iter>(&blk)` for a
+   single-element-arg iterator on an ARRAY receiver, set *forwards and return
+   the block's element type. The iterator name is only a filter for candidate
+   calls -- the decision is tied to the receiver's actual shape:
+     - array receiver: forwards, return the element type;
+     - receiver not yet resolved (TY_UNKNOWN): forwards with no type yet, so the
+       caller suppresses a premature poly-widen of the inlined block param (a
+       widen to poly never narrows back) while the receiver type settles over
+       the fixpoint -- it may still become an array;
+     - a definitively non-array receiver (hash, string, object, ...): NOT an
+       element-arg forward we type here -- leave it to the normal widening.
+   (A same-named user method with a real `blk.call`/`yield` is typed by the
+   explicit-call path before this is consulted, so it never reaches here.) */
+TyKind forwarded_iter_elem_type(Compiler *c, int si, int *forwards) {
+  const NodeTable *nt = c->nt;
+  *forwards = 0;
+  Scope *m = &c->scopes[si];
+  if (!m->blk_param || !m->blk_param[0]) return TY_UNKNOWN;
+  int saw_unresolved = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (!nt_type(nt, id) || strcmp(nt_type(nt, id), "CallNode")) continue;
+    if (c->nscope[id] != si) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!is_elem_arg_iter(nm)) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || strcmp(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0 || !nt_type(nt, ex) || strcmp(nt_type(nt, ex), "LocalVariableReadNode")) continue;
+    const char *en = nt_str(nt, ex, "name");
+    if (!en || strcmp(en, m->blk_param)) continue;  /* forwards THIS &block */
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    TyKind rt = infer_type(c, recv);
+    if (ty_is_array(rt)) { *forwards = 1; return ty_array_elem(rt); }
+    if (rt == TY_UNKNOWN) saw_unresolved = 1;  /* may resolve to an array later */
+  }
+  *forwards = saw_unresolved;
+  return TY_UNKNOWN;
+}
+
+/* The method scope a forwarder's &block is handed to: the first call
+   `g(&blk)` / `recv.g(&blk)` in scope `mi` whose block arg forwards mi's own
+   block param (named, or anonymous `&`), with `g` resolved to a user method --
+   receiverless by name, or on the receiver's object class. Returns g's scope
+   index (!= mi), or -1 if there is no such forward to a resolvable user method
+   (e.g. it forwards to a builtin, which has no scope). Lets a forwarded block
+   be typed from the callee's own `yield`, independent of the callee's name. */
+int forwarded_blk_target(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (!m->blk_param) return -1;
+  int anon = (m->blk_param[0] == '\0');
+  for (int id = 0; id < nt->count; id++) {
+    if (!nt_type(nt, id) || strcmp(nt_type(nt, id), "CallNode")) continue;
+    if (c->nscope[id] != mi) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || strcmp(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (anon) {
+      if (ex >= 0) continue;
+    }
+    else {
+      if (ex < 0 || !nt_type(nt, ex) || strcmp(nt_type(nt, ex), "LocalVariableReadNode")) continue;
+      const char *en = nt_str(nt, ex, "name");
+      if (!en || strcmp(en, m->blk_param)) continue;
+    }
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int g = -1;
+    if (recv < 0) {
+      g = comp_method_index(c, nm);
+      if (g < 0 && m->class_id >= 0) g = comp_method_in_chain(c, m->class_id, nm, NULL);
+    }
+    else {
+      TyKind rt = infer_type(c, recv);
+      if (ty_is_object(rt)) g = comp_method_in_chain(c, ty_object_class(rt), nm, NULL);
+    }
+    if (g >= 0 && g != mi) return g;
+  }
+  return -1;
+}
+
 /* Bind block parameter types for supported iteration methods. */
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -2287,6 +2388,47 @@ int infer_block_params(Compiler *c) {
         int yn = first_yield(c, yld_mi);
         int ya = yn >= 0 ? nt_ref(nt, yn, "arguments") : first_block_call_args(c, yld_mi);
         if (ya < 0) ya = first_ie_exec_args(c, yld_mi);  /* instance_exec(args, &b) */
+        /* No explicit yield / blk.call here: the method forwards its &blk
+           elsewhere. PRIMARY (name-independent): follow the `&blk` forward to a
+           resolvable user method that yields, and type the block params from
+           THAT callee's yield -- whatever its name. Re-points yld_mi/ya at the
+           followed yielder so the normal typing + poly-widen loops below run on
+           it. */
+        if (ya < 0) {
+          int g = yld_mi, hops = 0;
+          while (hops++ < 8) {
+            int ng = forwarded_blk_target(c, g);
+            if (ng < 0 || ng == g) break;
+            g = ng;
+            if (!c->scopes[g].yields) continue;  /* keep following the chain */
+            int gyn = first_yield(c, g);
+            int gya = gyn >= 0 ? nt_ref(nt, gyn, "arguments") : first_block_call_args(c, g);
+            if (gya < 0) gya = first_ie_exec_args(c, g);
+            if (gya >= 0) { yld_mi = g; ya = gya; break; }  /* type from g's yield */
+          }
+        }
+        /* FALLBACK (builtins only): a &blk forwarded to a builtin iterator has
+           no body to follow -- type the first block param from the receiver
+           array's element type, keyed by the iterator name. Skip the
+           poly-widening below whenever it forwards (even if the element type
+           isn't known this iteration; a premature widen to poly never narrows
+           back). */
+        if (ya < 0) {
+          int forwards = 0;
+          TyKind et = forwarded_iter_elem_type(c, yld_mi, &forwards);
+          if (forwards) {
+            if (et != TY_UNKNOWN) {
+              const char *bp = block_param_name(c, block, 0);
+              if (bp) {
+                Scope *bs = comp_scope_of(c, block);
+                LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
+                TyKind mt = ty_unify(lv->type, et);
+                if (mt != lv->type) { lv->type = mt; changed = 1; }
+              }
+            }
+            continue;
+          }
+        }
         int yc = 0;
         const int *yargs = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
         Scope *bs = comp_scope_of(c, block);

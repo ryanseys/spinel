@@ -9284,6 +9284,30 @@ int is_blockless_block_param_call(Compiler *c, int id) {
   return rn && !strcmp(rn, g_block_param_name);
 }
 
+/* The block node an iterator emitter should expand for CallNode `id`. A
+   `&blk` / anonymous `&` argument that forwards the active (inlined) block
+   param resolves to that caller block (g_block_id), so `recv.<iter>(&blk)`
+   reuses the full literal-block codegen for ANY iterator -- exactly as if the
+   block were written inline at the call. A BlockArgumentNode that does NOT
+   forward the active param (a Proc value, `&:sym`, a bound method) is returned
+   unchanged for the value-callable handlers; a plain literal block, or no
+   block, is returned unchanged too. */
+int resolved_call_block(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0 || !nt_type(nt, block) ||
+      strcmp(nt_type(nt, block), "BlockArgumentNode")) return block;
+  int ex = nt_ref(nt, block, "expression");
+  int forwards = 0;
+  if (ex < 0) forwards = 1;  /* anonymous `&`: nameless, can only forward */
+  else if (g_block_param_name && nt_type(nt, ex) &&
+           !strcmp(nt_type(nt, ex), "LocalVariableReadNode")) {
+    const char *en = nt_str(nt, ex, "name");
+    forwards = en && !strcmp(en, g_block_param_name);
+  }
+  return (forwards && g_block_id >= 0) ? g_block_id : block;
+}
+
 /* Expand the active block's body, binding its params to the given call
    args. Shared by YieldNode and `block.call`. `as_expr` wraps in ({...}). */
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr) {
@@ -9417,7 +9441,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
 
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");

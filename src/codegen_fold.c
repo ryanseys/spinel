@@ -35,7 +35,7 @@ int patch_lv_reads(Compiler *c, int id, const char *nm, TyKind ty,
    values, built via a loop over the hash entries in the statement prelude. */
 int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   int is_sel = !strcmp(name, "select") || !strcmp(name, "filter");
@@ -331,7 +331,7 @@ void restore_lv_read_ntype(Compiler *c, int *saved_ids, TyKind *saved_tys, int n
    Returns 1 if handled. */
 int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!name || (strcmp(name, "transform_keys") && strcmp(name, "transform_values"))) return 0;
@@ -459,7 +459,7 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
    Returns 1 if handled. */
 int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!name || strcmp(name, "bsearch")) return 0;
@@ -506,7 +506,7 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || (strcmp(name, "flat_map") && strcmp(name, "collect_concat"))) return 0;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
@@ -573,7 +573,7 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
 
 int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   int is_max = !strcmp(name, "max_by"), is_min = !strcmp(name, "min_by");
@@ -628,7 +628,7 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   if (!name || (strcmp(name, "uniq") && strcmp(name, "uniq!"))) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (recv < 0 || block < 0) return 0;
   if (comp_ntype(c, recv) != TY_POLY) return 0;
   int args = nt_ref(nt, id, "arguments");
@@ -676,7 +676,7 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
    the unanchored block forms. Returns 1 if handled. */
 int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!name || (strcmp(name, "gsub") && strcmp(name, "sub"))) return 0;
@@ -727,7 +727,7 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
    over every element. Returns 1 if handled. */
 int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!name || strcmp(name, "sum")) return 0;
@@ -1067,7 +1067,7 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
   /* find the operator symbol (from a &:op block or a trailing :op arg) and
      any explicit initial value */
   const char *op = NULL; int init = -1;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block >= 0 && nt_type(nt, block) && !strcmp(nt_type(nt, block), "BlockArgumentNode")) {
     int ex = nt_ref(nt, block, "expression");
     if (ex >= 0 && nt_type(nt, ex) && !strcmp(nt_type(nt, ex), "SymbolNode")) op = nt_str(nt, ex, "value");
@@ -1129,7 +1129,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   if (!k && !nested) return 0;
   if (nested) k = "Poly";  /* length via sp_PolyArray_length; elements unboxed below */
   TyKind et = nested ? TY_INT_ARRAY : ty_array_elem(rt);
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *bty = nt_type(nt, block);
   if (!bty || strcmp(bty, "BlockNode")) return 0;
@@ -1196,7 +1196,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
    handled. */
 int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   if (strcmp(name, "sort_by")) return 0;
@@ -1254,7 +1254,7 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
    handled. */
 int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   int is_bang = !strcmp(name, "sort!");
@@ -1340,7 +1340,7 @@ else {
    element; minmax yields a fresh [min, max]. Returns 1 if handled. */
 int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   int is_min = !strcmp(name, "min"), is_max = !strcmp(name, "max"), is_mm = !strcmp(name, "minmax");
@@ -1421,7 +1421,7 @@ int emit_partition_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || strcmp(name, "partition")) return 0;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
@@ -1514,7 +1514,7 @@ int emit_partition_expr(Compiler *c, int id, Buf *b) {
    temp array. Returns 1 if handled. */
 int emit_collect_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
@@ -1999,7 +1999,7 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
   int is_all = !strcmp(name, "all?"), is_any = !strcmp(name, "any?"),
       is_none = !strcmp(name, "none?"), is_one = !strcmp(name, "one?");
   if (!(is_all || is_any || is_none || is_one)) return 0;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
@@ -2873,7 +2873,7 @@ int emit_group_by_expr(Compiler *c, int id, Buf *b) {
   if (!name || strcmp(name, "group_by")) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
   if (!ty_is_array(rt)) return 0;
@@ -2976,7 +2976,7 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
   if (!name || strcmp(name, "each_with_object")) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
-  int block = nt_ref(nt, id, "block");
+  int block = resolved_call_block(c, id);
   if (block < 0) return 0;
   const char *bty = nt_type(nt, block);
   if (!bty || strcmp(bty, "BlockNode")) return 0;
