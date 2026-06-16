@@ -1904,6 +1904,36 @@ static int forwarding_yield_target(Compiler *c, int mi, int depth) {
   return forwarding_yield_target(c, t, depth + 1);
 }
 
+/* If method scope `si` forwards its &block param to `recv.each(&blk)`, set
+   *forwards and return the block's element type (TY_UNKNOWN if the receiver
+   isn't typed yet). *forwards lets the caller suppress the usual poly-widening
+   of the inlined block param even before the element type resolves over the
+   fixpoint -- a premature widen to poly never narrows back. */
+TyKind forwarded_iter_elem_type(Compiler *c, int si, int *forwards) {
+  const NodeTable *nt = c->nt;
+  *forwards = 0;
+  Scope *m = &c->scopes[si];
+  if (!m->blk_param || !m->blk_param[0]) return TY_UNKNOWN;
+  for (int id = 0; id < nt->count; id++) {
+    if (!nt_type(nt, id) || strcmp(nt_type(nt, id), "CallNode")) continue;
+    if (c->nscope[id] != si) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || strcmp(nm, "each")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || strcmp(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0 || !nt_type(nt, ex) || strcmp(nt_type(nt, ex), "LocalVariableReadNode")) continue;
+    const char *en = nt_str(nt, ex, "name");
+    if (!en || strcmp(en, m->blk_param)) continue;  /* forwards THIS &block */
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    *forwards = 1;
+    TyKind rt = infer_type(c, recv);
+    if (ty_is_array(rt)) return ty_array_elem(rt);
+  }
+  return TY_UNKNOWN;
+}
+
 /* Bind block parameter types for supported iteration methods. */
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -2287,6 +2317,28 @@ int infer_block_params(Compiler *c) {
         int yn = first_yield(c, yld_mi);
         int ya = yn >= 0 ? nt_ref(nt, yn, "arguments") : first_block_call_args(c, yld_mi);
         if (ya < 0) ya = first_ie_exec_args(c, yld_mi);  /* instance_exec(args, &b) */
+        /* No explicit yield / blk.call: the method may forward &blk to an
+           iterator (`recv.each(&blk)`). Type the first block param from the
+           forwarded-to receiver's element type. Skip the poly-widening below
+           whenever it forwards -- even if the element type isn't known this
+           iteration (it resolves later; a premature widen to poly never
+           narrows back). */
+        if (ya < 0) {
+          int forwards = 0;
+          TyKind et = forwarded_iter_elem_type(c, yld_mi, &forwards);
+          if (forwards) {
+            if (et != TY_UNKNOWN) {
+              const char *bp = block_param_name(c, block, 0);
+              if (bp) {
+                Scope *bs = comp_scope_of(c, block);
+                LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
+                TyKind mt = ty_unify(lv->type, et);
+                if (mt != lv->type) { lv->type = mt; changed = 1; }
+              }
+            }
+            continue;
+          }
+        }
         int yc = 0;
         const int *yargs = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
         Scope *bs = comp_scope_of(c, block);

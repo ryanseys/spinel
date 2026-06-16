@@ -9419,6 +9419,12 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
   if (block < 0) return 0;
+  /* `arr.each(&blk)` etc.: a forwarded block arg resolves to the block active
+     at this (already-inlined) site -- the caller's literal block -- so the loop
+     emits that block's body, exactly as if it were written inline. */
+  if (nt_type(nt, block) && !strcmp(nt_type(nt, block), "BlockArgumentNode"))
+    block = g_block_id;
+  if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name) return 0;
