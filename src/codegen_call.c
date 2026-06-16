@@ -9415,6 +9415,37 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   if (has_redo) g_redo_depth--;
 }
 
+/* If `block` is a BlockArgumentNode forwarding a Proc *value* (a TY_PROC
+   expression that is not the active block param), return its expression node;
+   else -1. `&blk` (the inlined block-param forward) and `&:sym` are excluded:
+   the former is handled by the inline path, the latter is not a Proc value. */
+int block_arg_proc_value(Compiler *c, int block) {
+  const NodeTable *nt = c->nt;
+  if (block < 0 || !nt_type(nt, block) ||
+      strcmp(nt_type(nt, block), "BlockArgumentNode")) return -1;
+  int ex = nt_ref(nt, block, "expression");
+  if (ex < 0 || comp_ntype(c, ex) != TY_PROC) return -1;
+  if (g_block_param_name && nt_type(nt, ex) &&
+      !strcmp(nt_type(nt, ex), "LocalVariableReadNode")) {
+    const char *en = nt_str(nt, ex, "name");
+    if (en && !strcmp(en, g_block_param_name)) return -1;
+  }
+  return ex;
+}
+
+/* The body return type of the Proc value at `pexpr` (a TY_PROC local), used to
+   box per-element #map results. TY_UNKNOWN if not a typed proc local. */
+TyKind block_arg_proc_value_ret(Compiler *c, int pexpr) {
+  const NodeTable *nt = c->nt;
+  if (pexpr < 0 || !nt_type(nt, pexpr) ||
+      strcmp(nt_type(nt, pexpr), "LocalVariableReadNode")) return TY_UNKNOWN;
+  const char *nm = nt_str(nt, pexpr, "name");
+  if (!nm) return TY_UNKNOWN;
+  LocalVar *lv = scope_local(comp_scope_of(c, pexpr), nm);
+  if (!lv || lv->type != TY_PROC) return TY_UNKNOWN;
+  return (TyKind)lv->proc_ret;
+}
+
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -9437,6 +9468,37 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const char *p0_orig = block_param_name(c, block, 0);
   const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
   TyKind rt = comp_ntype(c, recv);
+
+  /* arr.each(&proc): a forwarded Proc value is called once per element. The
+     element rides the proc's mrb_int arg slot (raw int, or a heap pointer
+     laundered through uintptr). Restricted to int/pointer-element arrays —
+     float elements don't fit the int slot. */
+  if (!strcmp(name, "each") && rt != TY_POLY_ARRAY && array_kind(rt)) {
+    int pexpr = block_arg_proc_value(c, block);
+    TyKind et = ty_array_elem(rt);
+    if (pexpr >= 0 && (et == TY_INT || proc_slot_is_ptr(et))) {
+      const char *k = array_kind(rt);
+      int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_indent(b, indent);
+      emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); buf_puts(b, rb.p ? rb.p : ""); buf_puts(b, ";\n");
+      free(rb.p);
+      emit_indent(b, indent);
+      buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);  /* sp_proc_call may allocate */
+      emit_indent(b, indent);
+      buf_printf(b, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, ta);
+      emit_indent(b, indent);
+      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+      emit_indent(b, indent + 1);
+      buf_puts(b, "sp_proc_call("); emit_expr(c, pexpr, b);
+      buf_puts(b, ", (mrb_int[16]){");
+      if (proc_slot_is_ptr(et)) buf_printf(b, "(mrb_int)(uintptr_t)sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+      else buf_printf(b, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+      buf_puts(b, "});\n");
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
+  }
 
   /* n.times { |i| ... } */
   if (!strcmp(name, "times") && rt == TY_INT) {

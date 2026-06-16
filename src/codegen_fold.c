@@ -1519,8 +1519,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   /* `arr.map(&blk)` inside `def m(&blk)`: a BlockArgumentNode that forwards
      the current method's block param maps over the caller's (already-inlined)
      literal block rather than treating it as an empty (nil-producing) block.
-     Only a forward of the active block param is redirected — `&:sym` and
-     `&proc_value` are left to their own handlers. */
+     A non-param BlockArgumentNode (`&proc_value`, `&:sym`) is not redirected;
+     it is left for the proc-value path below (or, failing that, declined so it
+     never reaches the empty-block nil path). */
+  int proc_value_arg = 0;
   if (nt_type(nt, block) && !strcmp(nt_type(nt, block), "BlockArgumentNode")) {
     int fwd_expr = nt_ref(nt, block, "expression");
     int forwards_param = 0;
@@ -1530,13 +1532,73 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       const char *en = nt_str(nt, fwd_expr, "name");
       forwards_param = en && !strcmp(en, g_block_param_name);
     }
-    if (!forwards_param || g_block_id < 0) return 0;
-    block = g_block_id;
+    if (forwards_param && g_block_id >= 0) block = g_block_id;
+    else proc_value_arg = 1;
   }
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
+
+  /* arr.map(&proc) / .collect(&proc): a forwarded Proc value is called once
+     per element and the results collected. The element rides the proc's
+     mrb_int arg slot and the return rides its mrb_int result slot, decoded by
+     the proc's body return type. Restricted to int/pointer elements and
+     int/pointer proc returns (float/poly returns don't fit the int slot). */
+  if ((!strcmp(name, "map") || !strcmp(name, "collect")) &&
+      rt != TY_POLY_ARRAY && array_kind(rt)) {
+    int pexpr = block_arg_proc_value(c, block);
+    TyKind et = ty_array_elem(rt);
+    TyKind pret = pexpr >= 0 ? block_arg_proc_value_ret(c, pexpr) : TY_UNKNOWN;
+    int ok_elem = (et == TY_INT || proc_slot_is_ptr(et));
+    int ok_ret = (pret == TY_INT || proc_slot_is_ptr(pret));
+    if (pexpr >= 0 && ok_elem && ok_ret) {
+      TyKind restype = comp_ntype(c, id);
+      int res_poly = (restype == TY_POLY_ARRAY);
+      const char *rk = res_poly ? "Poly" : array_kind(restype);
+      if (rk) {
+        const char *k = array_kind(rt);
+        int ta = ++g_tmp, tn = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);  /* preludes -> g_pre, value -> rb */
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", ta); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n");
+        free(rb.p);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);  /* sp_proc_call may allocate */
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, ta);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk, tres, rk, tres);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "mrb_int _t%d = sp_proc_call(", tv); emit_expr(c, pexpr, g_pre);
+        buf_puts(g_pre, ", (mrb_int[16]){");
+        if (proc_slot_is_ptr(et)) buf_printf(g_pre, "(mrb_int)(uintptr_t)sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+        else buf_printf(g_pre, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+        buf_puts(g_pre, "});\n");
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
+        /* decode the proc's mrb_int result into the result array's element:
+           a pointer return is laundered back through uintptr; a poly result
+           array boxes the decoded value by the proc's return type. */
+        if (res_poly) {
+          if (proc_slot_is_ptr(pret)) buf_printf(g_pre, "sp_box_str((const char *)(uintptr_t)_t%d)", tv);
+          else buf_printf(g_pre, "sp_box_int(_t%d)", tv);
+        }
+        else if (proc_slot_is_ptr(pret)) buf_printf(g_pre, "(const char *)(uintptr_t)_t%d", tv);
+        else buf_printf(g_pre, "_t%d", tv);
+        buf_puts(g_pre, ");\n");
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        buf_printf(b, "_t%d", tres);
+        return 1;
+      }
+    }
+  }
+  /* A `&proc_value` / `&:sym` arg the proc-value path above did not handle must
+     not fall through to the empty-block path (which would map to nil); decline
+     so its own handler — or an honest `unsupported` — takes over. */
+  if (proc_value_arg) return 0;
   /* array.each_slice(n).map { |x, y, ...| } chain: unroll into a direct slice loop */
   if ((!strcmp(name, "map") || !strcmp(name, "collect")) &&
       nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
