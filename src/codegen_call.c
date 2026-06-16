@@ -181,6 +181,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  if (emit_value_callable_expr(c, id, b)) return;
   if (emit_partition_expr(c, id, b)) return;
   if (emit_collect_expr(c, id, b)) return;
   if (emit_predicate_expr(c, id, b)) return;
@@ -9308,6 +9309,172 @@ int resolved_call_block(Compiler *c, int id) {
   return (forwards && g_block_id >= 0) ? g_block_id : block;
 }
 
+/* Classify a non-inline &callable forwarded to an array iterator: a Proc value
+   (a TY_PROC expression that is NOT the active inlined block param) or a
+   top-level (receiverless) Method target. `&` / `&blk` (the inline-forward
+   path) and `&:sym` are declined. Consolidates the proc-value and method-target
+   classifiers into one. */
+VCallable classify_value_callable(Compiler *c, int block) {
+  VCallable vc = { VCALL_NONE, -1, -1, TY_UNKNOWN };
+  const NodeTable *nt = c->nt;
+  if (block < 0 || !nt_type(nt, block) ||
+      strcmp(nt_type(nt, block), "BlockArgumentNode")) return vc;
+  int ex = nt_ref(nt, block, "expression");
+  if (ex < 0) return vc;  /* anonymous `&`: inline-forward path, not a value */
+  /* the active inlined block param is handled by resolved_call_block */
+  if (g_block_param_name && nt_type(nt, ex) &&
+      !strcmp(nt_type(nt, ex), "LocalVariableReadNode")) {
+    const char *en = nt_str(nt, ex, "name");
+    if (en && !strcmp(en, g_block_param_name)) return vc;
+  }
+  TyKind et = comp_ntype(c, ex);
+  if (et == TY_PROC) {
+    vc.kind = VCALL_PROC; vc.expr = ex;
+    if (nt_type(nt, ex) && !strcmp(nt_type(nt, ex), "LocalVariableReadNode")) {
+      const char *nm = nt_str(nt, ex, "name");
+      LocalVar *lv = nm ? scope_local(comp_scope_of(c, ex), nm) : NULL;
+      if (lv && lv->type == TY_PROC) vc.ret = (TyKind)lv->proc_ret;
+    }
+    return vc;
+  }
+  if (et == TY_METHOD) {
+    int mn = method_recv_node(c, ex);
+    if (mn < 0 || nt_ref(nt, mn, "receiver") >= 0) return vc;  /* top-level only */
+    int target = method_obj_target_mi(c, mn);
+    if (target < 0) return vc;
+    vc.kind = VCALL_METHOD; vc.expr = ex; vc.target = target;
+    vc.ret = c->scopes[target].ret;
+    return vc;
+  }
+  return vc;
+}
+
+/* Shared per-element loop for a value callable (`&proc` / `&method(:m)`) over a
+   typed array receiver. ONE scaffold (recv temp, SP_GC_ROOT, length, for-loop,
+   element get) parametrized by shape:
+     VITER_EACH   -> statement form, call for side effect, no result;
+     VITER_MAP    -> collect the decoded per-element result into a new array;
+     VITER_SELECT -> push the element when the call is truthy;
+     VITER_REJECT -> push the element when the call is falsy.
+   The element rides the proc's mrb_int arg slot (laundered through uintptr for
+   pointer elements) / the method's own typed parameter. Restricted to
+   int/pointer-slot elements; collect needs an int/pointer return, filter needs
+   an int/bool return. EACH emits into `b` at `indent`; the value shapes emit
+   into the statement prelude (g_pre) and write the result-array temp into `b`.
+   Returns 1 if handled, 0 to decline. */
+int emit_value_callable_iter(Compiler *c, int recv, TyKind rt, VCallable vc,
+                             VIterShape shape, TyKind result_type, Buf *b, int indent) {
+  if (rt == TY_POLY_ARRAY) return 0;
+  const char *k = array_kind(rt);
+  if (!k) return 0;
+  TyKind et = ty_array_elem(rt);
+  /* The element rides the call's first arg slot. Restrict to int elements: a
+     proc reads its arg from the mrb_int slot (pointer args don't round-trip),
+     and a method's parameter type for a non-int element isn't reliably inferred
+     from a bare `&method(:m)`. Pointer/string elements are a follow-up. */
+  if (et != TY_INT) return 0;
+  TyKind ret = vc.ret;
+  if (shape == VITER_MAP) {
+    /* a proc result rides the mrb_int slot, so only an int proc return fits; a
+       method returns its own ctype directly, so int or pointer is fine. */
+    if (vc.kind == VCALL_PROC) { if (ret != TY_INT) return 0; }
+    else if (!(ret == TY_INT || proc_slot_is_ptr(ret))) return 0;
+  }
+  else if (shape == VITER_SELECT || shape == VITER_REJECT) {
+    if (!(ret == TY_INT || ret == TY_BOOL)) return 0;  /* predicate truthiness via int slot */
+  }
+
+  int is_stmt = (shape == VITER_EACH);
+  Buf *out = is_stmt ? b : g_pre;
+  int oind = is_stmt ? indent : g_indent;
+
+  const char *rk = NULL; int res_poly = 0;
+  if (shape == VITER_MAP) {
+    res_poly = (result_type == TY_POLY_ARRAY);
+    rk = res_poly ? "Poly" : array_kind(result_type);
+    if (!rk) return 0;
+  }
+  else if (shape == VITER_SELECT || shape == VITER_REJECT) rk = k;  /* same element array */
+
+  int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
+  int tres = is_stmt ? 0 : ++g_tmp;
+
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(out, oind); emit_ctype(c, rt, out);
+  buf_printf(out, " _t%d = ", ta); buf_puts(out, rb.p ? rb.p : ""); buf_puts(out, ";\n"); free(rb.p);
+  emit_indent(out, oind); buf_printf(out, "SP_GC_ROOT(_t%d);\n", ta);  /* the call may allocate */
+  emit_indent(out, oind); buf_printf(out, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, ta);
+  if (tres) { emit_indent(out, oind); buf_printf(out, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk, tres, rk, tres); }
+  emit_indent(out, oind); buf_printf(out, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+  emit_indent(out, oind + 1); emit_ctype(c, et, out);
+  buf_printf(out, " _t%d = sp_%sArray_get(_t%d, _t%d);\n", te, k, ta, ti);
+
+  /* per-element call -> result temp tv (omitted for EACH, which discards). */
+  int tv = is_stmt ? 0 : ++g_tmp;
+  emit_indent(out, oind + 1);
+  if (vc.kind == VCALL_PROC) {
+    if (tv) buf_printf(out, "mrb_int _t%d = ", tv);
+    buf_puts(out, "sp_proc_call("); emit_expr(c, vc.expr, out);
+    buf_printf(out, ", 1, (mrb_int[16]){_t%d});\n", te);  /* one int element per call */
+  }
+  else { /* VCALL_METHOD: the C function takes the element's ctype directly */
+    if (tv) { emit_ctype(c, ret, out); buf_printf(out, " _t%d = ", tv); }
+    emit_method_cname(c, &c->scopes[vc.target], out);
+    buf_printf(out, "(_t%d);\n", te);
+  }
+
+  if (shape == VITER_MAP) {
+    emit_indent(out, oind + 1); buf_printf(out, "sp_%sArray_push(_t%d, ", rk, tres);
+    if (vc.kind == VCALL_PROC) {
+      /* decode the proc's mrb_int result: launder a pointer back through
+         uintptr; box into a poly result array by the proc's return type. */
+      if (res_poly) buf_printf(out, proc_slot_is_ptr(ret) ? "sp_box_str((const char *)(uintptr_t)_t%d)" : "sp_box_int(_t%d)", tv);
+      else if (proc_slot_is_ptr(ret)) buf_printf(out, "(const char *)(uintptr_t)_t%d", tv);
+      else buf_printf(out, "_t%d", tv);
+    }
+    else { /* method: tv already holds the typed return value */
+      if (res_poly) { Buf bx; memset(&bx, 0, sizeof bx); char tt[24]; snprintf(tt, sizeof tt, "_t%d", tv); emit_boxed_text(c, ret, tt, &bx); buf_puts(out, bx.p ? bx.p : ""); free(bx.p); }
+      else buf_printf(out, "_t%d", tv);
+    }
+    buf_puts(out, ");\n");
+  }
+  else if (shape == VITER_SELECT || shape == VITER_REJECT) {
+    emit_indent(out, oind + 1);
+    buf_printf(out, "if (%s(_t%d)) sp_%sArray_push(_t%d, _t%d);\n",
+               shape == VITER_REJECT ? "!" : "", tv, rk, tres, te);
+  }
+  emit_indent(out, oind); buf_puts(out, "}\n");
+  if (tres) buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
+/* Value-position dispatch for a forwarded value callable: `arr.map(&proc)`,
+   `arr.collect(&method(:m))`, `arr.select(&proc)`, `arr.reject(&proc)`.
+   Declines anything that isn't a typed-array receiver with a Proc/Method block
+   arg and a collect/filter iterator name. */
+int emit_value_callable_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_array(rt) || rt == TY_POLY_ARRAY) return 0;
+  VCallable vc = classify_value_callable(c, resolved_call_block(c, id));
+  if (vc.kind == VCALL_NONE) return 0;
+  VIterShape shape;
+  if (!strcmp(name, "map") || !strcmp(name, "collect")) shape = VITER_MAP;
+  else if (!strcmp(name, "select") || !strcmp(name, "filter")) shape = VITER_SELECT;
+  else if (!strcmp(name, "reject")) shape = VITER_REJECT;
+  else return 0;
+  if (emit_value_callable_iter(c, recv, rt, vc, shape, comp_ntype(c, id), b, 0)) return 1;
+  /* a genuine value callable on a collect/filter iterator we cannot emit
+     (unsupported element/return slot): fail honestly rather than fall through to
+     a literal-block emitter that would map it to nil. */
+  unsupported(c, id, "value callable forwarded to iterator (unsupported types)");
+  return 1;
+}
+
 /* Expand the active block's body, binding its params to the given call
    args. Shared by YieldNode and `block.call`. `as_expr` wraps in ({...}). */
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr) {
@@ -9461,6 +9628,18 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const char *p0_orig = block_param_name(c, block, 0);
   const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
   TyKind rt = comp_ntype(c, recv);
+
+  /* arr.each(&proc) / arr.each(&method(:m)): a forwarded value callable is
+     applied per element (side effect; result discarded). */
+  if (ty_is_array(rt) && rt != TY_POLY_ARRAY &&
+      (!strcmp(name, "each") || !strcmp(name, "each_entry"))) {
+    VCallable vc = classify_value_callable(c, block);
+    if (vc.kind != VCALL_NONE) {
+      if (emit_value_callable_iter(c, recv, rt, vc, VITER_EACH, TY_UNKNOWN, b, indent)) return 1;
+      unsupported(c, id, "value callable forwarded to each (unsupported types)");
+      return 1;
+    }
+  }
 
   /* n.times { |i| ... } */
   if (!strcmp(name, "times") && rt == TY_INT) {

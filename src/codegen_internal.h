@@ -379,6 +379,18 @@ int subtree_has_own_redo(const NodeTable *nt, int id);
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 int resolved_call_block(Compiler *c, int id);
+
+/* A non-inline &callable forwarded to an array iterator: a Proc value
+   (TY_PROC, not the active block param) or a top-level Method target.
+   Consolidates the proc-value and method-target classifiers. */
+typedef enum { VCALL_NONE, VCALL_PROC, VCALL_METHOD } VCallKind;
+typedef struct { VCallKind kind; int expr; int target; TyKind ret; } VCallable;
+/* Per-element loop shape (selected from the iterator name). */
+typedef enum { VITER_EACH, VITER_MAP, VITER_SELECT, VITER_REJECT } VIterShape;
+VCallable classify_value_callable(Compiler *c, int block);
+int emit_value_callable_iter(Compiler *c, int recv, TyKind rt, VCallable vc,
+                             VIterShape shape, TyKind result_type, Buf *b, int indent);
+int emit_value_callable_expr(Compiler *c, int id, Buf *b);
 void emit_interp(Compiler *c, int id, Buf *b);
 void emit_expr(Compiler *c, int id, Buf *b);
 void emit_puts_one(Compiler *c, int arg, Buf *b, int indent);
