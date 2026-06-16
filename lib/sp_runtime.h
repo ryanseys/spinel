@@ -432,9 +432,8 @@ static char *sp_str_alloc(size_t len) {
   sp_str_hdr *h = (sp_str_hdr *)malloc(total);
   if (!h) sp_oom_die();
   h->next = sp_str_heap;
-  h->size = (uint32_t)total;
-  h->len = (uint32_t)len;
-  h->hash = 0;
+  h->size = total;
+  h->len = len;
   sp_str_heap = h;
   /* Don't fold string-heap pressure into sp_gc_bytes : the
      threshold heuristic in sp_gc_alloc is keyed on heap survivors, and
@@ -474,9 +473,7 @@ static inline void sp_str_set_len(char *s, size_t len) {
   if (!s) return;
   unsigned char marker = ((unsigned char *)s)[-1];
   if (marker == 0xfe || marker == 0xfc) {
-    sp_str_hdr *hd = ((sp_str_hdr *)(s - 1)) - 1;
-    hd->len = (uint32_t)len;
-    hd->hash = 0;  /* length change implies content change: invalidate cached hash */
+    (((sp_str_hdr *)(s - 1)) - 1)->len = len;
   }
 }
 
@@ -1172,27 +1169,7 @@ static sp_StrArray*sp_StrArray_sort(sp_StrArray*a){sp_StrArray*b=sp_StrArray_dup
 static sp_StrArray*sp_StrArray_shuffle(sp_StrArray*a){sp_StrArray*r=sp_StrArray_new();sp_StrArray_replace(r,a);sp_StrArray_shuffle_bang(r);return r;}
 static const char *sp_StrArray_sample(sp_StrArray*a){if(a->len<=0)return sp_str_empty;return a->data[(mrb_int)(rand()%a->len)];}
 
-static inline uint64_t sp_str_hash_compute(const char*s){uint64_t h=14695981039346656037ULL;while(*s){h^=(unsigned char)*s++;h*=1099511628211ULL;}return h;}
-/* Cold path: compute (and, for a heap/heap-frozen string, cache) the FNV
-   hash. Kept out-of-line so sp_str_hash's inline fast path -- a cached-hash
-   read -- stays tiny and doesn't bloat every call site's code layout. */
-static SP_NOINLINE uint64_t sp_str_hash_miss(const char*s,unsigned char m){
-  if(m==0xfe||m==0xfc||m==0xf1){
-    sp_str_hdr*hd=((sp_str_hdr*)(s-1))-1;
-    uint64_t h=sp_str_hash_compute(s);
-    hd->hash=h?h:1;
-    return hd->hash;
-  }
-  return sp_str_hash_compute(s);
-}
-static inline uint64_t sp_str_hash(const char*s){
-  unsigned char m=((const unsigned char*)s)[-1];
-  if(m==0xfe||m==0xfc||m==0xf1){
-    uint64_t cached=(((sp_str_hdr*)(s-1))-1)->hash;
-    if(cached)return cached;
-  }
-  return sp_str_hash_miss(s,m);
-}
+static inline uint64_t sp_str_hash(const char*s){uint64_t h=14695981039346656037ULL;while(*s){h^=(unsigned char)*s++;h*=1099511628211ULL;}return h;}
 static void sp_StrIntHash_fin(void*p){sp_StrIntHash*h=(sp_StrIntHash*)p;free(h->keys);free(h->vals);free(h->order);}
 static void sp_StrIntHash_scan(void*p){sp_StrIntHash*h=(sp_StrIntHash*)p;for(mrb_int i=0;i<h->cap;i++){if(h->keys[i])sp_mark_string(h->keys[i]);}}
 /* default_v is SP_INT_NIL for a hash with no explicit default ({} / {k=>v}),
@@ -1939,12 +1916,7 @@ static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
     return v;
   }
   unsigned char m = ((const unsigned char *)s)[-1];
-  if (m == 0xfe || m == 0xfc) {
-    (((sp_str_hdr *)(s - 1)) - 1)->hash = 0;  /* invalidate cached key hash */
-    ((char *)s)[i] = (char)v;
-    return v;
-  }
-  if (m == 0xfd) {
+  if (m == 0xfe || m == 0xfc || m == 0xfd) {
     ((char *)s)[i] = (char)v;
     return v;
   }
