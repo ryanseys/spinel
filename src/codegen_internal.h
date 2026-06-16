@@ -380,6 +380,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 int block_arg_proc_value(Compiler *c, int block);
 TyKind block_arg_proc_value_ret(Compiler *c, int pexpr);
+int block_arg_method_target(Compiler *c, int block, int *expr);
 void emit_interp(Compiler *c, int id, Buf *b);
 void emit_expr(Compiler *c, int id, Buf *b);
 void emit_puts_one(Compiler *c, int arg, Buf *b, int indent);

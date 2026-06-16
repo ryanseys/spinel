@@ -1595,6 +1595,48 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       }
     }
   }
+  /* arr.map(&method(:m)) / .collect: a forwarded top-level Method is called per
+     element through its own typed signature and the results collected, decoded
+     by the method's return type. */
+  if ((!strcmp(name, "map") || !strcmp(name, "collect")) &&
+      rt != TY_POLY_ARRAY && array_kind(rt)) {
+    int mexpr = -1;
+    int target = block_arg_method_target(c, block, &mexpr);
+    TyKind mret = target >= 0 ? c->scopes[target].ret : TY_UNKNOWN;
+    if (target >= 0 && (mret == TY_INT || proc_slot_is_ptr(mret))) {
+      TyKind restype = comp_ntype(c, id);
+      int res_poly = (restype == TY_POLY_ARRAY);
+      const char *rk = res_poly ? "Poly" : array_kind(restype);
+      if (rk) {
+        const char *k = array_kind(rt);
+        int ta = ++g_tmp, tn = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", ta); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n");
+        free(rb.p);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);  /* the method body may allocate */
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, ta);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk, tres, rk, tres);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+        emit_indent(g_pre, g_indent + 1);
+        emit_ctype(c, mret, g_pre); buf_printf(g_pre, " _t%d = ", tv);
+        emit_method_cname(c, &c->scopes[target], g_pre);
+        buf_printf(g_pre, "(sp_%sArray_get(_t%d, _t%d));\n", k, ta, ti);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
+        if (res_poly) { Buf bx; memset(&bx, 0, sizeof bx); char tvtext[16]; snprintf(tvtext, sizeof tvtext, "_t%d", tv); emit_boxed_text(c, mret, tvtext, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+        else buf_printf(g_pre, "_t%d", tv);
+        buf_puts(g_pre, ");\n");
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        buf_printf(b, "_t%d", tres);
+        return 1;
+      }
+    }
+  }
   /* A `&proc_value` / `&:sym` arg the proc-value path above did not handle must
      not fall through to the empty-block path (which would map to nil); decline
      so its own handler — or an honest `unsupported` — takes over. */

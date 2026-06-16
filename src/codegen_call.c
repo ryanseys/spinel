@@ -9446,6 +9446,25 @@ TyKind block_arg_proc_value_ret(Compiler *c, int pexpr) {
   return (TyKind)lv->proc_ret;
 }
 
+/* `&method(:name)` forwarding: if `block` is a BlockArgumentNode whose value is
+   a top-level (receiverless) Method, return its target method scope index, and
+   set *expr to the Method expression node; else -1. Only top-level methods are
+   resolved here — a bound `recv.method(:m)` is left unsupported. */
+int block_arg_method_target(Compiler *c, int block, int *expr) {
+  const NodeTable *nt = c->nt;
+  *expr = -1;
+  if (block < 0 || !nt_type(nt, block) ||
+      strcmp(nt_type(nt, block), "BlockArgumentNode")) return -1;
+  int ex = nt_ref(nt, block, "expression");
+  if (ex < 0 || comp_ntype(c, ex) != TY_METHOD) return -1;
+  int mn = method_recv_node(c, ex);
+  if (mn < 0 || nt_ref(nt, mn, "receiver") >= 0) return -1;  /* top-level only */
+  int target = method_obj_target_mi(c, mn);
+  if (target < 0) return -1;
+  *expr = ex;
+  return target;
+}
+
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -9495,6 +9514,33 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       if (proc_slot_is_ptr(et)) buf_printf(b, "(mrb_int)(uintptr_t)sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
       else buf_printf(b, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
       buf_puts(b, "});\n");
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
+  }
+
+  /* arr.each(&method(:m)): a forwarded top-level Method is called per element
+     through its own typed signature (no mrb_int laundering — the C function
+     takes the element's ctype directly). */
+  if (!strcmp(name, "each") && rt != TY_POLY_ARRAY && array_kind(rt)) {
+    int mexpr = -1;
+    int target = block_arg_method_target(c, block, &mexpr);
+    if (target >= 0) {
+      const char *k = array_kind(rt);
+      int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_indent(b, indent);
+      emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); buf_puts(b, rb.p ? rb.p : ""); buf_puts(b, ";\n");
+      free(rb.p);
+      emit_indent(b, indent);
+      buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);  /* the method body may allocate */
+      emit_indent(b, indent);
+      buf_printf(b, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, ta);
+      emit_indent(b, indent);
+      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+      emit_indent(b, indent + 1);
+      emit_method_cname(c, &c->scopes[target], b);
+      buf_printf(b, "(sp_%sArray_get(_t%d, _t%d));\n", k, ta, ti);
       emit_indent(b, indent); buf_puts(b, "}\n");
       return 1;
     }
