@@ -2155,8 +2155,9 @@ int infer_block_params(Compiler *c) {
     }
   }
 
-  /* Fiber.new { |first| ... }: the block param receives the resume value,
-     which is always a poly (boxed) value at the runtime ABI boundary. */
+  /* Fiber.new { |first| ... }: the block param receives the resume value;
+     Ractor.new(args) { |x| ... }: the block param receives a deep-copied spawn
+     argument. Both arrive as poly (boxed) values at the runtime ABI boundary. */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || strcmp(ty, "CallNode")) continue;
@@ -2169,7 +2170,7 @@ int infer_block_params(Compiler *c) {
                    (!strcmp(rrty, "ConstantPathNode") && nt_ref(nt, recv, "parent") < 0);
     if (!is_const) continue;
     const char *rn = nt_str(nt, recv, "name");
-    if (!rn || strcmp(rn, "Fiber")) continue;
+    if (!rn || (strcmp(rn, "Fiber") && strcmp(rn, "Ractor"))) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0) continue;
     int pn = nt_ref(nt, blk, "parameters");

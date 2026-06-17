@@ -903,7 +903,28 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
   int body = nt_ref(nt, blk, "body");
   Scope *encl = comp_scope_of(c, id);
 
-  /* Isolation rule: reject captured outer locals and self. */
+  /* Block parameters bind the Ractor.new spawn arguments positionally:
+     Ractor.new(a, b) { |x, y| ... } deep-copies a->x, b->y into the new
+     Ractor's heap. Collect the param names and the call args. */
+  #define SP_RACTOR_MAX_BP 16
+  const char *bparams[SP_RACTOR_MAX_BP]; int nbp = 0;
+  {
+    int bp_node = nt_ref(nt, blk, "parameters");
+    if (bp_node >= 0) {
+      int inner = nt_ref(nt, bp_node, "parameters");
+      int pn = inner >= 0 ? inner : bp_node;
+      int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+      for (int i = 0; i < rn && nbp < SP_RACTOR_MAX_BP; i++) {
+        const char *p = nt_str(nt, reqs[i], "name");
+        if (p) bparams[nbp++] = p;
+      }
+    }
+  }
+  int args_node = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &argc) : NULL;
+
+  /* Isolation rule: reject captured outer locals and self. Block params are
+     not captures (they receive the deep-copied spawn args), so skip them. */
   NameSet rac_locals = {0};
   if (body >= 0) proc_collect_locals(c, body, &rac_locals);
   NameSet rac_used = {0};
@@ -912,28 +933,19 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
     for (int u = 0; u < rac_used.n; u++) {
       const char *nm = rac_used.v[u];
       if (nameset_has(&rac_locals, nm)) continue;
+      int is_bp = 0; for (int i = 0; i < nbp; i++) if (!strcmp(nm, bparams[i])) { is_bp = 1; break; }
+      if (is_bp) continue;
       LocalVar *lv = scope_local(encl, nm);
       if (!lv || lv->type == TY_UNKNOWN) continue;
       unsupported(c, id, "Ractor::IsolationError: block captures outer variable "
-                         "(Milestone 1 Ractors must be self-contained)");
+                         "(a Ractor block must be self-contained; pass data as a "
+                         "Ractor.new argument or via send instead)");
     }
   }
   free(rac_used.v);
   if (encl && encl->class_id >= 0 && !encl->is_cmethod && body >= 0 && fiber_body_uses_self(c, body))
     unsupported(c, id, "Ractor::IsolationError: block accesses self "
-                       "(Milestone 1 Ractors must be self-contained)");
-
-  /* Block parameters would carry Ractor.new arguments, which Milestone 1 does
-     not pass; reject so we never silently drop them. */
-  {
-    int bp_node = nt_ref(nt, blk, "parameters");
-    if (bp_node >= 0) {
-      int inner = nt_ref(nt, bp_node, "parameters");
-      int pn = inner >= 0 ? inner : bp_node;
-      int rn = 0; (void)nt_arr(nt, pn, "requireds", &rn);
-      if (rn > 0) unsupported(c, id, "Ractor.new block parameters (Milestone 1 takes no args)");
-    }
-  }
+                       "(a Ractor block must be self-contained)");
 
   buf_printf(&g_proc_protos, "static void %s(sp_Ractor *_rb);\n", fname);
 
@@ -958,10 +970,19 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
       if (!lv->name) continue;
       if (!nameset_has(&rac_locals, lv->name)) continue;
       if (lv->type == TY_UNKNOWN) continue;
+      int is_bp = 0; for (int i = 0; i < nbp; i++) if (!strcmp(lv->name, bparams[i])) { is_bp = 1; break; }
+      if (is_bp) continue;   /* block params are declared from spawn args below */
       declare_local(c, pb, lv, 0);
     }
   }
   free(rac_locals.v);
+
+  /* Block params: bind each to its deep-copied spawn argument (poly). */
+  for (int i = 0; i < nbp; i++) {
+    const char *bpn = rename_local(bparams[i]);
+    buf_printf(pb, "    sp_RbVal lv_%s = sp_ractor_spawn_arg(%d);\n", bpn, i);
+    buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
+  }
 
   /* Top-level rescue landing pad: an uncaught raise longjmps here and the
      Ractor simply terminates (its taker then sees the closed outbox). */
@@ -982,7 +1003,25 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
   g_result_poly = sv_rp; g_result_var = sv_rv;
 
-  buf_printf(b, "sp_Ractor_new(%s)", fname);
+  /* Creation: with spawn args, serialize each (on this creator thread, reading
+     this heap) into a malloc'd blob array, then hand ownership to the Ractor.
+     Hoist the array build into g_pre so arg expressions can pre-emit cleanly. */
+  if (argc > 0 && g_pre) {
+    int ta = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RactorBlob *_t%d = (sp_RactorBlob *)malloc(sizeof(sp_RactorBlob) * %d);\n", ta, argc);
+    for (int i = 0; i < argc; i++) {
+      Buf vb = {0};
+      if (comp_ntype(c, argv[i]) == TY_POLY) emit_expr(c, argv[i], &vb);
+      else emit_boxed(c, argv[i], &vb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_t%d[%d] = sp_ractor_serialize_hook(%s);\n", ta, i, vb.p ? vb.p : "sp_box_nil()");
+      free(vb.p);
+    }
+    buf_printf(b, "sp_Ractor_new_args(%s, _t%d, %d)", fname, ta, argc);
+  } else {
+    buf_printf(b, "sp_Ractor_new(%s)", fname);
+  }
 }
 
 /* Lower a `proc {}` / `lambda {}` / `Proc.new {}` / `->(){}` literal: emit a

@@ -41,6 +41,10 @@ extern __thread sp_Ractor *sp_ractor_current;
 
 /* Public API, reached by name from the generated translation unit. */
 sp_Ractor *sp_Ractor_new(void (*body)(sp_Ractor *)); /* Ractor.new { ... } */
+/* Ractor.new(args...) { |params...| }: `args` is a malloc'd array of `argc`
+   serialized blobs whose ownership transfers to the new Ractor. */
+sp_Ractor *sp_Ractor_new_args(void (*body)(sp_Ractor *), sp_RactorBlob *args, int argc);
+sp_RbVal   sp_ractor_spawn_arg(int i);               /* i-th block arg, deep-copied */
 void       sp_Ractor_send(sp_Ractor *r, sp_RbVal v); /* r.send(v) / r << v */
 sp_RbVal   sp_Ractor_receive(void);                  /* Ractor.receive     */
 void       sp_Ractor_yield(sp_RbVal v);              /* Ractor.yield(v)    */
