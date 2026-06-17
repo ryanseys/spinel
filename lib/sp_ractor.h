@@ -56,6 +56,17 @@ sp_Ractor *sp_Ractor_new(void (*body)(sp_Ractor *)); /* Ractor.new { ... } */
    serialized blobs whose ownership transfers to the new Ractor. */
 sp_Ractor *sp_Ractor_new_args(void (*body)(sp_Ractor *), sp_RactorBlob *args, int argc);
 sp_RbVal   sp_ractor_spawn_arg(int i);               /* i-th block arg, deep-copied */
+
+/* Ractor::Port -- a standalone, process-shared message channel (mutex+condvar
+   FIFO), not bound to any one Ractor. Unlike a message value, a Port crosses
+   the boundary BY REFERENCE (the same channel is shared), so producers and
+   consumers on different Ractors rendezvous through it. Registry-owned for the
+   process lifetime, so the shared pointer never dangles. */
+typedef struct sp_RactorPort sp_RactorPort;
+sp_RactorPort *sp_RactorPort_new(void);              /* Ractor::Port.new   */
+void           sp_RactorPort_send(sp_RactorPort *p, sp_RbVal v); /* p.send / p << v */
+sp_RbVal       sp_RactorPort_receive(sp_RactorPort *p);          /* p.receive       */
+void           sp_RactorPort_close(sp_RactorPort *p);            /* p.close         */
 void       sp_Ractor_send(sp_Ractor *r, sp_RbVal v); /* r.send(v) / r << v */
 sp_RbVal   sp_Ractor_receive(void);                  /* Ractor.receive     */
 void       sp_Ractor_yield(sp_RbVal v);              /* Ractor.yield(v)    */

@@ -170,6 +170,35 @@ sp_Ractor *sp_Ractor_new(void (*body)(sp_Ractor *)) {
   return sp_Ractor_new_args(body, NULL, 0);
 }
 
+/* ---- Ractor::Port: a process-shared message channel ---- */
+struct sp_RactorPort {
+  sp_RactorQueue q;
+  sp_RactorPort *reg_next;   /* process-lifetime registry */
+};
+static pthread_mutex_t sp_port_reg_mtx = PTHREAD_MUTEX_INITIALIZER;
+static sp_RactorPort  *sp_port_reg_head = NULL;
+
+sp_RactorPort *sp_RactorPort_new(void) {
+  sp_RactorPort *p = (sp_RactorPort *)calloc(1, sizeof(sp_RactorPort));
+  if (!p) sp_raise_cls("Ractor::Error", "failed to allocate Ractor::Port");
+  sp_rq_init(&p->q);
+  pthread_mutex_lock(&sp_port_reg_mtx);
+  p->reg_next = sp_port_reg_head; sp_port_reg_head = p;
+  pthread_mutex_unlock(&sp_port_reg_mtx);
+  return p;
+}
+void sp_RactorPort_send(sp_RactorPort *p, sp_RbVal v) {
+  if (!p) sp_raise_cls("Ractor::Error", "send on a null Ractor::Port");
+  sp_rq_push(&p->q, sp_ractor_to_blob(v));   /* serialize on the sender side */
+}
+sp_RbVal sp_RactorPort_receive(sp_RactorPort *p) {
+  if (!p) sp_raise_cls("Ractor::Error", "receive on a null Ractor::Port");
+  sp_RactorBlob b;
+  if (!sp_rq_pop(&p->q, &b)) sp_raise_cls("Ractor::Error", "Ractor::Port is closed");
+  return sp_ractor_from_blob(b);             /* rebuild into the receiver's heap */
+}
+void sp_RactorPort_close(sp_RactorPort *p) { if (p) sp_rq_close(&p->q); }
+
 /* Deserialize the i-th spawn argument into this Ractor's heap (read once, per
    block parameter). Out-of-range yields nil, matching a block param with no
    corresponding argument. */

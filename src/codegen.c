@@ -5,6 +5,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_EXCEPTION) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_EXCEPTION)", expr); return; }
   if (t == TY_FIBER) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_FIBER)", expr); return; }
   if (t == TY_IO) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_IO)", expr); return; }
+  if (t == TY_RACTOR_PORT) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_RACTOR_PORT)", expr); return; }
   if (ty_is_object(t)) { buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t)); return; }
   if (ty_is_hash(t) && hash_box_cls(t)) { buf_printf(b, "sp_box_obj(%s, %s)", expr, hash_box_cls(t)); return; }
   const char *fn = NULL;
@@ -72,6 +73,10 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   }
   if (t == TY_IO) {
     buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_IO)");
+    return;
+  }
+  if (t == TY_RACTOR_PORT) {
+    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_RACTOR_PORT)");
     return;
   }
   if (t == TY_EXCEPTION) {
@@ -1014,11 +1019,21 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
   }
   free(rac_locals.v);
 
-  /* Block params: bind each to its deep-copied spawn argument (poly). */
-  for (int i = 0; i < nbp; i++) {
-    const char *bpn = rename_local(bparams[i]);
-    buf_printf(pb, "    sp_RbVal lv_%s = sp_ractor_spawn_arg(%d);\n", bpn, i);
-    buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
+  /* Block params: bind each to its spawn argument. A Ractor::Port arg crossed
+     by reference (typed TY_RACTOR_PORT by the analyzer), so unbox it to the
+     port pointer; everything else is a deep-copied poly value. */
+  {
+    Scope *bs = comp_scope_of(c, blk);
+    for (int i = 0; i < nbp; i++) {
+      const char *bpn = rename_local(bparams[i]);
+      LocalVar *lvp = bs ? scope_local(bs, bparams[i]) : NULL;
+      if (lvp && lvp->type == TY_RACTOR_PORT) {
+        buf_printf(pb, "    sp_RactorPort *lv_%s = (sp_RactorPort *)sp_ractor_spawn_arg(%d).v.p;\n", bpn, i);
+      } else {
+        buf_printf(pb, "    sp_RbVal lv_%s = sp_ractor_spawn_arg(%d);\n", bpn, i);
+        buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
+      }
+    }
   }
 
   /* Top-level rescue landing pad: an uncaught raise longjmps here and the

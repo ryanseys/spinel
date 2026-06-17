@@ -5708,6 +5708,7 @@ void sp_ext_mark_string(const char *s) { sp_mark_string(s); }
 #define SPR_SYM_HASH    105   /* Symbol keys -> poly values */
 #define SPR_POLY_HASH   106   /* poly keys   -> poly values */
 #define SPR_OBJECT      107   /* user object: cls_id + ivars (each poly) */
+#define SPR_PORT        108   /* Ractor::Port: shared by reference (pointer) */
 
 typedef struct { char *p; size_t len, cap; } sp_RacBuf;
 static void sp_racbuf_put(sp_RacBuf *b, const void *src, size_t n) {
@@ -5736,6 +5737,11 @@ static void sp_ractor_ser_val(sp_RacBuf *b, sp_RbVal v) {
     case SP_TAG_SYM:  { const char *s = sp_sym_to_s((sp_sym)v.v.i); sp_racbuf_u8(b, SP_TAG_SYM); sp_racbuf_bytes(b, s, strlen(s)); return; }
     case SP_TAG_STR:  { const char *s = v.v.s ? v.v.s : sp_str_empty; sp_racbuf_u8(b, SP_TAG_STR); sp_racbuf_bytes(b, s, sp_str_byte_len(s)); return; }
     case SP_TAG_OBJ:
+      /* Ractor::Port is shared by reference: the channel is process-shared and
+         registry-owned, so pass the pointer itself across the boundary. */
+      if (v.cls_id == SP_BUILTIN_RACTOR_PORT) {
+        uintptr_t pv = (uintptr_t)v.v.p; sp_racbuf_u8(b, SPR_PORT); sp_racbuf_put(b, &pv, sizeof pv); return;
+      }
       if (v.cls_id == SP_BUILTIN_POLY_ARRAY) {
         sp_PolyArray *a = (sp_PolyArray *)v.v.p; sp_racbuf_u8(b, SPR_POLY_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
         for (mrb_int i = 0; i < a->len; i++) sp_ractor_ser_val(b, a->data[i]); return;
@@ -5896,6 +5902,10 @@ static sp_RbVal sp_ractor_deser_val(sp_RacRd *r) {
         sp_ractor_obj_setivar_hook(obj, cls_id, (int)i, iv);
       }
       return objv;
+    }
+    case SPR_PORT: {
+      uintptr_t pv = 0; sp_racrd_read(r, &pv, sizeof pv);
+      return sp_box_obj((void *)pv, SP_BUILTIN_RACTOR_PORT);   /* shared by reference */
     }
     default: sp_ractor_unshareable(tag); return sp_box_nil();
   }

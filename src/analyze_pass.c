@@ -2179,11 +2179,19 @@ int infer_block_params(Compiler *c) {
     int pnode = inner >= 0 ? inner : pn;
     int rnp = 0; const int *reqs = nt_arr(nt, pnode, "requireds", &rnp);
     Scope *bs = comp_scope_of(c, blk);
+    /* For Ractor.new(args){|p|}, a Ractor::Port arg crosses BY REFERENCE, so
+       the matching block param stays a port (not poly) -- otherwise port
+       methods wouldn't dispatch. Other (deep-copied) args arrive as poly. */
+    int is_ractor = !strcmp(rn, "Ractor");
+    int an = 0; const int *args = NULL;
+    if (is_ractor) { int anode = nt_ref(nt, id, "arguments"); if (anode >= 0) args = nt_arr(nt, anode, "arguments", &an); }
     for (int k = 0; k < rnp; k++) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
-      if (lv->type == TY_UNKNOWN) { lv->type = TY_POLY; changed = 1; }
+      TyKind want = TY_POLY;
+      if (is_ractor && args && k < an && infer_type(c, args[k]) == TY_RACTOR_PORT) want = TY_RACTOR_PORT;
+      if (lv->type == TY_UNKNOWN || (want == TY_RACTOR_PORT && lv->type == TY_POLY)) { lv->type = want; changed = 1; }
     }
   }
 

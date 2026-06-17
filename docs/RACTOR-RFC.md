@@ -1,8 +1,9 @@
 # RFC: A Minimal Ractor for Spinel
 
-Status: **experimental / Milestone 3** (working; ported to the C compiler in
-`src/`; message codec spans immediates/Symbol/String/Array/Hash; Ractor.new
-spawn arguments). This document is both the design
+Status: **experimental / Milestone 6** (working; ported to the C compiler in
+`src/`). Deep-copy message codec spans immediates / Symbol / String / Array /
+Hash / user-objects; `Ractor.new` spawn arguments; compile-time `@@cvar`/`$gvar`
+isolation; and a shared `Ractor::Port` channel. This document is both the design
 rationale and the record of what currently ships. It proposes whether to
 graduate to a full implementation (see *Path forward*).
 
@@ -166,11 +167,21 @@ split across `lib/sp_gc.c`, `lib/sp_fiber.c`, and the header `lib/sp_runtime.h`.
 
 ## Path forward (if this graduates)
 
-Done since the original RFC: the codec now spans strings → symbols → arrays →
-hashes (M2/M3b), the mailbox is an unbounded FIFO, and `Ractor.new(args){|p|}`
-spawn arguments are deep-copied in (M3a). Remaining, in rough dependency order:
-extend the codec to **user objects / structs** (the last big container gap);
-replay class-body `@@cvar`/`$gvar` initializers in a child (they are `__thread`,
-hence empty in a child today); shareable-by-value frozen captures; and a
-`Ractor::Port`-style multi-consumer surface. None change the core partition
-above — they extend it.
+Done since the original RFC: the deep-copy codec now spans strings → symbols →
+arrays → hashes → **user objects/structs** (M2/M3b/M4, recursively); the mailbox
+is an unbounded FIFO; `Ractor.new(args){|p|}` spawn arguments are deep-copied in
+(M3a); `@@cvar`/`$gvar` access inside a Ractor is rejected at compile time (M5);
+and **`Ractor::Port`** provides a process-shared channel (`new`/`send`/`receive`/
+`close`), passed across the boundary *by reference* so producers and consumers
+on different Ractors rendezvous through it (M6). Remaining: shareable-by-value
+frozen captures, object-graph cycles in the codec (acyclic assumed today), and
+the Ruby-3.5 Ractor-as-Port API reshaping. None change the core partition.
+
+### API sharp edges (operator/method overload collisions)
+
+- **`Ractor#send` / `Ractor::Port#send` with a bare String/Symbol *literal*** is
+  parsed as a reflective send (`x.send("m")` → `x.m`, a whole-program parser
+  behaviour). Send via `x.send(var)` or an Integer literal; `x.send("lit")` is
+  reflective.
+- **`port << v`** can be mis-inferred as an Array push (the `<<` push-promotion
+  heuristic types the receiver as an array). Use `port.send(v)` for ports.
