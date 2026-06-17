@@ -8755,11 +8755,21 @@ else {
      matches) yields a typed nil/0 placeholder instead of aborting. In practice
      such a call is guarded by a runtime-nil receiver (e.g. an optional hook that
      is never installed), so it never executes; emitting the inferred-type
-     default keeps codegen going without changing observable behaviour. A
-     concrete object receiver still errors -- that is a genuine missing method. */
+     default keeps codegen going without changing observable behaviour.
+
+     TY_STRING is included for the same reason: a String is a builtin with a
+     closed method table, so an unresolved call on it (e.g. `s.each`, which is a
+     real NoMethodError in Ruby) is the String analogue of the poly/int case,
+     not a user-class typo. The motivating shape is a `String|Hash` parameter
+     that this closed-world program only ever calls with a String: the
+     `if x.is_a?(String) ... else x.each end` Hash branch is then statically
+     dead, and CRuby never reaches its NoMethodError, so a runtime-nil stub
+     matches observable behaviour (#1434). A concrete user-object receiver still
+     errors -- that is a genuine missing method worth catching at compile time. */
   if (recv >= 0) {
     TyKind grt = comp_ntype(c, recv);
-    if (grt == TY_POLY || grt == TY_NIL || grt == TY_INT || grt == TY_UNKNOWN) {
+    if (grt == TY_POLY || grt == TY_NIL || grt == TY_INT || grt == TY_UNKNOWN ||
+        grt == TY_STRING) {
       TyKind ret = comp_ntype(c, id);
       /* Opt-in visibility: this call silently becomes nil/0 where CRuby would
          raise NoMethodError. The degradation is deliberate (a dead poly-dispatch
