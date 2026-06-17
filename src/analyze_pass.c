@@ -2039,7 +2039,7 @@ int infer_block_params(Compiler *c) {
       /* `{ _1.method }` : _1.._N all receive self (the receiver). */
       int maxn = (int)nt_int(nt, pn, "maximum", 0);
       for (int k = 1; k <= maxn; k++) {
-        char nm[8]; snprintf(nm, sizeof nm, "_%d", k);
+        char nm[16]; snprintf(nm, sizeof nm, "_%d", k);
         LocalVar *lv = scope_local_intern(bs, nm); lv->is_block_param = 1;
         if (lv->type != rt) { lv->type = rt; changed = 1; }
       }
@@ -2091,7 +2091,7 @@ int infer_block_params(Compiler *c) {
          call-site arg types. */
       int maxn = (int)nt_int(nt, pn, "maximum", 0);
       for (int k = 0; k < maxn && k < iac; k++) {
-        char npn[8]; snprintf(npn, sizeof npn, "_%d", k + 1);
+        char npn[16]; snprintf(npn, sizeof npn, "_%d", k + 1);
         TyKind at = infer_type(c, iav[k]);
         LocalVar *lv = scope_local_intern(bs, npn); lv->is_block_param = 1;
         if (at != TY_UNKNOWN && lv->type != at) { lv->type = at; changed = 1; }
