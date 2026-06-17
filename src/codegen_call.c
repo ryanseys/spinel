@@ -7172,7 +7172,11 @@ else {
       }
       if (!strcmp(name, "join") && argc <= 1) {
         buf_printf(b, "sp_%sArray_join(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (argc == 1) emit_expr(c, argv[0], b); else buf_puts(b, "\"\"");
+        if (argc == 1 && comp_ntype(c, argv[0]) == TY_POLY) {
+          buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        }
+        else if (argc == 1) emit_expr(c, argv[0], b);
+        else buf_puts(b, "\"\"");
         buf_puts(b, ")");
         return;
       }
@@ -7476,7 +7480,13 @@ else {
       }
       if (!strcmp(name, "join") && argc <= 1) {
         buf_puts(b, "sp_PolyArray_join("); emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (argc == 1) emit_expr(c, argv[0], b); else buf_puts(b, "\"\"");
+        /* the separator must be a const char*; a poly separator (e.g. a reader
+           whose ivar widened to poly) is converted with sp_poly_to_s. */
+        if (argc == 1 && comp_ntype(c, argv[0]) == TY_POLY) {
+          buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        }
+        else if (argc == 1) emit_expr(c, argv[0], b);
+        else buf_puts(b, "\"\"");
         buf_puts(b, ")");
         return;
       }
@@ -7731,6 +7741,11 @@ else {
     Buf rs; memset(&rs, 0, sizeof rs);
     emit_expr(c, recv, &rs);
     const char *r = rs.p ? rs.p : "";
+    /* A String-typed receiver that resolved to a poly nil -- e.g. an
+       unresolvable chain like `Rails.application.class.to_s` in a method that
+       is compiled but never called -- emits sp_box_nil(); coerce it to a
+       const char* (yields "" at runtime) so the string ops below type-check. */
+    if (rt == TY_STRING && !strcmp(r, "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
     int handled = 1;
 
     if (rt == TY_STRING) {
