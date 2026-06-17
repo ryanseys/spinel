@@ -151,6 +151,65 @@ static int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name)
   return saw;
 }
 
+/* Per-pass index of local-variable write nodes keyed by (scope, name). The
+   usage-driven promotion scans in infer_write_types ask "does local X in scope
+   S have any write / an array-typed write"; without this index each such query
+   re-scanned the entire node table, making a program with M such sites
+   O(M * nodes) -- the dominant cost on large auto-generated model graphs. The
+   index groups the write nodes once so each query walks only its own bucket. */
+typedef struct {
+  int *node;   /* local-write node ids */
+  int *next;   /* chain: next record in the same bucket, or -1 */
+  int *head;   /* hash buckets: head record index into node[], or -1 */
+  int cap;     /* bucket count (power of two) */
+} LWIndex;
+
+static int lw_is_write_kind(NodeKind k) {
+  return k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode ||
+         k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableOperatorWriteNode;
+}
+
+static unsigned lw_hash(const char *name, int scope) {
+  unsigned h = 2166136261u ^ (unsigned)scope;
+  for (const char *p = name; p && *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+  return h;
+}
+
+static void lw_index_build(Compiler *c, LWIndex *ix) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  for (int id = 0; id < nt->count; id++)
+    if (lw_is_write_kind(nt_kind(nt, id))) n++;
+  int cap = 16;
+  while (cap < n * 2) cap <<= 1;
+  ix->cap = cap;
+  ix->node = (int *)malloc(sizeof(int) * (n > 0 ? n : 1));
+  ix->next = (int *)malloc(sizeof(int) * (n > 0 ? n : 1));
+  ix->head = (int *)malloc(sizeof(int) * cap);
+  for (int i = 0; i < cap; i++) ix->head[i] = -1;
+  int k = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (!lw_is_write_kind(nt_kind(nt, id))) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int sc = (int)(comp_scope_of(c, id) - c->scopes);
+    unsigned h = lw_hash(nm, sc) & (unsigned)(cap - 1);
+    ix->node[k] = id;
+    ix->next[k] = ix->head[h];
+    ix->head[h] = k;
+    k++;
+  }
+}
+
+static void lw_index_free(LWIndex *ix) {
+  free(ix->node); free(ix->next); free(ix->head);
+}
+
+/* First record index in the bucket for (scope, name); iterate via ix->next.
+   Callers must still confirm scope/name (hash collisions) and node kind. */
+static int lw_index_first(const LWIndex *ix, const char *name, int scope) {
+  return ix->head[lw_hash(name, scope) & (unsigned)(ix->cap - 1)];
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -169,6 +228,11 @@ int infer_write_types(Compiler *c) {
   /* Re-seed loop-growth bigint locals inside the recompute frame (the
      reset above would otherwise wipe the promotion each iteration). */
   infer_bigint_loop_locals(c);
+
+  /* Index local-write nodes by (scope, name) for the usage-driven promotion
+     scans further down (see the per-scope write-site lookups below). */
+  LWIndex lw_ix;
+  lw_index_build(c, &lw_ix);
 
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -787,18 +851,13 @@ int infer_write_types(Compiler *c) {
            that ty_unify can never narrow back to the yield arg type. */
         if (rrty && !strcmp(rrty, "LocalVariableReadNode") && rnm2) {
           Scope *recv_scope = comp_scope_of(c, recv);
+          int recv_sid = (int)(recv_scope - c->scopes);
           int has_write = 0;
-          for (int _wi = 0; _wi < nt->count && !has_write; _wi++) {
-            const char *_wty = nt_type(nt, _wi);
-            if (!_wty) continue;
-            if ((!strcmp(_wty, "LocalVariableWriteNode") ||
-                 !strcmp(_wty, "LocalVariableOrWriteNode") ||
-                 !strcmp(_wty, "LocalVariableAndWriteNode") ||
-                 !strcmp(_wty, "LocalVariableOperatorWriteNode")) &&
-                comp_scope_of(c, _wi) == recv_scope) {
-              const char *_wnm = nt_str(nt, _wi, "name");
-              if (_wnm && !strcmp(_wnm, rnm2)) has_write = 1;
-            }
+          for (int _r = lw_index_first(&lw_ix, rnm2, recv_sid); _r >= 0 && !has_write; _r = lw_ix.next[_r]) {
+            int _wi = lw_ix.node[_r];
+            if (comp_scope_of(c, _wi) != recv_scope) continue;
+            const char *_wnm = nt_str(nt, _wi, "name");
+            if (_wnm && !strcmp(_wnm, rnm2)) has_write = 1;
           }
           if (!has_write) continue;
         }
@@ -851,10 +910,11 @@ int infer_write_types(Compiler *c) {
          etc.): it is an array indexed/assigned by position, and the hash type
          would otherwise collide with it. Mirrors the ivar guard. */
       if (!is_push && lv->type == TY_UNKNOWN) {
+        int lsc_sid = (int)(lsc - c->scopes);
         int has_array_write = 0;
-        for (int w = 0; w < nt->count && !has_array_write; w++) {
-          const char *wty = nt_type(nt, w);
-          if (!wty || strcmp(wty, "LocalVariableWriteNode")) continue;
+        for (int _r = lw_index_first(&lw_ix, rnm, lsc_sid); _r >= 0 && !has_array_write; _r = lw_ix.next[_r]) {
+          int w = lw_ix.node[_r];
+          if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
           const char *wn = nt_str(nt, w, "name");
           if (!wn || strcmp(wn, rnm) || comp_scope_of(c, w) != lsc) continue;
           int wv = nt_ref(nt, w, "value");
@@ -1021,6 +1081,7 @@ int infer_write_types(Compiler *c) {
       LocalVar *lv = &c->scopes[s].locals[i];
       if (!lv->is_param && !lv->is_block_param && (TyKind)lv->gc_root != lv->type) changed = 1;
     }
+  lw_index_free(&lw_ix);
   return changed;
 }
 
