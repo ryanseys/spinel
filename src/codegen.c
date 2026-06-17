@@ -1795,7 +1795,22 @@ static char *build_symbol_map_json(Compiler *c) {
       buf_puts(&rb, s->name);
     }
     else {
-      class_ruby_name_into(&rb, c->classes[s->class_id].name);
+      /* the namespace-qualified Ruby class path (Tep::Url). A class renamed by
+         the colliding-class pass (#1425) already encodes its full path as
+         `Mod__Leaf`, and its enclosing_class still points at the module, so a
+         chain walk would double-count -- demangle `__`->`::` instead. Otherwise
+         walk the enclosing-class chain (the leaf C name drops the module). */
+      const char *cn = c->classes[s->class_id].name;
+      if (cn && strstr(cn, "__")) {
+        for (const char *p = cn; *p; ) {
+          if (p[0] == '_' && p[1] == '_') { buf_puts(&rb, "::"); p += 2; }
+          else { buf_printf(&rb, "%c", (int)*p); p++; }
+        }
+      }
+      else {
+        const char *qn = class_ruby_name(c, s->class_id);
+        buf_puts(&rb, qn ? qn : (cn ? cn : ""));
+      }
       buf_puts(&rb, s->is_cmethod ? "." : "#");
       buf_puts(&rb, s->name);
       kind = s->is_cmethod ? "cmeth" : "imeth";
