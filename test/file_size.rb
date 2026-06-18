@@ -2,8 +2,8 @@
 # counted, unlike a strlen); a missing path raises Errno::ENOENT, matching
 # MRI and the other stat/open-based File class methods.
 filename = "test_size_temp.bin"
-File.write(filename, "ABC")
 begin
+  File.write(filename, "ABC")
   puts File.size(filename)
   File.write(filename, [65, 0, 66, 0, 67].pack("C*"))   # 5 bytes incl 2 NULs
   puts File.size(filename)
@@ -14,5 +14,5 @@ begin
     puts e.class
   end
 ensure
-  File.delete(filename)
+  File.delete(filename) if File.exist?(filename)
 end

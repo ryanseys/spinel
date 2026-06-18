@@ -5119,7 +5119,14 @@ static mrb_int sp_file_size(const char *path) {
   }
   struct stat st;
   if (stat(path, &st) == -1) {
-    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.size - %s", strerror(errno), path));
+    int err = errno;  /* capture once: strerror() may clobber errno */
+    sp_raise_cls(err == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.size - %s", strerror(err), path));
+    return 0;
+  }
+  /* off_t (typically 64-bit) into mrb_int (intptr_t -> 32-bit on a 32-bit
+     build): guard the narrowing, as spinel does for int arithmetic. */
+  if ((off_t)(mrb_int)st.st_size != st.st_size) {
+    sp_raise_cls("RangeError", "file size out of range for Integer");
     return 0;
   }
   return (mrb_int)st.st_size;
