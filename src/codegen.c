@@ -197,10 +197,77 @@ int scope_has_begin(Compiler *c, int si) {
   return 0;
 }
 
+/* Mark every node id in the subtree rooted at `id` (ref fields + array-field
+   elements are a node's children). Used to find the lexical extent of a
+   begin/rescue construct. */
+static void mark_subtree(const NodeTable *nt, int id, char *inb) {
+  if (id < 0 || id >= nt->count || inb[id]) return;
+  inb[id] = 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) mark_subtree(nt, nt_ref_at(nt, id, i), inb);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n; const int *a = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) mark_subtree(nt, a[j], inb);
+  }
+}
+
+static int lv_is_write_or_target(NodeKind k) {
+  return k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode ||
+         k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableOperatorWriteNode ||
+         k == NK_LocalVariableTargetNode;
+}
+
+/* Which locals in scope `si` need `volatile`? A `begin` emits a setjmp at its
+   entry; per C99 7.13.2.1 only a local modified between that setjmp and a
+   longjmp (a raise, or a retry) and read afterward is indeterminate -- i.e. a
+   local *written inside the begin construct*. Locals written only outside it
+   keep their setjmp-time value and need no volatile (the broad whole-scope
+   qualifier this replaces was sound but pessimized hot loops that merely sit in
+   the same method as an unrelated begin).
+
+   Returns the list of such names via *out/*nout (names borrow the node table's
+   storage; the array is the caller's to free). Sets *all = 1 when a bare
+   (method-level) RescueNode -- one not nested in any BeginNode -- protects the
+   whole body, in which case every local needs volatile and *out stays NULL. */
+static void begin_volatile_names(Compiler *c, int si, char ***out, int *nout, int *all) {
+  const NodeTable *nt = c->nt;
+  *out = NULL; *nout = 0; *all = 0;
+  char *inb = (char *)calloc((size_t)(nt->count > 0 ? nt->count : 1), 1);
+  if (!inb) { *all = 1; return; }  /* OOM: fall back to the conservative whole-scope rule */
+  for (int id = 0; id < nt->count; id++)
+    if (nt_kind(nt, id) == NK_BeginNode && c->nscope[id] == si) mark_subtree(nt, id, inb);
+  for (int id = 0; id < nt->count; id++)
+    if (nt_kind(nt, id) == NK_RescueNode && c->nscope[id] == si && !inb[id]) { *all = 1; break; }
+  if (*all) { free(inb); return; }
+  char **names = NULL; int n = 0, cap = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (!inb[id] || c->nscope[id] != si || !lv_is_write_or_target(nt_kind(nt, id))) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int dup = 0;
+    for (int j = 0; j < n; j++) if (!strcmp(names[j], nm)) { dup = 1; break; }
+    if (dup) continue;
+    if (n == cap) { cap = cap ? cap * 2 : 8; names = (char **)realloc(names, sizeof(char *) * cap); }
+    names[n++] = (char *)nm;
+  }
+  *out = names; *nout = n;
+  free(inb);
+}
+
+static int name_in(char **names, int n, const char *nm) {
+  if (!nm) return 0;
+  for (int i = 0; i < n; i++) if (!strcmp(names[i], nm)) return 1;
+  return 0;
+}
+
 /* Declare a scope's locals. Params are already C function parameters, so
    they only need a GC root; body locals get a full declaration. */
 void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
-  int vol = scope_has_begin(c, (int)(s - c->scopes));
+  int si = (int)(s - c->scopes);
+  int has_begin = scope_has_begin(c, si);
+  char **volnames = NULL; int nvol = 0, all_vol = 0;
+  if (has_begin) begin_volatile_names(c, si, &volnames, &nvol, &all_vol);
   for (int i = 0; i < s->nlocals; i++) {
     LocalVar *lv = &s->locals[i];
     /* define_method subst var: replaced inline by the literal, never a C
@@ -244,9 +311,11 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
       else if (needs_root(lv->type) && !comp_ty_value_obj(c, lv->type)) buf_printf(b, "    SP_GC_ROOT(lv_%s);\n", lv->name);
     }
     else {
+      int vol = has_begin && (all_vol || name_in(volnames, nvol, lv->name));
       declare_local(c, b, lv, vol);
     }
   }
+  free(volnames);
 }
 
 /* ---- methods ---- */
