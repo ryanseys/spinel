@@ -121,11 +121,12 @@ void emit_interp(Compiler *c, int id, Buf *b) {
         /* a bare empty array literal interpolates as "[]" */
         int en = 0; nt_arr(nt, expr, "elements", &en);
         if (en == 0) { buf_puts(&fmt, "%s"); buf_puts(&conv, "\"[]\""); }
-        else { free(fmt.p); free(argbuf.p); free(decls.p); free(conv.p); unsupported(c, pid, "interpolation value"); }
+        else { free(fmt.p); free(argbuf.p); free(decls.p); free(conv.p); unsupported(c, pid, "interpolation value"); return; }
       }
       else {
         free(fmt.p); free(argbuf.p); free(decls.p); free(conv.p);
         unsupported(c, pid, "interpolation value");
+        return;
       }
       #undef EMIT_IV
       /* Hoist a %s arg's (possibly freshly-allocated) string into a rooted
@@ -147,6 +148,7 @@ else {
     else {
       free(fmt.p); free(argbuf.p);
       unsupported(c, pid, "interpolation part");
+      return;
     }
   }
 
