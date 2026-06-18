@@ -7,6 +7,74 @@
 #include <string.h>
 #include <sys/mman.h>
 
+/* OpenBSD requires the stack a coroutine runs on to be MAP_STACK, else the
+   first push faults. Linux defines MAP_STACK as a (currently) no-op; keep it
+   portable. */
+#ifndef MAP_STACK
+#define MAP_STACK 0
+#endif
+
+/* ---- Portable coroutine context switch (replaces swapcontext) ----
+   sp_ctx_swap saves the callee-saved registers onto the *current* stack, stows
+   the resulting stack pointer in *from, loads *to's stack pointer, and pops the
+   callee-saved registers (the very first switch into a coroutine pops the zeroed
+   slots sp_ctx_make laid out and `ret`s into the trampoline). It lives in .text
+   (W^X-safe) and issues no syscall. See sp_fiber_ctx.h for sp_ctx_make and the
+   stack layout it must mirror. */
+#if SP_FIBER_ASM
+#if defined(__APPLE__)
+  #define SP_CTX_SYM "_sp_ctx_swap"
+#else
+  #define SP_CTX_SYM "sp_ctx_swap"
+#endif
+#if defined(__x86_64__)
+__asm__(
+  ".text\n"
+  ".globl " SP_CTX_SYM "\n"
+  SP_CTX_SYM ":\n"
+  "  pushq %rbp\n  pushq %rbx\n  pushq %r12\n  pushq %r13\n  pushq %r14\n  pushq %r15\n"
+  "  movq %rsp, (%rdi)\n"        /* from->sp = rsp                      */
+  "  movq (%rsi), %rsp\n"        /* rsp = to->sp                        */
+  "  popq %r15\n  popq %r14\n  popq %r13\n  popq %r12\n  popq %rbx\n  popq %rbp\n"
+  "  ret\n"
+);
+#elif defined(__aarch64__)
+__asm__(
+  ".text\n"
+  ".globl " SP_CTX_SYM "\n"
+  SP_CTX_SYM ":\n"
+  /* save x19..x30 (12*8) + d8..d15 (8*8) = 160 bytes onto the current stack */
+  "  stp x19, x20, [sp, #-160]!\n"
+  "  stp x21, x22, [sp, #16]\n"
+  "  stp x23, x24, [sp, #32]\n"
+  "  stp x25, x26, [sp, #48]\n"
+  "  stp x27, x28, [sp, #64]\n"
+  "  stp x29, x30, [sp, #80]\n"
+  "  stp d8,  d9,  [sp, #96]\n"
+  "  stp d10, d11, [sp, #112]\n"
+  "  stp d12, d13, [sp, #128]\n"
+  "  stp d14, d15, [sp, #144]\n"
+  "  mov x2, sp\n"
+  "  str x2, [x0]\n"             /* from->sp = sp */
+  "  ldr x2, [x1]\n"            /* sp = to->sp   */
+  "  mov sp, x2\n"
+  "  ldp d14, d15, [sp, #144]\n"
+  "  ldp d12, d13, [sp, #128]\n"
+  "  ldp d10, d11, [sp, #112]\n"
+  "  ldp d8,  d9,  [sp, #96]\n"
+  "  ldp x29, x30, [sp, #80]\n"
+  "  ldp x27, x28, [sp, #64]\n"
+  "  ldp x25, x26, [sp, #48]\n"
+  "  ldp x23, x24, [sp, #32]\n"
+  "  ldp x21, x22, [sp, #16]\n"
+  "  ldp x19, x20, [sp], #160\n"
+  "  ret\n"
+);
+#endif
+#else  /* ucontext fallback */
+void sp_ctx_swap(sp_fiber_ctx *from, sp_fiber_ctx *to) { swapcontext(&from->uc, &to->uc); }
+#endif
+
 /* ---- Reached by name in the generated TU ---- */
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 void sp_raise_cls(const char *cls, const char *msg);
@@ -68,13 +136,13 @@ static void sp_mark_suspended_fibers(void){sp_mark_fiber_roots(&sp_fiber_root);s
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
 static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack)munmap(f->stack,SP_FIBER_STACK_SIZE);if(f->saved_roots)free(f->saved_roots);sp_fiber_list_remove(f);}
 static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_mark(f->user_data);if(f->storage)sp_gc_mark(f->storage);}
-sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);f->stack=(char*)mmap(NULL,SP_FIBER_STACK_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->storage=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}return f;}
+sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);f->stack=(char*)mmap(NULL,SP_FIBER_STACK_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->storage=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}return f;}
 sp_RbVal sp_Fiber_storage_get(sp_Fiber*f,sp_sym k){if(!f->storage)return sp_box_nil();return sp_FiberStore_get((sp_FiberStore*)f->storage,k);}
 void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){if(!f->storage)f->storage=sp_FiberStore_new();sp_FiberStore_set((sp_FiberStore*)f->storage,k,v);}
-static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;f->body(f);f->state=3;if(f->transferred){sp_fiber_current=&sp_fiber_root;setcontext(&sp_fiber_root.ctx);}else{swapcontext(&f->ctx,&f->caller_ctx);}}
-sp_RbVal sp_Fiber_resume(sp_Fiber*f,sp_RbVal val){if(f->state==3){sp_raise_cls("FiberError","attempt to resume a terminated fiber");}f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);sp_fiber_current=f;if(f->state==0){f->state=1;getcontext(&f->ctx);f->ctx.uc_stack.ss_sp=f->stack;f->ctx.uc_stack.ss_size=SP_FIBER_STACK_SIZE;f->ctx.uc_link=&f->caller_ctx;makecontext(&f->ctx,(void(*)(void))sp_fiber_trampoline,0);swapcontext(&f->caller_ctx,&f->ctx);}else{f->state=1;swapcontext(&f->caller_ctx,&f->ctx);}sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;return f->yielded_value;}
-sp_RbVal sp_Fiber_yield(sp_RbVal val){sp_Fiber*f=sp_fiber_current;f->yielded_value=val;f->state=2;swapcontext(&f->ctx,&f->caller_ctx);return f->resumed_value;}
+static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;f->body(f);f->state=3;if(f->transferred){sp_fiber_current=&sp_fiber_root;sp_ctx_swap(&f->ctx,&sp_fiber_root.ctx);}else{sp_ctx_swap(&f->ctx,&f->caller_ctx);}}
+sp_RbVal sp_Fiber_resume(sp_Fiber*f,sp_RbVal val){if(f->state==3){sp_raise_cls("FiberError","attempt to resume a terminated fiber");}f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);sp_fiber_current=f;if(f->state==0){f->state=1;sp_ctx_make(&f->ctx,f->stack,SP_FIBER_STACK_SIZE,sp_fiber_trampoline);sp_ctx_swap(&f->caller_ctx,&f->ctx);}else{f->state=1;sp_ctx_swap(&f->caller_ctx,&f->ctx);}sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;return f->yielded_value;}
+sp_RbVal sp_Fiber_yield(sp_RbVal val){sp_Fiber*f=sp_fiber_current;f->yielded_value=val;f->state=2;sp_ctx_swap(&f->ctx,&f->caller_ctx);return f->resumed_value;}
 mrb_bool sp_Fiber_alive(sp_Fiber*f){return f->state!=3;}
-sp_RbVal sp_Fiber_transfer(sp_Fiber*f,sp_RbVal val){f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);sp_fiber_current=f;if(f->state==0){f->state=1;f->transferred=1;getcontext(&f->ctx);f->ctx.uc_stack.ss_sp=f->stack;f->ctx.uc_stack.ss_size=SP_FIBER_STACK_SIZE;f->ctx.uc_link=&prev->ctx;makecontext(&f->ctx,(void(*)(void))sp_fiber_trampoline,0);swapcontext(&prev->ctx,&f->ctx);}else{f->state=1;swapcontext(&prev->ctx,&f->ctx);}sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;return prev->resumed_value;}
+sp_RbVal sp_Fiber_transfer(sp_Fiber*f,sp_RbVal val){f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);sp_fiber_current=f;if(f->state==0){f->state=1;f->transferred=1;sp_ctx_make(&f->ctx,f->stack,SP_FIBER_STACK_SIZE,sp_fiber_trampoline);sp_ctx_swap(&prev->ctx,&f->ctx);}else{f->state=1;sp_ctx_swap(&prev->ctx,&f->ctx);}sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;return prev->resumed_value;}
 
 void sp_mark_fiber_root_storage(void){if(sp_fiber_root.storage)sp_gc_mark(sp_fiber_root.storage);}
