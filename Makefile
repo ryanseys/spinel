@@ -49,7 +49,7 @@ RBS_LIB      = build/librbs.a
 # `make all` includes spinel_rbs_extract when vendor/rbs has been fetched
 # (via `make deps`); without it the extractor is silently omitted.
 ifneq ($(wildcard $(RBS_INC)/rbs/parser.h),)
-  RBS_EXTRACT_TARGET = spinel_rbs_extract$(EXE)
+  RBS_EXTRACT_TARGET = spinel_rbs_extract
 else
   RBS_EXTRACT_TARGET =
 endif
@@ -58,7 +58,7 @@ endif
 # `all` rule, because a rule's prerequisites are expanded as it is read.
 # Built into bin/ alongside the companion tools (spinel-doctor, ...); bin/ sits
 # beside lib/ so the binary resolves its runtime lib via ../lib, same as before.
-SPINEL = bin/spinel$(EXE)
+SPINEL = bin/spinel
 
 all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools
 
@@ -122,9 +122,9 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 
 # ---- C Parser ----
 
-parse: legacy/spinel_parse$(EXE)
+parse: legacy/spinel_parse
 
-legacy/spinel_parse$(EXE): legacy/spinel_parse.c $(PRISM_LIB)
+legacy/spinel_parse: legacy/spinel_parse.c $(PRISM_LIB)
 	$(CC) $(CFLAGS) -I$(PRISM_INC) legacy/spinel_parse.c $(PRISM_LIB) -lm -o $@
 
 # ---- C compiler (src/) ----
@@ -179,9 +179,9 @@ rbs-missing:
 	 echo "  Run 'make deps' to fetch it from rubygems.org into vendor/rbs."; \
 	 exit 1
 else
-rbs_extract: spinel_rbs_extract$(EXE)
+rbs_extract: spinel_rbs_extract
 
-spinel_rbs_extract$(EXE): tools/spinel_rbs_extract.c $(RBS_LIB)
+spinel_rbs_extract: tools/spinel_rbs_extract.c $(RBS_LIB)
 	$(CC) $(CFLAGS) -I$(RBS_INC) tools/spinel_rbs_extract.c $(RBS_LIB) -o $@
 endif
 
@@ -257,7 +257,7 @@ TOOL_BINS  = $(addprefix bin/spinel-,$(TOOL_NAMES))
 
 tools: $(TOOL_BINS)
 
-bin/spinel-%$(EXE): tools/%.rb tools/tool_common.rb $(SPINEL) $(SP_RT_LIB)
+bin/spinel-%: tools/%.rb tools/tool_common.rb $(SPINEL) $(SP_RT_LIB)
 	@mkdir -p bin
 	$(SPINEL) $< -o $@
 
@@ -276,11 +276,6 @@ else
 # `promote_*` tests overflow on purpose and only have defined output under
 # --int-overflow=promote; in raise/wrap mode they would (correctly) raise.
 TESTS := $(filter-out test/promote_%.rb,$(TESTS))
-endif
-# sp_net is POSIX-only; on Windows the TU compiles to stubs and the smoke
-# test's output diverges. Skip it there.
-ifeq ($(OS),Windows_NT)
-TESTS := $(filter-out test/sp_net_basic.rb test/ffi_binstr_ws_frame.rb,$(TESTS))
 endif
 TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 
@@ -332,13 +327,13 @@ rbs-test:
 regen-rbs-expected:
 	@echo "regen-rbs-expected: skipped (vendor/rbs not fetched; run 'make deps')"
 else
-rbs-test: spinel_rbs_extract$(EXE)
+rbs-test: spinel_rbs_extract
 	@fail=0; n=0; \
 	for f in $(RBS_TEST_SRCS); do \
 	  n=$$((n+1)); \
 	  exp="$${f%.rbs}.seed.expected"; \
 	  if [ ! -f "$$exp" ]; then echo "rbs-test: MISSING golden $$exp"; fail=1; continue; fi; \
-	  d=$$(./spinel_rbs_extract$(EXE) "$$f" 2>/dev/null | diff -u "$$exp" - 2>&1); \
+	  d=$$(./spinel_rbs_extract "$$f" 2>/dev/null | diff -u "$$exp" - 2>&1); \
 	  if [ -z "$$d" ]; then \
 	    if [ -t 1 ]; then printf .; fi; \
 	  else \
@@ -349,9 +344,9 @@ rbs-test: spinel_rbs_extract$(EXE)
 	if [ $$fail -ne 0 ]; then echo "RBS extractor tests: FAIL"; exit 1; fi; \
 	echo "RBS extractor tests: $$n pass"
 
-regen-rbs-expected: spinel_rbs_extract$(EXE)
+regen-rbs-expected: spinel_rbs_extract
 	@for f in $(RBS_TEST_SRCS); do \
-	  ./spinel_rbs_extract$(EXE) "$$f" > "$${f%.rbs}.seed.expected"; \
+	  ./spinel_rbs_extract "$$f" > "$${f%.rbs}.seed.expected"; \
 	  echo "regen: $${f%.rbs}.seed.expected"; \
 	done
 endif
@@ -367,8 +362,8 @@ ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
 rbs-seed-test:
 	@echo "rbs-seed-test: skipped (vendor/rbs not fetched; run 'make deps')"
 else
-rbs-seed-test: $(SPINEL) spinel_rbs_extract$(EXE) $(SP_RT_LIB)
-	@cp -f spinel_rbs_extract$(EXE) $(dir $(SPINEL))spinel_rbs_extract$(EXE)
+rbs-seed-test: $(SPINEL) spinel_rbs_extract $(SP_RT_LIB)
+	@cp -f spinel_rbs_extract $(dir $(SPINEL))spinel_rbs_extract
 	@tmp=$$(mktemp -d /tmp/spinel-rbsseed.XXXXXX); ok=1; \
 	$(SPINEL) test/rbs-seed/nested_ivar.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/out.c" 2>/dev/null; \
@@ -404,7 +399,7 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) | $(SPINEL)
 	ast=$$tmpdir/test.ast; \
 	ir=$$tmpdir/test.ir; \
 	cfile=$$tmpdir/test.c; \
-	bin=$$tmpdir/test_bin$(EXE); \
+	bin=$$tmpdir/test_bin; \
 	exp=$$tmpdir/expected; \
 	act=$$tmpdir/actual; \
 	args=""; \
@@ -477,7 +472,7 @@ bench: $(SPINEL) $(SP_RT_LIB)
 	  if [ "$$tty" = 1 ]; then printf '\r\033[K  [%d/%d] %s' "$$i" "$$total" "$$bn"; fi; \
 	  $(TIMEOUT10) $(SPINEL) "$$f" -c --no-line-map -o /tmp/_sp_b.c 2>/dev/null && \
 	  $(CC) $(CFLAGS) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib -c /tmp/_sp_b.c -o /tmp/_sp_b.c.o 2>/dev/null && \
-	  $(CC) $(CFLAGS) /tmp/_sp_b.c.o $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o /tmp/_sp_b_bin$(EXE) 2>/dev/null; \
+	  $(CC) $(CFLAGS) /tmp/_sp_b.c.o $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o /tmp/_sp_b_bin 2>/dev/null; \
 	  if [ $$? -eq 0 ]; then \
 	    $(TIMEOUT60) $(REF_RUBY) "$$f" >/tmp/_sp_b_exp 2>/dev/null; \
 	    ruby_rc=$$?; \
@@ -489,7 +484,7 @@ bench: $(SPINEL) $(SP_RT_LIB)
 	      if [ "$$tty" = 1 ]; then printf '\r\033[K'; fi; \
 	      echo "SKIP: $$bn (ruby timeout)"; skip=$$((skip+1)); \
 	    else \
-	      $(TIMEOUT60) /tmp/_sp_b_bin$(EXE) >/tmp/_sp_b_act 2>/dev/null; \
+	      $(TIMEOUT60) /tmp/_sp_b_bin >/tmp/_sp_b_act 2>/dev/null; \
 	      LC_ALL=C sed 's/\r$$//' /tmp/_sp_b_exp >/tmp/_sp_b_exp.n; \
 	      LC_ALL=C sed 's/\r$$//' /tmp/_sp_b_act >/tmp/_sp_b_act.n; \
 	      if cmp -s /tmp/_sp_b_exp.n /tmp/_sp_b_act.n; then \
@@ -507,7 +502,7 @@ bench: $(SPINEL) $(SP_RT_LIB)
 	  fi; \
 	done; \
 	if [ "$$tty" = 1 ]; then printf '\r\033[K'; fi; \
-	rm -f /tmp/_sp_b.ast /tmp/_sp_b.ir /tmp/_sp_b.c /tmp/_sp_b.c.o /tmp/_sp_b_bin$(EXE) /tmp/_sp_b_exp /tmp/_sp_b_act /tmp/_sp_b_exp.n /tmp/_sp_b_act.n; \
+	rm -f /tmp/_sp_b.ast /tmp/_sp_b.ir /tmp/_sp_b.c /tmp/_sp_b.c.o /tmp/_sp_b_bin /tmp/_sp_b_exp /tmp/_sp_b_act /tmp/_sp_b_exp.n /tmp/_sp_b_act.n; \
 	echo "Benchmarks: $$pass pass, $$fail fail, $$err error, $$skip skip"; \
 	if [ $$fail -ne 0 ] || [ $$err -ne 0 ]; then exit 1; fi
 
@@ -575,7 +570,7 @@ SPNLDIR   = $(PREFIX)/lib/spinel
 # `analyze-fail-test`) and is not shipped.
 install: all
 	install -d $(SPNLDIR)/lib
-	install -m 755 $(SPINEL)            $(SPNLDIR)/spinel$(EXE)
+	install -m 755 $(SPINEL)            $(SPNLDIR)/spinel
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/
 	install -m 644 lib/sp_types.h        $(SPNLDIR)/lib/
@@ -590,12 +585,12 @@ install: all
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
 	for t in $(TOOL_NAMES); do \
-	  install -m 755 bin/spinel-$$t$(EXE) $(PREFIX)/bin/spinel-$$t$(EXE); \
+	  install -m 755 bin/spinel-$$t $(PREFIX)/bin/spinel-$$t; \
 	done
 
 uninstall:
 	rm -f $(PREFIX)/bin/spinel
-	for t in $(TOOL_NAMES); do rm -f $(PREFIX)/bin/spinel-$$t$(EXE); done
+	for t in $(TOOL_NAMES); do rm -f $(PREFIX)/bin/spinel-$$t; done
 	rm -rf $(SPNLDIR)
 
 # ---- Clean ----
@@ -605,4 +600,4 @@ uninstall:
 # intermediates). Only the root-level C artifacts need an explicit rm.
 clean:
 	rm -rf build/ bin/ legacy/build/
-	rm -f legacy/spinel_parse$(EXE) spinel_rbs_extract$(EXE) spinel
+	rm -f legacy/spinel_parse spinel_rbs_extract spinel

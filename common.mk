@@ -60,14 +60,6 @@ else
   GC_FLAGS = -Wl,--gc-sections
 endif
 
-# MinGW gcc appends .exe; reflect that so dependency tracking matches
-# reality. Windows' default 1MB stack is too small for the deeply
-# recursive bootstrap compile (~75k frames), so bump it at link time.
-ifeq ($(OS),Windows_NT)
-  EXE = .exe
-  LDFLAGS += -Wl,--stack,67108864
-endif
-
 # `timeout` is GNU coreutils — present on Linux, named `gtimeout` on macOS
 # (brew coreutils). Detect both; if neither is found run without limits.
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
