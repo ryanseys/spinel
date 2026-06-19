@@ -5427,17 +5427,17 @@ sp_Bigint *sp_bigint_shr(sp_Bigint *a, int64_t n);  /* forward decl for mutual r
 
 sp_Bigint *sp_bigint_shl(sp_Bigint *a, int64_t n) {
   if (n < 0) return sp_bigint_shr(a, -n);
-  if (n >= 64) return sp_bigint_new_int(0);
-  return sp_bigint_new_int(sp_bigint_to_int(a) << n);
+  /* x << n == x * 2^n at arbitrary precision (the old `to_int << n` truncated
+     the bigint to 64 bits and overflowed the shift). */
+  return sp_bigint_mul(a, sp_bigint_pow(sp_bigint_new_int(2), n));
 }
 
 sp_Bigint *sp_bigint_shr(sp_Bigint *a, int64_t n) {
   if (n < 0) return sp_bigint_shl(a, -n);
-  if (n >= 64) {
-    /* arithmetic right shift: negative -> -1, positive -> 0 */
-    return sp_bigint_new_int(sp_bigint_to_int(a) < 0 ? -1 : 0);
-  }
-  return sp_bigint_new_int(sp_bigint_to_int(a) >> n);
+  /* x >> n == floor(x / 2^n) at arbitrary precision (the old `to_int >> n`
+     truncated the bigint to 64 bits). sp_bigint_div floors toward -inf, which
+     matches Ruby's arithmetic right shift for negative values too. */
+  return sp_bigint_div(a, sp_bigint_pow(sp_bigint_new_int(2), n));
 }
 
 sp_Bigint *sp_bigint_not(sp_Bigint *a) {

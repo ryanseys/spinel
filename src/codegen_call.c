@@ -7045,7 +7045,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
-  if (recv >= 0 && argc == 1 && int_arith_fn(name) && !ty_is_object(rt) && !ty_is_array(rt)) {
+  if (recv >= 0 && argc == 1 && !ty_is_object(rt) && !ty_is_array(rt) &&
+      (int_arith_fn(name) ||
+       /* bigint shifts aren't "int arith" ops but lower through the same
+          TY_BIGINT branch below (sp_bigint_shl / sp_bigint_shr). */
+       (res == TY_BIGINT && (!strcmp(name, "<<") || !strcmp(name, ">>"))))) {
     if (rt == TY_STRING && !strcmp(name, "+")) {
       /* Root both operands when either may allocate: `a + b` evaluates both,
          and a fresh heap string from one can be swept while the other
@@ -7082,6 +7086,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (res == TY_BIGINT) {
+      /* **, <<, >> take an int64 second operand (exponent / shift), not a bigint;
+         bigint_arith_fn doesn't map them, so emit them directly. */
+      if (!strcmp(name, "**") || !strcmp(name, "<<") || !strcmp(name, ">>")) {
+        const char *sfn = !strcmp(name, "**") ? "sp_bigint_pow"
+                        : !strcmp(name, "<<") ? "sp_bigint_shl"
+                        : "sp_bigint_shr";
+        buf_printf(b, "%s(", sfn);
+        if (rt != TY_BIGINT) { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+        else emit_expr(c, recv, b);
+        buf_puts(b, ", ");
+        if (comp_ntype(c, argv[0]) == TY_BIGINT) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else { buf_puts(b, "(int64_t)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        buf_puts(b, ")");
+        return;
+      }
       const char *bfn = bigint_arith_fn(name);
       if (bfn) {
         buf_printf(b, "%s(", bfn);

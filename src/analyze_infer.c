@@ -2253,6 +2253,11 @@ else {
       (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
        !strcmp(name, "<<") || !strcmp(name, ">>")))
     return TY_INT;
+  /* bigint shifts keep arbitrary precision (a `<<` widening that overflows int
+     is exactly why the receiver was promoted to bigint in the first place). */
+  if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
+      (!strcmp(name, "<<") || !strcmp(name, ">>")))
+    return TY_BIGINT;
   /* poly recv bitwise op: result is int (sp_poly_to_i applied). */
   if (recv >= 0 && argc == 1 && rt == TY_POLY &&
       (!strcmp(name, ">>") || !strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^")))
