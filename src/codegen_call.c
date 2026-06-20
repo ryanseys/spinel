@@ -1055,7 +1055,9 @@ else {
         /* nil-on-miss -> poly */
         const char *fn = !strcmp(name, "rindex") ? "rindex_poly" : "index_poly";
         buf_printf(b, "sp_%sArray_%s(", k, fn);
-        emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (!strcmp(k, "Int")) emit_int_expr(c, argv[0], b); else emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
         return 1;
       }
       if (!strcmp(name, "include?") && argc == 1) {
@@ -1075,7 +1077,9 @@ else {
       if ((!strcmp(name, "include?") || !strcmp(name, "member?") || !strcmp(name, "index") || !strcmp(name, "find_index")) && argc == 1 && rt != TY_FLOAT_ARRAY) {
         const char *fn = (!strcmp(name, "include?") || !strcmp(name, "member?")) ? "include" : "index";
         buf_printf(b, "sp_%sArray_%s(", k, fn);
-        emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (!strcmp(k, "Int")) emit_int_expr(c, argv[0], b); else emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
         return 1;
       }
       if (!strcmp(name, "sort") && argc == 0 &&
@@ -2162,7 +2166,7 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "index") && argc == 2) {
         buf_printf(b, "sp_str_index_from_opt(%s, ", r);
         emit_expr(c, argv[0], b); buf_puts(b, ", ");
-        emit_expr(c, argv[1], b); buf_puts(b, ")");
+        emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       }
       else if ((!strcmp(name, "partition") || !strcmp(name, "rpartition")) && argc == 1 &&
                re_lit_index(c, argv[0]) < 0) {
