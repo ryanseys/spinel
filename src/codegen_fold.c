@@ -2001,7 +2001,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             emit_indent(g_pre, g_indent); emit_ctype(c, arr_rt, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", ta_es, rb_es.p ? rb_es.p : ""); free(rb_es.p);
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "mrb_int _t%d = ", ts_es); emit_expr(c, es_argv[0], g_pre); buf_puts(g_pre, ";\n");
+            buf_printf(g_pre, "mrb_int _t%d = ", ts_es); emit_int_expr(c, es_argv[0], g_pre); buf_puts(g_pre, ";\n");
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk_es, tres_es, rk_es);
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres_es);
@@ -2082,7 +2082,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             emit_indent(g_pre, g_indent); emit_ctype(c, arr_ec, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", ta_ec, rb_ec.p ? rb_ec.p : ""); free(rb_ec.p);
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "mrb_int _t%d = ", tn_ec); emit_expr(c, ec_argv[0], g_pre); buf_puts(g_pre, ";\n");
+            buf_printf(g_pre, "mrb_int _t%d = ", tn_ec); emit_int_expr(c, ec_argv[0], g_pre); buf_puts(g_pre, ";\n");
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk_ec, tres_ec, rk_ec);
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres_ec);
@@ -2176,7 +2176,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               emit_indent(g_pre, g_indent); emit_ctype(c, arr_wi, g_pre);
               buf_printf(g_pre, " _t%d = %s;\n", ta_wi, rb_wi.p ? rb_wi.p : ""); free(rb_wi.p);
               emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "mrb_int _t%d = ", tn_wi); emit_expr(c, ec_argv2[0], g_pre); buf_puts(g_pre, ";\n");
+              buf_printf(g_pre, "mrb_int _t%d = ", tn_wi); emit_int_expr(c, ec_argv2[0], g_pre); buf_puts(g_pre, ";\n");
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "mrb_int _t%d = ", toff_wi);
               if (wi_argc > 0 && wi_argv) { emit_expr(c, wi_argv[0], g_pre); }

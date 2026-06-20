@@ -17,7 +17,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   if (t == TY_INT) {
     /* a nullable int at the sentinel prints as nil (an empty line) */
     int tv = ++g_tmp;
-    buf_printf(b, "{ mrb_int _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "{ mrb_int _t%d = ", tv); emit_int_expr(c, arg, b);
     buf_printf(b, "; if (_t%d == SP_INT_NIL) putchar('\\n'); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
   }
   else if (t == TY_BIGINT) {
@@ -201,7 +201,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   if (t == TY_INT) {
     /* p of a nullable int at the sentinel prints "nil" */
     int tv = ++g_tmp;
-    buf_printf(b, "{ mrb_int _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "{ mrb_int _t%d = ", tv); emit_int_expr(c, arg, b);
     buf_printf(b, "; if (_t%d == SP_INT_NIL) fputs(\"nil\\n\", stdout); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
   }
   else if (t == TY_FLOAT) {

@@ -565,7 +565,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     int ta2 = ++g_tmp, tb2 = ++g_tmp, tc2 = ++g_tmp;
     if (irt == TY_POLY_ARRAY) {
       buf_printf(b, "({ sp_PolyArray *_t%d = ", ta2); emit_expr(c, ir, b);
-      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_expr(c, iav[0], b);
+      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);
       buf_printf(b, "; sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);", tc2, ta2, tb2);
       buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
       emit_boxed(c, iv, b);
@@ -573,7 +573,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     }
     else if (irt == TY_INT_ARRAY) {
       buf_printf(b, "({ sp_IntArray *_t%d = ", ta2); emit_expr(c, ir, b);
-      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_expr(c, iav[0], b);
+      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);
       buf_printf(b, "; mrb_int _t%d = sp_IntArray_get(_t%d, _t%d);", tc2, ta2, tb2);
       buf_printf(b, " if (%s(_t%d == SP_INT_NIL)) { _t%d = ", is_or2 ? "" : "!", tc2, tc2);
       emit_expr(c, iv, b);
@@ -581,7 +581,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     }
     else if (irt == TY_STR_ARRAY) {
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta2); emit_expr(c, ir, b);
-      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_expr(c, iav[0], b);
+      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);
       buf_printf(b, "; const char *_t%d = sp_StrArray_get(_t%d, _t%d);", tc2, ta2, tb2);
       buf_printf(b, " if (%s_t%d) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
       emit_expr(c, iv, b);
@@ -613,7 +613,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_RbVal _t%d = ", ta2); emit_expr(c, ir, b);
       buf_puts(b, "; ");
       if (kt2 == TY_INT) {
-        buf_printf(b, "mrb_int _t%d = ", tb2); emit_expr(c, iav[0], b); buf_puts(b, "; ");
+        buf_printf(b, "mrb_int _t%d = ", tb2); emit_int_expr(c, iav[0], b); buf_puts(b, "; ");
         buf_printf(b, "sp_RbVal _t%d = sp_poly_arr_get_hash(_t%d, _t%d);", tc2, ta2, tb2);
         buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
         emit_boxed(c, iv, b);
