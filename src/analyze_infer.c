@@ -1812,6 +1812,13 @@ else {
         (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") ||
          !strcmp(name, "/") || !strcmp(name, "%") || !strcmp(name, "**")))
       return TY_POLY;
+    /* unary numeric operators on a poly receiver: negation/unary-plus stay
+       poly, bitwise complement yields int. Resolve them here so the poly
+       method-dispatch below does not bind `-@`/`+@` to a user class that
+       happens to define one (e.g. `-@cents` with @cents widened to poly must
+       not infer the enclosing Money type). */
+    if (argc == 0 && (!strcmp(name, "-@") || !strcmp(name, "+@"))) return TY_POLY;
+    if (argc == 0 && !strcmp(name, "~")) return TY_INT;
     if (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") ||
         !strcmp(name, ">=") || !strcmp(name, "==") || !strcmp(name, "!=") ||
         !strcmp(name, "nil?") || !strcmp(name, "is_a?") || !strcmp(name, "kind_of?") ||
