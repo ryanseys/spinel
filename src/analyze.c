@@ -2275,7 +2275,11 @@ void analyze_program(Compiler *c) {
   if (g_promote_mode) {
     for (int s = 0; s < c->nscopes; s++) {
       Scope *sc = &c->scopes[s];
-      if (sc->ret == TY_INT) sc->ret = TY_POLY;
+      /* `<=>` yields a bounded -1/0/1 and is consumed as `(a <=> b) <cmp> 0`;
+         widening its return to poly would force every caller's comparison onto
+         the poly path while the result never overflows. Keep it int. */
+      int is_spaceship = sc->name && !strcmp(sc->name, "<=>");
+      if (sc->ret == TY_INT && !is_spaceship) sc->ret = TY_POLY;
       for (int i = 0; i < sc->nlocals; i++) {
         /* Skip block params: they are typed by the iterated collection's
            element type (an IntArray yields int elements), and the block
