@@ -3972,7 +3972,29 @@ void emit_call(Compiler *c, int id, Buf *b) {
           bam_done[ki][oi] = 1;
           const char *cast = (ki == 0) ? "" : "(mrb_int)(uintptr_t)";
           const char *uncast = (ki == 0) ? "" : "(const char *)(uintptr_t)";
-          if (oi == 0) {
+          if (g_promote_mode) {
+            /* promote: bound methods are invoked through the poly ABI, so the
+               adapter takes/returns sp_RbVal (boxing the int/string element). */
+            const char *boxret = (ki == 0) ? "sp_box_int_or_nil" : "sp_box_str";
+            const char *unbox  = (ki == 0) ? "sp_poly_to_i" : "sp_poly_to_s";
+            const char *boxarr = (ki == 0) ? "sp_box_int_array" : "sp_box_str_array";
+            if (oi == 0) {
+              buf_printf(&g_proc_protos, "static sp_RbVal _bam_%sArray_get(void *a, sp_RbVal i);\n", bk);
+              buf_printf(&g_procs, "static sp_RbVal _bam_%sArray_get(void *a, sp_RbVal i) {\n"
+                                   "  return %s(sp_%sArray_get((sp_%sArray *)a, sp_poly_to_i(i)));\n}\n", bk, boxret, bk, bk);
+            }
+            else if (oi == 1) {
+              buf_printf(&g_proc_protos, "static sp_RbVal _bam_%sArray_set(void *a, sp_RbVal i, sp_RbVal v);\n", bk);
+              buf_printf(&g_procs, "static sp_RbVal _bam_%sArray_set(void *a, sp_RbVal i, sp_RbVal v) {\n"
+                                   "  sp_%sArray_set((sp_%sArray *)a, sp_poly_to_i(i), %s(v));\n  return v;\n}\n", bk, bk, bk, unbox);
+            }
+            else {
+              buf_printf(&g_proc_protos, "static sp_RbVal _bam_%sArray_push(void *a, sp_RbVal v);\n", bk);
+              buf_printf(&g_procs, "static sp_RbVal _bam_%sArray_push(void *a, sp_RbVal v) {\n"
+                                   "  sp_%sArray_push((sp_%sArray *)a, %s(v));\n  return %s(a);\n}\n", bk, bk, bk, unbox, boxarr);
+            }
+          }
+          else if (oi == 0) {
             buf_printf(&g_proc_protos, "static mrb_int _bam_%sArray_get(void *a, mrb_int i);\n", bk);
             buf_printf(&g_procs, "static mrb_int _bam_%sArray_get(void *a, mrb_int i) {\n"
                                  "  return %ssp_%sArray_get((sp_%sArray *)a, i);\n}\n", bk, cast, bk, bk);
