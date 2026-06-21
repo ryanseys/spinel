@@ -2372,6 +2372,24 @@ void analyze_program(Compiler *c) {
         }
         if (br == TY_POLY_ARRAY) { sc->ret = TY_POLY_ARRAY; changed = 1; }
       }
+      /* (4) a local whose assigned value widened to a poly array must follow:
+         its declared IntArray/StrArray/FloatArray slot would otherwise mismatch
+         the PolyArray now produced -- whether by a map method whose return
+         widened (step 3), or by an array literal whose elements widened
+         (`arr = [x, y, x + y]` with poly x,y builds a PolyArray). */
+      for (int id = 0; id < nt->count; id++) {
+        const char *ty = nt_type(nt, id);
+        if (!ty || strcmp(ty, "LocalVariableWriteNode")) continue;
+        const char *nm = nt_str(nt, id, "name");
+        if (!nm) continue;
+        LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+        if (!lv) continue;
+        if (lv->type != TY_INT_ARRAY && lv->type != TY_STR_ARRAY &&
+            lv->type != TY_FLOAT_ARRAY) continue;
+        int vnode = nt_ref(nt, id, "value");
+        if (vnode < 0) continue;
+        if (infer_type(c, vnode) == TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
+      }
     }
     /* refresh the node-type cache so a `proc.call` node picks up the updated
        proc_ret (codegen reads comp_ntype, not lv->proc_ret directly). Re-infer
