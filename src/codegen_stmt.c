@@ -983,7 +983,15 @@ void emit_pm_eq(Compiler *c, int t, TyKind pt, int valnode, Buf *b) {
     buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, valnode, b); buf_puts(b, ")");
   }
   else {
-    buf_printf(b, "(_t%d == ", t); emit_expr(c, valnode, b); buf_puts(b, ")");
+    buf_printf(b, "(_t%d == ", t);
+    if (comp_ntype(c, valnode) == TY_POLY) {
+      /* a pinned poly value (e.g. `in ^x` with x widened) against a scalar
+         scrutinee: unbox it to the scrutinee's type so the C `==` typechecks. */
+      Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, valnode, &vb);
+      emit_unbox_text(c, pt, vb.p ? vb.p : "", b); free(vb.p);
+    }
+    else emit_expr(c, valnode, b);
+    buf_puts(b, ")");
   }
 }
 
