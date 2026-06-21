@@ -701,6 +701,12 @@ static void sp_str_sweep(void) {
       body[0] = (char)0xfe;
       pp = &h->next;
     }
+    /* a reachable frozen heap string (marked 0xf1 -> 0xf0 this cycle): keep it
+       and restore the frozen marker, so a live frozen global survives (#1449). */
+    else if ((unsigned char)body[0] == 0xf0) {
+      body[0] = (char)0xf1;
+      pp = &h->next;
+    }
 else {
       *pp = h->next;
       sp_str_heap_bytes -= h->size;   /* keep the string-heap live-byte count in step */
