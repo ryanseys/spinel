@@ -292,16 +292,16 @@ static mrb_bool sp_range_include(sp_Range *r, mrb_int x){return r->first<=x && x
    `--nestopia-palette`. */
 static inline sp_Complex sp_complex_polar(mrb_float m,mrb_float a){sp_Complex c;c.re=m*cos(a);c.im=m*sin(a);return c;}
 static inline sp_Complex sp_complex_add(sp_Complex a,sp_Complex b){sp_Complex c;c.re=a.re+b.re;c.im=a.im+b.im;return c;}
-static inline sp_Complex sp_complex_mul(sp_Complex a,sp_Complex b){sp_Complex c;c.re=a.re*b.re-a.im*b.im;c.im=a.re*b.im+a.im*b.re;return c;}
+static inline sp_Complex sp_complex_mul(sp_Complex a,sp_Complex b){sp_Complex c;c.re=(a.re*b.re)-(a.im*b.im);c.im=(a.re*b.im)+(a.im*b.re);return c;}
 static inline sp_Complex sp_complex_conjugate(sp_Complex a){sp_Complex c;c.re=a.re;c.im=-a.im;return c;}
 static inline sp_Complex sp_complex_sub(sp_Complex a,sp_Complex b){sp_Complex c;c.re=a.re-b.re;c.im=a.im-b.im;return c;}
 static inline sp_Complex sp_complex_div(sp_Complex a,sp_Complex b){
-  mrb_float d=b.re*b.re+b.im*b.im;sp_Complex c;
-  c.re=(a.re*b.re+a.im*b.im)/d;c.im=(a.im*b.re-a.re*b.im)/d;return c;
+  mrb_float d=(b.re*b.re)+(b.im*b.im);sp_Complex c;
+  c.re=((a.re*b.re)+(a.im*b.im))/d;c.im=((a.im*b.re)-(a.re*b.im))/d;return c;
 }
 static inline sp_Complex sp_complex_neg(sp_Complex a){sp_Complex c;c.re=-a.re;c.im=-a.im;return c;}
-static inline mrb_float sp_complex_abs2(sp_Complex a){return a.re*a.re+a.im*a.im;}
-static inline mrb_float sp_complex_abs(sp_Complex a){return sqrt(a.re*a.re+a.im*a.im);}
+static inline mrb_float sp_complex_abs2(sp_Complex a){return (a.re*a.re)+(a.im*a.im);}
+static inline mrb_float sp_complex_abs(sp_Complex a){return sqrt((a.re*a.re)+(a.im*a.im));}
 static inline mrb_bool sp_complex_eq(sp_Complex a,sp_Complex b){return a.re==b.re&&a.im==b.im;}
 static sp_Complex sp_complex_pow(sp_Complex a,mrb_int e){
   sp_Complex r;r.re=1;r.im=0;
@@ -422,11 +422,11 @@ static sp_Rational sp_rational_new_wide(sp_rat_wide n, sp_rat_wide d) {
   return r;
 }
 static inline sp_Rational sp_rational_add(sp_Rational a, sp_Rational b) {
-  return sp_rational_new_wide((sp_rat_wide)a.num * b.den + (sp_rat_wide)b.num * a.den,
+  return sp_rational_new_wide(((sp_rat_wide)a.num * b.den) + ((sp_rat_wide)b.num * a.den),
                               (sp_rat_wide)a.den * b.den);
 }
 static inline sp_Rational sp_rational_sub(sp_Rational a, sp_Rational b) {
-  return sp_rational_new_wide((sp_rat_wide)a.num * b.den - (sp_rat_wide)b.num * a.den,
+  return sp_rational_new_wide(((sp_rat_wide)a.num * b.den) - ((sp_rat_wide)b.num * a.den),
                               (sp_rat_wide)a.den * b.den);
 }
 static inline sp_Rational sp_rational_mul(sp_Rational a, sp_Rational b) {
@@ -533,7 +533,7 @@ static inline double sp_process_clock_gettime(void) {
 #if defined(CLOCK_MONOTONIC)
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+  return (double)ts.tv_sec + ((double)ts.tv_nsec * 1e-9);
 #else
   return 0.0;
 #endif
@@ -764,7 +764,7 @@ static inline int sp_time_cmp(sp_Time a, sp_Time b) {
 /* Time + seconds (int or float), Time - seconds */
 static inline sp_Time sp_time_add_f(sp_Time t, double secs) {
   long long ns = (long long)(secs * 1000000000.0);
-  long long total_ns = (long long)t.tv_sec * 1000000000LL + t.tv_nsec + ns;
+  long long total_ns = ((long long)t.tv_sec * 1000000000LL) + t.tv_nsec + ns;
   sp_Time r;
   r.tv_sec = (time_t)(total_ns / 1000000000LL);
   r.tv_nsec = (int32_t)(total_ns % 1000000000LL);
@@ -787,7 +787,7 @@ static inline sp_Time sp_time_sub_i(sp_Time t, mrb_int secs) {
   return r;
 }
 static inline double sp_time_sub_t(sp_Time a, sp_Time b) {
-  return (double)(a.tv_sec - b.tv_sec) + (double)(a.tv_nsec - b.tv_nsec) / 1e9;
+  return (double)(a.tv_sec - b.tv_sec) + ((double)(a.tv_nsec - b.tv_nsec) / 1e9);
 }
 
 /* SP_GC_STACK_MAX, sp_gc_roots, sp_gc_nroots come from sp_gc.h / lib/sp_gc.c. */
@@ -945,7 +945,7 @@ static sp_IntArray*sp_IntArray_slice(sp_IntArray*a,mrb_int start,mrb_int len){SP
    a->len first; the bare _slice already handles negative start. */
 static sp_IntArray*sp_IntArray_slice_range(sp_IntArray*a,mrb_int start,mrb_int end_,mrb_int excl){if(end_<0)end_+=a->len;if(start<0)start+=a->len;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_IntArray_slice(a,start,n);}
 static void sp_IntArray_replace(sp_IntArray*dst,sp_IntArray*src){dst->len=0;dst->start=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*dst->cap;h->size-=sizeof(mrb_int)*dst->cap;void*nd=realloc(dst->data,sizeof(mrb_int)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(mrb_int*)nd;dst->cap=src->len;h->size+=sizeof(mrb_int)*dst->cap;sp_gc_bytes+=sizeof(mrb_int)*dst->cap;}memcpy(dst->data,src->data+src->start,sizeof(mrb_int)*src->len);dst->len=src->len;}
-static void __attribute__((noinline)) sp_IntArray_push_grow(sp_IntArray*a){if(a->start>0){memmove(a->data,a->data+a->start,sizeof(mrb_int)*a->len);a->start=0;if(a->len<a->cap)return;}{sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*a->cap;h->size-=sizeof(mrb_int)*a->cap;a->cap=a->cap*2+1;void*nd=realloc(a->data,sizeof(mrb_int)*a->cap);if(!nd)sp_oom_die();a->data=(mrb_int*)nd;h->size+=sizeof(mrb_int)*a->cap;sp_gc_bytes+=sizeof(mrb_int)*a->cap;}}
+static void __attribute__((noinline)) sp_IntArray_push_grow(sp_IntArray*a){if(a->start>0){memmove(a->data,a->data+a->start,sizeof(mrb_int)*a->len);a->start=0;if(a->len<a->cap)return;}{sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*a->cap;h->size-=sizeof(mrb_int)*a->cap;a->cap=(a->cap*2)+1;void*nd=realloc(a->data,sizeof(mrb_int)*a->cap);if(!nd)sp_oom_die();a->data=(mrb_int*)nd;h->size+=sizeof(mrb_int)*a->cap;sp_gc_bytes+=sizeof(mrb_int)*a->cap;}}
 static inline void sp_IntArray_push(sp_IntArray*a,mrb_int v){if(a->frozen){sp_raise_frozen_array();return;}if(a->start+a->len>=a->cap)sp_IntArray_push_grow(a);a->data[a->start+a->len]=v;a->len++;}
 /* Issue #826: guard empty arrays. CRuby returns nil; spinel's int slot
    collapses nil to 0. Without the guard, `--a->len` wraps to -1 and
@@ -962,7 +962,7 @@ static inline mrb_int sp_IntArray_get(sp_IntArray*a,mrb_int i){if(!a)return SP_I
    CRuby raises IndexError; spinel no-ops as the safest fallback
    (raising from a typed-array set would need setjmp plumbing
    throughout the call chain). */
-static void sp_IntArray_set_slow(sp_IntArray*a,mrb_int i,mrb_int v){if(i<0)return;while(a->start+i>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*a->cap;h->size-=sizeof(mrb_int)*a->cap;a->cap=a->cap*2+1;a->data=(mrb_int*)realloc(a->data,sizeof(mrb_int)*a->cap);h->size+=sizeof(mrb_int)*a->cap;sp_gc_bytes+=sizeof(mrb_int)*a->cap;}while(i>=a->len){a->data[a->start+a->len]=0;a->len++;}a->data[a->start+i]=v;}
+static void sp_IntArray_set_slow(sp_IntArray*a,mrb_int i,mrb_int v){if(i<0)return;while(a->start+i>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*a->cap;h->size-=sizeof(mrb_int)*a->cap;a->cap=(a->cap*2)+1;a->data=(mrb_int*)realloc(a->data,sizeof(mrb_int)*a->cap);h->size+=sizeof(mrb_int)*a->cap;sp_gc_bytes+=sizeof(mrb_int)*a->cap;}while(i>=a->len){a->data[a->start+a->len]=0;a->len++;}a->data[a->start+i]=v;}
 /* Issue #839: an extreme negative index (still negative after
    `i += len`) raises IndexError per MRI. */
 static inline void sp_IntArray_set(sp_IntArray*a,mrb_int i,mrb_int v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}mrb_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));if(i<a->len){a->data[a->start+i]=v;return;}sp_IntArray_set_slow(a,i,v);}
@@ -1018,7 +1018,7 @@ static sp_IntArray*sp_IntArray_union(sp_IntArray*a,sp_IntArray*b){sp_IntArray*r=
    preserving the LHS's duplicates. CRuby's Array#- is not a set
    subtraction — `[1,1,2,3] - [3]` is `[1,1,2]`, not `[1,2]`. */
 static sp_IntArray*sp_IntArray_difference(sp_IntArray*a,sp_IntArray*b){sp_IntArray*r=sp_IntArray_new();if(!a)return r;for(mrb_int i=0;i<a->len;i++){mrb_int v=a->data[a->start+i];if(!sp_IntArray_include(b,v))sp_IntArray_push(r,v);}return r;}
-static void sp_IntArray_unshift(sp_IntArray*a,mrb_int v){if(a->frozen){sp_raise_frozen_array();return;}if(a->start>0){a->start--;a->data[a->start]=v;a->len++;}else{mrb_int e=a->len+1;if(e>a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*a->cap;h->size-=sizeof(mrb_int)*a->cap;a->cap=a->cap*2+1;a->data=(mrb_int*)realloc(a->data,sizeof(mrb_int)*a->cap);h->size+=sizeof(mrb_int)*a->cap;sp_gc_bytes+=sizeof(mrb_int)*a->cap;}memmove(a->data+1,a->data,sizeof(mrb_int)*a->len);a->data[0]=v;a->len++;}}
+static void sp_IntArray_unshift(sp_IntArray*a,mrb_int v){if(a->frozen){sp_raise_frozen_array();return;}if(a->start>0){a->start--;a->data[a->start]=v;a->len++;}else{mrb_int e=a->len+1;if(e>a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*a->cap;h->size-=sizeof(mrb_int)*a->cap;a->cap=(a->cap*2)+1;a->data=(mrb_int*)realloc(a->data,sizeof(mrb_int)*a->cap);h->size+=sizeof(mrb_int)*a->cap;sp_gc_bytes+=sizeof(mrb_int)*a->cap;}memmove(a->data+1,a->data,sizeof(mrb_int)*a->len);a->data[0]=v;a->len++;}}
 static const char*sp_IntArray_join(sp_IntArray*a,const char*sep){size_t sl=strlen(sep),cap=256;char*buf=(char*)malloc(cap);size_t len=0;for(mrb_int i=0;i<a->len;i++){if(i>0){if(len+sl>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,sep,sl);len+=sl;}char tmp[32];int n=snprintf(tmp,32,"%lld",(long long)a->data[a->start+i]);if(len+n>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,tmp,n);len+=n;}buf[len]=0;char*r=sp_str_alloc(len);memcpy(r,buf,len);free(buf);return r;}
 static mrb_bool sp_IntArray_eq(sp_IntArray*a,sp_IntArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(a->data[a->start+i]!=b->data[b->start+i])return FALSE;return TRUE;}
 /* Array#<=> for IntArray. Lexicographic: per-element compare,
@@ -1032,7 +1032,7 @@ static mrb_int sp_IntArray_cmp(sp_IntArray*a,sp_IntArray*b){if(!a||!b)return a==
 
 static void sp_FloatArray_fin(void*p){sp_FloatArray*a=(sp_FloatArray*)p;sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_float)*a->cap;h->size-=sizeof(mrb_float)*a->cap;free(a->data);}
 static sp_FloatArray*sp_FloatArray_new(void){sp_FloatArray*a=(sp_FloatArray*)sp_gc_alloc(sizeof(sp_FloatArray),sp_FloatArray_fin,NULL);a->cap=16;a->data=(mrb_float*)malloc(sizeof(mrb_float)*a->cap);if(!a->data)sp_oom_die();a->len=0;{sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));h->size+=sizeof(mrb_float)*a->cap;sp_gc_bytes+=sizeof(mrb_float)*a->cap;}return a;}
-static inline void sp_FloatArray_push(sp_FloatArray*a,mrb_float v){if(a->frozen){sp_raise_frozen_array();return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_float)*a->cap;h->size-=sizeof(mrb_float)*a->cap;a->cap=a->cap*2+1;a->data=(mrb_float*)realloc(a->data,sizeof(mrb_float)*a->cap);h->size+=sizeof(mrb_float)*a->cap;sp_gc_bytes+=sizeof(mrb_float)*a->cap;}a->data[a->len++]=v;}
+static inline void sp_FloatArray_push(sp_FloatArray*a,mrb_float v){if(a->frozen){sp_raise_frozen_array();return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_float)*a->cap;h->size-=sizeof(mrb_float)*a->cap;a->cap=(a->cap*2)+1;a->data=(mrb_float*)realloc(a->data,sizeof(mrb_float)*a->cap);h->size+=sizeof(mrb_float)*a->cap;sp_gc_bytes+=sizeof(mrb_float)*a->cap;}a->data[a->len++]=v;}
 /* Float#step materialised as a FloatArray. Direction follows the
    sign of k; k==0 yields an empty array to avoid an infinite loop. */
 static void sp_FloatArray_unshift(sp_FloatArray*a,mrb_float v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}sp_FloatArray_push(a,0.0);if(a->len>1)memmove(&a->data[1],&a->data[0],(size_t)(a->len-1)*sizeof(mrb_float));a->data[0]=v;}
@@ -1063,7 +1063,7 @@ static sp_FloatArray*sp_FloatArray_slice(sp_FloatArray*a,mrb_int start,mrb_int l
 /* See sp_IntArray_slice_range -- same shape, issue #496. */
 static sp_FloatArray*sp_FloatArray_slice_range(sp_FloatArray*a,mrb_int start,mrb_int end_,mrb_int excl){if(end_<0)end_+=a->len;if(start<0)start+=a->len;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_FloatArray_slice(a,start,n);}
 /* Issue #769: no-op for negative index after adjustment. */
-static inline void sp_FloatArray_set(sp_FloatArray*a,mrb_int i,mrb_float v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}mrb_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));while(i>=a->cap){a->cap=a->cap*2+1;a->data=(mrb_float*)realloc(a->data,sizeof(mrb_float)*a->cap);}while(i>=a->len){a->data[a->len]=0.0;a->len++;}a->data[i]=v;}
+static inline void sp_FloatArray_set(sp_FloatArray*a,mrb_int i,mrb_float v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}mrb_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));while(i>=a->cap){a->cap=(a->cap*2)+1;a->data=(mrb_float*)realloc(a->data,sizeof(mrb_float)*a->cap);}while(i>=a->len){a->data[a->len]=0.0;a->len++;}a->data[i]=v;}
 static void sp_FloatArray_reverse_bang(sp_FloatArray*a){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}for(mrb_int i=0,j=a->len-1;i<j;i++,j--){mrb_float t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
 static void sp_FloatArray_rotate_bang(sp_FloatArray*a,mrb_int n){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}if(a->len<=0)return;n=((n%a->len)+a->len)%a->len;if(n==0)return;mrb_float*d=a->data;mrb_int lo=0,hi=n-1;while(lo<hi){mrb_float t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=n;hi=a->len-1;while(lo<hi){mrb_float t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=0;hi=a->len-1;while(lo<hi){mrb_float t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}}
 static int _sp_float_cmp(const void*a,const void*b){mrb_float va=*(const mrb_float*)a,vb=*(const mrb_float*)b;return(va>vb)-(va<vb);}
@@ -1090,7 +1090,7 @@ static sp_PtrArray*sp_PtrArray_new(void){return sp_PtrArray_new_scan(sp_gc_mark)
    crash at collection time. Skip per-element scanning; the array
    header itself is still GC-tracked. */
 static sp_PtrArray*sp_PtrArray_new_noscan(void){return sp_PtrArray_new_scan(NULL);}
-static inline void sp_PtrArray_push(sp_PtrArray*a,void*v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(void*)*a->cap;h->size-=sizeof(void*)*a->cap;a->cap=a->cap*2+1;void*nd=realloc(a->data,sizeof(void*)*a->cap);if(!nd)sp_oom_die();a->data=(void**)nd;h->size+=sizeof(void*)*a->cap;sp_gc_bytes+=sizeof(void*)*a->cap;}a->data[a->len++]=v;}
+static inline void sp_PtrArray_push(sp_PtrArray*a,void*v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(void*)*a->cap;h->size-=sizeof(void*)*a->cap;a->cap=(a->cap*2)+1;void*nd=realloc(a->data,sizeof(void*)*a->cap);if(!nd)sp_oom_die();a->data=(void**)nd;h->size+=sizeof(void*)*a->cap;sp_gc_bytes+=sizeof(void*)*a->cap;}a->data[a->len++]=v;}
 /* Array#pop on a `<X>_ptr_array`. Returns NULL when empty
    (matches CRuby's nil for typed-element arrays since the slot
    can't carry nil). Issue #520: previously the dispatch on
@@ -1126,7 +1126,7 @@ static void *sp_PtrArray_sample(sp_PtrArray*a){if(a->len<=0)return NULL;return a
 static void sp_StrArray_fin(void*p){sp_StrArray*a=(sp_StrArray*)p;if(a->data!=a->inline_data){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(const char*)*a->cap;h->size-=sizeof(const char*)*a->cap;free(a->data);}}
 static void sp_StrArray_scan(void*p){sp_StrArray*a=(sp_StrArray*)p;for(mrb_int i=0;i<a->len;i++)sp_mark_string(a->data[i]);}
 static sp_StrArray*sp_StrArray_new(void){sp_StrArray*a=(sp_StrArray*)sp_gc_alloc(sizeof(sp_StrArray),sp_StrArray_fin,sp_StrArray_scan);a->cap=SP_STRARR_INLINE;a->data=a->inline_data;a->len=0;return a;}
-static inline void sp_StrArray_push(sp_StrArray*a,const char*v){if(a->frozen){sp_raise_frozen_array();return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));mrb_int nc=a->cap*2+1;if(a->data==a->inline_data){const char**nd=(const char**)malloc(sizeof(const char*)*nc);if(!nd)sp_oom_die();memcpy(nd,a->data,sizeof(const char*)*a->len);a->data=nd;}else{sp_gc_bytes-=sizeof(const char*)*a->cap;h->size-=sizeof(const char*)*a->cap;void*nd=realloc(a->data,sizeof(const char*)*nc);if(!nd)sp_oom_die();a->data=(const char**)nd;}a->cap=nc;h->size+=sizeof(const char*)*a->cap;sp_gc_bytes+=sizeof(const char*)*a->cap;}a->data[a->len++]=v;}
+static inline void sp_StrArray_push(sp_StrArray*a,const char*v){if(a->frozen){sp_raise_frozen_array();return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));mrb_int nc=(a->cap*2)+1;if(a->data==a->inline_data){const char**nd=(const char**)malloc(sizeof(const char*)*nc);if(!nd)sp_oom_die();memcpy(nd,a->data,sizeof(const char*)*a->len);a->data=nd;}else{sp_gc_bytes-=sizeof(const char*)*a->cap;h->size-=sizeof(const char*)*a->cap;void*nd=realloc(a->data,sizeof(const char*)*nc);if(!nd)sp_oom_die();a->data=(const char**)nd;}a->cap=nc;h->size+=sizeof(const char*)*a->cap;sp_gc_bytes+=sizeof(const char*)*a->cap;}a->data[a->len++]=v;}
 static void sp_StrArray_replace(sp_StrArray*dst,sp_StrArray*src){dst->len=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));void*nd;if(dst->data==dst->inline_data){nd=malloc(sizeof(const char*)*src->len);if(!nd){perror("malloc");exit(1);}}else{sp_gc_bytes-=sizeof(const char*)*dst->cap;h->size-=sizeof(const char*)*dst->cap;nd=realloc(dst->data,sizeof(const char*)*src->len);if(!nd){perror("realloc");exit(1);}}dst->data=(const char**)nd;dst->cap=src->len;h->size+=sizeof(const char*)*dst->cap;sp_gc_bytes+=sizeof(const char*)*dst->cap;}memcpy(dst->data,src->data,sizeof(const char*)*src->len);dst->len=src->len;}
 static const char*sp_StrArray_pop(sp_StrArray*a){if(!a||a->len<=0)return NULL;if(a->frozen){sp_raise_frozen_array();return NULL;}return a->data[--a->len];}
 static const char*sp_StrArray_shift(sp_StrArray*a){if(!a||a->len<=0)return NULL;if(a->frozen){sp_raise_frozen_array();return NULL;}const char*v=a->data[0];memmove(a->data,a->data+1,(size_t)(--a->len)*sizeof(const char*));return v;}
@@ -1178,7 +1178,7 @@ static mrb_int sp_str_casecmp(const char*a,const char*b){if(!a||!b)return a==b?0
    or well-formed UTF-8 (RFC 3629 byte sequences with no overlong
    forms, no surrogate halves, code points <= U+10FFFF). */
 static mrb_bool sp_str_valid_encoding(const char*s){if(!s)return TRUE;const unsigned char*p=(const unsigned char*)s;while(*p){unsigned c=*p;if(c<0x80){p++;continue;}int extra;unsigned cp;unsigned min;if((c&0xE0)==0xC0){extra=1;cp=c&0x1F;min=0x80;}else if((c&0xF0)==0xE0){extra=2;cp=c&0x0F;min=0x800;}else if((c&0xF8)==0xF0){extra=3;cp=c&0x07;min=0x10000;}else return FALSE;p++;for(int i=0;i<extra;i++){if((*p&0xC0)!=0x80)return FALSE;cp=(cp<<6)|(*p&0x3F);p++;}if(cp<min)return FALSE;if(cp>=0xD800&&cp<=0xDFFF)return FALSE;if(cp>0x10FFFF)return FALSE;}return TRUE;}
-static const char*sp_StrArray_join(sp_StrArray*a,const char*sep){size_t sl=strlen(sep),cap=256;char*buf=(char*)malloc(cap);size_t len=0;for(mrb_int i=0;i<a->len;i++){if(i>0){if(len+sl>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,sep,sl);len+=sl;}size_t el=strlen(a->data[i]);if(len+el>=cap){cap=(len+el)*2+1;buf=(char*)realloc(buf,cap);}memcpy(buf+len,a->data[i],el);len+=el;}buf[len]=0;char*r=sp_str_alloc(len);memcpy(r,buf,len);free(buf);return r;}
+static const char*sp_StrArray_join(sp_StrArray*a,const char*sep){size_t sl=strlen(sep),cap=256;char*buf=(char*)malloc(cap);size_t len=0;for(mrb_int i=0;i<a->len;i++){if(i>0){if(len+sl>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,sep,sl);len+=sl;}size_t el=strlen(a->data[i]);if(len+el>=cap){cap=((len+el)*2)+1;buf=(char*)realloc(buf,cap);}memcpy(buf+len,a->data[i],el);len+=el;}buf[len]=0;char*r=sp_str_alloc(len);memcpy(r,buf,len);free(buf);return r;}
 static mrb_bool sp_StrArray_include(sp_StrArray*a,const char*v){if(!a)return FALSE;for(mrb_int i=0;i<a->len;i++)if(strcmp(a->data[i],v)==0)return TRUE;return FALSE;}
 static sp_StrArray*sp_StrArray_intersect(sp_StrArray*a,sp_StrArray*b){sp_StrArray*r=sp_StrArray_new();if(!a||!b)return r;for(mrb_int i=0;i<a->len;i++){const char*v=a->data[i];if(sp_StrArray_include(b,v)&&!sp_StrArray_include(r,v))sp_StrArray_push(r,v);}return r;}
 static sp_StrArray*sp_StrArray_union(sp_StrArray*a,sp_StrArray*b){sp_StrArray*r=sp_StrArray_new();if(a)for(mrb_int i=0;i<a->len;i++){const char*v=a->data[i];if(!sp_StrArray_include(r,v))sp_StrArray_push(r,v);}if(b){for(mrb_int i=0;i<b->len;i++){const char*v=b->data[i];if(!sp_StrArray_include(r,v))sp_StrArray_push(r,v);}}return r;}
@@ -1412,7 +1412,7 @@ static inline mrb_float sp_float_clamp_ck(mrb_float v,mrb_float lo,mrb_float hi)
 }
 /* String#inspect: wrap in double quotes and escape \, ", \n, \t, \r,
    plus any non-printable byte as \xNN. Output is always ASCII-safe. */
-static const char*sp_str_inspect(const char*s){if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=sp_str_byte_len(s);size_t cap=sl*4+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}else if(c=='\n'){r[o++]='\\';r[o++]='n';}else if(c=='\t'){r[o++]='\\';r[o++]='t';}else if(c=='\r'){r[o++]='\\';r[o++]='r';}else if(c<0x20||c==0x7f){snprintf(r+o,5,"\\x%02X",c);o+=4;}else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}
+static const char*sp_str_inspect(const char*s){if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=sp_str_byte_len(s);size_t cap=(sl*4)+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}else if(c=='\n'){r[o++]='\\';r[o++]='n';}else if(c=='\t'){r[o++]='\\';r[o++]='t';}else if(c=='\r'){r[o++]='\\';r[o++]='r';}else if(c<0x20||c==0x7f){snprintf(r+o,5,"\\x%02X",c);o+=4;}else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}
 /* Issue #791: loop to `i < l` and write the NUL terminator explicitly.
    The original `<= l` form worked because sp_str_alloc_raw(l+1) makes
    index l valid, but it's brittle if allocation changes. Issue #797
@@ -1431,7 +1431,7 @@ static int _sp_hexval(unsigned char d){return (d<='9')?(d-'0'):(tolower(d)-'a'+1
 static const char*sp_str_dump(const char*s){
   if(!s)return sp_str_empty;
   size_t n=strlen(s);
-  char*out=sp_str_alloc_raw(n*4+3);size_t oi=0;
+  char*out=sp_str_alloc_raw((n*4)+3);size_t oi=0;
   out[oi++]='"';
   for(size_t i=0;i<n;i++){
     unsigned char c=(unsigned char)s[i];
@@ -1467,10 +1467,10 @@ static const char*sp_str_undump(const char*s){
     else if(c=='b')out[oi++]='\b';else if(c=='e')out[oi++]='\033';else if(c=='s')out[oi++]=' ';
     else if(c=='0')out[oi++]='\0';else if(c=='\\')out[oi++]='\\';else if(c=='"')out[oi++]='"';
     else if(c=='#')out[oi++]='#';
-    else if(c=='x'){int v=0,k=0;while(k<2&&p<pe&&isxdigit((unsigned char)*p)){v=v*16+_sp_hexval((unsigned char)*p);p++;k++;}out[oi++]=(char)v;}
+    else if(c=='x'){int v=0,k=0;while(k<2&&p<pe&&isxdigit((unsigned char)*p)){v=(v*16)+_sp_hexval((unsigned char)*p);p++;k++;}out[oi++]=(char)v;}
     else if(c=='u'){
-      if(p<pe&&*p=='{'){p++;while(p<pe&&*p!='}'){while(p<pe&&*p==' ')p++;uint32_t cp=0;int k=0;while(k<8&&p<pe&&isxdigit((unsigned char)*p)){cp=cp*16+(uint32_t)_sp_hexval((unsigned char)*p);p++;k++;}char enc[4];int el=sp_utf8_encode(cp,enc);for(int j=0;j<el;j++)out[oi++]=enc[j];while(p<pe&&*p==' ')p++;}if(p<pe&&*p=='}')p++;}
-      else{uint32_t cp=0;int k=0;while(k<4&&p<pe&&isxdigit((unsigned char)*p)){cp=cp*16+(uint32_t)_sp_hexval((unsigned char)*p);p++;k++;}char enc[4];int el=sp_utf8_encode(cp,enc);for(int j=0;j<el;j++)out[oi++]=enc[j];}
+      if(p<pe&&*p=='{'){p++;while(p<pe&&*p!='}'){while(p<pe&&*p==' ')p++;uint32_t cp=0;int k=0;while(k<8&&p<pe&&isxdigit((unsigned char)*p)){cp=(cp*16)+(uint32_t)_sp_hexval((unsigned char)*p);p++;k++;}char enc[4];int el=sp_utf8_encode(cp,enc);for(int j=0;j<el;j++)out[oi++]=enc[j];while(p<pe&&*p==' ')p++;}if(p<pe&&*p=='}')p++;}
+      else{uint32_t cp=0;int k=0;while(k<4&&p<pe&&isxdigit((unsigned char)*p)){cp=(cp*16)+(uint32_t)_sp_hexval((unsigned char)*p);p++;k++;}char enc[4];int el=sp_utf8_encode(cp,enc);for(int j=0;j<el;j++)out[oi++]=enc[j];}
     }
     else out[oi++]=c;
   }
@@ -1655,7 +1655,7 @@ static const char*sp_str_gsub(const char*s,const char*pat,const char*rep){
   if(pl==0){
     /* Empty pattern: insert rep between every codepoint + at start/end.
        Result size: (chars+1) * rl + sl. */
-    size_t cap=sl+rl*(sl+1)+1;
+    size_t cap=sl+(rl*(sl+1))+1;
     char*out=(char*)malloc(cap);
     size_t ol=0;
     memcpy(out+ol,rep,rl); ol+=rl;
@@ -1669,15 +1669,15 @@ static const char*sp_str_gsub(const char*s,const char*pat,const char*rep){
     out[ol]=0;
     char*r=sp_str_alloc(ol); memcpy(r,out,ol+1); free(out); return r;
   }
-  size_t cap=sl*2+1;
+  size_t cap=(sl*2)+1;
   char*out=(char*)malloc(cap);
   size_t ol=0;
   const char*p=s;
   while(*p){
     const char*f=strstr(p,pat);
-    if(!f){size_t n=strlen(p);if(ol+n>=cap){cap=(ol+n)*2+1;out=(char*)realloc(out,cap);}memcpy(out+ol,p,n);ol+=n;break;}
+    if(!f){size_t n=strlen(p);if(ol+n>=cap){cap=((ol+n)*2)+1;out=(char*)realloc(out,cap);}memcpy(out+ol,p,n);ol+=n;break;}
     size_t n=f-p;
-    if(ol+n+rl>=cap){cap=(ol+n+rl)*2+1;out=(char*)realloc(out,cap);}
+    if(ol+n+rl>=cap){cap=((ol+n+rl)*2)+1;out=(char*)realloc(out,cap);}
     memcpy(out+ol,p,n);ol+=n;
     memcpy(out+ol,rep,rl);ol+=rl;
     p=f+pl;
@@ -1731,7 +1731,7 @@ const char*sp_sprintf(const char*fmt,...){char _sp_tmp[4096];va_list ap;va_start
 /* Use a temp pointer for realloc so the original buffer is not leaked
    on allocation failure. Match the perror+exit pattern used elsewhere
    (see sp_IntArray_replace) instead of returning a partial result. */
-static const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a){size_t cap=strlen(fmt)+64;char*buf=(char*)malloc(cap);if(!buf){perror("malloc");exit(1);}size_t out=0;mrb_int idx=0;const char*p=fmt;while(*p){if(*p=='%'){if(p[1]=='s'){const char*s=(idx<a->len)?a->data[idx]:"";size_t sl=strlen(s);if(out+sl>=cap){size_t nc=(out+sl)*2+1;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}memcpy(buf+out,s,sl);out+=sl;idx++;p+=2;}else if(p[1]=='%'){if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]='%';p+=2;}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}buf[out]=0;char*r=sp_str_alloc(out);memcpy(r,buf,out);free(buf);return r;}
+static const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a){size_t cap=strlen(fmt)+64;char*buf=(char*)malloc(cap);if(!buf){perror("malloc");exit(1);}size_t out=0;mrb_int idx=0;const char*p=fmt;while(*p){if(*p=='%'){if(p[1]=='s'){const char*s=(idx<a->len)?a->data[idx]:"";size_t sl=strlen(s);if(out+sl>=cap){size_t nc=((out+sl)*2)+1;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}memcpy(buf+out,s,sl);out+=sl;idx++;p+=2;}else if(p[1]=='%'){if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]='%';p+=2;}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}buf[out]=0;char*r=sp_str_alloc(out);memcpy(r,buf,out);free(buf);return r;}
 
 static const char*sp_str_reverse(const char*s){if(!s)return sp_str_empty;size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t end=bl;const char*p=s;while(*p){int cn=sp_utf8_advance(p);end-=cn;memcpy(r+end,p,cn);p+=cn;}r[bl]=0;return r;}
 static const char*sp_str_sub(const char*s,const char*pat,const char*rep){if(!s)return sp_str_empty;if(!pat||!rep)return s;const char*f=strstr(s,pat);if(!f)return s;size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl+1);return r;}
@@ -1755,7 +1755,7 @@ static const char*sp_str_repeat(const char*s,mrb_int n){
   size_t total=(size_t)n*l;
   if(total>(size_t)(1u<<30)) sp_raise_cls("ArgumentError","string size too big");
   char*r=sp_str_alloc_raw(total+1);
-  for(mrb_int i=0;i<n;i++)memcpy(r+l*i,s,l);
+  for(mrb_int i=0;i<n;i++)memcpy(r+(l*i),s,l);
   r[total]=0;
   return r;
 }
@@ -1766,7 +1766,7 @@ static sp_IntArray*sp_str_bytes(const char*s){sp_IntArray*a=sp_IntArray_new();if
 static sp_IntArray*sp_str_codepoints(const char*s){sp_IntArray*a=sp_IntArray_new();if(!s)return a;const char*p=s;while(*p){uint32_t cp;int n=sp_utf8_decode(p,&cp);sp_IntArray_push(a,(mrb_int)cp);p+=n;}return a;}
 static sp_StrArray*sp_str_chars(const char*s){sp_StrArray*a=sp_StrArray_new();if(!s)return a;const char*p=s;while(*p){int n=sp_utf8_advance(p);char*c=sp_str_alloc(n);memcpy(c,p,n);c[n]=0;sp_StrArray_push(a,c);p+=n;}return a;}
 /* Issue #798: guard NULL inputs (CRuby treats nil/no-op gracefully). */
-static const char*sp_str_tr(const char*s,const char*from,const char*to){if(!s)return sp_str_empty;if(!from||!to)return s;int negate=0;const char*fp=from;if(*fp=='^'&&*(fp+1)){negate=1;fp++;}size_t fn,tn;uint32_t*fcps=sp_utf8_decode_charset(fp,&fn);uint32_t*tcps=sp_utf8_decode_charset(to,&tn);size_t bl=strlen(s);size_t cap=bl*4+1;char*buf=(char*)malloc(cap);size_t n=0;const char*p=s;while(*p){uint32_t cp;int cn=sp_utf8_decode(p,&cp);size_t mi=fn;for(size_t j=0;j<fn;j++)if(fcps[j]==cp){mi=j;break;}int in_set=(mi<fn);if(negate)in_set=!in_set;if(in_set&&tn>0){uint32_t rep=negate?tcps[tn-1]:(mi<tn?tcps[mi]:tcps[tn-1]);n+=sp_utf8_encode(rep,buf+n);}else if(in_set){}else{memcpy(buf+n,p,cn);n+=cn;}p+=cn;}buf[n]=0;char*r=sp_str_alloc(n);memcpy(r,buf,n+1);free(buf);free(fcps);free(tcps);return r;}
+static const char*sp_str_tr(const char*s,const char*from,const char*to){if(!s)return sp_str_empty;if(!from||!to)return s;int negate=0;const char*fp=from;if(*fp=='^'&&*(fp+1)){negate=1;fp++;}size_t fn,tn;uint32_t*fcps=sp_utf8_decode_charset(fp,&fn);uint32_t*tcps=sp_utf8_decode_charset(to,&tn);size_t bl=strlen(s);size_t cap=(bl*4)+1;char*buf=(char*)malloc(cap);size_t n=0;const char*p=s;while(*p){uint32_t cp;int cn=sp_utf8_decode(p,&cp);size_t mi=fn;for(size_t j=0;j<fn;j++)if(fcps[j]==cp){mi=j;break;}int in_set=(mi<fn);if(negate)in_set=!in_set;if(in_set&&tn>0){uint32_t rep=negate?tcps[tn-1]:(mi<tn?tcps[mi]:tcps[tn-1]);n+=sp_utf8_encode(rep,buf+n);}else if(in_set){}else{memcpy(buf+n,p,cn);n+=cn;}p+=cn;}buf[n]=0;char*r=sp_str_alloc(n);memcpy(r,buf,n+1);free(buf);free(fcps);free(tcps);return r;}
 /* Issue #902: String#tr_s -- translate AND squeeze consecutive
    identical results into one. Walks codepoint-by-codepoint and
    collapses adjacent duplicates only among the translated bytes
@@ -1780,7 +1780,7 @@ static const char*sp_str_tr_s(const char*s,const char*from,const char*to){
   uint32_t*fcps=sp_utf8_decode_charset(fp,&fn);
   uint32_t*tcps=sp_utf8_decode_charset(to,&tn);
   size_t bl=strlen(s);
-  size_t cap=bl*4+1;
+  size_t cap=(bl*4)+1;
   char*buf=(char*)malloc(cap);
   size_t n=0;
   const char*p=s;
@@ -1915,13 +1915,13 @@ else {
       }
     }
     if (valid) {
-      if (olen + (size_t)expected + 1 >= cap) { cap = (olen + expected) * 2 + 64; out = (char*)realloc(out, cap); }
+      if (olen + (size_t)expected + 1 >= cap) { cap = ((olen + expected) * 2) + 64; out = (char*)realloc(out, cap); }
       memcpy(out + olen, s + i, (size_t)expected);
       olen += (size_t)expected;
       i += (size_t)expected;
     }
 else {
-      if (olen + rlen + 1 >= cap) { cap = (olen + rlen) * 2 + 64; out = (char*)realloc(out, cap); }
+      if (olen + rlen + 1 >= cap) { cap = ((olen + rlen) * 2) + 64; out = (char*)realloc(out, cap); }
       memcpy(out + olen, r, rlen);
       olen += rlen;
       i += 1;
@@ -2052,7 +2052,7 @@ static inline void sp_fd_publish(sp_String *s){
 static inline int sp_fd_grow(sp_String *s, int64_t need){
   if (need < s->cap) return 1;
   sp_gc_hdr *h = (sp_gc_hdr *)((char *)s - sizeof(sp_gc_hdr));
-  int64_t new_cap = need * 2 + 16;
+  int64_t new_cap = (need * 2) + 16;
   char *raw = (char *)realloc(sp_fd_base(s->data), SP_FD_OVH + new_cap);
   if (!raw) return 0;
   sp_gc_bytes -= s->cap + SP_FD_OVH; h->size -= s->cap + SP_FD_OVH;
@@ -2072,7 +2072,7 @@ static sp_String*sp_String_new(const char*s){
      not on the GC heap and not on the string heap, so it survives
      any GC inside sp_gc_alloc. */
   int64_t len=(int64_t)strlen(s);
-  int64_t cap=len*2+16;
+  int64_t cap=(len*2)+16;
   char*raw=(char*)malloc(SP_FD_OVH+cap);
   char*data=sp_fd_setup(raw);
   memcpy(data,s,len);data[len]=0;
@@ -2489,8 +2489,8 @@ static void sp_re_set_captures(const char *str, int *caps, int ncaps) {
   sp_re_last_str = str;
   for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
   for (int i = 1; i < ncaps && i < 10; i++) {
-    if (caps[i*2] >= 0 && caps[i*2+1] >= 0) {
-      int len = caps[i*2+1] - caps[i*2];
+    if (caps[i*2] >= 0 && caps[(i*2)+1] >= 0) {
+      int len = caps[(i*2)+1] - caps[i*2];
       char *buf = sp_str_alloc_raw(len+1);
       memcpy(buf, str+caps[i*2], len); buf[len] = 0;
       sp_re_captures[i] = buf;
@@ -2647,9 +2647,9 @@ static void sp_re_expand_rep(char **out_io, size_t *olen_io, size_t *cap_io,
       char d = rep[i+1];
       if ((d >= '0' && d <= '9') || d == '&') {
         int gi = (d == '&') ? 0 : (d - '0');
-        if (gi*2 + 1 < ncaps && caps[gi*2] >= 0 && caps[gi*2+1] >= 0) {
-          int g_len = caps[gi*2+1] - caps[gi*2];
-          if (olen + g_len + 1 >= cap) { cap = (olen + g_len) * 2 + 64; out = (char*)realloc(out, cap); }
+        if ((gi*2) + 1 < ncaps && caps[gi*2] >= 0 && caps[(gi*2)+1] >= 0) {
+          int g_len = caps[(gi*2)+1] - caps[gi*2];
+          if (olen + g_len + 1 >= cap) { cap = ((olen + g_len) * 2) + 64; out = (char*)realloc(out, cap); }
           memcpy(out+olen, src + caps[gi*2], g_len);
           olen += g_len;
         }
@@ -2657,13 +2657,13 @@ static void sp_re_expand_rep(char **out_io, size_t *olen_io, size_t *cap_io,
         continue;
       }
 else if (d == '\\') {
-        if (olen + 1 >= cap) { cap = cap * 2 + 64; out = (char*)realloc(out, cap); }
+        if (olen + 1 >= cap) { cap = (cap * 2) + 64; out = (char*)realloc(out, cap); }
         out[olen++] = '\\';
         i += 2;
         continue;
       }
     }
-    if (olen + 1 >= cap) { cap = cap * 2 + 64; out = (char*)realloc(out, cap); }
+    if (olen + 1 >= cap) { cap = (cap * 2) + 64; out = (char*)realloc(out, cap); }
     out[olen++] = c;
     i++;
   }
@@ -2672,7 +2672,7 @@ else if (d == '\\') {
 
 static const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep) {
   int64_t slen = (int64_t)strlen(str); size_t rlen = strlen(rep);
-  size_t cap = slen * 2 + rlen * 4 + 64;
+  size_t cap = (slen * 2) + (rlen * 4) + 64;
  /* Build into a plain malloc scratch: the buffer is grown with realloc
     here and inside sp_re_expand_rep, which is only valid on a real
     malloc base (a sp_str body pointer is offset past its header). The
@@ -2683,7 +2683,7 @@ static const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const ch
     int n = re_exec(pat, str, slen, pos, caps, 64);
     if (n <= 0 || caps[0] < 0) break;
     size_t before = caps[0] - pos;
-    if (olen+before+rlen >= cap) { cap = (olen+before+rlen)*2+64; out = (char*)realloc(out, cap); }
+    if (olen+before+rlen >= cap) { cap = ((olen+before+rlen)*2)+64; out = (char*)realloc(out, cap); }
     memcpy(out+olen, str+pos, before); olen += before;
     sp_re_expand_rep(&out, &olen, &cap, rep, rlen, str, caps, n);
     if (caps[0] == caps[1]) {
@@ -2692,7 +2692,7 @@ static const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const ch
     and advances past it. Copy the char and step by one so the scan
     makes progress without dropping it or spinning on the same spot. */
       if (caps[1] < slen) {
-        if (olen+1 >= cap) { cap = olen*2+64; out = (char*)realloc(out, cap); }
+        if (olen+1 >= cap) { cap = (olen*2)+64; out = (char*)realloc(out, cap); }
         out[olen++] = str[caps[1]];
       }
       pos = caps[1] + 1;
@@ -2724,7 +2724,7 @@ else {
 static const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
   int64_t slen = (int64_t)strlen(str);
  /* malloc scratch (realloc-safe); exact-sized string emitted below. */
-  size_t cap = slen * 2 + 64; char *out = (char *)malloc(cap); size_t olen = 0;
+  size_t cap = (slen * 2) + 64; char *out = (char *)malloc(cap); size_t olen = 0;
   int64_t pos = 0; int caps[64];
   while (pos <= slen) {
     int n = re_exec(pat, str, slen, pos, caps, 64);
@@ -2742,7 +2742,7 @@ static const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *
     key[mlen] = 0;
     const char *rep = sp_StrStrHash_has_key(h, key) ? sp_StrStrHash_get(h, key) : "";
     size_t rlen = strlen(rep);
-    if (olen + before + rlen >= cap) { cap = (olen + before + rlen) * 2 + 64; out = (char *)realloc(out, cap); }
+    if (olen + before + rlen >= cap) { cap = ((olen + before + rlen) * 2) + 64; out = (char *)realloc(out, cap); }
     memcpy(out + olen, str + pos, before); olen += before;
     memcpy(out + olen, rep, rlen); olen += rlen;
     if (kbuf != keybuf) free(kbuf);
@@ -2750,7 +2750,7 @@ static const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *
  /* Zero-width match: keep the source char at this position and step
     past it (see sp_re_gsub for the rationale). */
       if (caps[1] < slen) {
-        if (olen + 1 >= cap) { cap = olen * 2 + 64; out = (char *)realloc(out, cap); }
+        if (olen + 1 >= cap) { cap = (olen * 2) + 64; out = (char *)realloc(out, cap); }
         out[olen++] = str[caps[1]];
       }
       pos = caps[1] + 1;
@@ -2825,7 +2825,7 @@ static const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const cha
   int n = re_exec(pat, str, slen, 0, caps, 64);
   if (n <= 0 || caps[0] < 0) return str;
   /* Issue #855: expand `\1`..`\9` / `\&` from rep against caps. */
-  size_t cap = caps[0] + rlen * 4 + (slen - caps[1]) + 64;
+  size_t cap = caps[0] + (rlen * 4) + (slen - caps[1]) + 64;
  /* malloc scratch: sp_re_expand_rep and the tail grow it with realloc,
     which needs a real malloc base. Exact-sized string emitted below. */
   char *out = (char *)malloc(cap);
@@ -2870,9 +2870,9 @@ static sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str) {
        Ruby splices each captured substring into the result
        between the surrounding segments (caps[2..n-1] hold groups
        1..(n/2-1); group 0 is the whole match). */
-    for (int gi = 1; gi * 2 + 1 < n; gi++) {
-      if (caps[gi*2] >= 0 && caps[gi*2+1] >= 0) {
-        int glen = caps[gi*2+1] - caps[gi*2];
+    for (int gi = 1; (gi * 2) + 1 < n; gi++) {
+      if (caps[gi*2] >= 0 && caps[(gi*2)+1] >= 0) {
+        int glen = caps[(gi*2)+1] - caps[gi*2];
         char *gm = sp_str_alloc_raw(glen+1);
         memcpy(gm, str + caps[gi*2], glen); gm[glen] = 0;
         sp_StrArray_push(arr, gm);
@@ -3369,9 +3369,9 @@ static double sp_lgamma_pos(double x) {  /* x > 0 */
   while (x < 12.0) { corr -= log(x); x += 1.0; }
   double inv = 1.0 / x, inv2 = inv * inv;
   /* sum_{k>=1} B_2k / (2k(2k-1) x^(2k-1)) up to the 1/x^11 term */
-  double series = (1.0/12.0) + inv2 * (-(1.0/360.0) + inv2 * ((1.0/1260.0)
-                  + inv2 * (-(1.0/1680.0) + inv2 * (1.0/1188.0))));
-  return corr + (x - 0.5) * log(x) - x + 0.5 * log(2.0 * M_PI) + series * inv;
+  double series = (1.0/12.0) + (inv2 * (-(1.0/360.0) + (inv2 * ((1.0/1260.0)
+                  + (inv2 * (-(1.0/1680.0) + (inv2 * (1.0/1188.0))))))));
+  return corr + ((x - 0.5) * log(x)) - x + (0.5 * log(2.0 * M_PI)) + (series * inv);
 }
 /* Math.lgamma(x) -> [log(|gamma(x)|), sign of gamma(x)]. */
 static sp_PolyArray *sp_math_lgamma(double x) {
@@ -3432,8 +3432,8 @@ static sp_PolyArray *sp_re_scan_poly(mrb_regexp_pattern *pat, const char *str) {
 else {
       sp_PolyArray *row = sp_PolyArray_new();
       for (int gi = 1; gi < pairs; gi++) {
-        if (caps[gi * 2] >= 0 && caps[gi * 2 + 1] >= 0) {
-          int glen = caps[gi * 2 + 1] - caps[gi * 2];
+        if (caps[gi * 2] >= 0 && caps[(gi * 2) + 1] >= 0) {
+          int glen = caps[(gi * 2) + 1] - caps[gi * 2];
           char *gm = sp_str_alloc_raw(glen + 1);
           memcpy(gm, str + caps[gi * 2], glen);
           gm[glen] = 0;
@@ -3467,7 +3467,7 @@ static sp_PolyArray *sp_re_match_data(mrb_regexp_pattern *pat, const char *str) 
   sp_PolyArray *arr = sp_PolyArray_new();
   for (int i = 0; i < pairs; i++) {
     int start = sp_re_caps[i * 2];
-    int end = sp_re_caps[i * 2 + 1];
+    int end = sp_re_caps[(i * 2) + 1];
     if (start >= 0 && end >= start) {
       int len = end - start;
       char *buf = sp_str_alloc_raw(len + 1);
@@ -3533,7 +3533,7 @@ static sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str
 /* group i substring, or NULL for a non-participating / out-of-range group */
 static const char *sp_MatchData_aref(sp_MatchData *m, mrb_int i) {
   if (!m || i < 0 || i >= m->ncap) return NULL;
-  int s = m->caps[i * 2], e = m->caps[i * 2 + 1];
+  int s = m->caps[i * 2], e = m->caps[(i * 2) + 1];
   if (s < 0 || e < s) return NULL;
   int len = e - s;
   char *b = sp_str_alloc((size_t)len);
@@ -3554,13 +3554,13 @@ static mrb_int sp_MatchData_begin(sp_MatchData *m, mrb_int i) {
 }
 static mrb_int sp_MatchData_end(sp_MatchData *m, mrb_int i) {
   if (!m || i < 0 || i >= m->ncap) return SP_INT_NIL;
-  return sp_md_char_off(m, m->caps[i * 2 + 1]);
+  return sp_md_char_off(m, m->caps[(i * 2) + 1]);
 }
 static sp_IntArray *sp_MatchData_offset(sp_MatchData *m, mrb_int i) {
   sp_IntArray *a = sp_IntArray_new();
   if (!m || i < 0 || i >= m->ncap) { sp_IntArray_push(a, SP_INT_NIL); sp_IntArray_push(a, SP_INT_NIL); return a; }
   sp_IntArray_push(a, sp_md_char_off(m, m->caps[i * 2]));
-  sp_IntArray_push(a, sp_md_char_off(m, m->caps[i * 2 + 1]));
+  sp_IntArray_push(a, sp_md_char_off(m, m->caps[(i * 2) + 1]));
   return a;
 }
 /* whole-match string (group 0) — also MatchData#to_s */
@@ -3922,7 +3922,7 @@ else {
       memcpy(tmp, spec, sl); tmp[sl] = 0; wn = (int)sl; idx--;
     }
     if (wn < 0) continue;
-    if (out + (size_t)wn + 1 >= cap) { cap = (out + wn) * 2 + 64; buf = (char *)realloc(buf, cap); }
+    if (out + (size_t)wn + 1 >= cap) { cap = ((out + wn) * 2) + 64; buf = (char *)realloc(buf, cap); }
     memcpy(buf + out, tmp, wn); out += wn;
   }
   buf[out] = 0;
@@ -4397,7 +4397,7 @@ static mrb_int sp_rbval_hash_key(sp_RbVal v) {
     case SP_TAG_OBJ:
       if (v.cls_id == SP_BUILTIN_INT_ARRAY) {
         sp_IntArray *ia = (sp_IntArray *)v.v.p;
-        mrb_int h = 0; if (ia) for (mrb_int i = 0; i < ia->len; i++) h = h * 31 + ia->data[ia->start+i];
+        mrb_int h = 0; if (ia) for (mrb_int i = 0; i < ia->len; i++) h = (h * 31) + ia->data[ia->start+i];
         return h;
       }
       if (v.cls_id == SP_BUILTIN_METHOD) {
@@ -4407,7 +4407,7 @@ static mrb_int sp_rbval_hash_key(sp_RbVal v) {
            fn slot is 0 (no resolvable callable address). */
         sp_BoundMethod *m = (sp_BoundMethod *)v.v.p;
         if (!m) return 0;
-        return (mrb_int)((uintptr_t)m->self * 31 + m->fn) +
+        return (mrb_int)(((uintptr_t)m->self * 31) + m->fn) +
                (m->name ? (mrb_int)sp_str_hash(m->name) : 0);
       }
       if (sp_obj_hash_hook) return sp_obj_hash_hook(v.cls_id, v.v.p);
@@ -5929,7 +5929,7 @@ struct sp_Val { enum { SP_PROC2, SP_INT2, SP_BOOL2, SP_NIL2 } tag; union { struc
 #define SP_ARENA_SIZE ((size_t)16ULL * 1024 * 1024 * 1024)
 static char *sp_arena = NULL; static size_t sp_arena_pos = 0;
 static void *sp_lam_alloc(size_t sz) { sz = (sz + 7) & ~(size_t)7; if (!sp_arena) { sp_arena = (char *)mmap(NULL, SP_ARENA_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0); if (sp_arena == MAP_FAILED) { perror("mmap"); exit(1); } sp_arena_pos = 0; } if (sp_arena_pos + sz > SP_ARENA_SIZE) { fprintf(stderr, "arena exhausted\n"); exit(1); } void *p = sp_arena + sp_arena_pos; sp_arena_pos += sz; return p; }
-static sp_Val *sp_lam_proc(sp_fn_t fn, int ncap) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val) + sizeof(sp_Val *) * ncap); v->tag = SP_PROC2; v->u.proc.fn = fn; v->u.proc.ncaptures = ncap; return v; }
+static sp_Val *sp_lam_proc(sp_fn_t fn, int ncap) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val) + (sizeof(sp_Val *) * ncap)); v->tag = SP_PROC2; v->u.proc.fn = fn; v->u.proc.ncaptures = ncap; return v; }
 static sp_Val *sp_lam_int(mrb_int n) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val)); v->tag = SP_INT2; v->u.ival = n; return v; }
 static sp_Val *sp_lam_bool(mrb_bool b) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val)); v->tag = SP_BOOL2; v->u.bval = b; return v; }
 static sp_Val sp_lam_nil_val = { .tag = SP_NIL2 };
