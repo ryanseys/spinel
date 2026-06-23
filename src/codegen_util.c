@@ -499,6 +499,8 @@ void emit_box_open(Compiler *c, TyKind t, Buf *b) {
   else if (t == TY_STR_ARRAY)   buf_puts(b, "sp_box_str_array(");
   else if (t == TY_POLY_ARRAY)  buf_puts(b, "sp_box_poly_array(");
   else if (t == TY_CLASS) buf_puts(b, "sp_box_class(");
+  else if (t == TY_COMPLEX)  buf_puts(b, "sp_box_complex(");
+  else if (t == TY_RATIONAL) buf_puts(b, "sp_box_rational(");
   else if (t == TY_FIBER) buf_puts(b, "sp_box_obj((void *)(");
   else if (t == TY_IO)    buf_puts(b, "sp_box_obj((void *)(");
   else if (ty_is_object(t)) {

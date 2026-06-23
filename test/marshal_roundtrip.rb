@@ -47,3 +47,13 @@ sh = {n: 1}
 eh = rt([sh, sh])
 eh[0][:m] = 5
 p eh[1][:m]
+# Complex and Rational (CRuby `U` user-marshal form). Spinel's Complex is
+# float-only, so its components round-trip as Floats.
+p rt(Rational(3, 4))
+p rt(Rational(-1, 2))
+p rt(Rational(5, 1))
+p rt(Complex(1.5, -2.5))
+p rt([Rational(1, 3), Rational(2, 5)])
+rc = rt({r: Rational(7, 8), c: Complex(1.5, -2.5)})
+puts rc[:r]
+puts rc[:c]

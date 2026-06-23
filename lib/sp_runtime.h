@@ -3119,6 +3119,8 @@ static const char *sp_exc_message(volatile struct sp_Exception_s *ve);
 #define SP_BUILTIN_METHOD        (-24) /* sp_BoundMethod * boxed into poly slot */
 /* SP_BUILTIN_FOREIGN_PTR (-25) is defined in sp_gc.h (the inline mark helper
    must see it to skip tracing opaque FFI pointers). */
+#define SP_BUILTIN_COMPLEX       (-26) /* sp_Complex *, heap copy crossing into poly */
+#define SP_BUILTIN_RATIONAL      (-27) /* sp_Rational *, heap copy crossing into poly */
 /* sp_RbVal is defined in sp_gc.h (the mark helpers dispatch on its tag). */
 /* Forward declarations for the bigint API the poly helpers below call; the
    full prototypes live further down (near the bigint runtime block). */
@@ -3313,6 +3315,18 @@ static sp_RbVal sp_box_range(sp_Range v) {
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_RANGE);
 }
+/* Complex / Rational are wider value types (two components); like sp_Range they
+   heap-copy when crossing into a poly slot. No internal pointers, so no scan. */
+static sp_RbVal sp_box_complex(sp_Complex v) {
+  sp_Complex *p = (sp_Complex *)sp_gc_alloc(sizeof(sp_Complex), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_COMPLEX);
+}
+static sp_RbVal sp_box_rational(sp_Rational v) {
+  sp_Rational *p = (sp_Rational *)sp_gc_alloc(sizeof(sp_Rational), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_RATIONAL);
+}
 static const char *sp_Range_inspect(sp_Range *r) {
   /* "first..last" / "first...last" form. Buffer sized for two int64s
      plus the dots. */
@@ -3393,6 +3407,8 @@ static inline void sp_poly_puts(sp_RbVal v) {
         }
         case SP_BUILTIN_RANGE: puts(sp_Range_inspect((sp_Range *)v.v.p)); break;
         case SP_BUILTIN_TIME: puts(sp_Time_inspect((sp_Time *)v.v.p)); break;
+        case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
+        case SP_BUILTIN_RATIONAL: puts(sp_rational_to_s(*(sp_Rational *)v.v.p)); break;
         default: printf("#<Object:0x%p>\n", v.v.p); break;
       }
       break;
@@ -3429,6 +3445,8 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_PTR_ARRAY: return sp_PtrArray_inspect((sp_PtrArray *)v.v.p);
         case SP_BUILTIN_RANGE: return sp_Range_inspect((sp_Range *)v.v.p);
         case SP_BUILTIN_TIME: return sp_Time_inspect((sp_Time *)v.v.p);
+        case SP_BUILTIN_COMPLEX: return sp_complex_to_s(*(sp_Complex *)v.v.p);
+        case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
         default: return sp_str_empty;
       }
@@ -3455,6 +3473,8 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_PTR_ARRAY: case SP_BUILTIN_POLY_ARRAY: return SPL("Array");
         case SP_BUILTIN_RANGE: return SPL("Range");
         case SP_BUILTIN_TIME: return SPL("Time");
+        case SP_BUILTIN_COMPLEX: return SPL("Complex");
+        case SP_BUILTIN_RATIONAL: return SPL("Rational");
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
         default: { sp_Class c = {v.cls_id}; return sp_class_to_s(c); }
       }
@@ -4351,6 +4371,8 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
         case SP_BUILTIN_RANGE:     return sp_Range_inspect((sp_Range *)v.v.p);
         case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
+        case SP_BUILTIN_COMPLEX:   return sp_complex_inspect(*(sp_Complex *)v.v.p);
+        case SP_BUILTIN_RATIONAL:  return sp_rational_inspect(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_sprintf("#<%s: %s>", sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p), sp_exc_message((volatile struct sp_Exception_s *)v.v.p));
         default:                   return SPL("#<Object>");
       }

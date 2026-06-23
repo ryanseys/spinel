@@ -14,6 +14,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     case TY_STRING: fn = "sp_box_str"; break;     case TY_BOOL: fn = "sp_box_bool"; break;
     case TY_SYMBOL: fn = "sp_box_sym"; break;     case TY_RANGE: fn = "sp_box_range"; break;
     case TY_TIME: fn = "sp_box_time"; break;
+    case TY_COMPLEX: fn = "sp_box_complex"; break;  case TY_RATIONAL: fn = "sp_box_rational"; break;
     case TY_PROC: fn = "sp_box_proc"; break;
     case TY_METHOD: fn = "sp_box_method"; break;
     case TY_CLASS: fn = "sp_box_class"; break;
@@ -133,6 +134,8 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_SYMBOL: fn = "sp_box_sym";   break;
     case TY_RANGE:  fn = "sp_box_range"; break;
     case TY_TIME:   fn = "sp_box_time";  break;
+    case TY_COMPLEX:  fn = "sp_box_complex";  break;
+    case TY_RATIONAL: fn = "sp_box_rational"; break;
     case TY_PROC:   fn = "sp_box_proc";  break;
     case TY_METHOD: fn = "sp_box_method"; break;
     case TY_INT_ARRAY:   fn = "sp_box_int_array";   break;

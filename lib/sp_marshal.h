@@ -6,11 +6,13 @@
    sp_runtime.h with per-TU static heap state, so it must compile in the same
    translation unit (same pattern as sp_time.h).
 
-   Covers nil/true/false/Integer/Float/String/Symbol + Array + Hash in the CRuby
-   4.8 wire format, with CRuby's object-link table so cyclic and shared
-   references round-trip. Round-trip oriented: the dumper does not deduplicate
-   symbols, but it does emit `@` links for repeated objects (required for
-   cycles), and the loader resolves both. User objects remain out of scope. */
+   Covers nil/true/false/Integer/Float/String/Symbol + Array + Hash + Bignum +
+   Complex + Rational in the CRuby 4.8 wire format, with CRuby's object-link
+   table so cyclic and shared references round-trip. Round-trip oriented: the
+   dumper does not deduplicate symbols, but it does emit `@` links for repeated
+   objects (required for cycles), and the loader resolves both. Complex /
+   Rational use CRuby's `U` user-marshal form; arbitrary user objects remain out
+   of scope. */
 static sp_sym sp_sym_intern(const char *s);  /* generated per-TU; fwd decl */
 
 /* ---- dump ---- */
@@ -109,6 +111,30 @@ static void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
         case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH:
           if (sp_mar_seen(b, v.v.p)) break;
           sp_mar_w_hash(b, v); break;
+        /* Complex / Rational round-trip as CRuby user-marshal objects: `U`
+           <:ClassName> <marshal_dump array>. The payload array is a fresh
+           object that still consumes a link id (so pass NULL to sp_mar_seen).
+           spinel's Complex is float-only, so its components dump as Floats. */
+        case SP_BUILTIN_COMPLEX: {
+          if (sp_mar_seen(b, v.v.p)) break;
+          sp_Complex *c = (sp_Complex *)v.v.p;
+          sp_mar_b(b, 'U'); sp_mar_sym(b, "Complex");
+          sp_mar_seen(b, NULL);
+          sp_mar_b(b, '['); sp_mar_long(b, 2);
+          sp_mar_w(b, sp_box_float(c->re));
+          sp_mar_w(b, sp_box_float(c->im));
+          break;
+        }
+        case SP_BUILTIN_RATIONAL: {
+          if (sp_mar_seen(b, v.v.p)) break;
+          sp_Rational *q = (sp_Rational *)v.v.p;
+          sp_mar_b(b, 'U'); sp_mar_sym(b, "Rational");
+          sp_mar_seen(b, NULL);
+          sp_mar_b(b, '['); sp_mar_long(b, 2);
+          sp_mar_w(b, sp_box_int(q->num));
+          sp_mar_w(b, sp_box_int(q->den));
+          break;
+        }
         default:
           sp_raise_cls("TypeError", "no marshal_dump is defined for this object");
       }
@@ -225,6 +251,30 @@ static sp_RbVal sp_mar_r(sp_mar_rd *r) {
     case '@': {
       long id = sp_mar_rlong(r);
       return (id >= 0 && id < r->nobj) ? r->objs[id] : sp_box_nil();
+    }
+    case 'U': {
+      /* user-marshal object: <:ClassName> <marshal_dump data>. The object id is
+         reserved before its data (which also consumes its own id). Only the
+         Complex / Rational classes are reconstructible. */
+      int id = sp_mar_reg(r);
+      sp_RbVal sym = sp_mar_r(r);
+      sp_RbVal data = sp_mar_r(r);
+      const char *cn = (sym.tag == SP_TAG_SYM) ? sp_sym_to_s((sp_sym)sym.v.i) : "";
+      sp_RbVal a0 = sp_box_nil(), a1 = sp_box_nil();
+      if (data.tag == SP_TAG_OBJ) { a0 = sp_poly_arr_get(data, 0); a1 = sp_poly_arr_get(data, 1); }
+      sp_RbVal v;
+      if (!strcmp(cn, "Complex")) {
+        sp_Complex c; c.re = sp_poly_to_f(a0); c.im = sp_poly_to_f(a1);
+        v = sp_box_complex(c);
+      }
+      else if (!strcmp(cn, "Rational")) {
+        v = sp_box_rational(sp_rational_new((mrb_int)sp_poly_to_i(a0), (mrb_int)sp_poly_to_i(a1)));
+      }
+      else {
+        sp_raise_cls("ArgumentError", "unsupported user class in Marshal.load");
+        v = sp_box_nil();
+      }
+      r->objs[id] = v; return v;
     }
     case 'l': {
       int id = sp_mar_reg(r);
