@@ -2244,7 +2244,7 @@ static sp_StrArray *sp_file_readlines_chomp(const char *path) {
    emits a 0 placeholder that flows into `.inspect`, and dereferencing
    a->len would segfault. Rendering "[]" stops the crash and degrades to
    the same shape as the empty-array case. */
-static const char*sp_IntArray_inspect(sp_IntArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(a->data[a->start+i]));}sp_String_append(s,"]");return s->data;}
+static const char*sp_IntArray_inspect(sp_IntArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");mrb_int e=a->data[a->start+i];sp_String_append(s,e==SP_INT_NIL?SPL("nil"):sp_int_to_s(e));}sp_String_append(s,"]");return s->data;}
 static const char*sp_FloatArray_inspect(sp_FloatArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_float_inspect(a->data[i]));}sp_String_append(s,"]");return s->data;}
 /* Array#join for float arrays -- each element via the Ruby-faithful
    sp_float_to_s ("1.0", not "1"). Mirrors sp_IntArray_join exactly: build in a
@@ -3218,7 +3218,8 @@ static mrb_bool sp_poly_truthy(sp_RbVal v) { return !(v.tag == SP_TAG_NIL || (v.
 static const char *sp_class_to_s(sp_Class c);
 static inline const char *sp_poly_to_s(sp_RbVal v) {
   switch (v.tag) {
-    case SP_TAG_INT: return sp_int_to_s(v.v.i);
+    /* int-typed nil (SP_INT_NIL) is Ruby nil; nil.to_s is "" — match it. */
+    case SP_TAG_INT: return v.v.i == SP_INT_NIL ? sp_str_empty : sp_int_to_s(v.v.i);
     case SP_TAG_STR: return v.v.s ? v.v.s : sp_str_empty;
     case SP_TAG_FLT: return sp_float_to_s(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
@@ -4168,7 +4169,9 @@ static const char*sp_PolyArrayPtrArray_inspect(sp_PtrArray*a){SP_GC_ROOT(a);sp_S
    table yet (follow-up PR). Returns a GC-managed C string. */
 static inline const char *sp_poly_inspect(sp_RbVal v) {
   switch (v.tag) {
-    case SP_TAG_INT:  return sp_int_to_s(v.v.i);
+    /* An int-typed nil (unfilled int block param, nullable-int miss) carries
+       the SP_INT_NIL sentinel; render it as nil, not the raw INT64_MIN. */
+    case SP_TAG_INT:  return v.v.i == SP_INT_NIL ? SPL("nil") : sp_int_to_s(v.v.i);
     case SP_TAG_STR:  return sp_str_inspect(v.v.s);
     case SP_TAG_FLT:  return sp_float_to_s(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
