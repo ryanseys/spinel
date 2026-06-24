@@ -3590,6 +3590,43 @@ static mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
 static volatile int sp_catch_top = 0;
 static void sp_throw(const char *tag, mrb_int val) { int i = sp_catch_top - 1; while (i >= 0) { if (strcmp(sp_catch_tag[i], tag) == 0) { sp_catch_val[i] = val; sp_catch_top = i + 1; longjmp(sp_catch_stack[i], 1); } i--; } fprintf(stderr, "uncaught throw: %s\n", tag); exit(1); }
 
+/* ---- non-lambda proc `return` (non-local return to the home method) -------
+   A non-lambda proc's `return` returns from the method that created the proc.
+   Such a method pushes a frame (a setjmp target) at entry and captures its index
+   into every returning proc it creates; the proc's `return` longjmps to that
+   frame with the boxed value, so the home method returns it. If the home frame
+   has already exited (the proc escaped and is called later), its index is no
+   longer live and a LocalJumpError is raised, matching CRuby.
+
+   Like sp_throw (catch/throw), this longjmp does not run `ensure` blocks the
+   jump passes over -- a pre-existing property of Spinel's non-local control
+   flow, not specific to proc return. */
+/* Each home method owns a frame on its own C stack (the jmp_buf never moves); the
+   global stack holds only pointers, so it can grow with realloc -- the depth is
+   bounded by the C stack, like ordinary recursion, not a fixed ceiling. The
+   `exc_top` field records the exception-handler depth at the method's entry so a
+   non-local return can run intervening `ensure` blocks (see sp_unwind_resume). */
+typedef struct { jmp_buf jb; sp_RbVal val; int exc_top; } sp_proc_ret_frame;
+static sp_proc_ret_frame **sp_proc_ret_frames = NULL;
+static int sp_proc_ret_top = 0, sp_proc_ret_cap = 0;
+static int sp_proc_ret_push(sp_proc_ret_frame *f) {
+  if (sp_proc_ret_top >= sp_proc_ret_cap) {
+    int nc = sp_proc_ret_cap ? sp_proc_ret_cap * 2 : 64;
+    sp_proc_ret_frame **np = (sp_proc_ret_frame **)realloc(sp_proc_ret_frames, (size_t)nc * sizeof *np);
+    if (!np) { fprintf(stderr, "out of memory\n"); exit(1); }
+    sp_proc_ret_frames = np; sp_proc_ret_cap = nc;
+  }
+  f->exc_top = sp_exc_top;
+  sp_proc_ret_frames[sp_proc_ret_top] = f;
+  return sp_proc_ret_top++;
+}
+static void sp_proc_do_return(int frame, sp_RbVal v) {
+  if (frame < 0 || frame >= sp_proc_ret_top) sp_raise_cls("LocalJumpError", "unexpected return");
+  sp_proc_ret_frames[frame]->val = v;
+  sp_proc_ret_top = frame + 1;
+  longjmp(sp_proc_ret_frames[frame]->jb, 1);
+}
+
 /* ---- Per-fiber exception/catch handler context (#1474) -------------------
    The handler stacks above are process-global, but begin/rescue handlers and
    catch tags are stack-frame-bound: a fiber that yields while holding one must

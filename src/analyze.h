@@ -34,6 +34,13 @@ TyKind ie_block_break_next_ty(Compiler *c, int node);
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
 
+/* True if `id` is a `proc {}` / `lambda {}` / `Proc.new {}` literal (a CallNode
+   whose block becomes its own lowered proc fn), or the `Proc` constant. Declared
+   here (not analyze_internal.h) so codegen can distinguish an inlined iteration
+   block from a nested proc/lambda literal. */
+int is_proc_constant(const NodeTable *nt, int n);
+int is_proc_literal(Compiler *c, int id);
+
 /* Element type an `each_with_object([])` accumulator is filled with, inferred
    from how the memo param is pushed to (following a forwarded callable's body).
    TY_UNKNOWN when undetermined; callers default an empty `[]` to int_array. */

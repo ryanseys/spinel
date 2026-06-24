@@ -2129,6 +2129,57 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int n = 0;
   const int *a = args >= 0 ? nt_arr(c->nt, args, "arguments", &n) : NULL;
 
+  /* Inside a non-lambda proc body: `return` is non-local -- longjmp to the
+     creating method's frame with the boxed value (CRuby proc-return semantics). */
+  if (g_proc_return_home) {
+    emit_indent(b, indent);
+    if (n > 1) {
+      int ta = ++g_tmp;
+      buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+      for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+      buf_printf(b, " sp_proc_do_return(%s, sp_box_poly_array(_t%d)); }\n", g_proc_return_home, ta);
+    }
+    else {
+      buf_printf(b, "{ sp_proc_do_return(%s, ", g_proc_return_home);
+      if (n == 0) buf_puts(b, "sp_box_nil()");
+      else emit_boxed(c, a[0], b);
+      buf_puts(b, "); }\n");
+    }
+    return;
+  }
+
+  /* Inside a method that owns a proc-return frame: funnel every `return`
+     through the single exit that pops the frame, storing the value first. */
+  if (g_method_pr_label && g_ensure_depth == 0) {
+    emit_indent(b, indent);
+    buf_puts(b, "{ ");
+    if (g_method_pr_var) {
+      if (n > 1) {
+        int ta = ++g_tmp;
+        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+        for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+        buf_printf(b, " %s = _t%d; ", g_method_pr_var, ta);
+      }
+      else if (n == 1) {
+        buf_printf(b, "%s = ", g_method_pr_var);
+        TyKind r0 = comp_ntype(c, a[0]);
+        if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+        else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
+        else emit_tail_value(c, a[0], b);
+        buf_puts(b, "; ");
+      }
+      else {
+        const char *nilv = g_ret_type == TY_POLY ? "sp_box_nil()"
+                         : g_ret_type == TY_INT ? "SP_INT_NIL"
+                         : g_ret_type == TY_FLOAT ? "sp_float_nil()"
+                         : g_ret_type == TY_STRING ? "NULL" : default_value(g_ret_type);
+        buf_printf(b, "%s = %s; ", g_method_pr_var, nilv);
+      }
+    }
+    buf_printf(b, "goto %s; }\n", g_method_pr_label);
+    return;
+  }
+
   if (g_ensure_depth > 0) {
     /* Inside a begin..ensure body: defer the return until ensure runs. */
     EnsureCtx *ctx = &g_ensure_stack[g_ensure_depth - 1];
