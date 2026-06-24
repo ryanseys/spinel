@@ -226,6 +226,10 @@ build/sp_str.o: lib/sp_str.c lib/sp_str.h lib/sp_array.h lib/sp_alloc.h lib/sp_c
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_str.c -o build/sp_str.o
 
+build/sp_re.o: lib/sp_re.c lib/sp_re.h lib/sp_array.h lib/sp_str.h lib/sp_string.h lib/sp_inspect.h
+	@mkdir -p build
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_re.c -o build/sp_re.o
+
 build/sp_core.o: lib/sp_core.c lib/sp_core.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_core.c -o build/sp_core.o
@@ -280,7 +284,7 @@ build/sp_io.o: lib/sp_io.c lib/sp_io.h lib/sp_gc.h lib/sp_types.h
 
 SP_RT_LIB = lib/libspinel_rt.a
 
-$(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o build/sp_strscan.o build/sp_time.o build/sp_core.o build/sp_net.o build/sp_system.o build/sp_gc.o build/sp_alloc.o build/sp_json.o build/sp_marshal.o build/sp_format.o build/sp_stringio.o build/sp_string.o build/sp_inspect.o build/sp_array.o build/sp_str.o build/sp_fiber.o build/sp_io.o
+$(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o build/sp_strscan.o build/sp_time.o build/sp_core.o build/sp_net.o build/sp_system.o build/sp_gc.o build/sp_alloc.o build/sp_json.o build/sp_marshal.o build/sp_format.o build/sp_stringio.o build/sp_string.o build/sp_inspect.o build/sp_array.o build/sp_str.o build/sp_re.o build/sp_fiber.o build/sp_io.o
 	ar rcs $@ $^
 
 regexp: $(SP_RT_LIB)
@@ -626,6 +630,7 @@ install: all
 	install -m 644 lib/sp_inspect.h      $(SPNLDIR)/lib/
 	install -m 644 lib/sp_array.h        $(SPNLDIR)/lib/
 	install -m 644 lib/sp_str.h          $(SPNLDIR)/lib/
+	install -m 644 lib/sp_re.h           $(SPNLDIR)/lib/
 	install -m 644 lib/sp_fiber.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_io.h           $(SPNLDIR)/lib/
 	install -m 644 lib/sp_time.h         $(SPNLDIR)/lib/

@@ -191,6 +191,7 @@ static inline sp_RbVal sp_box_bool(mrb_bool v)  { sp_RbVal r; r.tag = SP_TAG_BOO
 static inline sp_RbVal sp_box_nil(void)         { sp_RbVal r; r.tag = SP_TAG_NIL;  r.cls_id = 0; r.v.i = 0; return r; }
 static inline sp_RbVal sp_box_obj(void *p, int cls_id) { sp_RbVal r; r.tag = SP_TAG_OBJ; r.cls_id = cls_id; r.v.p = p; return r; }
 static inline sp_RbVal sp_box_sym(sp_sym v)     { sp_RbVal r; r.tag = SP_TAG_SYM;  r.cls_id = 0; r.v.i = (mrb_int)v; return r; }
+static inline sp_RbVal sp_box_poly_array(void *p) { return sp_box_obj(p, SP_BUILTIN_POLY_ARRAY); }
 
 /* GC object allocator. The threshold/stress state is extern (defined in
    sp_alloc.c) so every TU shares it -- the same model as sp_gc_heap/bytes.
