@@ -1529,7 +1529,8 @@ int is_exc_name(const char *n) {
     "KeyError", "RangeError", "IOError", "EOFError",
     "ZeroDivisionError", "NotImplementedError", "StopIteration",
     "FloatDomainError", "Math_DomainError", "FrozenError", "EncodingError",
-    "LoadError", "RegexpError", "StringScanner_Error", "FiberError", NULL
+    "LoadError", "RegexpError", "StringScanner_Error", "FiberError",
+    "UncaughtThrowError", NULL
   };
   for (int i = 0; EX[i]; i++) if (!strcmp(n, EX[i])) return 1;
   return 0;

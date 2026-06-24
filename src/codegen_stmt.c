@@ -2454,16 +2454,20 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    /* A non-local unwind (proc return / throw) only passes through here; it is
+       not an exception, so skip rescue -- only the ensure (below) runs. */
+    emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) {\n");
     if (rescue >= 0) {
-      emit_rescue(c, rescue, b, indent + 1, fr, resultvar);
+      emit_rescue(c, rescue, b, indent + 2, fr, resultvar);
     }
     else {
       /* No rescue: save exception info for re-raise after ensure runs.
          sp_exc_top has just been decremented so sp_exc_top is the right index. */
-      emit_indent(b, indent + 1);
+      emit_indent(b, indent + 2);
       buf_printf(b, "_excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top];\n",
                  eid, eid, eid);
     }
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
 
     g_ensure_depth--;
@@ -2471,6 +2475,12 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     /* Ensure label: reached by deferred-return goto AND by normal fall-through. */
     buf_printf(b, "_ensure%d: ;\n", eid);
     emit_stmts(c, ensure_stmts, b, indent);
+
+    /* A non-local unwind passing through has now run this ensure: continue to the
+       next handler or deliver to its target (never falls through to the
+       deferred-return / re-raise propagation below). */
+    emit_indent(b, indent);
+    buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
 
     emit_indent(b, indent);
     if (g_ensure_depth > 0) {
@@ -2537,8 +2547,14 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   emit_indent(b, indent); buf_puts(b, "}\n");
   emit_indent(b, indent); buf_puts(b, "else {\n");
   emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
-  if (rescue >= 0) emit_rescue(c, rescue, b, indent + 1, fr, resultvar);
+  /* A non-local unwind (proc return / throw) only passes through; skip rescue. */
+  if (rescue >= 0) {
+    emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) {\n");
+    emit_rescue(c, rescue, b, indent + 2, fr, resultvar);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+  }
   if (ensure_stmts >= 0) emit_stmts(c, ensure_stmts, b, indent + 1);
+  emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
   emit_indent(b, indent); buf_puts(b, "}\n");
   g_retry_label = saved_retry;
 }
@@ -4150,6 +4166,8 @@ else {
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    /* A non-local unwind only passes through (no ensure here): continue it. */
+    emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
     if (r >= 0) emit_stmt(c, r, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return;
