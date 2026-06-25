@@ -3827,6 +3827,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  if (emit_lazy_chain(c, id, b)) return;
   if (emit_partition_expr(c, id, b)) return;
   if (emit_with_index_expr(c, id, b)) return;
   if (emit_each_with_index_chain(c, id, b)) return;
@@ -9895,7 +9896,9 @@ else {
     }
     if (lazy_nid >= 0) {
       int src = unwrap_parens(c, nt_ref(nt, lazy_nid, "receiver"));
-      if (src >= 0 && infer_type(c, src) == TY_RANGE) {
+      /* literal ranges only -- a range variable has no AST bounds (left/right) */
+      if (src >= 0 && nt_type(nt, src) && !strcmp(nt_type(nt, src), "RangeNode") &&
+          infer_type(c, src) == TY_RANGE) {
         int excl = (int)(nt_int(nt, src, "flags", 0) & 4) ? 1 : 0;
         int right = nt_ref(nt, src, "right");
         int endless = (right < 0);

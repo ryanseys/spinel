@@ -2306,6 +2306,260 @@ static void emit_block_value_into(Compiler *c, int block, const char *dest,
   g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly;
 }
 
+/* ---- stream-fused lazy chains ------------------------------------------- */
+enum { LZ_MAP, LZ_SELECT, LZ_REJECT, LZ_FILTER_MAP, LZ_TAKE, LZ_TAKE_WHILE, LZ_DROP, LZ_DROP_WHILE };
+
+typedef struct { LocalVar *plv; TyKind saved; int tail; int bn; } LzBlk;
+
+/* Open a `{`-scope for a lazy op block, bind its single param as a poly shadow of
+   the current value temp `_t<tv>`, set the param type to poly + re-infer so the
+   tail emits poly-aware, and emit the leading statements. The caller emits the
+   tail (`r.tail`) while the shadow is live, then calls lz_block_end. */
+static LzBlk lz_block_begin(Compiler *c, int blk, int tv, int ind) {
+  const NodeTable *nt = c->nt;
+  LzBlk r; r.plv = NULL; r.saved = TY_UNKNOWN; r.tail = -1; r.bn = 0;
+  const char *pn = block_param_name(c, blk, 0);
+  const char *pr = pn ? rename_local(pn) : NULL;
+  int bd = nt_ref(nt, blk, "body");
+  int bn = 0; const int *bb = bd >= 0 ? nt_arr(nt, bd, "body", &bn) : NULL;
+  Scope *bsc = comp_scope_of(c, blk);
+  r.plv = (pn && bsc) ? scope_local(bsc, pn) : NULL;
+  r.saved = r.plv ? r.plv->type : TY_UNKNOWN;
+  if (r.plv) r.plv->type = TY_POLY;
+  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+  emit_indent(g_pre, ind); buf_puts(g_pre, "{\n");
+  if (pr) { emit_indent(g_pre, ind + 1); buf_printf(g_pre, "sp_RbVal lv_%s = _t%d;\n", pr, tv); }
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, ind + 1);
+  r.tail = bn > 0 ? bb[bn - 1] : -1;
+  r.bn = bn;
+  return r;
+}
+static void lz_block_end(LzBlk *r, int ind) {
+  emit_indent(g_pre, ind); buf_puts(g_pre, "}\n");
+  if (r->plv) r->plv->type = r->saved;
+}
+
+/* `<array|range>.lazy.<op>*.<terminal>` lowered to a single fused pass with no
+   intermediate arrays. The value flows through the chain as a boxed poly so the
+   pipeline is type-uniform; select/reject/take_while continue-or-break, map
+   rewrites the value, take/drop count. An endless range terminates when a bounding
+   op (first(n) / take / take_while) is present. The narrow typed
+   `range.lazy.<filter>?.first[(n)]` shape (which yields an IntArray) is left to the
+   range lowering in emit_call. Returns 1 if handled. */
+int emit_lazy_chain(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *tname = nt_str(nt, id, "name");
+  if (!tname) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  int is_to_a = !strcmp(tname, "to_a") || !strcmp(tname, "force") || !strcmp(tname, "entries");
+  int is_first = !strcmp(tname, "first");
+  if (!is_to_a && !is_first) return 0;
+  int targ = -1;   /* first(n) arg node, -1 if first with no arg */
+  {
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (is_first && ac == 1) targ = av[0];
+    else if (ac != 0) return 0;
+  }
+
+  /* walk the receiver chain (terminal -> source), collecting ops until `.lazy` */
+  #define LZ_MAXOPS 16
+  int op_kind[LZ_MAXOPS], op_block[LZ_MAXOPS], op_arg[LZ_MAXOPS], op_ctr[LZ_MAXOPS], nops = 0;
+  int node = nt_ref(nt, id, "receiver");
+  int lazy_node = -1;
+  while (node >= 0 && nt_type(nt, node) && !strcmp(nt_type(nt, node), "CallNode")) {
+    const char *nm = nt_str(nt, node, "name");
+    if (!nm) return 0;
+    if (!strcmp(nm, "lazy") && nt_ref(nt, node, "block") < 0) { lazy_node = node; break; }
+    int blk = nt_ref(nt, node, "block");
+    int kind, needs_block = 1;
+    if (!strcmp(nm, "map") || !strcmp(nm, "collect")) kind = LZ_MAP;
+    else if (!strcmp(nm, "select") || !strcmp(nm, "filter")) kind = LZ_SELECT;
+    else if (!strcmp(nm, "reject")) kind = LZ_REJECT;
+    else if (!strcmp(nm, "filter_map")) kind = LZ_FILTER_MAP;
+    else if (!strcmp(nm, "take_while")) kind = LZ_TAKE_WHILE;
+    else if (!strcmp(nm, "drop_while")) kind = LZ_DROP_WHILE;
+    else if (!strcmp(nm, "take")) { kind = LZ_TAKE; needs_block = 0; }
+    else if (!strcmp(nm, "drop")) { kind = LZ_DROP; needs_block = 0; }
+    else return 0;
+    if (nops >= LZ_MAXOPS) return 0;
+    int arg = -1;
+    if (needs_block) {
+      if (blk < 0 || block_param_name(c, blk, 1) || block_param_is_multi(c, blk, 0)) return 0;
+    } else {
+      if (blk >= 0) return 0;
+      int args = nt_ref(nt, node, "arguments");
+      int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+      if (ac != 1) return 0;
+      arg = av[0];
+    }
+    op_kind[nops] = kind; op_block[nops] = blk; op_arg[nops] = arg; nops++;
+    node = nt_ref(nt, node, "receiver");
+  }
+  if (lazy_node < 0) return 0;
+  int source = unwrap_parens(c, nt_ref(nt, lazy_node, "receiver"));
+  if (source < 0) return 0;
+  TyKind srt = infer_type(c, source);
+
+  int is_range = (srt == TY_RANGE);
+  /* a literal range exposes its bounds at the AST; a range *variable* is walked at
+     runtime via its sp_Range struct (.first/.last/.excl, last==INTPTR_MAX when
+     endless) and so is only safe when the chain is bounded (see has_limit below). */
+  int range_lit = is_range && nt_type(nt, source) && !strcmp(nt_type(nt, source), "RangeNode");
+  int range_var = is_range && !range_lit;
+  const char *k = NULL;
+  if (!is_range) {
+    if (!ty_is_array(srt)) return 0;
+    k = (srt == TY_POLY_ARRAY) ? "Poly" : array_kind(srt);
+    if (!k) return 0;
+  }
+  TyKind et = is_range ? TY_INT : ty_array_elem(srt);
+
+  /* a chain has a limit iff it can stop early (first, or a take/take_while op) */
+  int has_limit = is_first;
+  for (int i = 0; i < nops; i++)
+    if (op_kind[i] == LZ_TAKE || op_kind[i] == LZ_TAKE_WHILE) has_limit = 1;
+
+  /* range endless detection (literal ranges only; mirrors the narrow lowering) */
+  int excl = 0, endless = 0, left_n = -1, right_n = -1;
+  if (range_lit) {
+    excl = (int)(nt_int(nt, source, "flags", 0) & 4) ? 1 : 0;
+    left_n = nt_ref(nt, source, "left");
+    right_n = nt_ref(nt, source, "right");
+    endless = (right_n < 0);
+    if (!endless && nt_type(nt, right_n) && !strcmp(nt_type(nt, right_n), "NilNode")) endless = 1;
+    if (!endless && nt_type(nt, right_n) && !strcmp(nt_type(nt, right_n), "ConstantPathNode")) {
+      const char *cpnm = nt_str(nt, right_n, "name");
+      if (cpnm && !strcmp(cpnm, "INFINITY")) {
+        int par = nt_ref(nt, right_n, "parent");
+        const char *parnm = (par >= 0 && nt_type(nt, par) &&
+                             !strcmp(nt_type(nt, par), "ConstantReadNode")) ? nt_str(nt, par, "name") : NULL;
+        if (parnm && !strcmp(parnm, "Float")) endless = 1;
+      }
+    }
+    if (endless && !has_limit) return 0;   /* would loop forever */
+  }
+  if (range_var && !has_limit) return 0;   /* a possibly-endless range var needs a bound */
+
+  /* ---- emit ---- */
+  int collect = is_to_a || (is_first && targ >= 0);   /* PolyArray result vs scalar */
+  int tv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp, tfound = -1, tlim = -1;
+  int tsrc = -1, tlo = -1, thi = -1, trng = -1;
+
+  /* source setup (operands via a Buf: their preludes flow to g_pre, the value
+     lands in the assembled decl line -- an array literal builds multi-line) */
+  if (range_lit) {
+    tlo = ++g_tmp;
+    Buf lob; memset(&lob, 0, sizeof lob); emit_expr(c, left_n, &lob);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = %s;\n", tlo, lob.p ? lob.p : "0"); free(lob.p);
+    if (!endless) {
+      thi = ++g_tmp;
+      Buf hib; memset(&hib, 0, sizeof hib); emit_expr(c, right_n, &hib);
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = %s;\n", thi, hib.p ? hib.p : "0"); free(hib.p);
+    }
+  } else if (range_var) {
+    trng = ++g_tmp;
+    Buf rgb; memset(&rgb, 0, sizeof rgb); emit_expr(c, source, &rgb);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_Range _t%d = %s;\n", trng, rgb.p ? rgb.p : "sp_range_new(0,0,0)"); free(rgb.p);
+  } else {
+    tsrc = ++g_tmp;
+    Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, source, &sb);
+    emit_indent(g_pre, g_indent); emit_ctype(c, srt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tsrc, sb.p ? sb.p : ""); free(sb.p);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tsrc);
+  }
+  /* per-op counters */
+  for (int i = 0; i < nops; i++) {
+    if (op_kind[i] == LZ_TAKE || op_kind[i] == LZ_DROP) {
+      op_ctr[i] = ++g_tmp;
+      Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, op_arg[i], &ab);
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = %s;\n", op_ctr[i], ab.p ? ab.p : "0"); free(ab.p);
+    } else if (op_kind[i] == LZ_DROP_WHILE) {
+      op_ctr[i] = ++g_tmp; emit_indent(g_pre, g_indent); buf_printf(g_pre, "int _t%d = 1;\n", op_ctr[i]);
+    } else op_ctr[i] = -1;
+  }
+  /* result accumulator */
+  if (collect) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres); }
+  else { tfound = ++g_tmp; emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tres, tres); emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_bool _t%d = 0;\n", tfound); }
+  if (is_first && targ >= 0) {
+    tlim = ++g_tmp;
+    Buf nb; memset(&nb, 0, sizeof nb); emit_expr(c, targ, &nb);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = %s;\n", tlim, nb.p ? nb.p : "0"); free(nb.p);
+  }
+
+  /* source loop header */
+  emit_indent(g_pre, g_indent);
+  if (range_lit) {
+    if (endless) buf_printf(g_pre, "for (mrb_int _t%d = _t%d; ; _t%d++) {\n", ti, tlo, ti);
+    else buf_printf(g_pre, "for (mrb_int _t%d = _t%d; _t%d %s _t%d; _t%d++) {\n", ti, tlo, ti, excl ? "<" : "<=", thi, ti);
+  } else if (range_var) {
+    buf_printf(g_pre, "for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl; _t%d++) {\n", ti, trng, ti, trng, trng, ti);
+  } else {
+    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, tsrc, ti);
+  }
+  int ind = g_indent + 1;
+  if (is_first && targ >= 0) { emit_indent(g_pre, ind); buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) >= _t%d) break;\n", tres, tlim); }
+  /* box the element into the value temp */
+  emit_indent(g_pre, ind); buf_printf(g_pre, "sp_RbVal _t%d = ", tv);
+  if (is_range) buf_printf(g_pre, "sp_box_int(_t%d)", ti);
+  else if (!strcmp(k, "Poly")) buf_printf(g_pre, "sp_PolyArray_get(_t%d, _t%d)", tsrc, ti);
+  else { char src[96]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, tsrc, ti); Buf eb; memset(&eb, 0, sizeof eb); emit_boxed_text(c, et, src, &eb); buf_puts(g_pre, eb.p ? eb.p : "sp_box_nil()"); free(eb.p); }
+  buf_puts(g_pre, ";\n");
+
+  /* the op chain, in source -> terminal order */
+  for (int oi = nops - 1; oi >= 0; oi--) {
+    int kind = op_kind[oi], blk = op_block[oi];
+    if (kind == LZ_TAKE) { emit_indent(g_pre, ind); buf_printf(g_pre, "if (_t%d <= 0) break; _t%d--;\n", op_ctr[oi], op_ctr[oi]); continue; }
+    if (kind == LZ_DROP) { emit_indent(g_pre, ind); buf_printf(g_pre, "if (_t%d > 0) { _t%d--; continue; }\n", op_ctr[oi], op_ctr[oi]); continue; }
+    if (kind == LZ_DROP_WHILE) {
+      emit_indent(g_pre, ind); buf_printf(g_pre, "if (_t%d) {\n", op_ctr[oi]);
+      LzBlk lb = lz_block_begin(c, blk, tv, ind + 1);
+      int sg = g_indent; g_indent = ind + 2; Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, lb.tail, &cb); g_indent = sg;
+      emit_indent(g_pre, ind + 2); buf_printf(g_pre, "if (%s) continue; else _t%d = 0;\n", cb.p ? cb.p : "0", op_ctr[oi]); free(cb.p);
+      lz_block_end(&lb, ind + 1);
+      emit_indent(g_pre, ind); buf_puts(g_pre, "}\n");
+      continue;
+    }
+    LzBlk lb = lz_block_begin(c, blk, tv, ind);
+    int sg = g_indent; g_indent = ind + 1;
+    if (kind == LZ_MAP) {
+      Buf tb; memset(&tb, 0, sizeof tb); emit_expr(c, lb.tail, &tb); g_indent = sg;
+      TyKind bt = comp_ntype(c, lb.tail);
+      emit_indent(g_pre, ind + 1); buf_printf(g_pre, "_t%d = ", tv);
+      if (bt == TY_POLY || bt == TY_NIL) buf_puts(g_pre, tb.p ? tb.p : "sp_box_nil()");
+      else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bt, tb.p ? tb.p : "0", &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+      buf_puts(g_pre, ";\n"); free(tb.p);
+    } else if (kind == LZ_FILTER_MAP) {
+      Buf tb; memset(&tb, 0, sizeof tb); emit_expr(c, lb.tail, &tb); g_indent = sg;
+      TyKind bt = comp_ntype(c, lb.tail);
+      int tt = ++g_tmp;
+      emit_indent(g_pre, ind + 1); buf_printf(g_pre, "sp_RbVal _t%d = ", tt);
+      if (bt == TY_POLY || bt == TY_NIL) buf_puts(g_pre, tb.p ? tb.p : "sp_box_nil()");
+      else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bt, tb.p ? tb.p : "0", &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+      buf_puts(g_pre, ";\n"); free(tb.p);
+      emit_indent(g_pre, ind + 1); buf_printf(g_pre, "if (!sp_poly_truthy(_t%d)) continue;\n", tt);
+      emit_indent(g_pre, ind + 1); buf_printf(g_pre, "_t%d = _t%d;\n", tv, tt);
+    } else { /* SELECT / REJECT / TAKE_WHILE */
+      Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, lb.tail, &cb); g_indent = sg;
+      emit_indent(g_pre, ind + 1);
+      if (kind == LZ_SELECT) buf_printf(g_pre, "if (!(%s)) continue;\n", cb.p ? cb.p : "0");
+      else if (kind == LZ_REJECT) buf_printf(g_pre, "if (%s) continue;\n", cb.p ? cb.p : "0");
+      else buf_printf(g_pre, "if (!(%s)) break;\n", cb.p ? cb.p : "0");   /* take_while */
+      free(cb.p);
+    }
+    lz_block_end(&lb, ind);
+  }
+
+  /* terminal consume */
+  if (collect) { emit_indent(g_pre, ind); buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tres, tv); }
+  else { emit_indent(g_pre, ind); buf_printf(g_pre, "_t%d = _t%d; _t%d = 1; break;\n", tres, tv, tfound); }
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+
+  if (collect) buf_printf(b, "_t%d", tres);
+  else buf_printf(b, "(_t%d ? _t%d : sp_box_nil())", tfound, tres);
+  return 1;
+  #undef LZ_MAXOPS
+}
+
 /* map/select/reject/filter as an expression: build a result array via a
    loop emitted into the statement prelude; the expression value is the
    temp array. Returns 1 if handled. */

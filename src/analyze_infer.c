@@ -313,6 +313,51 @@ static int infer_int_shl_overflows(long long base, long long amount) {
   return 0;
 }
 
+/* True if a lazy terminal call `id` (first/to_a/force/entries) is a fusible chain
+   that emit_lazy_chain will lower -- so its result can be typed poly. Mirrors that
+   emitter's acceptance exactly: only recognized ops, a source that is an array or a
+   range, and a bound (first / take / take_while) whenever the source could be
+   endless (an endless literal range, or any range variable). */
+static int infer_lazy_fusible(Compiler *c, int id, const char *tname) {
+  const NodeTable *nt = c->nt;
+  int has_limit = !strcmp(tname, "first");
+  int node = nt_ref(nt, id, "receiver");
+  int lazy = -1;
+  while (node >= 0 && nt_type(nt, node) && !strcmp(nt_type(nt, node), "CallNode")) {
+    const char *nm = nt_str(nt, node, "name");
+    if (!nm) return 0;
+    if (!strcmp(nm, "lazy") && nt_ref(nt, node, "block") < 0) { lazy = node; break; }
+    if (!strcmp(nm, "take") || !strcmp(nm, "take_while")) has_limit = 1;
+    else if (strcmp(nm, "map") && strcmp(nm, "collect") && strcmp(nm, "select") &&
+             strcmp(nm, "filter") && strcmp(nm, "reject") && strcmp(nm, "filter_map") &&
+             strcmp(nm, "drop") && strcmp(nm, "drop_while"))
+      return 0;
+    node = nt_ref(nt, node, "receiver");
+  }
+  if (lazy < 0) return 0;
+  int src = nt_ref(nt, lazy, "receiver");
+  while (src >= 0 && nt_type(nt, src) && !strcmp(nt_type(nt, src), "ParenthesesNode")) {
+    int body = nt_ref(nt, src, "body"); int n = 0;
+    const int *bd = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    if (n != 1) break;
+    src = bd[0];
+  }
+  if (src < 0) return 0;
+  if (nt_type(nt, src) && !strcmp(nt_type(nt, src), "RangeNode")) {
+    int right = nt_ref(nt, src, "right");
+    int endless = (right < 0) ||
+      (nt_type(nt, right) && !strcmp(nt_type(nt, right), "NilNode"));
+    if (!endless && nt_type(nt, right) && !strcmp(nt_type(nt, right), "ConstantPathNode")) {
+      const char *cpnm = nt_str(nt, right, "name");
+      if (cpnm && !strcmp(cpnm, "INFINITY")) endless = 1;
+    }
+    return endless ? has_limit : 1;
+  }
+  TyKind st = infer_type(c, src);
+  if (st == TY_RANGE) return has_limit;   /* range variable: bounded only at runtime */
+  return ty_is_array(st) ? 1 : 0;
+}
+
 TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -322,6 +367,17 @@ TyKind infer_call(Compiler *c, int id) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   if (!name) return TY_UNKNOWN;
+
+  /* Lazy terminal: a fused stream pipeline yields a poly collection (or a poly
+     element for `first` with no arg). Typed here so consumers (p/inspect/...) see
+     a concrete poly type rather than UNKNOWN. */
+  if (recv >= 0 && nt_ref(nt, id, "block") < 0 &&
+      (!strcmp(name, "to_a") || !strcmp(name, "force") || !strcmp(name, "entries") ||
+       !strcmp(name, "first")) &&
+      infer_lazy_fusible(c, id, name)) {
+    if (!strcmp(name, "first") && argc == 0) return TY_POLY;
+    return TY_POLY_ARRAY;
+  }
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
