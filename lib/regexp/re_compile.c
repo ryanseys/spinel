@@ -121,21 +121,24 @@ insert_inst(re_compiler *c, uint32_t pos, uint8_t op, uint8_t a, uint16_t offset
   c->code[pos].a = a;
   c->code[pos].offset = offset;
 
-  /* Fix jump targets that point past the insertion point. An offset equal
-     to `pos` already points to the inserted instruction's new location and
-     must not be bumped -- bumping it would shift the target to whatever
-     code got displaced by the insertion (e.g. the body of the quantified
-     atom), corrupting "skip past this atom" jumps emitted earlier.
-     Imported from mruby b9b8186f00.
-     Issue #824: also patches LOOKAHEAD/NEG_LOOKAHEAD/LOOKBEHIND/
-     NEG_LOOKBEHIND (their offset is the jump-to-end target). */
+  /* Fix jump targets across the insertion. A target past `pos` shifts down by
+     one. A target equal to `pos` is ambiguous (mruby da41af3c9):
+     - code that moved (i > pos) is a backward jump -- e.g. the SPLIT that
+       loops `\d+` back to its class -- and meant the instruction now at
+       pos+1, so it must follow it.
+     - code before the insertion (i < pos) is a forward "skip to here"
+       reference (e.g. a quantifier's skip-past-atom jump, or a lookaround's
+       jump-to-end target) that should stay on the newly inserted instruction.
+     Issue #824: LOOKAHEAD/NEG_LOOKAHEAD/LOOKBEHIND/NEG_LOOKBEHIND carry their
+     jump-to-end target in `offset` too. */
   for (uint32_t i = 0; i < c->code_len; i++) {
     if (i == pos) continue;
     switch (c->code[i].op) {
     case RE_JMP: case RE_SPLIT: case RE_SPLITNG:
     case RE_LOOKAHEAD: case RE_NEG_LOOKAHEAD:
     case RE_LOOKBEHIND: case RE_NEG_LOOKBEHIND:
-      if (c->code[i].offset > pos && c->code[i].offset < 0xffff) {
+      if (c->code[i].offset >= 0xffff) break;
+      if (c->code[i].offset > pos || (c->code[i].offset == pos && i > pos)) {
         c->code[i].offset++;
       }
       break;
