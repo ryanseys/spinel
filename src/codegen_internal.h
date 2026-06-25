@@ -184,6 +184,7 @@ typedef struct { const char **v; int n, cap; } NameSet;
    held in `_cap` instead of a (non-existent) local. NULL outside such a body. */
 extern const char *g_cap_struct;
 extern NameSet *g_cap_names;
+extern NameSet g_block_cell_names;
 /* set when the program registers an at_exit hook; main()'s tail then runs them
    in reverse registration order. */
 extern int g_needs_at_exit;
@@ -434,6 +435,12 @@ int is_blockless_block_param_call(Compiler *c, int id);
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr);
 int emit_inline_expr(Compiler *c, int id, Buf *b);
 void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig, const char *p0_ren, TyKind src_type, const char *src_expr, Buf *b, int indent);
+void emit_fresh_cell(Compiler *c, const char *cellvar, TyKind t, const char *init_expr, Buf *pre, int indent);
+/* If block param `orig` is a pure-block-cell, emit its fresh per-iteration cell
+   (value `init_expr`, which the caller has already boxed to the param type) into
+   `b` at `indent`, register it live, and return 1 -- the caller then skips its
+   plain `lv_<ren> = ...` bind. Returns 0 otherwise. */
+int emit_block_cell_bind(Compiler *c, int block, const char *orig, const char *init_expr, Buf *b, int indent);
 int subtree_has_own_redo(const NodeTable *nt, int id);
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);

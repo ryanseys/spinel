@@ -803,6 +803,58 @@ void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b) {
   buf_puts(b, "mrb_int");
 }
 
+/* The capture types that can ride a value-snapshot / per-iteration cell -- the
+   same set the is_cell branch accepts. */
+static int vsnap_type_ok(Compiler *c, TyKind t) {
+  int ptr_cell = proc_slot_is_ptr(t) && !comp_ty_value_obj(c, t);
+  return t == TY_INT || t == TY_BOOL || t == TY_UNKNOWN || t == TY_PROC ||
+         t == TY_FLOAT || t == TY_POLY || ptr_cell;
+}
+
+/* Emit a fresh GC cell named `cellvar` of type `t`, root it, and store
+   `init_expr` into it -- mirroring the per-type cell shapes in emit_scope_decls.
+   A heap-object (pointer / string) capture rides a real typed-pointer cell so it
+   shares one representation with the cap-struct field and the in-body `_cell_x`
+   reads (no mrb_int launder). Shared by the value-snapshot capture and the
+   per-iteration block-param bind. */
+void emit_fresh_cell(Compiler *c, const char *cellvar, TyKind t,
+                     const char *init_expr, Buf *pre, int indent) {
+  emit_indent(pre, indent);
+  if (t == TY_FLOAT) {
+    buf_printf(pre, "mrb_float *%s = (mrb_float *)sp_gc_alloc(sizeof(mrb_float), NULL, NULL);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "SP_GC_ROOT(%s);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "*%s = %s;\n", cellvar, init_expr);
+  }
+  else if (t == TY_POLY) {
+    buf_printf(pre, "sp_RbVal *%s = (sp_RbVal *)sp_gc_alloc(sizeof(sp_RbVal), NULL, sp_cell_scan_rbval);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "SP_GC_ROOT(%s);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "*%s = %s;\n", cellvar, init_expr);
+  }
+  else if (proc_slot_is_ptr(t) && !comp_ty_value_obj(c, t)) {
+    const char *scan = (t == TY_STRING) ? "sp_cell_scan_str" : "sp_cell_scan_ptr";
+    emit_ctype(c, t, pre); buf_printf(pre, " *%s = (", cellvar); emit_ctype(c, t, pre);
+    buf_puts(pre, " *)sp_gc_alloc(sizeof("); emit_ctype(c, t, pre);
+    buf_printf(pre, "), NULL, %s);\n", scan);
+    emit_indent(pre, indent); buf_printf(pre, "SP_GC_ROOT(%s);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "*%s = %s;\n", cellvar, init_expr);
+  }
+  else {
+    buf_printf(pre, "mrb_int *%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "SP_GC_ROOT(%s);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "*%s = %s;\n", cellvar, init_expr);
+  }
+}
+
+/* Emit, into the proc-creation prelude, a fresh cell holding a snapshot of the
+   block param `nm`'s current value `lv_<nm>` (C var name `_vs_<nm>`). */
+static void emit_vsnap_cell(Compiler *c, const char *nm, LocalVar *clv, Buf *pre) {
+  TyKind t = clv ? clv->type : TY_INT;
+  char cellvar[96], init[96];
+  snprintf(cellvar, sizeof cellvar, "_vs_%s", nm);
+  snprintf(init, sizeof init, "lv_%s", nm);
+  emit_fresh_cell(c, cellvar, t, init, pre, g_indent);
+}
+
 /* True if the AST subtree at `id` has a YieldNode, not crossing DefNode. */
 int proc_body_has_yield(Compiler *c, int id) {
   if (id < 0) return 0;
@@ -1277,7 +1329,7 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
      enclosing locals (marked is_cell by analyze), and the proc's own body
      locals. Captures populate the cap struct; body locals are declared inside
      the fn; params come from args[]. */
-  NameSet params = {0}, used = {0}, locals = {0}, caps = {0};
+  NameSet params = {0}, used = {0}, locals = {0}, caps = {0}, vsnap = {0};
   for (int k = 0; k < arity; k++) nameset_add(&params, proc_param_name(c, create, k));
   proc_collect_used(c, body, &used);
   /* deep: include nested blocks' params/locals so a name used only inside a
@@ -1303,16 +1355,39 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
       int poly_cell = lv->type == TY_POLY;
       if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN &&
           lv->type != TY_PROC && !float_cell && !ptr_cell && !poly_cell) {
-        free(params.v); free(used.v); free(locals.v); free(caps.v);
+        free(params.v); free(used.v); free(locals.v); free(caps.v); free(vsnap.v);
         unsupported(c, create, "proc capturing a non-integer variable (later slice)");
+        return;
+      }
+      /* A celled inlined-block param is a loop variable that is both written and
+         captured; it takes a fresh heap cell allocated per loop iteration at its
+         binding site. Promote it only when it is pure block-bound (not sharing
+         its LocalVar with a method local) AND its binding emitter actually
+         emitted that cell (registered live in g_block_cell_names). Otherwise the
+         per-iteration cell does not exist -- a structural-misfit emitter, or a
+         mixed var -- so defer rather than reference an undeclared cell. */
+      if (lv->is_block_param &&
+          (!lv->is_pure_block_cell || !nameset_has(&g_block_cell_names, nm))) {
+        free(params.v); free(used.v); free(locals.v); free(caps.v); free(vsnap.v);
+        unsupported(c, create, "proc capturing a written enclosing block variable (later slice)");
         return;
       }
       nameset_add(&caps, nm);
     }
+    else if (lv && lv->is_block_param && !nameset_has(&locals, nm) && vsnap_type_ok(c, lv->type)) {
+      /* An ENCLOSING inlined-block param read (not one of the proc's own inlined
+         blocks, which are proc-locals) that is never written -- a write would
+         have celled it -- is captured by VALUE: snapshot its current value into a
+         fresh per-creation cell. Because the cap struct is built once per proc
+         creation (inside the loop), each iteration's closure snapshots its own
+         value -- matching CRuby's fresh-per-iteration block binding. */
+      nameset_add(&caps, nm);
+      nameset_add(&vsnap, nm);
+    }
     else if (!nameset_has(&locals, nm)) {
       /* read of an enclosing var that wasn't celled and isn't proc-local:
          no storage exists for it inside the fn -- defer rather than miscompile */
-      free(params.v); free(used.v); free(locals.v); free(caps.v);
+      free(params.v); free(used.v); free(locals.v); free(caps.v); free(vsnap.v);
       unsupported(c, create, "proc referencing an uncaptured outer variable (later slice)");
       return;
     }
@@ -1444,7 +1519,7 @@ else if (orecv >= 0 && onm) {
   int ret_poly = (ret == TY_POLY);
   int ret_fbox = (ret == TY_FLOAT);  /* boxed through the poly return slot */
   if (!proc_slot_is_direct(ret) && !ret_ptr && !ret_no_value && !ret_poly && !ret_fbox) {
-    free(params.v); free(used.v); free(locals.v); free(caps.v);
+    free(params.v); free(used.v); free(locals.v); free(caps.v); free(vsnap.v);
     unsupported(c, create, "proc with range/time return (later slice)");
     return;
   }
@@ -1658,7 +1733,15 @@ else if (orecv >= 0 && onm) {
          struct before the box adopts it. */
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "SP_GC_ROOT(_capv_%d);\n", pid);
-      for (int i = 0; i < ncap; i++) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->%s = _cell_%s;\n", pid, caps.v[i], caps.v[i]); }
+      for (int i = 0; i < ncap; i++) {
+        if (nameset_has(&vsnap, caps.v[i])) {
+          /* value-snapshot: a fresh cell holding this iteration's value */
+          emit_vsnap_cell(c, caps.v[i], scope_local(bs, caps.v[i]), g_pre);
+          emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->%s = _vs_%s;\n", pid, caps.v[i], caps.v[i]);
+        } else {
+          emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->%s = _cell_%s;\n", pid, caps.v[i], caps.v[i]);
+        }
+      }
       /* Capture the enclosing instance self by pointer (#1436). */
       if (cap_self) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->__self = (void *)%s;\n", pid, sv_self ? sv_self : "self"); }
       /* Capture the home method's proc-return frame so the proc's `return`
@@ -1669,7 +1752,7 @@ else if (orecv >= 0 && onm) {
                pid, pid, pid, meta_arity, is_lambda ? "TRUE" : "FALSE", arity, meta_args);
   }
 
-  free(params.v); free(used.v); free(locals.v); free(caps.v);
+  free(params.v); free(used.v); free(locals.v); free(caps.v); free(vsnap.v);
 }
 
 /* Emit the struct + the constructor (sp_<Class>_new) for one class. */

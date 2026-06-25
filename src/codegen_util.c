@@ -258,6 +258,12 @@ void nameset_add(NameSet *s, const char *nm) {
 }
 const char *g_cap_struct = NULL;
 NameSet *g_cap_names = NULL;
+/* Block params whose per-iteration `_cell_<name>` is in scope at the current
+   emission point. A converted iteration emitter adds its celled param names
+   before emitting the loop body and truncates back to the saved size after, so
+   `emit_proc_literal` only promotes a celled block-param capture when its cell
+   actually exists. Borrowed pointers (interned names); truncating .n is safe. */
+NameSet g_block_cell_names = {0};
 int g_needs_at_exit = 0;
 int g_needs_class_machinery = 0;
 int g_has_user_global_marks = 0;

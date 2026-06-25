@@ -896,18 +896,22 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", bk, tres, bk, tres);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, rk, ta, ti);
+  int _bc = g_block_cell_names.n;
   if (np <= 1) {
     const char *p0 = block_param_name(c, block, 0);
     if (p0) {
       const char *p0r = rename_local(p0);
       LocalVar *lv = scope_local(comp_scope_of(c, block), p0);
       TyKind pt = lv ? lv->type : et;
-      emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = ", p0r);
       char src[64]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", rk, ta, ti);
-      if (pt == et) buf_puts(g_pre, src);
-      else if (et == TY_POLY) { Buf cv; memset(&cv,0,sizeof cv); flatmap_coerce_from_poly(pt, src, &cv); buf_puts(g_pre, cv.p?cv.p:src); free(cv.p); }
-      else buf_puts(g_pre, src);
-      buf_puts(g_pre, ";\n");
+      Buf bind; memset(&bind, 0, sizeof bind);
+      if (pt == et) buf_puts(&bind, src);
+      else if (et == TY_POLY) { Buf cv; memset(&cv,0,sizeof cv); flatmap_coerce_from_poly(pt, src, &cv); buf_puts(&bind, cv.p?cv.p:src); free(cv.p); }
+      else buf_puts(&bind, src);
+      if (!emit_block_cell_bind(c, block, p0, bind.p ? bind.p : src, g_pre, g_indent + 1)) {
+        emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = %s;\n", p0r, bind.p ? bind.p : src);
+      }
+      free(bind.p);
     }
   }
   else {
@@ -934,6 +938,7 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
              tj, tj, bk, tbv, tj, bk, tres, bk, tbv, tj);
+  g_block_cell_names.n = _bc;
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   buf_printf(b, "_t%d", tres);
   return 1;
@@ -957,8 +962,8 @@ int emit_filter_map_expr(Compiler *c, int id, Buf *b) {
   int bn = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
-  const char *p0 = block_param_name(c, block, 0);
-  if (p0) p0 = rename_local(p0);
+  const char *p0_orig = block_param_name(c, block, 0);
+  const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
 
   int ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
@@ -972,15 +977,25 @@ int emit_filter_map_expr(Compiler *c, int id, Buf *b) {
   Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
   LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
   TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-  int use_shadow = clv0 && clv0->type != et && et != TY_UNKNOWN;
+  /* A captured-and-written (pure-block-cell) param binds into a fresh
+     per-iteration cell carrying its analyzed type, bypassing the re-typing shadow. */
+  LocalVar *bcell0 = p0_orig ? scope_local(comp_scope_of(c, block), p0_orig) : NULL;
+  int celled = bcell0 && bcell0->is_cell && bcell0->is_pure_block_cell;
+  int use_shadow = !celled && clv0 && clv0->type != et && et != TY_UNKNOWN;
   int din = g_indent + 1;
+  int _bc = g_block_cell_names.n;
   if (use_shadow) {
     clv0->type = et;
     for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
     emit_indent(g_pre, din); buf_puts(g_pre, "{\n"); din++;
     emit_indent(g_pre, din); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, ti);
   }
-  else if (p0) { emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, ti); }
+  else if (p0) {
+    char src[96]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+    if (!emit_block_cell_bind(c, block, p0_orig, src, g_pre, din)) {
+      emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, ti);
+    }
+  }
 
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, din);
   int save = g_indent; g_indent = din;
@@ -993,6 +1008,7 @@ int emit_filter_map_expr(Compiler *c, int id, Buf *b) {
   buf_puts(g_pre, ";\n"); free(vb.p);
   emit_indent(g_pre, din); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tv);
   emit_indent(g_pre, din); buf_printf(g_pre, "if (sp_poly_truthy(_t%d)) sp_PolyArray_push(_t%d, _t%d);\n", tv, tres, tv);
+  g_block_cell_names.n = _bc;
   if (use_shadow) { din--; emit_indent(g_pre, din); buf_puts(g_pre, "}\n"); }
   if (clv0) clv0->type = csaved0;
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
@@ -2852,7 +2868,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   const char *rk = res_poly ? "Poly" : array_kind(restype);
   if (!rk) return 0;
 
-  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
+  const char *p0_orig = block_param_name(c, block, 0);
+  const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
   int body = nt_ref(nt, block, "body");
   int bn = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -2921,7 +2938,12 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
   LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
   TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-  int use_shadow = clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
+  /* A captured-and-written (pure-block-cell) param binds into a fresh
+     per-iteration heap cell instead of a plain C local; the cell carries its
+     analyzed type, so the re-typing shadow path is bypassed for it. */
+  LocalVar *bcell0 = p0_orig ? scope_local(comp_scope_of(c, block), p0_orig) : NULL;
+  int celled = bcell0 && bcell0->is_cell && bcell0->is_pure_block_cell;
+  int use_shadow = !celled && clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
   if (use_shadow) {
     clv0->type = et_elem;
     for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
@@ -2929,14 +2951,18 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
 
   int bodyIndent = g_indent + 1;
   int innerIndent = use_shadow ? bodyIndent + 1 : bodyIndent;
+  int _bc = g_block_cell_names.n;
   if (use_shadow) {
     emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "{\n");
     emit_indent(g_pre, innerIndent); emit_ctype(c, et_elem, g_pre);
     buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
   }
 else if (p0) {
-    emit_indent(g_pre, bodyIndent);
-    buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
+    char src[128]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
+    if (!emit_block_cell_bind(c, block, p0_orig, src, g_pre, bodyIndent)) {
+      emit_indent(g_pre, bodyIndent);
+      buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
+    }
   }
   if (is_map) {
     /* map: collect the block's value (next-aware) into a result temp, then
@@ -2974,8 +3000,15 @@ else if (p0) {
     else if (cty == TY_INT)   buf_printf(g_pre, "if (%s(_t%d != SP_INT_NIL)) ", is_rej ? "!" : "", tv);
     else if (cty == TY_FLOAT) buf_printf(g_pre, "if (%s(!sp_float_is_nil(_t%d))) ", is_rej ? "!" : "", tv);
     else                   buf_printf(g_pre, "if (%s(_t%d)) ", is_rej ? "!" : "", tv);
-    buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
+    /* select/reject collect the receiver's element (matching CRuby), not the
+       block param -- so a captured-and-written param read from its cell does not
+       perturb the collected value. */
+    if (celled)
+      buf_printf(g_pre, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n", rk, tres, k, trecv, ti);
+    else
+      buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
   }
+  g_block_cell_names.n = _bc;
   if (use_shadow) { emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "}\n"); }
   if (use_shadow && clv0) clv0->type = csaved0;
   emit_indent(g_pre, g_indent);

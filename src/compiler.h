@@ -23,6 +23,11 @@ typedef struct {
   int is_cell;      /* captured by an escaping proc: lives in a heap cell
                        (mrb_int *_cell_<name>) so the closure and the enclosing
                        scope share mutable storage */
+  int is_pure_block_cell; /* an is_cell inlined-block param that is exclusively
+                       block-bound (not a method param, no method-scope use): its
+                       cell can be allocated fresh per loop iteration at the
+                       binding site. A celled-but-not-pure block param (shared
+                       with a method local) keeps deferring in codegen */
   int init_guarded; /* (consts) initialized via `CONST = Class.new(...)`: reads
                        during the init raise NameError (uninitialized constant) */
   int rbs_seeded;   /* param type pinned from an --rbs advisory seed: the

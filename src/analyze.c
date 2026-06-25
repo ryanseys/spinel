@@ -295,9 +295,22 @@ int a_proc_create_or_lifted(Compiler *c, int id) {
 void mark_proc_captures(Compiler *c) {
   const NodeTable *nt = c->nt;
   char *inproc = (char *)calloc((size_t)nt->count, 1);
-  if (!inproc) return;
+  char *inblock = (char *)calloc((size_t)nt->count, 1);
+  char *thisproc = (char *)calloc((size_t)nt->count, 1);
+  if (!inproc || !inblock || !thisproc) { free(inproc); free(inblock); free(thisproc); return; }
   for (int id = 0; id < nt->count; id++)
     if (a_proc_create_or_lifted(c, id)) { int body = a_proc_body(c, id); if (body >= 0) a_mark_subtree(c, body, inproc); }
+  /* Mark every node inside ANY block / lambda body. A reference to a name that
+     lies OUTSIDE all of these (at the enclosing scope) is a genuine method-scope
+     use, which means a block param of that name is "mixed" -- it shares its
+     LocalVar with a method local -- and so cannot use a per-iteration cell. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (ty && (!strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode"))) {
+      int body = nt_ref(nt, id, "body");
+      if (body >= 0) a_mark_subtree(c, body, inblock);
+    }
+  }
 
   for (int id = 0; id < nt->count; id++) {
     if (!a_proc_create_or_lifted(c, id)) continue;
@@ -310,6 +323,10 @@ void mark_proc_captures(Compiler *c) {
     int body = a_proc_body(c, id);
     if (body < 0) continue;
     int encl = c->nscope[id];
+    /* mark THIS proc's own body so a write it performs on a captured var counts
+       toward celling (a shared mutable binding), not just writes outside it */
+    memset(thisproc, 0, (size_t)nt->count);
+    a_mark_subtree(c, body, thisproc);
     ANameSet params = {0}, used = {0};
     int pn = a_proc_params_node(c, id);
     if (pn >= 0) { int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn); for (int k = 0; k < rn; k++) aname_add(&params, nt_str(nt, reqs[k], "name")); }
@@ -321,30 +338,59 @@ void mark_proc_captures(Compiler *c) {
       LocalVar *lv = scope_local(es, nm);
       if (!lv) continue;                              /* not an enclosing local */
       int owned = lv->is_param;
-      for (int w = 0; w < nt->count && !owned; w++) {
-        if (c->nscope[w] != encl || inproc[w]) continue;
-        if (!a_is_write_node(nt_type(nt, w))) continue;
+      int wrote_in_proc = 0, used_outside_proc = 0;
+      for (int w = 0; w < nt->count; w++) {
+        if (c->nscope[w] != encl) continue;
         const char *wn = nt_str(nt, w, "name");
-        if (wn && sp_streq(wn, nm)) owned = 1;
+        if (!wn || !sp_streq(wn, nm)) continue;
+        const char *wty = nt_type(nt, w);
+        if (thisproc[w]) {
+          if (a_is_write_node(wty)) wrote_in_proc = 1;
+        }
+        else if (!inproc[w]) {
+          /* a method-body / inlined-block reference, not inside any proc */
+          if (a_is_write_node(wty)) owned = 1;  /* a write here cells outright */
+          if (a_is_local_node(wty)) used_outside_proc = 1;
+        }
       }
-      if (owned) {
-        /* A fiber/generator now cells a captured heap object too (string /
-           array / hash / object), via a typed-pointer cell, so a reassignment
-           in the body reaches the enclosing scope. In-place mutation of a
-           non-reassigned capture stays by pointer (the var isn't `owned`, so it
-           never reaches here). Value-type objects have no stable pointer. */
-        int heap_ptr = (lv->type == TY_STRING || ty_is_array(lv->type) ||
-                        ty_is_hash(lv->type) || ty_is_object(lv->type)) &&
-                       !comp_ty_value_obj(c, lv->type);
-        if (fib_create && lv->type != TY_INT && lv->type != TY_BOOL &&
-            lv->type != TY_FLOAT && lv->type != TY_POLY && !heap_ptr)
-          continue;   /* capture type without a usable cell: leave by value */
-        lv->is_cell = 1;
+      /* A write performed only inside the capturing proc cells the var only when
+         the block body also observes it (a reference outside the proc).
+         Otherwise the write is private to the proc -- a value snapshot is
+         observably correct, and the var may be a proc-local (e.g. a `rescue =>
+         e` binding) that must not be celled. */
+      if (wrote_in_proc && used_outside_proc) owned = 1;
+      if (!owned) continue;
+      /* A fiber/generator cells a captured heap object too (string / array /
+         hash / object) via a typed-pointer cell, so a reassignment in the body
+         reaches the enclosing scope. In-place mutation of a non-reassigned
+         capture stays by pointer (the var isn't `owned`, so it never reaches
+         here). Value-type objects have no stable pointer. */
+      int heap_ptr = (lv->type == TY_STRING || ty_is_array(lv->type) ||
+                      ty_is_hash(lv->type) || ty_is_object(lv->type)) &&
+                     !comp_ty_value_obj(c, lv->type);
+      if (fib_create && lv->type != TY_INT && lv->type != TY_BOOL &&
+          lv->type != TY_FLOAT && lv->type != TY_POLY && !heap_ptr)
+        continue;   /* capture type without a usable cell: leave by value */
+      lv->is_cell = 1;
+      /* A celled inlined-block param can take a fresh per-iteration cell only if
+         it is exclusively block-bound: not a method param, and with no read/write
+         at the enclosing scope OUTSIDE every block body (which would be a method
+         local sharing this LocalVar). Otherwise it stays celled-but-not-pure and
+         codegen keeps deferring it. */
+      if (lv->is_block_param && !lv->is_param) {
+        int mixed = 0;
+        for (int w = 0; w < nt->count && !mixed; w++) {
+          if (c->nscope[w] != encl || inblock[w]) continue;
+          if (!a_is_local_node(nt_type(nt, w))) continue;
+          const char *wn = nt_str(nt, w, "name");
+          if (wn && !strcmp(wn, nm)) mixed = 1;
+        }
+        if (!mixed) lv->is_pure_block_cell = 1;
       }
     }
     free(params.v); free(used.v);
   }
-  free(inproc);
+  free(inproc); free(inblock); free(thisproc);
 }
 
 /* ---- bigint loop-variable detection ---- */
