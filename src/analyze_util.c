@@ -9,6 +9,7 @@ int is_builtin_class_name(const char *n) {
     "IO","File","Exception","StandardError","RuntimeError","TypeError",
     "ArgumentError","NameError","NoMethodError","StopIteration","Math",
     "Complex","Rational","Encoding","Method","UnboundMethod","Fiber",
+    "Enumerator",
     "Thread","Mutex","GC","ObjectSpace","Signal","Process","Regexp",
     "MatchData","StringIO","StringScanner",NULL
   };

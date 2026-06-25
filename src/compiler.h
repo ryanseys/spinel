@@ -23,6 +23,9 @@ typedef struct {
   int is_cell;      /* captured by an escaping proc: lives in a heap cell
                        (mrb_int *_cell_<name>) so the closure and the enclosing
                        scope share mutable storage */
+  int is_enum_yielder; /* the |y| param of an Enumerator.new block: `y << v` is
+                          a yield (sp_Fiber_yield), never an array push, so the
+                          slot must not be promoted to an array accumulator */
   int init_guarded; /* (consts) initialized via `CONST = Class.new(...)`: reads
                        during the init raise NameError (uninitialized constant) */
   int rbs_seeded;   /* param type pinned from an --rbs advisory seed: the

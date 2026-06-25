@@ -2041,6 +2041,28 @@ void analyze_program(Compiler *c) {
     if (seed && *seed) apply_rbs_seeds(c, seed);
   }
 
+  /* Mark Enumerator.new block yielder params before the fixpoint so the
+     push-promotion pass leaves `y << v` as a yield instead of typing `y` as an
+     array accumulator. */
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *ty = nt_type(c->nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    const char *nm = nt_str(c->nt, id, "name");
+    if (!nm || strcmp(nm, "new")) continue;
+    int recv = nt_ref(c->nt, id, "receiver");
+    if (recv < 0) continue;
+    const char *rty = nt_type(c->nt, recv);
+    if (!rty || (strcmp(rty, "ConstantReadNode") && strcmp(rty, "ConstantPathNode"))) continue;
+    const char *rn = nt_str(c->nt, recv, "name");
+    if (!rn || strcmp(rn, "Enumerator")) continue;
+    int blk = nt_ref(c->nt, id, "block");
+    if (blk < 0) continue;
+    const char *p0 = block_param_name(c, blk, 0);
+    Scope *bs = p0 ? comp_scope_of(c, blk) : NULL;
+    LocalVar *lv = (bs && p0) ? scope_local(bs, p0) : NULL;
+    if (lv) { lv->is_enum_yielder = 1; lv->type = TY_POLY; }
+  }
+
   for (int iter = 0; iter < 128; iter++) {
     int ch = 0;
     sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */

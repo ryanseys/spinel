@@ -64,6 +64,9 @@ extern int  g_yield_block_fallback;
 /* Name of the `&block` parameter of the method currently being inlined, so
    `<blk>.call(args)` inside it expands the active block like `yield args`. */
 extern const char *g_block_param_name;
+/* Name of an Enumerator.new yielder block param while its body is emitted;
+   `y << v` / `y.yield(v)` then lower to sp_Fiber_yield. NULL otherwise. */
+extern const char *g_enum_yielder_name;
 /* Result temp for a do{}while(0)-wrapped instance_exec splice; a top-level
    `next <v>` captures into it before continuing out. NULL otherwise. */
 extern const char *g_ie_next_var;
@@ -487,6 +490,8 @@ int proc_body_has_yield(Compiler *c, int id);
 int fiber_cap_needs_root(TyKind t);
 int fiber_body_uses_self(Compiler *c, int id);
 void emit_fiber_new(Compiler *c, int id, Buf *b);
+void emit_enumerator_new(Compiler *c, int id, Buf *b);
+int  emit_enum_yield(Compiler *c, int id, Buf *b);
 void emit_proc_literal(Compiler *c, int create, Buf *b);
 int is_builtin_reopen(const char *name);
 int is_exc_name(const char *n);

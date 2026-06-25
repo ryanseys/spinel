@@ -44,6 +44,7 @@ typedef enum {
   TY_PROC,         /* a first-class Proc/lambda value (sp_Proc *) */
   TY_CURRY,        /* a curried Proc argument accumulator (sp_Curry *) */
   TY_FIBER,        /* a cooperative Fiber (sp_Fiber *) */
+  TY_ENUMERATOR,   /* a fiber-backed Enumerator generator (sp_Enumerator *) */
   TY_RANDOM,       /* a per-instance PRNG (sp_Random *) */
   TY_METHOD,       /* a bound Method object (sp_BoundMethod *) */
   TY_IO,           /* a File/IO handle (sp_File *) */

@@ -10,6 +10,10 @@
 #include "sp_str.h"      /* sp_sym_inspect_key for the symbol hash-key short form */
 
 const char *sp_inspect_container(sp_RbVal v) {
+  /* Root the container across the sp_String allocations below: when it is a
+     freshly-returned, not-yet-rooted temp (e.g. `p obj.to_a`), the first
+     allocation could otherwise collect it and we would walk freed elements. */
+  SP_GC_ROOT_RBVAL(v);
   int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
   mrb_int n = sp_json_len_fn ? sp_json_len_fn(v) : 0;
   if (kind == 1) {  /* array: [e0, e1, ...] */

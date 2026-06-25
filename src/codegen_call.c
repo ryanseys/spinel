@@ -3812,6 +3812,36 @@ static void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, node, b); buf_puts(b, "), 0})");
 }
 
+/* Inside an Enumerator.new generator body, `y << v` / `y.yield(...)` hands a
+   value to the consumer. The yielder operates on the running fiber
+   (sp_fiber_current), so it lowers to sp_Fiber_yield no matter how deeply it
+   nests. A multi-value `y.yield(a, b)` yields an array. Returns 1 (and emits the
+   sp_Fiber_yield(...) value expression into b) when `id` is such a yield. The
+   caller supplies any statement framing (indent + `;`). */
+int emit_enum_yield(Compiler *c, int id, Buf *b) {
+  if (!g_enum_yielder_name) return 0;
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *nm = nt_str(nt, id, "name");
+  if (recv < 0 || !nm || (strcmp(nm, "<<") && strcmp(nm, "yield"))) return 0;
+  if (!nt_type(nt, recv) || strcmp(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
+  const char *rn = nt_str(nt, recv, "name");
+  if (!rn || strcmp(rn, g_enum_yielder_name)) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  buf_puts(b, "sp_Fiber_yield(");
+  if (ac == 0) buf_puts(b, "sp_box_nil()");
+  else if (ac == 1) emit_boxed(c, av[0], b);
+  else {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_ty%d = sp_PolyArray_new(); SP_GC_ROOT(_ty%d); ", t, t);
+    for (int k = 0; k < ac; k++) { buf_printf(b, "sp_PolyArray_push(_ty%d, ", t); emit_boxed(c, av[k], b); buf_puts(b, "); "); }
+    buf_printf(b, "sp_box_poly_array(_ty%d); })", t);
+  }
+  buf_puts(b, ")");
+  return 1;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* `require` / `require_relative` is a compile-time directive: top-level ones
@@ -3827,6 +3857,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  if (emit_enum_yield(c, id, b)) return;
   if (emit_partition_expr(c, id, b)) return;
   if (emit_with_index_expr(c, id, b)) return;
   if (emit_each_with_index_chain(c, id, b)) return;
@@ -4703,6 +4734,30 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* Enumerator (fiber-backed generator) instance methods. The `each { }` form
+     is a block call, handled in the block-call dispatch alongside loop/times. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_ENUMERATOR) {
+    if (!strcmp(name, "next")) {
+      buf_puts(b, "sp_Enumerator_next("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "peek")) {
+      buf_puts(b, "sp_Enumerator_peek("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "rewind") && argc == 0) {
+      buf_puts(b, "sp_Enumerator_rewind("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "first") && argc == 0) {
+      buf_puts(b, "sp_Enumerator_first("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if ((!strcmp(name, "first") || !strcmp(name, "take")) && argc == 1) {
+      buf_puts(b, "sp_Enumerator_first_n("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_int_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "to_a") || !strcmp(name, "entries")) {
+      buf_puts(b, "sp_Enumerator_to_a("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+  }
+
   /* Random class methods: Random.rand(n) / Random.rand / Random.bytes(n)
      share a lazily-seeded default instance. */
   if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
@@ -5560,6 +5615,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_RANGE) cn = "Range";
     else if (rt == TY_TIME) cn = "Time";
     else if (rt == TY_FIBER) cn = "Fiber";
+    else if (rt == TY_ENUMERATOR) cn = "Enumerator";
     else if (rt == TY_IO) cn = "IO";
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
     else if (rt == TY_NIL) cn = "NilClass";
@@ -6405,6 +6461,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         /* Single-threaded: a Thread is modeled as a Fiber that runs to
            completion on #value (no preemption, no Fiber.yield in the body). */
         emit_fiber_new(c, id, b);
+        return;
+      }
+      if (cn && !strcmp(cn, "Enumerator") && nt_ref(nt, id, "block") >= 0) {
+        emit_enumerator_new(c, id, b);
         return;
       }
       if (cn && !strcmp(cn, "Random")) {
@@ -10079,6 +10139,17 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
 
+  /* `y << v` on an Enumerator.new yielder is a yield, not an array/poly mutate. */
+  if (g_enum_yielder_name) {
+    Buf yb = {0};
+    if (emit_enum_yield(c, id, &yb)) {
+      emit_indent(b, indent); buf_puts(b, yb.p); buf_puts(b, ";\n");
+      free(yb.p);
+      return 1;
+    }
+    free(yb.p);
+  }
+
   /* mutable-string append: a STRBUF-typed local appends in place (amortized
      O(1)) via sp_String_append. Chains (`s << a << b`) all target the same
      buffer. recv is emitted raw (the sp_String*), not via emit_expr (which
@@ -11044,6 +11115,25 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const char *p0_orig = block_param_name(c, block, 0);
   const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
   TyKind rt = comp_ntype(c, recv);
+
+  /* enum.each { |x| ... } -- iterate the generator from the start (a fresh run,
+     independent of the #next cursor). The fresh enumerator is rooted because
+     each advance resumes its fiber, which can GC. */
+  if (rt == TY_ENUMERATOR && !strcmp(name, "each")) {
+    int t = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_expr(c, recv, &rb);
+    emit_indent(b, indent);
+    buf_printf(b, "{ sp_Enumerator *_te%d = sp_Enumerator_fresh(", t); buf_puts(b, rb.p);
+    buf_printf(b, "); SP_GC_ROOT(_te%d); sp_RbVal _tv%d;\n", t, t);
+    emit_indent(b, indent);
+    buf_printf(b, "while (sp_Enumerator_advance(_te%d, &_tv%d)) {\n", t, t);
+    if (p0) { char ts[40]; snprintf(ts, sizeof ts, "_tv%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_POLY, ts, b, indent + 1); }
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "} }\n");
+    free(rb.p);
+    return 1;
+  }
 
   /* n.times { |i| ... } */
   if (!strcmp(name, "times") && rt == TY_INT) {

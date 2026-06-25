@@ -820,6 +820,7 @@ else {
       if (cn && !strcmp(cn, "Hash")) return TY_UNKNOWN;
       if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
       if (cn && !strcmp(cn, "Fiber")) return TY_FIBER;
+      if (cn && !strcmp(cn, "Enumerator") && nt_ref(nt, id, "block") >= 0) return TY_ENUMERATOR;
       if (cn && (!strcmp(cn, "Thread") || !strcmp(cn, "Mutex") || !strcmp(cn, "Monitor") ||
                  !strcmp(cn, "Random") || !strcmp(cn, "IO") || !strcmp(cn, "File") ||
                  !strcmp(cn, "GzipReader") || !strcmp(cn, "GzipWriter"))) return TY_POLY;
@@ -860,6 +861,9 @@ else {
       if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
       /* Builtin object types */
       if (cn && !strcmp(cn, "Fiber")) return TY_FIBER;
+      /* Enumerator.new { |y| ... }: a fiber-backed generator. Requires a block
+         (a blockless Enumerator.new raises ArgumentError in CRuby). */
+      if (cn && !strcmp(cn, "Enumerator") && nt_ref(nt, id, "block") >= 0) return TY_ENUMERATOR;
       /* Thread.new { block }: modeled as a Fiber run to completion on #value. */
       if (cn && !strcmp(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_FIBER;
       if (cn && !strcmp(cn, "Random")) return TY_RANDOM;
@@ -1066,6 +1070,26 @@ else {
     if (!strcmp(name, "alive?")) return TY_BOOL;
     if (!strcmp(name, "value")) return TY_POLY;
     if (!strcmp(name, "kill")) return TY_FIBER;   /* returns the receiver */
+  }
+
+  /* TY_ENUMERATOR instance methods */
+  if (recv >= 0 && rt == TY_ENUMERATOR) {
+    if (!strcmp(name, "next") || !strcmp(name, "peek")) return TY_POLY;
+    if (!strcmp(name, "rewind")) return TY_ENUMERATOR;  /* returns the receiver */
+    if (!strcmp(name, "first") && argc == 0) return TY_POLY;
+    if (!strcmp(name, "first") || !strcmp(name, "take")) return TY_POLY_ARRAY;
+    if (!strcmp(name, "to_a") || !strcmp(name, "entries"))
+      return TY_POLY_ARRAY;
+    if (!strcmp(name, "each")) {
+      int blk = nt_ref(nt, id, "block");
+      if (blk >= 0) {
+        const char *bp0 = block_param_name(c, blk, 0);
+        Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
+        LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
+        if (blv) blv->type = TY_POLY;
+      }
+      return TY_ENUMERATOR;  /* each returns the receiver */
+    }
   }
 
   /* TY_RANDOM instance methods */

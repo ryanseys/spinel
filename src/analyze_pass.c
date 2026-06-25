@@ -870,6 +870,13 @@ int infer_write_types(Compiler *c) {
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       if (name && (!strcmp(name, "push") || !strcmp(name, "<<")) && an == 1) {
+        /* `y << v` on an Enumerator.new yielder is a yield, not an array push. */
+        if (!strcmp(name, "<<") && recv >= 0 && nt_type(nt, recv) &&
+            !strcmp(nt_type(nt, recv), "LocalVariableReadNode")) {
+          const char *yn = nt_str(nt, recv, "name");
+          LocalVar *ylv = yn ? scope_local(comp_scope_of(c, recv), yn) : NULL;
+          if (ylv && ylv->is_enum_yielder) continue;
+        }
         /* `<<` is ambiguous (Array#push vs Integer#<< shift): a numeric-assigned
            receiver is a shift, so don't promote its slot to an array. */
         if (!strcmp(name, "<<") && recv_has_scalar_numeric_write(c, recv)) continue;

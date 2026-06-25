@@ -4,6 +4,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_POLY) { buf_puts(b, expr); return; }
   if (t == TY_EXCEPTION) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_EXCEPTION)", expr); return; }
   if (t == TY_FIBER) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_FIBER)", expr); return; }
+  if (t == TY_ENUMERATOR) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_ENUMERATOR)", expr); return; }
   if (t == TY_IO) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_IO)", expr); return; }
   if (ty_is_object(t)) { buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t)); return; }
   if (ty_is_hash(t) && hash_box_cls(t)) { buf_printf(b, "sp_box_obj(%s, %s)", expr, hash_box_cls(t)); return; }
@@ -82,6 +83,10 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   if (t == TY_POLY) { emit_expr(c, node, b); return; }
   if (t == TY_FIBER) {
     buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_FIBER)");
+    return;
+  }
+  if (t == TY_ENUMERATOR) {
+    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_ENUMERATOR)");
     return;
   }
   if (t == TY_IO) {
@@ -588,6 +593,69 @@ int is_nested_block(const char *ty) {
   return ty && (!strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode"));
 }
 
+/* Methods that take an ESCAPING block (a real closure compiled to its own
+   function), so a Fiber/Enumerator body must not adopt the block's params and
+   captures as its own. Everything else carrying a block emits it inline. */
+static int fib_block_escapes(const char *nm) {
+  if (!nm) return 0;
+  return !strcmp(nm, "proc") || !strcmp(nm, "lambda") || !strcmp(nm, "new") ||
+         !strcmp(nm, "define_method") || !strcmp(nm, "define_singleton_method");
+}
+
+/* Collect a Fiber/Enumerator body's own locals and used names. Unlike
+   proc_collect_*, it descends into inline-iteration blocks (`times`/`upto`/
+   `each`/`map`/...{ |i| ... }`), which emit in the same C function: their params
+   become body locals and the outer vars they read become body captures. It does
+   not enter escaping-block calls (proc/lambda/define_method) or lambda literals,
+   whose internals belong to their own function. */
+static void fib_collect_body(Compiler *c, int id, NameSet *locals, NameSet *used) {
+  if (id < 0) return;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return;
+  int is_write = !strcmp(ty, "LocalVariableWriteNode") || !strcmp(ty, "LocalVariableTargetNode") ||
+                 !strcmp(ty, "LocalVariableOperatorWriteNode") || !strcmp(ty, "LocalVariableOrWriteNode") ||
+                 !strcmp(ty, "LocalVariableAndWriteNode");
+  if (is_write) nameset_add(locals, nt_str(nt, id, "name"));
+  if (is_write || !strcmp(ty, "LocalVariableReadNode")) nameset_add(used, nt_str(nt, id, "name"));
+
+  /* A call with an inline block: its params are body locals; we descend into
+     that block (only). */
+  int inline_blk = -1;
+  if (!strcmp(ty, "CallNode")) {
+    int blk = nt_ref(nt, id, "block");
+    const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
+    if (blk >= 0 && bty && !strcmp(bty, "BlockNode") && !fib_block_escapes(nt_str(nt, id, "name"))) {
+      inline_blk = blk;
+      int pn = nt_ref(nt, blk, "parameters");
+      int inner = pn >= 0 ? nt_ref(nt, pn, "parameters") : -1;
+      int pnode = inner >= 0 ? inner : pn;
+      if (pnode >= 0) {
+        int rn = 0; const int *reqs = nt_arr(nt, pnode, "requireds", &rn);
+        for (int k = 0; k < rn; k++) { const char *pnm = nt_str(nt, reqs[k], "name"); if (pnm) nameset_add(locals, pnm); }
+      }
+    }
+  }
+
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(nt, id, i);
+    if (ch < 0) continue;
+    if (is_nested_block(nt_type(nt, ch)) && ch != inline_blk) continue;
+    fib_collect_body(c, ch, locals, used);
+  }
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) {
+      int ch = ids[k];
+      if (ch < 0) continue;
+      if (is_nested_block(nt_type(nt, ch)) && ch != inline_blk) continue;
+      fib_collect_body(c, ch, locals, used);
+    }
+  }
+}
+
 /* Collect the local names WRITTEN in the proc body subtree (the proc's own
    locals), not descending into nested blocks. */
 void proc_collect_locals(Compiler *c, int id, NameSet *locals) {
@@ -692,7 +760,7 @@ int proc_body_has_yield(Compiler *c, int id) {
 /* Returns 1 if a type needs a GC root when stored in a fiber capture struct. */
 int fiber_cap_needs_root(TyKind t) {
   return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) ||
-         ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER ||
+         ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER || t == TY_ENUMERATOR ||
          t == TY_EXCEPTION || t == TY_STRINGIO || t == TY_STRINGSCANNER ||
          t == TY_MATCHDATA || t == TY_REGEX || t == TY_TIME;
 }
@@ -722,14 +790,21 @@ int fiber_body_uses_self(Compiler *c, int id) {
   return 0;
 }
 
-void emit_fiber_new(Compiler *c, int id, Buf *b) {
+/* Shared lowering for `Fiber.new { }` (as_enum == 0) and `Enumerator.new { }`
+   (as_enum == 1). Both compile the block into a static void(*)(sp_Fiber *) body
+   with the same capture-struct machinery; they differ in three spots, marked
+   `as_enum` below: the Fiber binds its block param to the resume value and the
+   body's tail sets the yielded value, whereas the Enumerator treats its block
+   param as a yielder (yields happen via explicit `y << v`) and the body runs
+   purely for effect. The creation expression is sp_Fiber_new vs sp_Enumerator_new. */
+static void emit_fiber_or_enum(Compiler *c, int id, Buf *b, int as_enum) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
-  if (blk < 0) { buf_puts(b, "sp_Fiber_new(NULL)"); return; }
+  if (blk < 0) { buf_puts(b, as_enum ? "sp_Enumerator_new(NULL, NULL)" : "sp_Fiber_new(NULL)"); return; }
 
   int fid = ++g_fiber_counter;
   char fname[48];
-  snprintf(fname, sizeof fname, "_fiber_body_%d", fid);
+  snprintf(fname, sizeof fname, as_enum ? "_enum_body_%d" : "_fiber_body_%d", fid);
 
   /* Block parameter name (first required, if any) */
   const char *bp0 = NULL;
@@ -743,14 +818,12 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
   int body = nt_ref(nt, blk, "body");
   Scope *encl = comp_scope_of(c, id);
 
-  /* Collect locals written inside this fiber body (not in nested blocks). */
+  /* Collect the body's own locals + used names, descending into inline
+     iteration blocks (their params are body locals; their reads of outer vars
+     are body captures) but not into escaping procs. */
   NameSet fib_locals = {0};
-  if (body >= 0) proc_collect_locals(c, body, &fib_locals);
-
-  /* Compute captures: names used in the body that belong to the enclosing scope
-     but are NOT defined by the fiber body itself and NOT the block param. */
   NameSet fib_used = {0};
-  if (body >= 0) proc_collect_used(c, body, &fib_used);
+  if (body >= 0) fib_collect_body(c, body, &fib_locals, &fib_used);
 
   /* caps: outer-scope vars referenced in body but not written in body */
   NameSet caps = {0};
@@ -813,9 +886,14 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
   /* Save global emission state */
   Buf *sv_pre = g_pre; int sv_indent = g_indent, sv_nren = g_nren, sv_block = g_block_id;
   const char *sv_bpn = g_block_param_name, *sv_self = g_self, *sv_rv = g_result_var;
+  const char *sv_eny = g_enum_yielder_name;
   TyKind sv_rt = g_ret_type; int sv_rp = g_result_poly;
   g_pre = NULL; g_indent = 1; g_nren = 0; g_block_id = blk;
-  g_block_param_name = bp0; g_self = sv_self;
+  /* The Enumerator's block param is the yielder, not a &block or resume value:
+     recognize it for `y << v` / `y.yield(v)`, and leave g_block_param_name unset. */
+  g_block_param_name = as_enum ? NULL : bp0;
+  g_enum_yielder_name = as_enum ? bp0 : NULL;
+  g_self = sv_self;
   g_ret_type = TY_POLY; g_result_poly = 0; g_result_var = NULL;
 
   /* Unpack capture struct */
@@ -839,8 +917,9 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
     }
   }
 
-  /* Block param: first resume value (or nil on initial resume) */
-  if (bp0) {
+  /* Block param: a Fiber binds it to the first resume value; an Enumerator's is
+     the yielder, handled syntactically (no C local), so emit no binding. */
+  if (bp0 && !as_enum) {
     const char *bpn = rename_local(bp0);
     buf_printf(pb, "    sp_RbVal lv_%s = _fb->resumed_value;\n", bpn);
     buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
@@ -860,6 +939,45 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
     }
   }
   free(fib_locals.v);
+
+  /* An Enumerator body runs purely for effect -- values leave through `y << v`
+     (sp_Fiber_yield); the body's own return value is discarded. Emit every
+     statement plainly and let the trampoline terminate it (StopIteration). */
+  if (as_enum) {
+    if (body >= 0) {
+      int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+      for (int k = 0; k < bn; k++) emit_stmt(c, bb[k], pb, 1);
+    }
+    buf_puts(pb, "}\n");
+    g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
+    g_block_param_name = sv_bpn; g_enum_yielder_name = sv_eny; g_self = sv_self;
+    g_ret_type = sv_rt; g_result_poly = sv_rp; g_result_var = sv_rv;
+    /* Creation: sp_Enumerator_new(body, user_data). With captures, build the
+       same capture struct the fiber path uses and pass it as user_data. */
+    if (ncap > 0 || cap_self) {
+      int tc = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_fib_cap_%d *_t%d = (_fib_cap_%d *)sp_gc_alloc(sizeof(_fib_cap_%d), NULL, _fib_cap_scan_%d);\n",
+                 fid, tc, fid, fid, fid);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tc);
+      if (cap_self) {
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "_t%d->self_ptr = %s;\n", tc, sv_self ? sv_self : "self");
+      }
+      for (int i = 0; i < ncap; i++) {
+        const char *rn = rename_local(caps.v[i]);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "_t%d->%s = lv_%s;\n", tc, caps.v[i], rn);
+      }
+      buf_printf(b, "sp_Enumerator_new(%s, _t%d)", fname, tc);
+    }
+    else {
+      buf_printf(b, "sp_Enumerator_new(%s, NULL)", fname);
+    }
+    free(caps.v);
+    return;
+  }
 
   /* Emit body: all-but-last as side-effect statements, last sets yielded_value.
      For void/nil last statements emit as stmt first then set yielded=nil. */
@@ -907,7 +1025,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
 
   /* Restore emission state */
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
-  g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
+  g_block_param_name = sv_bpn; g_enum_yielder_name = sv_eny; g_self = sv_self; g_ret_type = sv_rt;
   g_result_poly = sv_rp; g_result_var = sv_rv;
 
   /* Emit creation expression:
@@ -941,6 +1059,9 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
   }
   free(caps.v);
 }
+
+void emit_fiber_new(Compiler *c, int id, Buf *b) { emit_fiber_or_enum(c, id, b, 0); }
+void emit_enumerator_new(Compiler *c, int id, Buf *b) { emit_fiber_or_enum(c, id, b, 1); }
 
 /* Does a proc body reference `self` -- explicitly, via an ivar, via `super`, or
    via a receiverless call that dispatches on an instance method of class_id?
@@ -2225,6 +2346,7 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_STRINGSCANNER:         buf_puts(b, "StringScanner"); break;
     case TY_PROC: case TY_CURRY:   buf_puts(b, "Proc"); break;
     case TY_FIBER:                 buf_puts(b, "Fiber"); break;
+    case TY_ENUMERATOR:            buf_puts(b, "Enumerator"); break;
     case TY_RANDOM:                buf_puts(b, "Random"); break;
     case TY_METHOD:                buf_puts(b, "Method"); break;
     case TY_IO:                    buf_puts(b, "IO"); break;
