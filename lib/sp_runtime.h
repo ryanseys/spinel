@@ -3452,6 +3452,7 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
     {"RegexpError",           "StandardError"},
     {"StringScanner_Error",   "StandardError"},
     {"FiberError",            "StandardError"},
+    {"UncaughtThrowError",    "ArgumentError"},
     {"SyntaxError",           "ScriptError"},
     {"ScriptError",           "Exception"},
     {"StandardError",         "Exception"},
@@ -3511,6 +3512,7 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
     {"RegexpError",          "StandardError"},
     {"StringScanner_Error",  "StandardError"},
     {"FiberError",           "StandardError"},
+    {"UncaughtThrowError",   "ArgumentError"},
     {"SyntaxError",          "ScriptError"},
     {"ScriptError",          "Exception"},
     {"StandardError",        "Exception"},
@@ -3543,12 +3545,87 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
 void sp_bigint_raise_zerodiv(const char *msg) { sp_raise_cls("ZeroDivisionError", msg); }
 /* sp_exc_is_a: see earlier definition (takes volatile sp_Exception *) */
 
+/* A non-local control-flow unwind -- a proc `return` or a `throw` -- runs the
+   `ensure` blocks it passes over before delivering to its target, like an
+   exception does. It first longjmps through the sp_exc_stack handler chain (each
+   handler runs its ensure), bounded by the exception depth recorded at the
+   target's entry, then delivers to the target. sp_unwind_resume drives each step;
+   the codegen-emitted exception handlers call it when an unwind is in flight. */
+enum { SP_UNWIND_NONE, SP_UNWIND_PROCRET, SP_UNWIND_THROW };
+static int sp_unwind_kind = SP_UNWIND_NONE, sp_unwind_target = -1, sp_unwind_exc_top = 0;
+
 #define SP_CATCH_STACK_MAX 64
 static jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];
 static const char *sp_catch_tag[SP_CATCH_STACK_MAX];
 static mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
+static int sp_catch_exc_top[SP_CATCH_STACK_MAX];  /* exception depth at each catch's entry */
 static volatile int sp_catch_top = 0;
-static void sp_throw(const char *tag, mrb_int val) { int i = sp_catch_top - 1; while (i >= 0) { if (strcmp(sp_catch_tag[i], tag) == 0) { sp_catch_val[i] = val; sp_catch_top = i + 1; longjmp(sp_catch_stack[i], 1); } i--; } fprintf(stderr, "uncaught throw: %s\n", tag); exit(1); }
+static void sp_throw(const char *tag, mrb_int val) {
+  int i = sp_catch_top - 1;
+  while (i >= 0) {
+    if (strcmp(sp_catch_tag[i], tag) == 0) {
+      sp_catch_val[i] = val; sp_catch_top = i + 1;
+      if (sp_exc_top > sp_catch_exc_top[i]) {       /* run intervening ensures first */
+        sp_unwind_kind = SP_UNWIND_THROW; sp_unwind_target = i; sp_unwind_exc_top = sp_catch_exc_top[i];
+        longjmp(sp_exc_stack[sp_exc_top - 1], 1);
+      }
+      longjmp(sp_catch_stack[i], 1);
+    }
+    i--;
+  }
+  sp_raise_cls("UncaughtThrowError", sp_sprintf("uncaught throw :%s", tag));
+}
+
+/* ---- non-lambda proc `return` (non-local return to the home method) -------
+   A non-lambda proc's `return` returns from the method that created the proc.
+   Such a method pushes a frame (a setjmp target) at entry and captures its index
+   into every returning proc it creates; the proc's `return` longjmps to that
+   frame with the boxed value, so the home method returns it. If the home frame
+   has already exited (the proc escaped and is called later), its index is no
+   longer live and a LocalJumpError is raised, matching CRuby.
+
+   Like sp_throw, a proc return runs the `ensure` blocks it passes over (see the
+   unwind machinery above); when there are none it longjmps straight home. */
+/* Each home method owns a frame on its own C stack (the jmp_buf never moves); the
+   global stack holds only pointers, so it can grow with realloc -- the depth is
+   bounded by the C stack, like ordinary recursion, not a fixed ceiling. The
+   `exc_top` field records the exception-handler depth at the method's entry so a
+   non-local return can run intervening `ensure` blocks (see sp_unwind_resume). */
+typedef struct { jmp_buf jb; sp_RbVal val; int exc_top; } sp_proc_ret_frame;
+static sp_proc_ret_frame **sp_proc_ret_frames = NULL;
+static int sp_proc_ret_top = 0, sp_proc_ret_cap = 0;
+static int sp_proc_ret_push(sp_proc_ret_frame *f) {
+  if (sp_proc_ret_top >= sp_proc_ret_cap) {
+    int nc = sp_proc_ret_cap ? sp_proc_ret_cap * 2 : 64;
+    sp_proc_ret_frame **np = (sp_proc_ret_frame **)realloc(sp_proc_ret_frames, (size_t)nc * sizeof *np);
+    if (!np) { fprintf(stderr, "out of memory\n"); exit(1); }
+    sp_proc_ret_frames = np; sp_proc_ret_cap = nc;
+  }
+  f->exc_top = sp_exc_top;
+  sp_proc_ret_frames[sp_proc_ret_top] = f;
+  return sp_proc_ret_top++;
+}
+static void sp_proc_do_return(int frame, sp_RbVal v) {
+  if (frame < 0 || frame >= sp_proc_ret_top) sp_raise_cls("LocalJumpError", "unexpected return");
+  sp_proc_ret_frames[frame]->val = v;
+  sp_proc_ret_top = frame + 1;
+  if (sp_exc_top > sp_proc_ret_frames[frame]->exc_top) {   /* run intervening ensures first */
+    sp_unwind_kind = SP_UNWIND_PROCRET; sp_unwind_target = frame;
+    sp_unwind_exc_top = sp_proc_ret_frames[frame]->exc_top;
+    longjmp(sp_exc_stack[sp_exc_top - 1], 1);
+  }
+  longjmp(sp_proc_ret_frames[frame]->jb, 1);
+}
+/* Continue a non-local unwind after a handler has run its ensure: if more ensure
+   handlers lie between here and the target, longjmp to the next; otherwise
+   deliver to the target frame (the proc-return home, or the matched catch). */
+static void sp_unwind_resume(void) {
+  if (sp_exc_top > sp_unwind_exc_top) longjmp(sp_exc_stack[sp_exc_top - 1], 1);
+  int kind = sp_unwind_kind, target = sp_unwind_target;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  if (kind == SP_UNWIND_PROCRET) longjmp(sp_proc_ret_frames[target]->jb, 1);
+  longjmp(sp_catch_stack[target], 1);
+}
 
 /* ---- Per-fiber exception/catch handler context (#1474) -------------------
    The handler stacks above are process-global, but begin/rescue handlers and
