@@ -113,6 +113,13 @@ extern const char *g_result_var;
 /* When g_result_var is set, whether that result slot is poly (so a scalar
    tail value must be boxed into it). */
 extern int g_result_poly;
+/* Non-lambda proc `return`: a method owning a proc-return frame routes every
+   `return` to a single exit (g_method_pr_label) that pops the frame, storing
+   the value in g_method_pr_var; a returning proc's body longjmps to the home
+   frame named by g_proc_return_home (a C expr reading the proc's capture). */
+extern const char *g_method_pr_label;
+extern const char *g_method_pr_var;
+extern const char *g_proc_return_home;
 /* Return type of the method currently being emitted, so a tail/return value
    can be boxed when the method returns poly but the value is concrete. */
 extern TyKind g_ret_type;
