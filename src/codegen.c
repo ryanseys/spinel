@@ -4,6 +4,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_POLY) { buf_puts(b, expr); return; }
   if (t == TY_EXCEPTION) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_EXCEPTION)", expr); return; }
   if (t == TY_FIBER) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_FIBER)", expr); return; }
+  if (t == TY_ENUMERATOR) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_ENUMERATOR)", expr); return; }
   if (t == TY_IO) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_IO)", expr); return; }
   if (ty_is_object(t)) { buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t)); return; }
   if (ty_is_hash(t) && hash_box_cls(t)) { buf_printf(b, "sp_box_obj(%s, %s)", expr, hash_box_cls(t)); return; }
@@ -208,12 +209,27 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
   free(cty.p);
 }
 
-/* Does scope index `si` contain a begin/rescue (so its locals need volatile)? */
+/* A `loop { }` call emits a setjmp (to rescue StopIteration and terminate), so
+   for the volatile analysis it behaves like a begin: a local written in its body
+   and read after must survive the longjmp. */
+static int is_stopiter_loop(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, id);
+  if (!ty || strcmp(ty, "CallNode")) return 0;
+  if (nt_ref(nt, id, "receiver") >= 0) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  return nm && !strcmp(nm, "loop") && nt_ref(nt, id, "block") >= 0;
+}
+
+/* Does scope index `si` contain a begin/rescue or a `loop {}` (so its locals
+   need volatile across the setjmp it emits)? */
 int scope_has_begin(Compiler *c, int si) {
   for (int id = 0; id < c->nt->count; id++) {
+    if (c->nscope[id] != si) continue;
     const char *ty = nt_type(c->nt, id);
-    if (ty && (!strcmp(ty, "BeginNode") || !strcmp(ty, "RescueNode")) && c->nscope[id] == si)
+    if (ty && (!strcmp(ty, "BeginNode") || !strcmp(ty, "RescueNode")))
       return 1;
+    if (is_stopiter_loop(c, id)) return 1;
   }
   return 0;
 }
@@ -257,7 +273,7 @@ static void begin_volatile_names(Compiler *c, int si, char ***out, int *nout, in
   char *inb = (char *)calloc((size_t)(nt->count > 0 ? nt->count : 1), 1);
   if (!inb) { *all = 1; return; }  /* OOM: fall back to the conservative whole-scope rule */
   for (int id = 0; id < nt->count; id++)
-    if (nt_kind(nt, id) == NK_BeginNode && c->nscope[id] == si) mark_subtree(nt, id, inb);
+    if (((nt_kind(nt, id) == NK_BeginNode) || is_stopiter_loop(c, id)) && c->nscope[id] == si) mark_subtree(nt, id, inb);
   for (int id = 0; id < nt->count; id++)
     if (nt_kind(nt, id) == NK_RescueNode && c->nscope[id] == si && !inb[id]) { *all = 1; break; }
   if (*all) { free(inb); return; }

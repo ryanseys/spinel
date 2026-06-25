@@ -182,6 +182,7 @@ static inline const char*sp_float_to_s(mrb_float f){
 #define SP_BUILTIN_FIBER         (-22)
 #define SP_BUILTIN_IO            (-23)
 #define SP_BUILTIN_METHOD        (-24)
+#define SP_BUILTIN_ENUMERATOR    (-25)
 /* Exception lived at -13, aliasing SP_BUILTIN_STR_INT_HASH, which both put
    exceptions inside the hash cls_id block [-20,-13] (breaking is_a?(Hash) /
    poly .class for exceptions) and made a str_int_hash arriving as a poly value

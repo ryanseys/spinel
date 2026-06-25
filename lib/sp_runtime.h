@@ -4099,6 +4099,43 @@ static sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *)) { ret
    (a string literal). Only `self` is GC-managed. */
 static void sp_BoundMethod_scan(void *p) { sp_BoundMethod *m = (sp_BoundMethod *)p; if (m->self) sp_gc_mark(m->self); }
 static sp_BoundMethod *sp_bound_method_new(void *self, mrb_int fn, const char *name) { sp_BoundMethod *m = (sp_BoundMethod *)sp_gc_alloc(sizeof(sp_BoundMethod), NULL, sp_BoundMethod_scan); m->self = self; m->fn = fn; m->name = name; return m; }
+
+/* External Enumerator: a cursor over a snapshot of a collection's elements
+   (boxed into a PolyArray at creation). #next / #peek walk the cursor and raise
+   StopIteration past the end; #rewind resets it. Block-form chains (each.map,
+   each.with_index, ...) are handled by codegen and never build this object. */
+typedef struct { sp_PolyArray *items; mrb_int cursor; } sp_Enumerator;
+static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ) {
+    void *p = v.v.p;
+    switch (v.cls_id) {
+      case SP_BUILTIN_INT_ARRAY:  return sp_IntArray_to_poly((sp_IntArray *)p);
+      case SP_BUILTIN_STR_ARRAY:  return sp_StrArray_to_poly_fmt((sp_StrArray *)p);
+      case SP_BUILTIN_POLY_ARRAY: { sp_PolyArray *a = (sp_PolyArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, a->data[i]); return r; }
+      case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = (sp_FloatArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_float(a->data[i])); return r; }
+      case SP_BUILTIN_SYM_ARRAY:  { sp_IntArray *a = (sp_IntArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_sym((sp_sym)a->data[a->start + i])); return r; }
+    }
+  }
+  return sp_PolyArray_new();
+}
+static void sp_Enumerator_scan(void *p) { sp_Enumerator *e = (sp_Enumerator *)p; if (e->items) sp_gc_mark(e->items); }
+static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
+  sp_PolyArray *items = sp_enum_items_from(arr);
+  SP_GC_ROOT(items);
+  sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
+  e->items = items; e->cursor = 0;
+  return e;
+}
+static sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {
+  if (!e->items || e->cursor >= e->items->len) sp_raise_cls("StopIteration", "iteration reached an end");
+  return e->items->data[e->cursor++];
+}
+static sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {
+  if (!e->items || e->cursor >= e->items->len) sp_raise_cls("StopIteration", "iteration reached an end");
+  return e->items->data[e->cursor];
+}
+static sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) { e->cursor = 0; return e; }
+static mrb_int sp_Enumerator_size(sp_Enumerator *e) { return e && e->items ? e->items->len : 0; }
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
 static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }

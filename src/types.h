@@ -48,6 +48,7 @@ typedef enum {
   TY_METHOD,       /* a bound Method object (sp_BoundMethod *) */
   TY_IO,           /* a File/IO handle (sp_File *) */
   TY_ARGF,         /* the ARGF pseudo-IO singleton (sp_Argf *) */
+  TY_ENUMERATOR,   /* an external Enumerator (sp_Enumerator *) */
   TY_CLASS,        /* a Class/Module value (sp_Class, carries cls_id) */
   TY_POLY          /* union / top: a value whose static type widened */
 } TyKind;

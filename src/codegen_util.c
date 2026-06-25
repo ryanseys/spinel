@@ -409,6 +409,7 @@ const char *c_type_name(TyKind t) {
     case TY_METHOD:       return "sp_BoundMethod *";
     case TY_IO:           return "sp_File *";
     case TY_ARGF:         return "sp_Argf *";
+    case TY_ENUMERATOR:   return "sp_Enumerator *";
     case TY_CLASS:        return "sp_Class";
     default:             return NULL;
   }
@@ -418,7 +419,7 @@ int is_scalar_ret(TyKind t) {
          t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_STRINGIO || t == TY_STRINGSCANNER || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_STRBUF ||
-         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_CLASS ||
+         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_CLASS ||
          ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t);
 }
 const char *ffi_c_type(const char *spec) {
@@ -472,6 +473,7 @@ const char *default_value(TyKind t) {
     case TY_METHOD:  return "NULL";
     case TY_IO:      return "NULL";
     case TY_ARGF:    return "NULL";
+    case TY_ENUMERATOR: return "NULL";
     case TY_POLY:    return "sp_box_nil()";
     case TY_CLASS:   return "((sp_Class){-1})";
     default:        return (ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t)) ? "NULL" : "0";
@@ -503,6 +505,7 @@ void emit_box_open(Compiler *c, TyKind t, Buf *b) {
   else if (t == TY_COMPLEX)  buf_puts(b, "sp_box_complex(");
   else if (t == TY_RATIONAL) buf_puts(b, "sp_box_rational(");
   else if (t == TY_FIBER) buf_puts(b, "sp_box_obj((void *)(");
+  else if (t == TY_ENUMERATOR) buf_puts(b, "sp_box_obj((void *)(");
   else if (t == TY_IO)    buf_puts(b, "sp_box_obj((void *)(");
   else if (ty_is_object(t)) {
     int cid = ty_object_class(t);
@@ -514,6 +517,7 @@ void emit_box_close(Compiler *c, TyKind t, Buf *b) {
   (void)c;
   if (t == TY_POLY || t == TY_UNKNOWN) return; /* no-op: already sp_RbVal */
   if (t == TY_FIBER) { buf_puts(b, "), SP_BUILTIN_FIBER)"); return; }
+  if (t == TY_ENUMERATOR) { buf_puts(b, "), SP_BUILTIN_ENUMERATOR)"); return; }
   if (t == TY_IO)    { buf_puts(b, "), SP_BUILTIN_IO)"); return; }
   if (ty_is_object(t))        { buf_printf(b, "), %d)", ty_object_class(t)); return; }
   buf_puts(b, ")");
@@ -700,6 +704,7 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   else if (t == TY_NIL) self_cls = "NilClass";
   else if (t == TY_BOOL) self_cls = "Boolean"; /* true/false split handled at call site */
   else if (t == TY_FIBER) self_cls = "Fiber";
+  else if (t == TY_ENUMERATOR) self_cls = "Enumerator";
   if (!self_cls) return -1;
   if (!strcmp(cn, self_cls)) return 1;
   if (exact) return 0;

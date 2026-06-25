@@ -4080,16 +4080,26 @@ void emit_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent); emit_ctype(c, bt, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", t,
                    bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
-        emit_indent(g_pre, g_indent); buf_puts(g_pre, "for (;;) {\n");
+        /* Kernel#loop rescues StopIteration to terminate; wrap in a setjmp. */
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_top++;\n");
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+        emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "for (;;) {\n");
         const char *sv_lb = g_loop_break_var;
         int sv_iep = g_ie_res_poly;
         g_ie_res_poly = (bt == TY_POLY);   /* box a scalar `break <v>` into the poly slot */
         char lb_buf[32]; snprintf(lb_buf, sizeof lb_buf, "_t%d", t);
         g_loop_break_var = lb_buf;
         int lbody = nt_ref(nt, blk, "body");
-        emit_stmts(c, lbody, g_pre, g_indent + 1);
+        emit_stmts(c, lbody, g_pre, g_indent + 2);
         g_loop_break_var = sv_lb;
         g_ie_res_poly = sv_iep;
+        emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+        emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_exc_top--;\n");
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "else {\n");
+        emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_exc_top--;\n");
+        emit_indent(g_pre, g_indent + 1);
+        buf_puts(g_pre, "if (!sp_exc_cls_matches((const char *)sp_last_exc_cls, \"StopIteration\")) sp_raise_cls(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n");
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
         buf_printf(b, "_t%d", t);
         return;
@@ -4700,6 +4710,32 @@ void emit_call(Compiler *c, int id, Buf *b) {
       else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
       buf_puts(b, ")");
       return;
+    }
+  }
+
+  /* arr.each with no block -> an external Enumerator over a snapshot of the
+     array's (boxed) elements. Block-form and chained (each.with_index, each.map)
+     uses are matched earlier and never reach here. */
+  if (recv >= 0 && ty_is_array(comp_ntype(c, recv)) &&
+      !strcmp(name, "each") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    buf_puts(b, "sp_Enumerator_new_from("); emit_boxed(c, recv, b); buf_puts(b, ")");
+    return;
+  }
+
+  /* Enumerator instance methods: #next / #peek (raise StopIteration past the
+     end), #rewind (reset, returns self), #size. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_ENUMERATOR) {
+    if (!strcmp(name, "next") && argc == 0) {
+      buf_puts(b, "sp_Enumerator_next("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "peek") && argc == 0) {
+      buf_puts(b, "sp_Enumerator_peek("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "rewind") && argc == 0) {
+      buf_puts(b, "sp_Enumerator_rewind("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "size") && argc == 0) {
+      buf_puts(b, "sp_Enumerator_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
   }
 
@@ -5560,6 +5596,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_RANGE) cn = "Range";
     else if (rt == TY_TIME) cn = "Time";
     else if (rt == TY_FIBER) cn = "Fiber";
+    else if (rt == TY_ENUMERATOR) cn = "Enumerator";
     else if (rt == TY_IO) cn = "IO";
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
     else if (rt == TY_NIL) cn = "NilClass";
@@ -11033,8 +11070,20 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* loop { ... } -- infinite loop, exited by break */
   if (recv < 0 && !strcmp(name, "loop")) {
     int lbody = nt_ref(nt, block, "body");
-    emit_indent(b, indent); buf_puts(b, "for (;;) {\n");
-    emit_loop_body(c, lbody, b, indent + 1);
+    /* Kernel#loop rescues StopIteration to terminate normally (e.g. an external
+       Enumerator's #next at the end). Wrap the loop in a setjmp handler; a
+       StopIteration falls through, any other exception re-raises. */
+    emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
+    emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+    emit_indent(b, indent + 1); buf_puts(b, "for (;;) {\n");
+    emit_loop_body(c, lbody, b, indent + 2);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "else {\n");
+    emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    emit_indent(b, indent + 1);
+    buf_puts(b, "if (!sp_exc_cls_matches((const char *)sp_last_exc_cls, \"StopIteration\")) sp_raise_cls(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
   }
