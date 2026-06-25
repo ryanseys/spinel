@@ -11148,25 +11148,40 @@ int emit_inline_expr(Compiler *c, int id, Buf *b) {
   return emit_inline_call_x(c, id, b, g_indent + 1, 1);
 }
 
+int emit_block_cell_bind(Compiler *c, int block, const char *orig,
+                         const char *init_expr, Buf *b, int indent) {
+  Scope *sc = comp_scope_of(c, block);
+  LocalVar *lv = sc ? scope_local(sc, orig) : NULL;
+  if (!lv || !lv->is_cell || !lv->is_pure_block_cell) return 0;
+  char cellvar[96];
+  snprintf(cellvar, sizeof cellvar, "_cell_%s", orig);
+  emit_fresh_cell(c, cellvar, lv->type, init_expr, b, indent);
+  nameset_add(&g_block_cell_names, orig);
+  return 1;
+}
+
 /* Block iteration lowered to an inline C for-loop. Handles n.times,
    array.each, range.each, n.upto/downto. Returns 1 if handled. */
-/* Emit `lv_<p0> = <expr_src>` boxing if p0 is poly and src is concrete. */
+/* Emit `lv_<p0> = <expr_src>` boxing if p0 is poly and src is concrete. A
+   captured-and-written (pure-block-cell) param gets a fresh per-iteration cell
+   instead of the plain C local. */
 void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig,
                                    const char *p0_ren, TyKind src_type,
                                    const char *src_expr, Buf *b, int indent) {
   Scope *sc = comp_scope_of(c, block);
   LocalVar *lv = sc ? scope_local(sc, p0_orig) : NULL;
   TyKind pt = lv ? lv->type : src_type;
-  emit_indent(b, indent);
+  Buf vx; memset(&vx, 0, sizeof vx);
+  const char *val = src_expr;
   if (pt == TY_POLY && src_type != TY_POLY) {
-    Buf bx; memset(&bx, 0, sizeof bx);
-    emit_boxed_text(c, src_type, src_expr, &bx);
-    buf_printf(b, "lv_%s = %s;\n", p0_ren, bx.p ? bx.p : src_expr);
-    free(bx.p);
+    emit_boxed_text(c, src_type, src_expr, &vx);
+    if (vx.p) val = vx.p;
   }
-  else {
-    buf_printf(b, "lv_%s = %s;\n", p0_ren, src_expr);
+  if (!emit_block_cell_bind(c, block, p0_orig, val, b, indent)) {
+    emit_indent(b, indent);
+    buf_printf(b, "lv_%s = %s;\n", p0_ren, val);
   }
+  free(vx.p);
 }
 
 /* Does the subtree contain a `redo` that belongs to THIS loop, i.e. one not
@@ -11328,8 +11343,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < ", t, t);
     buf_puts(b, rb.p); buf_printf(b, "; _t%d++) {\n", t);
+    int _bc = g_block_cell_names.n;
     if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(rb.p);
     return 1;
@@ -11355,8 +11372,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "for (mrb_int _t%d = ", t); emit_expr(c, recv, b);
       buf_printf(b, "; _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
                  ts, t, tl, t, tl, t, ts);
+      int _bc = g_block_cell_names.n;
       if (p0) { char ts2[32]; snprintf(ts2, sizeof ts2, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts2, b, indent + 1); }
       emit_loop_body(c, body, b, indent + 1);
+      g_block_cell_names.n = _bc;
       emit_indent(b, indent); buf_puts(b, "}\n");
       return 1;
     }
@@ -11376,8 +11395,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "mrb_int _t%d = (mrb_int)floor((_t%d-_t%d)/_t%d + _t%d_e);\n", tn, tl, tb, ts, tn);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d <= _t%d; _t%d++) {\n", ti, ti, tn, ti);
+    int _bc = g_block_cell_names.n;
     if (p0) { char fp_expr[64]; snprintf(fp_expr, sizeof fp_expr, "_t%d + _t%d * _t%d", tb, ti, ts); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, fp_expr, b, indent + 1); }
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
   }
@@ -11393,6 +11414,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < ", t, t);
     buf_puts(b, rb.p); buf_printf(b, "->len; _t%d++) {\n", t);
+    int _bc = g_block_cell_names.n;
     if (p0) {
       /* The param may be poly (a name shared across hashes of differing element
          types); box a concrete key into the poly slot. */
@@ -11405,10 +11427,12 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         snprintf(src0, sizeof src0, "%s->keys[%s->order[_t%d]]", rb.p, rb.p, t);
       else
         snprintf(src0, sizeof src0, "%s->order[_t%d]", rb.p, t);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = ", p0);
-      if (box0) emit_boxed_text(c, want0, src0, b); else buf_puts(b, src0);
-      buf_puts(b, ";\n");
+      Buf ev0; memset(&ev0, 0, sizeof ev0);
+      if (box0) emit_boxed_text(c, want0, src0, &ev0); else buf_puts(&ev0, src0);
+      if (!emit_block_cell_bind(c, block, raw0, ev0.p ? ev0.p : "0", b, indent + 1)) {
+        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = %s;\n", p0, ev0.p ? ev0.p : "0");
+      }
+      free(ev0.p);
     }
     if (p1) {
       const char *raw1 = block_param_name(c, block, 1);
@@ -11420,12 +11444,15 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         snprintf(src1, sizeof src1, "%s->vals[%s->order[_t%d]]", rb.p, rb.p, t);
       else
         snprintf(src1, sizeof src1, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = ", p1);
-      if (box1) emit_boxed_text(c, want1, src1, b); else buf_puts(b, src1);
-      buf_puts(b, ";\n");
+      Buf ev1; memset(&ev1, 0, sizeof ev1);
+      if (box1) emit_boxed_text(c, want1, src1, &ev1); else buf_puts(&ev1, src1);
+      if (!emit_block_cell_bind(c, block, raw1, ev1.p ? ev1.p : "0", b, indent + 1)) {
+        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = %s;\n", p1, ev1.p ? ev1.p : "0");
+      }
+      free(ev1.p);
     }
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(rb.p);
     return 1;
@@ -11442,6 +11469,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < ", t, t);
     buf_puts(b, rb.p); buf_printf(b, "->len; _t%d++) {\n", t);
+    int _bc = g_block_cell_names.n;
     if (p0) {
       /* The param may be poly (shared name across hashes of differing
          element types); box a concrete element into the poly slot. */
@@ -11461,13 +11489,15 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         snprintf(src, sizeof src, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
       else
         snprintf(src, sizeof src, "%s->order[_t%d]", rb.p, t);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = ", p0);
-      if (box) emit_boxed_text(c, want, src, b);
-      else buf_puts(b, src);
-      buf_puts(b, ";\n");
+      Buf ev; memset(&ev, 0, sizeof ev);
+      if (box) emit_boxed_text(c, want, src, &ev); else buf_puts(&ev, src);
+      if (!emit_block_cell_bind(c, block, raw, ev.p ? ev.p : "0", b, indent + 1)) {
+        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = %s;\n", p0, ev.p ? ev.p : "0");
+      }
+      free(ev.p);
     }
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(rb.p);
     return 1;
@@ -11547,7 +11577,8 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (!strcmp(name, "each_with_index") && ty_is_array(rt)) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) return 0;
-    const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
+    const char *p1_orig = block_param_name(c, block, 1);
+    const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     Scope *cs_ewi = comp_scope_of(c, id);
@@ -11556,36 +11587,49 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     TyKind ewi_et = ty_array_elem(rt);
     int p0_box_poly = clv_ewi_p0 && clv_ewi_p0->type == TY_POLY && ewi_et != TY_POLY;
     int p1_box_poly = clv_ewi_p1 && clv_ewi_p1->type == TY_POLY;
+    /* A celled param decouples from its same-named outer local; skip its
+       save/restore and bind into the per-iteration cell instead. */
+    Scope *bs_ewi = comp_scope_of(c, block);
+    LocalVar *bp0_ewi = p0_orig ? scope_local(bs_ewi, p0_orig) : NULL;
+    LocalVar *bp1_ewi = p1_orig ? scope_local(bs_ewi, p1_orig) : NULL;
+    int celled0 = bp0_ewi && bp0_ewi->is_cell && bp0_ewi->is_pure_block_cell;
+    int celled1 = bp1_ewi && bp1_ewi->is_cell && bp1_ewi->is_pure_block_cell;
     /* Save outer variables before loop */
     int ts_p0 = 0, ts_p1 = 0;
-    if (p0 && clv_ewi_p0) {
+    if (p0 && clv_ewi_p0 && !celled0) {
       ts_p0 = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, clv_ewi_p0->type, &ot);
       emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", ts_p0, p0); free(ot.p);
     }
-    if (p1 && clv_ewi_p1) {
+    if (p1 && clv_ewi_p1 && !celled1) {
       ts_p1 = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, clv_ewi_p1->type, &ot);
       emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", ts_p1, p1); free(ot.p);
     }
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(", t, t, k);
     buf_puts(b, rb.p); buf_printf(b, "); _t%d++) {\n", t);
+    int _bc = g_block_cell_names.n;
     if (p0) {
-      emit_indent(b, indent + 1);
+      Buf ev; memset(&ev, 0, sizeof ev);
       if (p0_box_poly) {
         char src[512]; snprintf(src, sizeof src, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
-        buf_printf(b, "lv_%s = ", p0); emit_boxed_text(c, ewi_et, src, b); buf_puts(b, ";\n");
+        emit_boxed_text(c, ewi_et, src, &ev);
       }
-      else {
-        buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
-        buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
+      else { buf_printf(&ev, "sp_%sArray_get(", k); buf_puts(&ev, rb.p); buf_printf(&ev, ", _t%d)", t); }
+      if (!emit_block_cell_bind(c, block, p0_orig, ev.p ? ev.p : "0", b, indent + 1)) {
+        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = %s;\n", p0, ev.p ? ev.p : "0");
       }
+      free(ev.p);
     }
     if (p1) {
-      emit_indent(b, indent + 1);
-      if (p1_box_poly) buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", p1, t);
-      else buf_printf(b, "lv_%s = _t%d;\n", p1, t);
+      char iv[40];
+      if (p1_box_poly) snprintf(iv, sizeof iv, "sp_box_int(_t%d)", t);
+      else snprintf(iv, sizeof iv, "_t%d", t);
+      if (!emit_block_cell_bind(c, block, p1_orig, iv, b, indent + 1)) {
+        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = %s;\n", p1, iv);
+      }
     }
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent); buf_puts(b, "}\n");
     /* Restore outer variables */
     if (p0 && ts_p0 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_p0); }
@@ -11605,42 +11649,57 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       if (!k2) k2 = k;
       TyKind et = ty_array_elem(rt);
       TyKind et2 = ty_is_array(a0t) ? ty_array_elem(a0t) : et;
-      const char *p1n = block_param_name(c, block, 1); if (p1n) p1n = rename_local(p1n);
+      const char *p1_orig = block_param_name(c, block, 1);
+      const char *p1n = p1_orig ? rename_local(p1_orig) : NULL;
       int t = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
       Buf ob; memset(&ob, 0, sizeof ob); emit_expr(c, zargv[0], &ob);
       Scope *zs = comp_scope_of(c, id);
       LocalVar *zlv0 = (p0 && zs) ? scope_local(zs, p0) : NULL;
       LocalVar *zlv1 = (p1n && zs) ? scope_local(zs, p1n) : NULL;
+      /* A captured-and-written (pure-block-cell) param binds into a fresh
+         per-iteration cell, which decouples it from a same-named outer local;
+         skip its shadow save/restore. */
+      Scope *bs_zip = comp_scope_of(c, block);
+      LocalVar *bz0 = p0_orig ? scope_local(bs_zip, p0_orig) : NULL;
+      LocalVar *bz1 = p1_orig ? scope_local(bs_zip, p1_orig) : NULL;
+      int zcell0 = bz0 && bz0->is_cell && bz0->is_pure_block_cell;
+      int zcell1 = bz1 && bz1->is_cell && bz1->is_pure_block_cell;
       int zs0 = 0, zs1 = 0;
-      if (p0 && zlv0) {
+      if (p0 && zlv0 && !zcell0) {
         zs0 = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, zlv0->type, &ot);
         emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", zs0, p0); free(ot.p);
       }
-      if (p1n && zlv1) {
+      if (p1n && zlv1 && !zcell1) {
         zs1 = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, zlv1->type, &ot);
         emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", zs1, p1n); free(ot.p);
       }
       emit_indent(b, indent);
       buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(%s); _t%d++) {\n",
                  t, t, k, rb.p ? rb.p : "NULL", t);
+      int _bc = g_block_cell_names.n;
       if (p0 && zlv0) {
         char src[512]; snprintf(src, sizeof src, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
         int box0 = zlv0->type == TY_POLY && et != TY_POLY;
-        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = ", p0);
-        if (box0) emit_boxed_text(c, et, src, b);
-        else buf_puts(b, src);
-        buf_puts(b, ";\n");
+        Buf ev; memset(&ev, 0, sizeof ev);
+        if (box0) emit_boxed_text(c, et, src, &ev); else buf_puts(&ev, src);
+        if (!emit_block_cell_bind(c, block, p0_orig, ev.p ? ev.p : "0", b, indent + 1)) {
+          emit_indent(b, indent + 1); buf_printf(b, "lv_%s = %s;\n", p0, ev.p ? ev.p : "0");
+        }
+        free(ev.p);
       }
       if (p1n && zlv1 && ob.p) {
         char src2[512]; snprintf(src2, sizeof src2, "sp_%sArray_get(%s, _t%d)", k2, ob.p, t);
         int box1 = zlv1->type == TY_POLY && et2 != TY_POLY;
-        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = ", p1n);
-        if (box1) emit_boxed_text(c, et2, src2, b);
-        else buf_puts(b, src2);
-        buf_puts(b, ";\n");
+        Buf ev; memset(&ev, 0, sizeof ev);
+        if (box1) emit_boxed_text(c, et2, src2, &ev); else buf_puts(&ev, src2);
+        if (!emit_block_cell_bind(c, block, p1_orig, ev.p ? ev.p : "0", b, indent + 1)) {
+          emit_indent(b, indent + 1); buf_printf(b, "lv_%s = %s;\n", p1n, ev.p ? ev.p : "0");
+        }
+        free(ev.p);
       }
       emit_loop_body(c, body, b, indent + 1);
+      g_block_cell_names.n = _bc;
       emit_indent(b, indent); buf_puts(b, "}\n");
       if (p0 && zs0 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, zs0); }
       if (p1n && zs1 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p1n, zs1); }
@@ -11660,6 +11719,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tn, ta);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+    int _bc = g_block_cell_names.n;
     /* multi-param: auto-splat each poly element into params */
     int npp_poly = 0; while (block_param_name(c, block, npp_poly)) npp_poly++;
     if (npp_poly >= 2) {
@@ -11674,10 +11734,14 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       }
     }
     else {
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = sp_poly_each_elem(_t%d, _t%d);\n", p0, ta, ti);
+      char src[64]; snprintf(src, sizeof src, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
+      if (!emit_block_cell_bind(c, block, p0_orig, src, b, indent + 1)) {
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = sp_poly_each_elem(_t%d, _t%d);\n", p0, ta, ti);
+      }
     }
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
   }
@@ -11690,8 +11754,12 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     /* Detect block param shadowing an outer variable; save/restore to preserve outer value */
     Scope *cs_pa = p0 ? comp_scope_of(c, id) : NULL;
     LocalVar *outer_pa = (p0 && cs_pa) ? scope_local(cs_pa, p0) : NULL;
+    /* A captured-and-written (pure-block-cell) param decouples from any same-named
+       outer local via its per-iteration cell, so skip the shadow save/restore. */
+    LocalVar *bp_cell_pa = p0_orig ? scope_local(comp_scope_of(c, block), p0_orig) : NULL;
+    int celled_pa = bp_cell_pa && bp_cell_pa->is_cell && bp_cell_pa->is_pure_block_cell;
     int ts_pa = 0;
-    if (outer_pa) {
+    if (outer_pa && !celled_pa) {
       ts_pa = ++g_tmp; Buf ot_pa; memset(&ot_pa, 0, sizeof ot_pa); emit_ctype(c, outer_pa->type, &ot_pa);
       emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot_pa.p ? ot_pa.p : "sp_RbVal", ts_pa, p0); free(ot_pa.p);
     }
@@ -11704,6 +11772,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", t, t, ta, t);
+    int _bc = g_block_cell_names.n;
     if (p0) {
       /* Destructuring: 2+ params over poly_array where params are scalar-typed */
       const char *orig_p0n = block_param_name(c, block, 0);
@@ -11730,13 +11799,17 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         }
       }
       if (!did_destruct) {
-        emit_indent(b, indent + 1);
-        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, t);
+        char src[128]; snprintf(src, sizeof src, "sp_PolyArray_get(_t%d, _t%d)", ta, t);
+        if (!emit_block_cell_bind(c, block, p0_orig, src, b, indent + 1)) {
+          emit_indent(b, indent + 1);
+          buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, t);
+        }
       }
     }
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent); buf_puts(b, "}\n");
-    if (outer_pa) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_pa); }
+    if (outer_pa && !celled_pa) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_pa); }
     return 1;
   }
   if ((!strcmp(name, "each") || !strcmp(name, "each_entry") || !strcmp(name, "reverse_each")) &&
@@ -11752,14 +11825,20 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     Scope *cs = p0 ? comp_scope_of(c, id) : NULL;
     LocalVar *outer = (p0 && cs) ? scope_local(cs, p0) : NULL;
     int box_to_poly = outer && outer->type == TY_POLY && et != TY_POLY;
+    /* A captured-and-written (pure-block-cell) param has no plain lv_ to shadow:
+       its per-iteration cell decouples it from any same-named outer local, so
+       skip the save/restore and bind into the cell instead. */
+    LocalVar *bp_cell = p0 ? scope_local(comp_scope_of(c, block), p0_orig) : NULL;
+    int celled = bp_cell && bp_cell->is_cell && bp_cell->is_pure_block_cell;
     int ts = 0;
-    if (outer) {
+    if (outer && !celled) {
       /* Block params shadow outer variables in Ruby; save and restore */
       ts = ++g_tmp;
       Buf ot_ea; memset(&ot_ea, 0, sizeof ot_ea); emit_ctype(c, outer->type, &ot_ea);
       emit_indent(b, indent);
       buf_printf(b, "%s _t%d = lv_%s;\n", ot_ea.p ? ot_ea.p : "sp_RbVal", ts, p0); free(ot_ea.p);
     }
+    int _bc = g_block_cell_names.n;
     if (rev) { emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = sp_%sArray_length(%s);\n", tn, k, rb.p); }
     emit_indent(b, indent);
     if (rev) buf_printf(b, "for (mrb_int _t%d = _t%d - 1; _t%d >= 0; _t%d--) {\n", t, tn, t, t);
@@ -11795,26 +11874,29 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
           goto each_body;
         }
       }
-      emit_indent(b, indent + 1);
+      const char *boxfn = NULL;
       if (box_to_poly) {
-        if (et == TY_INT) buf_printf(b, "lv_%s = sp_box_int(sp_%sArray_get(", p0, k);
-        else if (et == TY_STRING) buf_printf(b, "lv_%s = sp_box_str(sp_%sArray_get(", p0, k);
-        else if (et == TY_FLOAT) buf_printf(b, "lv_%s = sp_box_float(sp_%sArray_get(", p0, k);
-        else if (et == TY_BOOL) buf_printf(b, "lv_%s = sp_box_bool(sp_%sArray_get(", p0, k);
-        else buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
-        buf_puts(b, rb.p); buf_printf(b, ", _t%d)", t);
-        if (et == TY_INT || et == TY_STRING || et == TY_FLOAT || et == TY_BOOL) buf_puts(b, ")");
-        buf_puts(b, ";\n");
+        if (et == TY_INT) boxfn = "sp_box_int";
+        else if (et == TY_STRING) boxfn = "sp_box_str";
+        else if (et == TY_FLOAT) boxfn = "sp_box_float";
+        else if (et == TY_BOOL) boxfn = "sp_box_bool";
       }
-      else {
-        buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
-        buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
+      Buf ev; memset(&ev, 0, sizeof ev);
+      if (boxfn) buf_printf(&ev, "%s(", boxfn);
+      buf_printf(&ev, "sp_%sArray_get(", k);
+      buf_puts(&ev, rb.p); buf_printf(&ev, ", _t%d)", t);
+      if (boxfn) buf_puts(&ev, ")");
+      if (!emit_block_cell_bind(c, block, p0_orig, ev.p ? ev.p : "0", b, indent + 1)) {
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = %s;\n", p0, ev.p ? ev.p : "0");
       }
+      free(ev.p);
     }
     each_body:
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent); buf_puts(b, "}\n");
-    if (outer) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts); }
+    if (outer && !celled) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts); }
     free(rb.p);
     return 1;
   }
@@ -11909,14 +11991,20 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
        loop with a fresh mrb_int temp and re-box the counter each iteration
        (mirrors emit_for's poly-counter arm). */
     LocalVar *clv = p0_orig ? scope_local(comp_scope_of(c, block), p0_orig) : NULL;
-    if (clv && clv->type == TY_POLY) {
+    int celled_r = clv && clv->is_cell && clv->is_pure_block_cell;
+    /* A poly-widened loop var (promote mode) or a captured-and-written cell var
+       can't drive the C for-loop directly; run it off a fresh mrb_int counter and
+       rebind the param (boxing / celling as needed) each iteration. */
+    if ((clv && clv->type == TY_POLY) || celled_r) {
       int tc = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl; _t%d++) {\n",
                  tc, t, tc, t, t, tc);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", p0, tc);
+      int _bc = g_block_cell_names.n;
+      char tcs[32]; snprintf(tcs, sizeof tcs, "_t%d", tc);
+      emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, tcs, b, indent + 1);
       emit_loop_body(c, body, b, indent + 1);
+      g_block_cell_names.n = _bc;
       emit_indent(b, indent); buf_puts(b, "}\n");
       return 1;
     }
@@ -11945,8 +12033,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "for (mrb_int _t%d = ", ti); buf_puts(b, lo.p);
     buf_printf(b, "; _t%d %s ", ti, up ? "<=" : ">="); buf_puts(b, hi.p);
     buf_printf(b, "; _t%d%s) {\n", ti, up ? "++" : "--");
+    int _bc = g_block_cell_names.n;
     if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", ti); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(lo.p); free(hi.p);
     return 1;
@@ -11965,8 +12055,13 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_printf(b, "for (int _t%d = 0; _t%d < 4096; _t%d++) {\n", ti, ti, ti);
     emit_indent(b, indent + 1); buf_printf(b, "int _t%d = strcmp(_t%d, _t%d);\n", tcmp, tc, te);
     emit_indent(b, indent + 1); buf_printf(b, "if (_t%d > 0) break;\n", tcmp);
-    emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", p0, tc);
+    int _bc = g_block_cell_names.n;
+    char tcs[32]; snprintf(tcs, sizeof tcs, "_t%d", tc);
+    if (!emit_block_cell_bind(c, block, p0_orig, tcs, b, indent + 1)) {
+      emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", p0, tc);
+    }
     emit_loop_body(c, body, b, indent + 1);
+    g_block_cell_names.n = _bc;
     emit_indent(b, indent + 1); buf_printf(b, "if (_t%d == 0) break;\n", tcmp);
     emit_indent(b, indent + 1); buf_printf(b, "_t%d = sp_str_succ(_t%d);\n", tc, tc);
     emit_indent(b, indent); buf_puts(b, "}\n");

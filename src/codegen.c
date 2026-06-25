@@ -317,6 +317,12 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
        scope share storage. A param's incoming value is copied into the cell;
        a body local starts at 0. Int and proc cells supported. */
     if (lv->is_cell) {
+      /* A celled inlined-block param's cell is emitted per loop iteration at the
+         binding site (when pure block-bound), or its capturing proc defers (mixed
+         var) -- either way there is no method-entry cell. Proc-literal params
+         never reach emit_scope_decls, so an is_cell block param here is always an
+         inlined-block param. */
+      if (lv->is_block_param) continue;
       if (lv->type == TY_PROC) {
         buf_printf(b, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL);\n", lv->name);
         buf_printf(b, "    SP_GC_ROOT(_cell_%s);\n", lv->name);
@@ -1265,31 +1271,42 @@ static int vsnap_type_ok(Compiler *c, TyKind t) {
          t == TY_FLOAT || t == TY_POLY || ptr_cell;
 }
 
-/* Emit, into the proc-creation prelude, a fresh cell holding a snapshot of the
-   block param `nm`'s current value, and return its C variable name `_vs_<nm>`.
-   Mirrors the per-type cell shapes in emit_scope_decls. */
-static void emit_vsnap_cell(Compiler *c, const char *nm, LocalVar *clv, Buf *pre) {
-  TyKind t = clv ? clv->type : TY_INT;
-  emit_indent(pre, g_indent);
+/* Emit a fresh GC cell named `cellvar` of type `t` (mirroring the per-type cell
+   shapes in emit_scope_decls), root it, and store `init_expr` into it. A
+   pointer / string slot is laundered through the int cell as a (uintptr_t).
+   Shared by the value-snapshot capture and the per-iteration block-param bind. */
+void emit_fresh_cell(Compiler *c, const char *cellvar, TyKind t,
+                            const char *init_expr, Buf *pre, int indent) {
+  emit_indent(pre, indent);
   if (t == TY_FLOAT) {
-    buf_printf(pre, "mrb_float *_vs_%s = (mrb_float *)sp_gc_alloc(sizeof(mrb_float), NULL, NULL);\n", nm);
-    emit_indent(pre, g_indent); buf_printf(pre, "SP_GC_ROOT(_vs_%s);\n", nm);
-    emit_indent(pre, g_indent); buf_printf(pre, "*_vs_%s = lv_%s;\n", nm, nm);
+    buf_printf(pre, "mrb_float *%s = (mrb_float *)sp_gc_alloc(sizeof(mrb_float), NULL, NULL);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "SP_GC_ROOT(%s);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "*%s = %s;\n", cellvar, init_expr);
   }
   else if (t == TY_POLY) {
-    buf_printf(pre, "sp_RbVal *_vs_%s = (sp_RbVal *)sp_gc_alloc(sizeof(sp_RbVal), NULL, sp_cell_scan_rbval);\n", nm);
-    emit_indent(pre, g_indent); buf_printf(pre, "SP_GC_ROOT(_vs_%s);\n", nm);
-    emit_indent(pre, g_indent); buf_printf(pre, "*_vs_%s = lv_%s;\n", nm, nm);
+    buf_printf(pre, "sp_RbVal *%s = (sp_RbVal *)sp_gc_alloc(sizeof(sp_RbVal), NULL, sp_cell_scan_rbval);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "SP_GC_ROOT(%s);\n", cellvar);
+    emit_indent(pre, indent); buf_printf(pre, "*%s = %s;\n", cellvar, init_expr);
   }
   else {
     int ptr_cell = proc_slot_is_ptr(t) && !comp_ty_value_obj(c, t);
     const char *scan = !ptr_cell ? "NULL" : (t == TY_STRING ? "sp_cell_scan_str" : "sp_cell_scan_ptr");
-    buf_printf(pre, "mrb_int *_vs_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, %s);\n", nm, scan);
-    emit_indent(pre, g_indent); buf_printf(pre, "SP_GC_ROOT(_vs_%s);\n", nm);
-    emit_indent(pre, g_indent);
-    if (ptr_cell) buf_printf(pre, "*_vs_%s = (mrb_int)(uintptr_t)lv_%s;\n", nm, nm);
-    else buf_printf(pre, "*_vs_%s = lv_%s;\n", nm, nm);
+    buf_printf(pre, "mrb_int *%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, %s);\n", cellvar, scan);
+    emit_indent(pre, indent); buf_printf(pre, "SP_GC_ROOT(%s);\n", cellvar);
+    emit_indent(pre, indent);
+    if (ptr_cell) buf_printf(pre, "*%s = (mrb_int)(uintptr_t)%s;\n", cellvar, init_expr);
+    else buf_printf(pre, "*%s = %s;\n", cellvar, init_expr);
   }
+}
+
+/* Emit, into the proc-creation prelude, a fresh cell holding a snapshot of the
+   block param `nm`'s current value `lv_<nm>` (C var name `_vs_<nm>`). */
+static void emit_vsnap_cell(Compiler *c, const char *nm, LocalVar *clv, Buf *pre) {
+  TyKind t = clv ? clv->type : TY_INT;
+  char cellvar[96], init[96];
+  snprintf(cellvar, sizeof cellvar, "_vs_%s", nm);
+  snprintf(init, sizeof init, "lv_%s", nm);
+  emit_fresh_cell(c, cellvar, t, init, pre, g_indent);
 }
 
 void emit_proc_literal(Compiler *c, int create, Buf *b) {
@@ -1327,15 +1344,6 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
     if (nameset_has(&params, nm)) continue;
     LocalVar *lv = scope_local(bs, nm);
     if (lv && lv->is_cell) {
-      /* A celled enclosing inlined-block param is a loop variable that is both
-         written and captured. It would need a fresh heap cell allocated per loop
-         iteration (its binding lives at the iteration sites), which the
-         value-snapshot path does not cover -- defer rather than miscompile. */
-      if (lv->is_block_param) {
-        free(params.v); free(used.v); free(locals.v); free(caps.v); free(vsnap.v);
-        unsupported(c, create, "proc capturing a written enclosing block variable (later slice)");
-        return;
-      }
       int ptr_cell = proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type);
       int float_cell = lv->type == TY_FLOAT && !has_float_param;
       int poly_cell = lv->type == TY_POLY;
@@ -1343,6 +1351,19 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
           lv->type != TY_PROC && !float_cell && !ptr_cell && !poly_cell) {
         free(params.v); free(used.v); free(locals.v); free(caps.v); free(vsnap.v);
         unsupported(c, create, "proc capturing a non-integer variable (later slice)");
+        return;
+      }
+      /* A celled inlined-block param is a loop variable that is both written and
+         captured; it takes a fresh heap cell allocated per loop iteration at its
+         binding site. Promote it only when it is pure block-bound (not sharing
+         its LocalVar with a method local) AND its binding emitter actually
+         emitted that cell (registered live in g_block_cell_names). Otherwise the
+         per-iteration cell does not exist -- a structural-misfit emitter, or a
+         mixed var -- so defer rather than reference an undeclared cell. */
+      if (lv->is_block_param &&
+          (!lv->is_pure_block_cell || !nameset_has(&g_block_cell_names, nm))) {
+        free(params.v); free(used.v); free(locals.v); free(caps.v); free(vsnap.v);
+        unsupported(c, create, "proc capturing a written enclosing block variable (later slice)");
         return;
       }
       nameset_add(&caps, nm);
