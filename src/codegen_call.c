@@ -3365,11 +3365,17 @@ static int emit_range_call(Compiler *c, int id, Buf *b) {
       free(rb.p); free(sb.p);
       return 1;
     }
-    if (!strcmp(name, "each") && block < 0) {  /* enumerator: materialize to_a */
+    if (!strcmp(name, "each") && block < 0) {  /* external enumerator, or to_a materialize */
       int t = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      buf_printf(b, "({ sp_Range _t%d = %s; sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); })",
-                 t, rb.p ? rb.p : "", t, t, t);
+      if (comp_ntype(c, id) == TY_ENUMERATOR) {
+        buf_printf(b, "sp_Enumerator_new_from(sp_box_int_array(({ sp_Range _t%d = %s; sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); })))",
+                   t, rb.p ? rb.p : "", t, t, t);
+      }
+      else {
+        buf_printf(b, "({ sp_Range _t%d = %s; sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); })",
+                   t, rb.p ? rb.p : "", t, t, t);
+      }
       free(rb.p);
       return 1;
     }

@@ -313,6 +313,24 @@ static int infer_int_shl_overflows(long long base, long long amount) {
   return 0;
 }
 
+/* A blockless `range.each` is an external Enumerator only when used standalone
+   or consumed by an enumerator method (#next/#peek/#rewind/#size). When it is
+   the receiver of a collection method (.to_a/.map/.select/...), it materializes
+   to a typed array instead, so those chains keep the fast unboxed path. */
+static int range_each_is_external(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  for (int n = 0; n < nt->count; n++) {
+    const char *ty = nt_type(nt, n);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (nt_ref(nt, n, "receiver") != id) continue;
+    const char *m = nt_str(nt, n, "name");
+    if (m && (!strcmp(m, "next") || !strcmp(m, "peek") ||
+              !strcmp(m, "rewind") || !strcmp(m, "size"))) return 1;
+    return 0;   /* receiver of a collection method -> materialize to an array */
+  }
+  return 1;     /* standalone -> enumerator */
+}
+
 TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -2106,7 +2124,8 @@ else {
     if (!strcmp(name, "step")) return TY_INT_ARRAY;
     if (!strcmp(name, "all?") || !strcmp(name, "any?") ||
         !strcmp(name, "none?") || !strcmp(name, "one?")) return TY_BOOL;
-    if (!strcmp(name, "each") && nt_ref(nt, id, "block") < 0) return TY_INT_ARRAY;
+    if (!strcmp(name, "each") && nt_ref(nt, id, "block") < 0)
+      return range_each_is_external(c, id) ? TY_ENUMERATOR : TY_INT_ARRAY;
     if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 1) return TY_INT_ARRAY;
     if (!strcmp(name, "sum") || !strcmp(name, "min") || !strcmp(name, "max") ||
         !strcmp(name, "first") || !strcmp(name, "last") ||
