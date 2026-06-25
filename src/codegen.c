@@ -627,6 +627,46 @@ void proc_collect_locals(Compiler *c, int id, NameSet *locals) {
   }
 }
 
+/* Collect the parameter names declared by a block/lambda node (requireds,
+   optionals, posts, rest). Used to declare a nested block's params in the
+   flat fiber-body C function it is inlined into. */
+static void collect_block_param_names(Compiler *c, int blk, NameSet *out) {
+  const NodeTable *nt = c->nt;
+  int bp_node = nt_ref(nt, blk, "parameters");
+  if (bp_node < 0) return;
+  int inner = nt_ref(nt, bp_node, "parameters");
+  int pn = inner >= 0 ? inner : bp_node;
+  if (pn < 0) return;
+  int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+  for (int i = 0; i < rn; i++) { const char *nm = nt_str(nt, reqs[i], "name"); if (nm) nameset_add(out, nm); }
+  int on = 0; const int *opts = nt_arr(nt, pn, "optionals", &on);
+  for (int i = 0; i < on; i++) { const char *nm = nt_str(nt, opts[i], "name"); if (nm) nameset_add(out, nm); }
+  int psn = 0; const int *posts = nt_arr(nt, pn, "posts", &psn);
+  for (int i = 0; i < psn; i++) { const char *nm = nt_str(nt, posts[i], "name"); if (nm) nameset_add(out, nm); }
+  int rest = nt_ref(nt, pn, "rest");
+  if (rest >= 0) { const char *nm = nt_str(nt, rest, "name"); if (nm) nameset_add(out, nm); }
+}
+
+/* Collect every local name defined inside a fiber/generator body INCLUDING
+   nested blocks: local-variable writes plus the parameters of nested blocks.
+   A nested block (`3.times { |i| ... }`) is inlined into the fiber body's flat
+   C function, so its param `i` and any locals it writes must be declared
+   there. Unlike proc_collect_locals this descends through nested blocks. */
+static void fiber_collect_nested_locals(Compiler *c, int id, NameSet *out) {
+  if (id < 0) return;
+  const char *ty = nt_type(c->nt, id);
+  if (!ty) return;
+  if (!strcmp(ty, "LocalVariableWriteNode") || !strcmp(ty, "LocalVariableTargetNode") ||
+      !strcmp(ty, "LocalVariableOperatorWriteNode") || !strcmp(ty, "LocalVariableOrWriteNode") ||
+      !strcmp(ty, "LocalVariableAndWriteNode"))
+    nameset_add(out, nt_str(c->nt, id, "name"));
+  if (is_nested_block(ty)) collect_block_param_names(c, id, out);
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) fiber_collect_nested_locals(c, ch, out); }
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) fiber_collect_nested_locals(c, ids[k], out); }
+}
+
 /* Collect all local names used (read or written) directly in the proc body,
    not crossing nested blocks. The caller classifies each as the proc's own
    param/local or a captured enclosing var (is_cell). */
@@ -763,6 +803,12 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   NameSet fib_locals = {0};
   if (body >= 0) proc_collect_locals(c, body, &fib_locals);
 
+  /* Locals to declare in the flat fiber-body C function: the body's own
+     locals PLUS the params/locals of any nested blocks inlined into it
+     (a nested `3.times { |i| ... }` needs `i` declared here). */
+  NameSet fib_decls = {0};
+  if (body >= 0) fiber_collect_nested_locals(c, body, &fib_decls);
+
   /* Compute captures: names used in the body that belong to the enclosing scope
      but are NOT defined by the fiber body itself and NOT the block param. */
   NameSet fib_used = {0};
@@ -896,12 +942,13 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
       if (!lv->name) continue;
       if (bp0 && !strcmp(lv->name, bp0)) continue;
       if (nameset_has(&caps, lv->name)) continue;
-      if (!nameset_has(&fib_locals, lv->name)) continue;
+      if (!nameset_has(&fib_locals, lv->name) && !nameset_has(&fib_decls, lv->name)) continue;
       if (lv->type == TY_UNKNOWN) continue;
       declare_local(c, pb, lv, 0);
     }
   }
   free(fib_locals.v);
+  free(fib_decls.v);
 
   /* A generator yields imperatively via `y << v`; its body value is discarded
      (running off the end terminates the fiber, which #next maps to
