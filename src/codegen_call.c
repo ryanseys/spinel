@@ -1,4 +1,21 @@
 #include "codegen_internal.h"
+#include "respond_to_table.h"
+
+/* Pick the sorted method-name table for a primitive receiver type, or NULL
+   when the type has no compile-time table (e.g. a poly value whose runtime
+   class is unknown). Used to answer respond_to? for built-in receivers. */
+static const char *const *prim_rt_table(TyKind rt, int *n) {
+  if (rt == TY_STRING)               { *n = sp_rt_string_n;  return sp_rt_string; }
+  if (rt == TY_INT || rt == TY_BIGINT) { *n = sp_rt_integer_n; return sp_rt_integer; }
+  if (rt == TY_FLOAT)                { *n = sp_rt_float_n;   return sp_rt_float; }
+  if (rt == TY_SYMBOL)               { *n = sp_rt_symbol_n;  return sp_rt_symbol; }
+  if (rt == TY_RANGE)                { *n = sp_rt_range_n;   return sp_rt_range; }
+  if (rt == TY_NIL)                  { *n = sp_rt_nil_n;     return sp_rt_nil; }
+  if (rt == TY_BOOL)                 { *n = sp_rt_true_n;    return sp_rt_true; }
+  if (ty_is_array(rt))               { *n = sp_rt_array_n;   return sp_rt_array; }
+  if (ty_is_hash(rt))                { *n = sp_rt_hash_n;    return sp_rt_hash; }
+  return NULL;
+}
 
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -8109,7 +8126,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
-    else if (aty && sp_streq(aty, "StringNode")) qm = nt_str(nt, argv[0], "unescaped");
+    else if (aty && sp_streq(aty, "StringNode")) qm = nt_str(nt, argv[0], "content");
     if (qm) {
       static const char *const uni[] = {
         "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze",
@@ -8169,9 +8186,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                 comp_reader_in_chain(c, cid, qm, NULL) ||
                 comp_writer_in_chain(c, cid, qm, NULL);
         }
-        /* a primitive/poly/unknown receiver with a non-universal method: we
-           lack a per-type method table, so leave it to the fall-through
-           rather than answer a possibly-wrong false. */
+        else {
+          /* primitive receiver (String/Integer/Array/...): consult the
+             generated per-type method set. A poly/unknown receiver has no
+             table, so it stays unresolved and falls through rather than
+             answering a possibly-wrong false. */
+          int tn = 0;
+          const char *const *tbl = prim_rt_table(rt, &tn);
+          if (tbl) { resolved = 1; yes = sp_rt_in(tbl, tn, qm); }
+        }
       }
       if (resolved) { buf_printf(b, "%d", yes); return; }
     }
