@@ -41,7 +41,8 @@ void compute_reachable(Compiler *c) {
   /* Names that may be invoked implicitly (no explicit CallNode): keep live. */
   static const char *const implicit[] = {
     "to_s", "inspect", "==", "<=>", "eql?", "hash", "each", "coerce",
-    "to_str", "to_ary", "to_a", "to_i", "to_int", "to_h", "to_proc", "call", NULL };
+    "to_str", "to_ary", "to_a", "to_i", "to_int", "to_h", "to_proc", "call",
+    "initialize_copy", NULL };
 
   /* BFS queue (scope indices). */
   int *queue = malloc((size_t)c->nscopes * sizeof(int));
