@@ -215,6 +215,10 @@ static unsigned sm_hash(int class_id, const char *name, int is_cm) {
 }
 static int sm_nscopes = -1, sm_buckets = 0, sm_frozen = 0;
 static int *sm_next = NULL, *sm_head = NULL;
+/* Parallel index for top-level methods (class_id < 0), keyed by name. Built in
+   descending scope order so the chain head is the lowest scope index -- matching
+   comp_method_index's "first definition wins" forward scan. */
+static int *tm_next = NULL, *tm_head = NULL;
 /* The index is only safe once scope shape (count + each scope's class_id/name/
    is_cmethod) stops changing: walk_scope and the register_* / prepend passes
    create and *rename* scopes, and a rename leaves the count unchanged, so a
@@ -224,17 +228,27 @@ static int *sm_next = NULL, *sm_head = NULL;
 void comp_scope_index_set_frozen(int f) { sm_frozen = f; sm_nscopes = -1; }
 static void sm_build(Compiler *c) {
   int ns = c->nscopes;
-  free(sm_next); free(sm_head);
+  free(sm_next); free(sm_head); free(tm_next); free(tm_head);
   sm_buckets = ns > 0 ? ns : 1;
   sm_next = malloc((size_t)(ns > 0 ? ns : 1) * sizeof(int));
   sm_head = malloc((size_t)sm_buckets * sizeof(int));
+  tm_next = malloc((size_t)(ns > 0 ? ns : 1) * sizeof(int));
+  tm_head = malloc((size_t)sm_buckets * sizeof(int));
   sm_nscopes = ns;
-  if (!sm_next || !sm_head) { sm_buckets = 0; return; }
-  for (int i = 0; i < sm_buckets; i++) sm_head[i] = -1;
+  if (!sm_next || !sm_head || !tm_next || !tm_head) { sm_buckets = 0; return; }
+  for (int i = 0; i < sm_buckets; i++) { sm_head[i] = -1; tm_head[i] = -1; }
   for (int s = 0; s < ns; s++) {
-    if (c->scopes[s].class_id < 0 || !c->scopes[s].name) continue;
-    unsigned b = sm_hash(c->scopes[s].class_id, c->scopes[s].name, c->scopes[s].is_cmethod) % (unsigned)sm_buckets;
-    sm_next[s] = sm_head[b]; sm_head[b] = s;
+    if (!c->scopes[s].name) continue;
+    if (c->scopes[s].class_id >= 0) {
+      unsigned b = sm_hash(c->scopes[s].class_id, c->scopes[s].name, c->scopes[s].is_cmethod) % (unsigned)sm_buckets;
+      sm_next[s] = sm_head[b]; sm_head[b] = s;
+    }
+  }
+  /* top-level methods: descending so the lowest scope index ends at the head */
+  for (int s = ns - 1; s >= 0; s--) {
+    if (c->scopes[s].class_id >= 0 || !c->scopes[s].name) continue;
+    unsigned b = sm_hash(-1, c->scopes[s].name, 0) % (unsigned)sm_buckets;
+    tm_next[s] = tm_head[b]; tm_head[b] = s;
   }
 }
 static int sm_lookup(Compiler *c, int class_id, const char *name, int is_cm) {
@@ -571,9 +585,17 @@ Scope *comp_scope_of(Compiler *c, int node_id) {
 
 int comp_method_index(Compiler *c, const char *name) {
   if (!name) return -1;
-  for (int s = 0; s < c->nscopes; s++)
-    if (c->scopes[s].class_id < 0 && c->scopes[s].name &&
-        sp_streq(c->scopes[s].name, name)) return s;
+  if (!sm_frozen) {
+    for (int s = 0; s < c->nscopes; s++)
+      if (c->scopes[s].class_id < 0 && c->scopes[s].name &&
+          sp_streq(c->scopes[s].name, name)) return s;
+    return -1;
+  }
+  if (sm_nscopes != c->nscopes) sm_build(c);
+  if (!sm_buckets) return -1;
+  unsigned b = sm_hash(-1, name, 0) % (unsigned)sm_buckets;
+  for (int s = tm_head[b]; s >= 0; s = tm_next[s])
+    if (c->scopes[s].class_id < 0 && c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
   return -1;
 }
 

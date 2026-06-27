@@ -20,6 +20,15 @@ static unsigned wrn_hash(const char *s) {
   for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
   return h;
 }
+/* Bucket key. Local writes are keyed by (name, scope) so a common local name
+   (`s`, `result`) written across thousands of methods does not collapse into
+   one giant chain that every query must walk; ivar writes are keyed by name
+   alone, matching the lookup semantics (an ivar `@x` write anywhere counts). */
+static unsigned wrn_key(const char *nm, int scopeidx) {
+  unsigned h = wrn_hash(nm);
+  if (scopeidx >= 0) h = h * 31u + (unsigned)scopeidx * 2654435761u;
+  return h;
+}
 static const NodeTable *wrn_nt = NULL;
 static int wrn_ntc = -1, wrn_buckets = 0;
 static int *wrn_next = NULL, *wrn_head = NULL;
@@ -35,10 +44,13 @@ static void wrn_build(Compiler *c) {
   for (int i = 0; i < wrn_buckets; i++) wrn_head[i] = -1;
   for (int id = 0; id < n; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || (!sp_streq(ty, "InstanceVariableWriteNode") && !sp_streq(ty, "LocalVariableWriteNode"))) continue;
+    if (!ty) continue;
+    int is_local = sp_streq(ty, "LocalVariableWriteNode");
+    if (!is_local && !sp_streq(ty, "InstanceVariableWriteNode")) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
-    unsigned b = wrn_hash(nm) % (unsigned)wrn_buckets;
+    int scopeidx = is_local ? (int)(comp_scope_of(c, id) - c->scopes) : -1;
+    unsigned b = wrn_key(nm, scopeidx) % (unsigned)wrn_buckets;
     wrn_next[id] = wrn_head[b]; wrn_head[b] = id;
   }
 }
@@ -55,7 +67,8 @@ static int recv_has_scalar_numeric_write(Compiler *c, int recv) {
   const char *wkind = is_ivar ? "InstanceVariableWriteNode" : "LocalVariableWriteNode";
   if (wrn_nt != nt || wrn_ntc != nt->count) wrn_build(c);
   if (!wrn_buckets) return 0;
-  unsigned b = wrn_hash(rnm) % (unsigned)wrn_buckets;
+  int qscope = is_local ? (int)(rscope - c->scopes) : -1;
+  unsigned b = wrn_key(rnm, qscope) % (unsigned)wrn_buckets;
   for (int id = wrn_head[b]; id >= 0; id = wrn_next[id]) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, wkind)) continue;
@@ -70,6 +83,48 @@ static int recv_has_scalar_numeric_write(Compiler *c, int recv) {
     if (vt == TY_INT || vt == TY_FLOAT || vt == TY_BIGINT) return 1;
   }
   return 0;
+}
+
+/* Name-keyed index of `recv[k] = v` (`[]=`) call sites whose receiver is an
+   ivar/local read, cached per node table. aset_value_type and
+   infer_param_hash_value both look these up by receiver name; during the
+   fixpoint that is O(recvs * nodes * iterations) without the index. The shape
+   is stable across the pass (only inferred types change), so it is built once
+   and reused; per-call filters (exact name, receiver kind, scope) run fresh. */
+static const NodeTable *aw_nt = NULL;
+static int aw_ntc = -1, aw_buckets = 0;
+static int *aw_next = NULL, *aw_head = NULL;
+static void aw_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  free(aw_next); free(aw_head);
+  aw_buckets = n > 0 ? n : 1;
+  aw_next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+  aw_head = malloc((size_t)aw_buckets * sizeof(int));
+  aw_nt = nt; aw_ntc = n;
+  if (!aw_next || !aw_head) { aw_buckets = 0; return; }
+  for (int i = 0; i < aw_buckets; i++) aw_head[i] = -1;
+  for (int id = 0; id < n; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "[]=")) continue;
+    int wr = nt_ref(nt, id, "receiver");
+    if (wr < 0) continue;
+    int wk = nt_kind(nt, wr);
+    if (wk != NK_InstanceVariableReadNode && wk != NK_LocalVariableReadNode) continue;
+    const char *wn = nt_str(nt, wr, "name");
+    if (!wn) continue;
+    unsigned b = wrn_hash(wn) % (unsigned)aw_buckets;
+    aw_next[id] = aw_head[b]; aw_head[b] = id;
+  }
+}
+/* First `[]=` call id chained for receiver name `rnm`, or -1; walk via aw_next.
+   Caller must still verify the exact name (hash collisions) and receiver kind. */
+static int aw_first(Compiler *c, const char *rnm) {
+  const NodeTable *nt = c->nt;
+  if (aw_nt != nt || aw_ntc != nt->count) aw_build(c);
+  if (!aw_buckets) return -1;
+  return aw_head[wrn_hash(rnm) % (unsigned)aw_buckets];
 }
 
 /* Unified value type of `recv[k] = v` writes that target the same ivar/local
@@ -89,10 +144,7 @@ static TyKind aset_value_type(Compiler *c, int recv) {
   Scope *rsc = comp_scope_of(c, recv);
   int rcls = rsc ? rsc->class_id : -1;
   TyKind acc = TY_UNKNOWN;
-  for (int id = 0; id < nt->count; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "[]=")) continue;
+  for (int id = aw_first(c, rnm); id >= 0; id = aw_next[id]) {
     int wrecv = nt_ref(nt, id, "receiver");
     if (wrecv < 0) continue;
     const char *wn = nt_str(nt, wrecv, "name");
@@ -139,10 +191,7 @@ int infer_param_hash_value(Compiler *c) {
       if (!seedable || lv->rbs_seeded) continue;
       TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
       int saw = 0, ambiguous = 0;
-      for (int id = 0; id < nt->count; id++) {
-        if (nt_kind(nt, id) != NK_CallNode) continue;
-        const char *nm = nt_str(nt, id, "name");
-        if (!nm || !sp_streq(nm, "[]=")) continue;
+      for (int id = aw_first(c, sc->pnames[p]); id >= 0; id = aw_next[id]) {
         int wr = nt_ref(nt, id, "receiver");
         if (wr < 0 || nt_kind(nt, wr) != NK_LocalVariableReadNode) continue;
         const char *wn = nt_str(nt, wr, "name");
