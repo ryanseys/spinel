@@ -769,6 +769,22 @@ else {
     buf_puts(b, ")));\n");
     return;
   }
+  /* Array set-operation op-assign (`a |= b`, `a &= b`, `a -= b`): desugar to
+     `a = a OP b` through the same typed set-op helper the binary `a | b` path
+     uses. The rhs must be the same array kind (or an empty `[]` literal); a
+     mismatched element kind falls through to the loud reject below. */
+  if (ty_is_array(t) && (sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "-"))) {
+    TyKind vt = comp_ntype(c, v);
+    if (vt == t || vt == TY_UNKNOWN) {
+      const char *k = (t == TY_POLY_ARRAY) ? "Poly" : array_kind(t);
+      const char *fn = sp_streq(op, "&") ? "intersect" : (sp_streq(op, "|") ? "union" : "difference");
+      buf_printf(b, "lv_%s = sp_%sArray_%s(lv_%s, ", en, k, fn, en);
+      if (vt == TY_UNKNOWN) buf_puts(b, "NULL");
+      else emit_expr(c, v, b);
+      buf_puts(b, ");\n");
+      return;
+    }
+  }
   unsupported(c, id, "operator assignment");
 }
 
