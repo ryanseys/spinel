@@ -10,6 +10,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_UNKNOWN || t == TY_VOID || t == TY_REGEX) { buf_printf(b, "(%s, sp_box_nil())", expr); return; }
   if (t == TY_EXCEPTION) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_EXCEPTION)", expr); return; }
   if (t == TY_FIBER) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_FIBER)", expr); return; }
+  if (t == TY_THREAD) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_THREAD)", expr); return; }
   if (t == TY_ENUMERATOR) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_ENUMERATOR)", expr); return; }
   if (t == TY_IO) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_IO)", expr); return; }
   if (ty_is_object(t)) { buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t)); return; }
@@ -95,6 +96,10 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   if (t == TY_POLY) { emit_expr(c, node, b); return; }
   if (t == TY_FIBER) {
     buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_FIBER)");
+    return;
+  }
+  if (t == TY_THREAD) {
+    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_THREAD)");
     return;
   }
   if (t == TY_IO) {
@@ -923,7 +928,7 @@ int scope_creates_returning_proc(Compiler *c, int si) {
 /* Returns 1 if a type needs a GC root when stored in a fiber capture struct. */
 int fiber_cap_needs_root(TyKind t) {
   return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) ||
-         ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER ||
+         ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER || t == TY_THREAD ||
          t == TY_EXCEPTION || t == TY_STRINGIO || t == TY_STRINGSCANNER ||
          t == TY_MATCHDATA || t == TY_REGEX || t == TY_TIME;
 }
@@ -2607,6 +2612,7 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_STRINGSCANNER:         buf_puts(b, "StringScanner"); break;
     case TY_PROC: case TY_CURRY:   buf_puts(b, "Proc"); break;
     case TY_FIBER:                 buf_puts(b, "Fiber"); break;
+    case TY_THREAD:                buf_puts(b, "Thread"); break;
     case TY_RANDOM:                buf_puts(b, "Random"); break;
     case TY_METHOD:                buf_puts(b, "Method"); break;
     case TY_IO:                    buf_puts(b, "IO"); break;
@@ -2865,7 +2871,7 @@ static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
   g_uses_marshal = 0;
-  g_uses_regex = 0; g_uses_argv = 0; g_uses_random = 0;
+  g_uses_regex = 0; g_uses_argv = 0; g_uses_random = 0; g_uses_threads = 0;
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
     if (!ty) continue;
@@ -2877,6 +2883,7 @@ static void scan_prologue_features(Compiler *c) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
       if (sp_streq(nm, "Regexp")) g_uses_regex = 1;
+      else if (sp_streq(nm, "Thread")) g_uses_threads = 1;
       else if (sp_streq(nm, "Random")) g_uses_random = 1;
       else if (sp_streq(nm, "ARGV") || sp_streq(nm, "ARGF")) g_uses_argv = 1;
       else if (sp_streq(nm, "Symbol")) g_uses_symbols = 1;
@@ -3597,6 +3604,9 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(body, "int main(int argc,char**argv){\n");
   buf_puts(body, "    SP_GC_SAVE();\n");
   if (g_re_init_needed) buf_puts(body, "    sp_re_init();\n");
+  /* Adopt the main thread and chain the scheduler's GC root hook. Placed after
+     sp_re_init so it chains whatever globals hook that installed. */
+  if (g_uses_threads) buf_puts(body, "    sp_sched_init();\n");
   /* The ARGV copy loop only matters if the program reads ARGV / ARGF / $*. */
   if (g_uses_argv)
     buf_puts(body, "    { sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_dup_external(argv[_ai + 1]); }\n");
@@ -3639,6 +3649,9 @@ char *codegen_program(const NodeTable *nt) {
     }
   }
   EMIT_COLLECT_UNIT(emit_stmts(c, c->scopes[0].body, body, 1));
+  /* Run any fire-and-forget threads that never got a turn before the program
+     exits, so their side effects happen. */
+  if (g_uses_threads) buf_puts(body, "    sp_sched_drain();\n");
   if (g_needs_at_exit)
     buf_puts(body, "  { mrb_int _ax_args[16] = {0}; for (mrb_int _ax = sp_at_exit_count - 1; _ax >= 0; _ax--) sp_proc_call(sp_at_exit_hooks[_ax], 0, _ax_args); }\n");
   buf_puts(body, "  return 0;\n}\n");

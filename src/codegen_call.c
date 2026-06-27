@@ -5382,6 +5382,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
 
+  /* Thread instance methods (a green thread on the scheduler) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_THREAD) {
+    if (sp_streq(name, "value") && argc == 0) {
+      buf_puts(b, "sp_Thread_value("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "join") && argc == 0) {
+      buf_puts(b, "sp_Thread_join("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "alive?") && argc == 0) {
+      buf_puts(b, "sp_Thread_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+  }
+
   /* Fiber instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
     if (sp_streq(name, "resume")) {
@@ -7265,6 +7278,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
+  /* Thread class methods: Thread.current / Thread.pass (recv is the Thread
+     constant). Handled before the Class.new dispatch since they are not `new`. */
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
+    const char *tcn = nt_str(nt, recv, "name");
+    if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "current") && argc == 0) {
+      buf_puts(b, "sp_Thread_current()"); return;
+    }
+    if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "pass") && argc == 0) {
+      /* Thread.pass yields the scheduler and evaluates to nil. */
+      buf_puts(b, "(sp_Thread_pass(), sp_box_nil())"); return;
+    }
+  }
+
   /* Class.new(args) -> sp_<Class>_new(args) */
   if (recv >= 0 && sp_streq(name, "new")) {
     const char *rty = nt_type(nt, recv);
@@ -7364,9 +7390,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_fiber_new(c, id, b, 1);
         return;
       }
-      if (cn && (sp_streq(cn, "Fiber") || sp_streq(cn, "Thread")) && nt_ref(nt, id, "block") >= 0) {
-        /* Single-threaded: a Thread is modeled as a Fiber that runs to
-           completion on #value (no preemption, no Fiber.yield in the body). */
+      if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) {
+        /* Thread.new: an eager green thread wrapping a fiber built exactly like
+           a Fiber.new block, enqueued on the scheduler (the block result lands
+           in fiber->yielded_value, read back by #value). */
+        buf_puts(b, "sp_Thread_spawn_fiber(");
+        emit_fiber_new(c, id, b, 0);
+        buf_puts(b, ")");
+        return;
+      }
+      if (cn && sp_streq(cn, "Fiber") && nt_ref(nt, id, "block") >= 0) {
         emit_fiber_new(c, id, b, 0);
         return;
       }

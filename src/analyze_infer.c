@@ -879,8 +879,8 @@ else {
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
       /* Builtin object types */
       if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
-      /* Thread.new { block }: modeled as a Fiber run to completion on #value. */
-      if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_FIBER;
+      /* Thread.new { block }: an eager green thread (sp_thread) on the scheduler. */
+      if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_THREAD;
       if (cn && sp_streq(cn, "Random")) return TY_RANDOM;
       if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
                  sp_streq(cn, "IO") || sp_streq(cn, "File") ||
@@ -1070,15 +1070,15 @@ else {
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Enumerator") &&
           nt_ref(nt, id, "block") >= 0) return TY_ENUMERATOR;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Fiber")) return TY_FIBER;
-      /* Thread.new { block } modeled as a Fiber (single-threaded); #value
-         resumes it to completion. */
+      /* Thread.new { block }: an eager green thread on the scheduler. */
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Thread") &&
           nt_ref(nt, id, "block") >= 0)
-        return TY_FIBER;
+        return TY_THREAD;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) return TY_RANDOM;
-      if (cn2 && sp_streq(name, "new") &&
-          (sp_streq(cn2, "Thread") || sp_streq(cn2, "Mutex")))
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Mutex"))
         return TY_POLY;
+      if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "current")) return TY_THREAD;
+      if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "pass")) return TY_NIL;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "current")) return TY_FIBER;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "yield")) return TY_POLY;
       /* Random class methods: Random.rand(n)->int / Random.rand->float */
@@ -1094,6 +1094,13 @@ else {
     if (sp_streq(name, "alive?")) return TY_BOOL;
     if (sp_streq(name, "value")) return TY_POLY;
     if (sp_streq(name, "kill")) return TY_FIBER;   /* returns the receiver */
+  }
+
+  /* TY_THREAD instance methods */
+  if (recv >= 0 && rt == TY_THREAD) {
+    if (sp_streq(name, "value")) return TY_POLY;
+    if (sp_streq(name, "join")) return TY_THREAD;      /* returns the thread */
+    if (sp_streq(name, "alive?")) return TY_BOOL;
   }
 
   /* TY_ENUMERATOR instance methods */

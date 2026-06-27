@@ -18,6 +18,7 @@ static sp_Fiber  *g_root_fiber = NULL;   /* the main thread's context, captured 
 static sp_thread  g_main_thread;         /* the main thread: runs on root, fiber == NULL */
 static sp_thread *g_current = NULL;      /* the green thread running right now */
 static sp_thread *g_rq_head = NULL, *g_rq_tail = NULL;  /* FIFO run queue (RUNNABLE) */
+static sp_thread *g_all = NULL;          /* registry of live threads, for GC rooting */
 static unsigned   g_next_id = 1;
 
 static void rq_push(sp_thread *t) {
@@ -32,6 +33,27 @@ static sp_thread *rq_pop(void) {
   return t;
 }
 
+static void reg_add(sp_thread *t) {
+  t->all_prev = NULL; t->all_next = g_all;
+  if (g_all) g_all->all_prev = t;
+  g_all = t;
+}
+static void reg_remove(sp_thread *t) {
+  if (t->all_prev) t->all_prev->all_next = t->all_next;
+  else if (g_all == t) g_all = t->all_next;
+  if (t->all_next) t->all_next->all_prev = t->all_prev;
+  t->all_prev = t->all_next = NULL;
+}
+
+/* GC: root every live green thread (and thus its fiber, stack roots, and
+   pending result) so a fire-and-forget thread with no user reference is not
+   collected mid-run. Chained ahead of whatever globals hook was installed. */
+static void (*g_prev_globals_hook)(void) = NULL;
+static void sp_sched_globals_mark(void) {
+  for (sp_thread *t = g_all; t; t = t->all_next) sp_gc_mark(t);
+  if (g_prev_globals_hook) g_prev_globals_hook();
+}
+
 void sp_sched_init(void) {
   /* Called from main() on the root fiber, so sp_fiber_current is the root. */
   g_root_fiber = sp_fiber_current;
@@ -39,8 +61,9 @@ void sp_sched_init(void) {
   g_main_thread.fiber = NULL;
   g_main_thread.state = SP_TH_RUNNING;
   g_main_thread.report_on_exception = 1;
-  g_main_thread.id = 0;
   g_current = &g_main_thread;
+  g_prev_globals_hook = sp_gc_mark_globals_hook;
+  sp_gc_mark_globals_hook = sp_sched_globals_mark;
 }
 
 static void sp_thread_report(sp_thread *t) {
@@ -77,51 +100,39 @@ static void sp_sched_pump(sp_thread *target) {
     sp_Fiber_transfer_catch(t->fiber, sp_box_nil(), &raised, &ec, &em, &eo);
     g_current = saved;
     if (t->fiber->state == 3) {   /* the body returned (terminated) */
+      t->retval = t->fiber->yielded_value;
       t->state = SP_TH_DEAD;
       if (raised) {
         t->has_exc = 1; t->exc_cls = ec; t->exc_msg = em; t->exc_obj = eo;
         if (t->report_on_exception) sp_thread_report(t);
       }
       sp_thread_wake_joiners(t);
+      reg_remove(t);   /* collectable once no user reference remains */
     }
     /* otherwise t yielded back: it parked itself (joiners list) or re-queued
        itself (Thread.pass) before transferring, so the queue state is correct. */
   }
 }
 
-/* The fiber body for every green thread: recover the sp_thread from user_data
-   and run its generated block body. The trampoline marks the fiber terminated
-   and returns control to root when this returns. */
-static void sp_thread_fiber_entry(sp_Fiber *f) {
-  sp_thread *t = (sp_thread *)f->user_data;
-  t->ruby_body(t);
-}
-
 static void sp_thread_scan(void *p) {
   sp_thread *t = (sp_thread *)p;
-  sp_mark_rbval(t->arg);
+  if (t->fiber) sp_gc_mark(t->fiber);
   sp_mark_rbval(t->retval);
   if (t->exc_obj) sp_gc_mark(t->exc_obj);
-  if (t->fiber) sp_gc_mark(t->fiber);
 }
 
-sp_thread *sp_Thread_spawn(void (*body)(sp_thread *), sp_RbVal arg) {
+sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f) {
+  SP_GC_ROOT(f);   /* root the freshly-built fiber across the allocation below */
   sp_thread *volatile t = (sp_thread *)sp_gc_alloc(sizeof(sp_thread), NULL, sp_thread_scan);
   memset(t, 0, sizeof *t);
-  t->ruby_body = body;
-  t->arg = arg;
+  t->fiber = f;
   t->retval = sp_box_nil();
   t->report_on_exception = 1;
   t->id = g_next_id++;
-  /* Root t across sp_Fiber_new's allocation (which may collect). */
-  SP_GC_ROOT(t);
-  t->fiber = sp_Fiber_new(sp_thread_fiber_entry);
-  t->fiber->user_data = t;    /* the fiber's scan marks t, and t's scan marks the fiber */
+  reg_add(t);
   rq_push(t);
   return t;
 }
-
-void sp_Thread_set_result(sp_thread *t, sp_RbVal v) { t->retval = v; }
 
 /* Block the calling thread until `t` is dead. The main thread pumps the queue;
    a spawned thread parks on t's joiners and yields to the scheduler. */

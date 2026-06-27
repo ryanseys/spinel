@@ -212,6 +212,7 @@ extern int g_uses_marshal;
 extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_random;
+extern int g_uses_threads;
 extern int g_re_init_needed;
 
 const char *rename_local(const char *nm);

@@ -73,6 +73,8 @@ static int sp_bt_n = 0;
 #include "sp_gc.h"
 /* sp_Fiber + the Fiber API; the bodies live in libspinel_rt.a (lib/sp_fiber.c). */
 #include "sp_fiber.h"
+/* sp_thread + the cooperative scheduler (Phase 0); bodies in lib/sp_sched.c. */
+#include "sp_sched.h"
 static const char *sp_sym_to_s(sp_sym id);
 /* Capacity of the runtime symbol-intern pool the generated TU declares
    (sp_dyn_syms). 8 bytes/entry, so the default is a 64 KB static buffer holding
@@ -3263,6 +3265,8 @@ static sp_RbVal sp_poly_last(sp_RbVal v) {
    result; join runs it and returns the thread (self). A non-Fiber poly returns
    nil, matching the NoMethodError gate for an unknown poly method. */
 static sp_RbVal sp_poly_fiber_value(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD)
+    return sp_Thread_value((sp_thread *)v.v.p);   /* a green thread carried in a poly slot */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FIBER) {
     sp_Fiber *f = (sp_Fiber *)v.v.p;
     if (f->state == 3) return f->yielded_value;   /* already run: cached result, idempotent */
@@ -3271,6 +3275,10 @@ static sp_RbVal sp_poly_fiber_value(sp_RbVal v) {
   return sp_box_nil();
 }
 static sp_RbVal sp_poly_fiber_join(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) {
+    sp_Thread_join((sp_thread *)v.v.p);
+    return v;
+  }
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FIBER) {
     sp_Fiber *f = (sp_Fiber *)v.v.p;
     if (f->state != 3) sp_Fiber_resume(f, sp_box_nil());
