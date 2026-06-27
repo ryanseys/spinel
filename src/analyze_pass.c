@@ -1710,6 +1710,25 @@ int infer_param_types(Compiler *c) {
       }
     }
 
+    /* `obj.dup` / `obj.clone` for a user object call the class's initialize_copy
+       hook (in codegen) with the original as the sole argument. That call has no
+       Ruby CallNode, so seed the hook's first param to the receiver's class here
+       -- otherwise it stays TY_UNKNOWN and the backstop prunes the method. */
+    if (recv >= 0 && name && (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
+      TyKind drt = infer_type(c, recv);
+      if (ty_is_object(drt)) {
+        int dcid = ty_object_class(drt);
+        int dmi = comp_method_in_chain(c, dcid, "initialize_copy", NULL);
+        if (dmi >= 0 && c->scopes[dmi].nparams >= 1) {
+          LocalVar *dp = scope_local(&c->scopes[dmi], c->scopes[dmi].pnames[0]);
+          if (dp && !dp->rbs_seeded) {
+            TyKind m = ty_unify(dp->type, ty_object(dcid));
+            if (m != dp->type) { dp->type = m; changed = 1; }
+          }
+        }
+      }
+    }
+
     /* <method>.call(args): bind the call-site arg types to the target
        method's params (the Method ABI is the only call site for a method
        reached solely via method(:sym)). */

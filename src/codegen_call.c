@@ -6324,6 +6324,54 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
+  /* dup/clone of a user (pointer) object: allocate a fresh instance, shallow-copy
+     the struct (cls_id + all ivars), then -- if the class defines initialize_copy
+     -- run it with the original so deep-copy hooks fire. Without this, dup/clone
+     fell through to the identity shortcut below and aliased the original.
+     Value-type objects copy by value already; exception subclasses use distinct
+     allocation, so both stay on the identity path. */
+  if (recv >= 0 && (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
+    int dargs = nt_ref(nt, id, "arguments");
+    int dargc = 0; if (dargs >= 0) nt_arr(nt, dargs, "arguments", &dargc);
+    TyKind drt = comp_ntype(c, recv);
+    if (dargc == 0 && ty_is_object(drt) && !comp_ty_value_obj(c, drt)) {
+      int cid = ty_object_class(drt);
+      if (!class_is_exc_subclass(c, cid)) {
+        ClassInfo *dci = &c->classes[cid];
+        const char *cn = dci->name;
+        int defcls = -1;
+        int ic = comp_method_in_chain(c, cid, "initialize_copy", &defcls);
+        LocalVar *icp = (ic >= 0 && c->scopes[ic].nparams >= 1)
+          ? scope_local(&c->scopes[ic], c->scopes[ic].pnames[0]) : NULL;
+        TyKind ictp = icp ? icp->type : TY_UNKNOWN;
+        int to = ++g_tmp, td = ++g_tmp;
+        buf_printf(b, "({ sp_%s *_t%d = ", cn, to); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%s *_t%d = SP_POOL_NEW(%s, %s%s%s);"
+                      " *_t%d = *_t%d; SP_GC_ROOT(_t%d); ",
+                   to, cn, td, cn,
+                   class_needs_scan(dci) ? "sp_" : "", class_needs_scan(dci) ? cn : "NULL",
+                   class_needs_scan(dci) ? "_scan" : "", td, to, td);
+        /* Invoke the hook when its param was typed by the seeding pass to any
+           object class -- it unifies to a common ancestor when both a parent and
+           a subclass are dup'd, so accept ty_is_object, casting the original to
+           the param's class. TY_POLY -> box it. */
+        if (ic >= 0 && (ty_is_object(ictp) || ictp == TY_POLY)) {
+          buf_printf(b, "sp_%s_initialize_copy(", c->classes[defcls].name);
+          if (defcls != cid) buf_printf(b, "(sp_%s *)", c->classes[defcls].name);
+          if (ictp == TY_POLY) { buf_printf(b, "_t%d, sp_box_obj(_t%d, %d)); ", td, to, cid); }
+          else {
+            int icid = ty_object_class(ictp);
+            buf_printf(b, "_t%d, ", td);
+            if (icid != cid) buf_printf(b, "(sp_%s *)", c->classes[icid].name);
+            buf_printf(b, "_t%d); ", to);
+          }
+        }
+        buf_printf(b, "_t%d; })", td);
+        return;
+      }
+    }
+  }
+
   /* identity methods -> the receiver itself */
   if (recv >= 0 &&
       (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
