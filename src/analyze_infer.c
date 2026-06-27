@@ -319,9 +319,7 @@ static int infer_int_shl_overflows(long long base, long long amount) {
    to a typed array instead, so those chains keep the fast unboxed path. */
 static int range_each_is_external(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  for (int n = 0; n < nt->count; n++) {
-    const char *ty = nt_type(nt, n);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
     if (nt_ref(nt, n, "receiver") != id) continue;
     const char *m = nt_str(nt, n, "name");
     if (m && (sp_streq(m, "next") || sp_streq(m, "peek") ||

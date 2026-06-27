@@ -1933,10 +1933,8 @@ int cmethod_has_bare_new(Compiler *c, int mi) {
 static int cmethod_reaches_override(Compiler *c, int mi, int ci, int def_cls, int depth) {
   if (depth > 64) return 0;
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < nt->count; id++) {
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (c->nscope[id] != mi) continue;
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;   /* receiverless only */
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;          /* direct `new` is the caller's has_new path */
@@ -1960,10 +1958,8 @@ int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *
   const NodeTable *nt = c->nt;
   int need = 0;
   if (has_new) *has_new = 0;
-  for (int id = 0; id < nt->count; id++) {
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (c->nscope[id] != mi) continue;
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;   /* receiverless only */
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
