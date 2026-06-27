@@ -93,6 +93,35 @@ static void sp_thread_wake_joiners(sp_thread *t) {
 /* Run runnable green threads until `target` is DEAD, until the main thread is
    woken back to RUNNABLE (it had blocked on a primitive), or until the run queue
    drains. Runs on the root fiber (the main thread). */
+/* Run thread t for one timeslice: transfer into its fiber until it yields back
+   (parked on a wait-list, or re-queued itself via Thread.pass) or its body
+   returns. On termination, publish the result/exception and wake joiners. */
+static void run_thread_once(sp_thread *t) {
+  sp_thread *saved = g_current;
+  g_current = t;
+  t->state = SP_TH_RUNNING;
+  int raised = 0;
+  const char *ec = NULL, *em = NULL;
+  void *eo = NULL;
+  /* On the body's first entry the block's param reads the fiber's resumed
+     value, so hand it Thread.new's argument then; later resumes pass nil. */
+  sp_RbVal in = (t->fiber->state == 0) ? t->arg : sp_box_nil();
+  sp_Fiber_transfer_catch(t->fiber, in, &raised, &ec, &em, &eo);
+  g_current = saved;
+  if (t->fiber->state == 3) {   /* the body returned (terminated) */
+    t->retval = t->fiber->yielded_value;
+    t->state = SP_TH_DEAD;
+    if (raised) {
+      t->has_exc = 1; t->exc_cls = ec; t->exc_msg = em; t->exc_obj = eo;
+      if (t->report_on_exception) sp_thread_report(t);
+    }
+    sp_thread_wake_joiners(t);
+    reg_remove(t);   /* collectable once no user reference remains */
+  }
+  /* otherwise t yielded back: it parked itself (joiners list) or re-queued
+     itself (Thread.pass) before transferring, so the queue state is correct. */
+}
+
 static void sp_sched_pump(sp_thread *target) {
   for (;;) {
     if (target && target->state == SP_TH_DEAD) return;
@@ -100,29 +129,24 @@ static void sp_sched_pump(sp_thread *target) {
     if (g_main_thread.state == SP_TH_RUNNABLE) { g_main_thread.state = SP_TH_RUNNING; return; }
     sp_thread *t = rq_pop();
     if (!t) return;   /* nothing runnable: drained, or a deadlock the caller observes */
-    sp_thread *saved = g_current;
-    g_current = t;
-    t->state = SP_TH_RUNNING;
-    int raised = 0;
-    const char *ec = NULL, *em = NULL;
-    void *eo = NULL;
-    /* On the body's first entry the block's param reads the fiber's resumed
-       value, so hand it Thread.new's argument then; later resumes pass nil. */
-    sp_RbVal in = (t->fiber->state == 0) ? t->arg : sp_box_nil();
-    sp_Fiber_transfer_catch(t->fiber, in, &raised, &ec, &em, &eo);
-    g_current = saved;
-    if (t->fiber->state == 3) {   /* the body returned (terminated) */
-      t->retval = t->fiber->yielded_value;
-      t->state = SP_TH_DEAD;
-      if (raised) {
-        t->has_exc = 1; t->exc_cls = ec; t->exc_msg = em; t->exc_obj = eo;
-        if (t->report_on_exception) sp_thread_report(t);
-      }
-      sp_thread_wake_joiners(t);
-      reg_remove(t);   /* collectable once no user reference remains */
-    }
-    /* otherwise t yielded back: it parked itself (joiners list) or re-queued
-       itself (Thread.pass) before transferring, so the queue state is correct. */
+    run_thread_once(t);
+  }
+}
+
+/* One round-robin sweep for Thread.pass from the main thread: give each thread
+   that is runnable *right now* exactly one timeslice, then return to main.
+   Threads that re-queue themselves (their own Thread.pass) during the sweep land
+   after the snapshot boundary and wait for the next sweep, so a sibling looping
+   on Thread.pass cannot starve main (which would happen if main drained the
+   queue here). */
+static void sp_sched_pass(void) {
+  sp_thread *boundary = g_rq_tail;   /* last thread to get a turn this round */
+  while (boundary) {
+    sp_thread *t = rq_pop();
+    if (!t) return;
+    int last = (t == boundary);
+    run_thread_once(t);
+    if (last) return;
   }
 }
 
@@ -187,7 +211,7 @@ sp_RbVal sp_Thread_value(sp_thread *t) {
 void sp_Thread_pass(void) {
   sp_thread *self = g_current;
   if (self == &g_main_thread) {
-    sp_sched_pump(NULL);   /* give every currently-runnable thread a turn */
+    sp_sched_pass();   /* one round-robin sweep, then main resumes (not a drain) */
   } else {
     rq_push(self);
     sp_Fiber_transfer(g_root_fiber, sp_box_nil());
