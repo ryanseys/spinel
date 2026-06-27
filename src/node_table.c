@@ -477,6 +477,43 @@ NodeKind nt_kind(const NodeTable *nt, int id) {
   return k;
 }
 
+/* Node ids grouped by kind (CSR), cached per node table. The analyze passes
+   each scan the whole table filtering by node kind, dozens of times per fixpoint
+   iteration; this lets a pass walk only the nodes of the kind it cares about.
+   Ids within a kind are in ascending order (matching a forward `for id` scan).
+   Rebuilt when the table pointer or count changes (desugar passes append nodes).
+   nt_kind is O(1) (cached per node), so a rebuild is a single linear pass. */
+static const NodeTable *nki_nt = NULL;
+static int nki_ntc = -1;
+static int *nki_ids = NULL;   /* all ids, grouped by kind */
+static int *nki_off = NULL;   /* size NK__COUNT+1; kind k spans [off[k], off[k+1]) */
+static void nki_build(const NodeTable *nt) {
+  int n = nt->count;
+  free(nki_ids); free(nki_off);
+  nki_off = (int *)calloc((size_t)NK__COUNT + 1, sizeof(int));
+  nki_ids = (int *)malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+  nki_nt = nt; nki_ntc = n;
+  if (!nki_off || !nki_ids) { nki_nt = NULL; nki_ntc = -1; return; }
+  for (int id = 0; id < n; id++) nki_off[(int)nt_kind(nt, id) + 1]++;
+  for (int k = 1; k <= NK__COUNT; k++) nki_off[k] += nki_off[k - 1];
+  /* nki_off[k] is now the start of kind k; fill, advancing a local cursor */
+  int *cur = (int *)malloc((size_t)NK__COUNT * sizeof(int));
+  if (!cur) { free(nki_ids); free(nki_off); nki_ids = NULL; nki_off = NULL; nki_nt = NULL; nki_ntc = -1; return; }
+  for (int k = 0; k < NK__COUNT; k++) cur[k] = nki_off[k];
+  for (int id = 0; id < n; id++) { int k = (int)nt_kind(nt, id); nki_ids[cur[k]++] = id; }
+  free(cur);
+}
+/* Return the ids of nodes of kind `k` (ascending), writing the count to *count.
+   The returned pointer is valid until the next call with a changed node table.
+   Falls back to count 0 on allocation failure (callers then see no nodes -- they
+   must only use this for kinds they would otherwise have filtered for anyway). */
+const int *nt_nodes_of_kind(const NodeTable *nt, NodeKind k, int *count) {
+  if (nki_nt != nt || nki_ntc != nt->count) nki_build(nt);
+  if (!nki_off || !nki_ids || k < 0 || k >= NK__COUNT) { *count = 0; return NULL; }
+  *count = nki_off[k + 1] - nki_off[k];
+  return nki_ids + nki_off[k];
+}
+
 const char *nt_str(const NodeTable *nt, int id, const char *key) {
   const SpNode *nd = node_at(nt, id);
   if (!nd) return NULL;

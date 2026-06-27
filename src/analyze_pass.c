@@ -1500,9 +1500,7 @@ int is_string_only_method(const char *m) {
 int infer_params_from_ivar_hash_ops(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
     int is_set = sp_streq(name, "[]=");
@@ -1659,9 +1657,7 @@ int infer_array_params(Compiler *c) {
     "each_with_index","each_with_object","zip","combination","permutation",NULL
   };
   int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
     int is_arr = 0;
@@ -1685,9 +1681,7 @@ int infer_array_params(Compiler *c) {
 int infer_string_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
     if (!name || recv < 0 || !is_string_only_method(name)) continue;
@@ -2754,9 +2748,7 @@ int infer_block_params(Compiler *c) {
   }
 
   /* Hash.new { |hash, key| } : hash is the StrPolyHash, key the string key. */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cname = nt_str(nt, id, "name");
     if (!cname || !sp_streq(cname, "new")) continue;
     int recv = nt_ref(nt, id, "receiver");
@@ -2782,9 +2774,7 @@ int infer_block_params(Compiler *c) {
 
   /* recv.instance_eval { |me| } : the block params all receive the receiver
      (Ruby yields self), typed as the receiver's object type. */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cname = nt_str(nt, id, "name");
     if (!cname) continue;
     int recv = nt_ref(nt, id, "receiver");
@@ -2822,9 +2812,7 @@ int infer_block_params(Compiler *c) {
 
   /* recv.instance_exec(args) { |params| } : block params take the call-site
      arg types (strict arity). */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cname = nt_str(nt, id, "name");
     if (!cname) continue;
     int xrecv = nt_ref(nt, id, "receiver");
@@ -2921,9 +2909,7 @@ int infer_block_params(Compiler *c) {
 
   /* Fiber.new { |first| ... }: the block param receives the resume value,
      which is always a poly (boxed) value at the runtime ABI boundary. */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cname = nt_str(nt, id, "name");
     if (!cname || !sp_streq(cname, "new")) continue;
     int recv = nt_ref(nt, id, "receiver");
@@ -2952,9 +2938,7 @@ int infer_block_params(Compiler *c) {
 
   /* Proc/lambda call-site param inference: `f.call(:a)` propagates arg types
      to the proc's params (e.g. `t` gets TY_SYMBOL instead of the default TY_INT). */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cname = nt_str(nt, id, "name");
     if (!cname || (!sp_streq(cname, "call") && !sp_streq(cname, "()") && !sp_streq(cname, "[]"))) continue;
     int recv = nt_ref(nt, id, "receiver");
@@ -3007,9 +2991,7 @@ int infer_block_params(Compiler *c) {
     }
   }
 
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
     int block = nt_ref(nt, id, "block");
     if (block < 0) continue;
     const char *name = nt_str(nt, id, "name");

@@ -189,6 +189,28 @@ typedef enum {
    has no type or an unrecognized one. */
 NodeKind nt_kind(const NodeTable *nt, int id);
 
+/* Node ids of a given kind, in ascending id order (cached per node table).
+   Lets a pass iterate only the nodes it cares about instead of scanning the
+   whole table and filtering by kind. *count receives the number of ids. */
+const int *nt_nodes_of_kind(const NodeTable *nt, NodeKind k, int *count);
+
+/* Iterate the ids of kind KIND (ascending), binding each to a fresh `int IDV`:
+     NT_FOREACH_KIND(nt, NK_CallNode, id) { ... use id ... }
+   Replaces `for (int id=0; id<nt->count; id++) { if (kind!=K) continue; ... }`.
+   The inner one-shot loop scopes IDV; nesting/multiple uses don't collide. */
+typedef struct { const int *ids; int n, i, id; } NtKindIter;
+static inline NtKindIter nt_kind_iter_begin(const NodeTable *nt, NodeKind k) {
+  NtKindIter it; it.ids = nt_nodes_of_kind(nt, k, &it.n); it.i = 0; it.id = -1; return it;
+}
+static inline int nt_kind_iter_next(NtKindIter *it) {
+  if (it->i >= it->n) return 0;
+  it->id = it->ids[it->i++];
+  return 1;
+}
+#define NT_FOREACH_KIND(NT, KIND, IDV) \
+  for (NtKindIter _it_##IDV = nt_kind_iter_begin((NT), (KIND)); nt_kind_iter_next(&_it_##IDV); ) \
+    for (int IDV = _it_##IDV.id, _once_##IDV = 1; _once_##IDV; _once_##IDV = 0)
+
 /* Build a node table from the parser's text AST (NUL-terminated). The
    buffer is consumed read-only; the table owns its own copies. Returns
    NULL on allocation failure. */
