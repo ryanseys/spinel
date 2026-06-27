@@ -5412,6 +5412,42 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_Thread_set_name("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_boxed(c, argv[0], b); buf_puts(b, ")"); return;
     }
+    if ((sp_streq(name, "kill") || sp_streq(name, "exit") || sp_streq(name, "terminate")) && argc == 0) {
+      buf_puts(b, "sp_Thread_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "equal?") && argc == 1 && comp_ntype(c, argv[0]) == TY_THREAD) {
+      buf_puts(b, "((void *)("); emit_expr(c, recv, b);
+      buf_puts(b, ") == (void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
+    }
+    if (sp_streq(name, "raise")) {
+      /* #raise: deliver an exception to the thread (it fires when the thread next
+         runs). Argument forms mirror Kernel#raise; an exception object is unpacked
+         into (cls, msg, obj) since sp_exc_* are TU-static (cf Fiber#raise). */
+      TyKind a0t = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      int arg0_const = argc >= 1 && nt_type(nt, argv[0]) &&
+        (sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ||
+         sp_streq(nt_type(nt, argv[0]), "ConstantPathNode"));
+      int arg0_exc = a0t == TY_EXCEPTION ||
+        (ty_is_object(a0t) && class_is_exc_subclass(c, ty_object_class(a0t)));
+      if (argc >= 1 && arg0_exc) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_thread *_tr%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Exception *_te%d = (sp_Exception *)(", t); emit_expr(c, argv[0], b);
+        buf_printf(b, "); sp_Thread_raise(_tr%d, sp_exc_class_name(_te%d), sp_exc_message(_te%d), _te%d); })",
+                   t, t, t, t);
+        return;
+      }
+      buf_puts(b, "sp_Thread_raise("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (arg0_const) {
+        buf_printf(b, "\"%s\", ", nt_str(nt, argv[0], "name"));
+        if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
+        buf_puts(b, ", NULL");
+      }
+      else if (argc >= 1) { buf_puts(b, "\"RuntimeError\", "); emit_expr(c, argv[0], b); buf_puts(b, ", NULL"); }
+      else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
+      buf_puts(b, ")");
+      return;
+    }
     /* thread-local storage: t[:key] / t[:key]=v / t.key?(:key) (symbol keys) */
     if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
       buf_puts(b, "sp_Thread_tls_get("); emit_expr(c, recv, b); buf_puts(b, ", ");

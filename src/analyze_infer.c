@@ -1107,12 +1107,13 @@ else {
   /* TY_THREAD instance methods */
   if (recv >= 0 && rt == TY_THREAD) {
     if (sp_streq(name, "value")) return TY_POLY;
-    if (sp_streq(name, "join")) return TY_THREAD;      /* returns the thread */
+    if (sp_streq(name, "join") || sp_streq(name, "kill") || sp_streq(name, "exit") ||
+        sp_streq(name, "terminate") || sp_streq(name, "raise")) return TY_THREAD;   /* return self */
     if (sp_streq(name, "alive?")) return TY_BOOL;
     if (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception=")) return TY_BOOL;
     if (sp_streq(name, "status") || sp_streq(name, "[]") || sp_streq(name, "[]=") ||
         sp_streq(name, "name") || sp_streq(name, "name=")) return TY_POLY;
-    if (sp_streq(name, "key?")) return TY_BOOL;
+    if (sp_streq(name, "key?") || sp_streq(name, "equal?")) return TY_BOOL;
   }
 
   /* TY_QUEUE instance methods */

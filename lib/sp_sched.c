@@ -12,6 +12,11 @@
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 SP_NORETURN void sp_raise_cls(const char *cls, const char *msg);
 void sp_fiber_reraise(const char *cls, const char *msg, void *obj);
+/* Per-context exception handler stack (defined in the generated TU). */
+void *sp_exc_ctx_new(void);
+void  sp_exc_ctx_save(void *p);
+void  sp_exc_ctx_load(void *p);
+void  sp_exc_ctx_free(void *p);
 
 /* ---- scheduler state (single OS worker, so plain globals) ---- */
 static sp_Fiber  *g_root_fiber = NULL;   /* the main thread's context, captured at init */
@@ -75,17 +80,14 @@ static void sp_thread_report(sp_thread *t) {
           t->id, t->exc_msg ? t->exc_msg : "", t->exc_cls ? t->exc_cls : "Exception");
 }
 
+/* Park/wake primitives (defined below; used by join here). */
+static void       sp_sched_block(sp_thread **waitlist);
+static sp_thread *sp_sched_wake_one(sp_thread **waitlist);
+
 /* A finished thread's parked joiners become runnable again (the main thread,
    if it was waiting, is released by the pump's target check, not the queue). */
 static void sp_thread_wake_joiners(sp_thread *t) {
-  sp_thread *j = t->joiners;
-  t->joiners = NULL;
-  while (j) {
-    sp_thread *n = j->join_next;
-    j->join_next = NULL;
-    if (j != &g_main_thread) rq_push(j);
-    j = n;
-  }
+  while (sp_sched_wake_one(&t->joiners)) { }
 }
 
 /* Run runnable green threads until `target` is DEAD, until the main thread is
@@ -160,10 +162,7 @@ static void sp_thread_await(sp_thread *t) {
     if (t->state != SP_TH_DEAD)
       sp_raise_cls("ThreadError", "deadlock detected: no runnable thread");
   } else {
-    self->state = SP_TH_BLOCKED;
-    self->join_next = t->joiners;
-    t->joiners = self;
-    sp_Fiber_transfer(g_root_fiber, sp_box_nil());   /* resumes once t is dead */
+    sp_sched_block(&t->joiners);   /* parks on t's joiners; resumes once t is dead */
   }
 }
 
@@ -192,6 +191,7 @@ void sp_Thread_pass(void) {
   } else {
     rq_push(self);
     sp_Fiber_transfer(g_root_fiber, sp_box_nil());
+    sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while paused */
   }
 }
 
@@ -292,13 +292,25 @@ static void sp_sched_block(sp_thread **waitlist) {
   sp_thread *self = g_current;
   self->state = SP_TH_BLOCKED;
   self->wait_next = *waitlist;
+  self->wait_head = waitlist;   /* so #kill/#raise can unlink it */
   *waitlist = self;
   if (self == &g_main_thread) {
     sp_sched_pump(NULL);   /* returns once a waker marks main RUNNABLE */
     if (self->state != SP_TH_RUNNING)
       sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
   } else {
+    /* The symmetric fiber transfer's exc bookkeeping clobbers this thread's
+       handler stack when root resumes from the block, so snapshot it here and
+       restore it on wake -- otherwise a #raise/#kill delivered while blocked
+       would find an empty handler stack and escape unhandled. */
+    void *exc_snap = sp_exc_ctx_new();
+    sp_exc_ctx_save(exc_snap);
     sp_Fiber_transfer(g_root_fiber, sp_box_nil());
+    sp_exc_ctx_load(exc_snap);
+    sp_exc_ctx_free(exc_snap);
+    /* resumed: a pending #kill/#raise fires here, in this thread's context, so
+       its ensure/rescue blocks unwind on its own stack. */
+    sp_fiber_fire_inject_if_pending();
   }
 }
 
@@ -309,8 +321,45 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
   if (!t) return NULL;
   *waitlist = t->wait_next;
   t->wait_next = NULL;
+  t->wait_head = NULL;
   if (t == &g_main_thread) t->state = SP_TH_RUNNABLE;   /* the pump observes this */
   else rq_push(t);
+  return t;
+}
+
+/* Remove a parked thread from whatever wait list it sits on (for #kill/#raise). */
+static void sp_sched_unpark(sp_thread *t) {
+  if (!t->wait_head) return;
+  for (sp_thread **pp = t->wait_head; *pp; pp = &(*pp)->wait_next)
+    if (*pp == t) { *pp = t->wait_next; break; }
+  t->wait_next = NULL;
+  t->wait_head = NULL;
+}
+
+/* #kill / #raise: deliver an inject to the target so it terminates (running its
+   ensures) or raises. The current thread acts on itself immediately; another
+   thread gets the inject queued on its fiber and is made runnable, so the inject
+   fires when the scheduler next runs it -- at body entry (never-run) or right
+   after it unblocks (sp_sched_block / Thread.pass). */
+static void sp_thread_deliver(sp_thread *t, int is_kill,
+                              const char *cls, const char *msg, void *obj) {
+  if (t == g_current) {
+    if (t == &g_main_thread) return;   /* killing the main thread from itself: unsupported, no-op */
+    if (is_kill) sp_fiber_raise_kill_self();   /* noreturn */
+    sp_fiber_reraise(cls, msg, obj);           /* noreturn */
+  }
+  if (is_kill) sp_fiber_set_kill_inject(t->fiber);
+  else sp_fiber_set_raise_inject(t->fiber, cls, msg, obj);
+  if (t->state == SP_TH_BLOCKED) { sp_sched_unpark(t); rq_push(t); }
+  /* RUNNABLE threads are already queued; the inject fires when they run. */
+}
+
+sp_thread *sp_Thread_kill(sp_thread *t) {
+  if (t->state != SP_TH_DEAD) sp_thread_deliver(t, 1, NULL, NULL, NULL);
+  return t;
+}
+sp_thread *sp_Thread_raise(sp_thread *t, const char *cls, const char *msg, void *obj) {
+  if (t->state != SP_TH_DEAD) sp_thread_deliver(t, 0, cls, msg, obj);
   return t;
 }
 

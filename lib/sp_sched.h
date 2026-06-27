@@ -34,8 +34,8 @@ typedef struct sp_thread {
   unsigned char     report_on_exception;
   struct sp_thread *rq_next;     /* run-queue link while RUNNABLE */
   struct sp_thread *joiners;     /* threads parked in #join/#value on this one */
-  struct sp_thread *join_next;   /* link within another thread's joiners list */
-  struct sp_thread *wait_next;   /* link within a primitive's wait list (Queue/Mutex) */
+  struct sp_thread *wait_next;   /* link within the wait list it is parked on */
+  struct sp_thread **wait_head;  /* head of that wait list, so #kill/#raise can unpark it */
   struct sp_thread *all_next, *all_prev;  /* registry of live threads (GC roots) */
   void             *tls;         /* thread-local storage (Thread#[] / #[]=); lazily allocated */
   unsigned          id;
@@ -56,6 +56,8 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg);
 sp_thread *sp_Thread_join(sp_thread *t);
 sp_RbVal   sp_Thread_value(sp_thread *t);
 
+sp_thread *sp_Thread_kill(sp_thread *t);  /* #kill / #exit / #terminate */
+sp_thread *sp_Thread_raise(sp_thread *t, const char *cls, const char *msg, void *obj);  /* #raise */
 void       sp_Thread_pass(void);          /* Thread.pass: cooperative yield */
 sp_thread *sp_Thread_current(void);       /* Thread.current */
 mrb_bool   sp_Thread_alive(sp_thread *t); /* #alive? */
