@@ -166,6 +166,68 @@ void compute_reachable(Compiler *c) {
   free(scope_calls); free(sc_n); free(sc_cap); free(queue);
 }
 
+/* Mark each user class whose exact cls_id can appear at runtime. A poly value
+   carries class C's cls_id only if a C instance was minted: `C.new`,
+   `C.allocate`, `raise C` (exception construct), or a `Struct.new`-defined C.
+   `dup`/`clone` copy an existing C value (propagate, never originate) and a
+   subclass D mints cls_id D (not C), so neither marks C. `Marshal.load` /
+   `Marshal.restore` can mint *any* user class, as can `.new` on a dynamic Class
+   value -- either disables the gating (every class kept) so we never drop a
+   live arm. Conservative by construction: this is a whole-program scan (it does
+   not require the origination site to be reachable), so it only over-marks,
+   never under-marks. The poly-dispatch switch reads `instantiated` to skip the
+   `case` arm of a class no value can be (codegen_call.c). */
+void compute_instantiated(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int disable = 0;
+  /* Struct classes: conservatively live (their instances flow as poly). */
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].is_struct) c->classes[k].instantiated = 1;
+  for (int id = 0; id < nt->count && !disable; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *name = nt_str(nt, id, "name");
+    if (!name) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    /* Marshal.load / Marshal.restore -> any class can be minted. */
+    if (recv >= 0 && (sp_streq(name, "load") || sp_streq(name, "restore"))) {
+      const char *rty = nt_type(nt, recv);
+      const char *rn = nt_str(nt, recv, "name");
+      if (rty && sp_streq(rty, "ConstantReadNode") && rn && sp_streq(rn, "Marshal")) {
+        disable = 1; break;
+      }
+    }
+    /* C.new / C.allocate */
+    if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "allocate"))) {
+      const char *rty = nt_type(nt, recv);
+      if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+        const char *cn = nt_str(nt, recv, "name");
+        int ci = cn ? comp_class_index(c, cn) : -1;
+        if (ci >= 0) c->classes[ci].instantiated = 1;
+        /* an unknown constant is a builtin (Array.new, ...) -- not a user arm */
+      }
+      else if (comp_ntype(c, recv) == TY_CLASS) {
+        /* `klass.new` on a dynamic Class value: unresolvable -> keep all. */
+        disable = 1; break;
+      }
+    }
+    /* raise Cls / raise Cls, msg : constructs an instance of Cls */
+    if (recv < 0 && sp_streq(name, "raise")) {
+      int rargs = nt_ref(nt, id, "arguments");
+      int ran = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &ran) : NULL;
+      if (ran >= 1 && rav) {
+        const char *aty = nt_type(nt, rav[0]);
+        if (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode"))) {
+          const char *cn = nt_str(nt, rav[0], "name");
+          int ci = cn ? comp_class_index(c, cn) : -1;
+          if (ci >= 0) c->classes[ci].instantiated = 1;
+        }
+      }
+    }
+  }
+  if (disable)
+    for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = 1;
+}
+
 /* ---- proc capture detection (closures) ----
    A local read inside a proc body that isn't bound by the proc (param or a
    local the body itself writes) is a captured/free variable; its enclosing
@@ -2588,6 +2650,10 @@ void analyze_program(Compiler *c) {
      are dead code; skipping them avoids type-checking uninvoked methods
      (e.g. a never-called method with an uninferrable param). */
   compute_reachable(c);
+  /* Which exact cls_ids can appear at runtime -- lets the poly-dispatch switch
+     drop `case` arms for classes that are never instantiated (the referenced
+     method then DCEs as an unreferenced static). */
+  compute_instantiated(c);
 
   /* Lower self-recursive yield methods: methods that use `yield` AND call
      themselves recursively. Their implicit block is forwarded as a synthetic

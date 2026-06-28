@@ -110,6 +110,13 @@ typedef struct {
   int is_value_type;   /* small immutable scalar-ivar class represented by value
                           (sp_X, not sp_X *): no heap alloc / GC. Set by
                           detect_value_types after analysis. */
+  int instantiated;    /* a value with this exact cls_id can come into existence
+                          somewhere: `.new`/`.allocate`/`raise Cls`/Struct, or a
+                          Marshal.load that can mint any class. When clear, no
+                          poly value is ever this class, so the poly-dispatch
+                          switch can drop its `case` arm (the referenced method
+                          then becomes an unreferenced static the C compiler
+                          DCEs). Set by compute_instantiated. */
   /* Prepend shadow chain: when `prepend M` is called on this class,
      M's methods overwrite the active slot; the previous slot is
      renamed to a shadow `__prep_N_<m>`.  The chain maps each name

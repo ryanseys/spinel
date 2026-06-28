@@ -420,8 +420,18 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
      frames demangle (Exception#backtrace / Kernel#caller). Toplevel methods
      keep `static` -- a bare sp_<name> could collide with a runtime helper. */
   const char *stor = (g_debug && s->class_id >= 0) ? "" : "static ";
-  if (method_is_void(s)) { buf_puts(b, stor); buf_puts(b, "void "); }
-  else { buf_puts(b, stor); emit_ctype(c, s->ret, b); buf_puts(b, " "); }
+  /* An instance method of a never-instantiated class has had its poly-dispatch
+     arm dropped (compute_instantiated) and -- no instance ever existing -- has
+     no direct call site either, so it is emitted but unreferenced. Mark it
+     unused so the C compiler does not -Wunused-function before DCEing the
+     orphan. Harmless if it turns out referenced (an instantiated subclass
+     inheriting it). The attribute precedes the declarator so it is valid on the
+     definition, not just the prototype. */
+  const char *unused = (s->class_id >= 0 && !s->is_cmethod &&
+                        !c->classes[s->class_id].instantiated)
+                       ? "__attribute__((unused)) " : "";
+  if (method_is_void(s)) { buf_puts(b, stor); buf_puts(b, unused); buf_puts(b, "void "); }
+  else { buf_puts(b, stor); buf_puts(b, unused); emit_ctype(c, s->ret, b); buf_puts(b, " "); }
   emit_method_cname(c, s, b);
   buf_puts(b, "(");
   int wrote = 0;

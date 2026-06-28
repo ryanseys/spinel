@@ -9727,12 +9727,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          so a boxed scalar (cls_id 0) does not alias it (issue #1576). */
       int cls0_d = -1, cls0_rd = -1;
       int cls0_mi = c->nclasses > 0 ? comp_method_in_chain(c, 0, name, &cls0_d) : -1;
-      int cls0_cand = (cls0_mi >= 0 && c->scopes[cls0_mi].nrequired == 0) ||
-                      (c->nclasses > 0 && comp_reader_in_chain(c, 0, name, &cls0_rd));
+      int cls0_cand = ((cls0_mi >= 0 && c->scopes[cls0_mi].nrequired == 0) ||
+                       (c->nclasses > 0 && comp_reader_in_chain(c, 0, name, &cls0_rd))) &&
+                      c->nclasses > 0 && c->classes[0].instantiated;
       buf_puts(b, "switch (");
       emit_poly_dispatch_key(c, tv, cls0_cand, b);
       buf_puts(b, ") {");
       for (int k = 0; k < c->nclasses; k++) {
+        /* A never-instantiated class can't be this poly value's runtime class,
+           so drop its arm (method or reader); the referenced symbol then DCEs
+           as an unreferenced static (#1608). */
+        if (!c->classes[k].instantiated) continue;
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
         /* Skip a method with no standalone definition to call: DCE-pruned (its
@@ -9910,7 +9915,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          with its arity satisfied; guard the key so a boxed scalar (cls_id 0)
          cannot alias it (issue #1576). */
       int cls0_mi2 = c->nclasses > 0 ? comp_method_in_chain(c, 0, name, NULL) : -1;
-      int cls0_cand2 = cls0_mi2 >= 0 && argc >= c->scopes[cls0_mi2].nrequired;
+      int cls0_cand2 = cls0_mi2 >= 0 && argc >= c->scopes[cls0_mi2].nrequired &&
+                       c->classes[0].instantiated;
       buf_puts(b, "switch (");
       emit_poly_dispatch_key(c, tv, cls0_cand2, b);
       buf_puts(b, ") {");
@@ -9918,6 +9924,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
         if (mi < 0 || argc < c->scopes[mi].nrequired) continue;
+        /* A class no value can ever be (never `.new`/`.allocate`/`raise`d, no
+           Struct, no Marshal escape) cannot be this poly value's receiver, so
+           its arm is dead. Dropping it makes sp_<Class>_<name> an unreferenced
+           static the C compiler then DCEs -- spinel supplies the accurate
+           reference graph, the C compiler removes the code (#1608). */
+        if (!c->classes[k].instantiated) continue;
         /* Skip a method with no standalone definition (DCE-pruned, or inlined
            at call sites because it yields): a `case` arm calling its absent
            `sp_Class_method` symbol would dangle at link. The class can't be

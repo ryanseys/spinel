@@ -201,6 +201,7 @@ TyKind return_node_type(Compiler *c, int id);
 int infer_return_types(Compiler *c);
 void cr_collect_calls(const NodeTable *nt, int id, char ***out, int *n, int *cap);
 void compute_reachable(Compiler *c);
+void compute_instantiated(Compiler *c);
 int aname_has(ANameSet *s, const char *nm);
 void aname_add(ANameSet *s, const char *nm);
 int a_nested_block(const char *ty);
