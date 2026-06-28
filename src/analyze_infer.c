@@ -3083,8 +3083,16 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* symbol keys -> SymPolyHash (boxed values), regardless of value type */
     if (kt == TY_SYMBOL) return TY_SYM_POLY_HASH;
     TyKind hv = ty_hash_of(kt, vt);
-    /* unsupported combination -> fall back to poly storage */
-    if (hv == TY_UNKNOWN && vt != TY_UNKNOWN) return TY_POLY_POLY_HASH;
+    if (hv != TY_UNKNOWN) return hv;
+    /* No scalar (key,val) variant: the value is poly-stored (a nested hash/
+       array/object, or a mix). The key type still selects the hash variant --
+       string keys stay a str-keyed poly hash rather than collapsing to a
+       fully-poly-keyed one, so the literal matches a `Hash[String, untyped]`
+       (StrPolyHash) parameter without a layout-mismatching pointer cast. */
+    if (vt != TY_UNKNOWN) {
+      if (kt == TY_STRING) return TY_STR_POLY_HASH;
+      return TY_POLY_POLY_HASH;
+    }
     return hv;
   }
   if (nk == NK_YieldNode)
