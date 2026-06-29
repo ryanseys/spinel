@@ -3025,7 +3025,7 @@ int infer_block_params(Compiler *c) {
     /* StringIO.open(args) { |io| ... }: io is a StringIO */
     if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
         sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        sp_streq(nt_str(nt, recv, "name"), "StringIO")) {
+        sp_streq(nt_str(nt, recv, "name"), "StringIO") && sp_feature_enabled("stringio")) {
       const char *p0 = block_param_name(c, block, 0);
       if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
                 if (l->type != TY_STRINGIO) { l->type = TY_STRINGIO; changed = 1; } }

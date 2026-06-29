@@ -831,7 +831,7 @@ else {
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY;
       if (cn && sp_streq(cn, "Object")) return TY_POLY;
       if (cn && sp_streq(cn, "String")) return TY_STRING;
-      if (cn && sp_streq(cn, "StringIO")) return TY_STRINGIO;
+      if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) return TY_STRINGIO;
       if (cn && sp_streq(cn, "StringScanner")) return TY_STRINGSCANNER;
       if (cn && sp_streq(cn, "Hash")) return TY_UNKNOWN;
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
@@ -867,7 +867,7 @@ else {
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
       if (cn && sp_streq(cn, "Object")) return TY_POLY;  /* identity sentinel */
       if (cn && sp_streq(cn, "String")) return TY_STRING;
-      if (cn && sp_streq(cn, "StringIO")) return TY_STRINGIO;
+      if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) return TY_STRINGIO;
       if (cn && sp_streq(cn, "StringScanner")) return TY_STRINGSCANNER;
       /* Hash.new { |hash, key| default } : a string-keyed poly hash with a
          default-proc (the block computes the missing-key value). */
@@ -941,7 +941,7 @@ else {
   /* StringIO.open(args) { |io| body } -> the block body's value */
   if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
       sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-      sp_streq(nt_str(nt, recv, "name"), "StringIO")) {
+      sp_streq(nt_str(nt, recv, "name"), "StringIO") && sp_feature_enabled("stringio")) {
     int block = nt_ref(nt, id, "block");
     int bbody = block >= 0 ? nt_ref(nt, block, "body") : -1;
     if (bbody >= 0) {
@@ -1137,7 +1137,7 @@ else {
     if (sp_streq(name, "closed?") || sp_streq(name, "eof?") || sp_streq(name, "eof") ||
         sp_streq(name, "tty?") || sp_streq(name, "isatty")) return TY_BOOL;
     if (sp_streq(name, "fileno")) return TY_INT;
-    if (sp_streq(name, "winsize")) return TY_INT_ARRAY;
+    if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) return TY_INT_ARRAY;
     if (sp_streq(name, "<<")) return TY_IO;   /* writes, returns self (chainable) */
     if (sp_streq(name, "each_line") || sp_streq(name, "each")) {
       int blk = nt_ref(nt, id, "block");

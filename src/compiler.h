@@ -12,6 +12,15 @@
 #include "node_table.h"
 #include "types.h"
 
+/* require-gate (defined in spinel_parse.c). sp_feature_enabled(name) is 1 when
+   feature `name` may be provided: always when the gate is off (g_require_gate
+   == 0), else only if `require "name"` appeared in the program. Used to gate
+   require-gated stdlib (stringio, io/console, ...) so they match CRuby's
+   uninitialized-constant / NoMethodError when the require is absent. */
+extern int g_require_gate;
+void sp_feature_mark(const char *name);
+int sp_feature_enabled(const char *name);
+
 typedef struct {
   char *name;       /* Ruby local name (without sigil) */
   TyKind type;      /* inferred type */

@@ -5436,7 +5436,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "fileno")) {
       buf_printf(b, "sp_File_fileno(%s)", r); free(rb.p); return;
     }
-    if (sp_streq(name, "winsize")) {
+    if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) {
       buf_printf(b, "sp_File_winsize(%s)", r); free(rb.p); return;
     }
     if (sp_streq(name, "print") || sp_streq(name, "puts")) {
@@ -7136,7 +7136,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (cn && (sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor"))) {
         buf_puts(b, "sp_box_nil()"); return;
       }
-      if (cn && sp_streq(cn, "StringIO")) {
+      if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) {
         if (argc == 0) buf_puts(b, "sp_StringIO_new()");
         else if (argc == 1) { buf_puts(b, "sp_StringIO_new_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else { buf_puts(b, "sp_StringIO_new_sm("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
@@ -7411,7 +7411,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      return the block's value, then close. */
   if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
       sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-      sp_streq(nt_str(nt, recv, "name"), "StringIO")) {
+      sp_streq(nt_str(nt, recv, "name"), "StringIO") && sp_feature_enabled("stringio")) {
     int block = nt_ref(nt, id, "block");
     if (block < 0) {
       /* no block: behaves like StringIO.new */

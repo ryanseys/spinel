@@ -1608,6 +1608,34 @@ static char **sp_included_paths = NULL;
 static int sp_included_count = 0;
 static int sp_included_cap = 0;
 
+/* ---- require-gate: features enabled by a `require "name"` ----
+   SPINEL_REQUIRE_GATE: when set, a require-gated stdlib feature (stringio,
+   io/console, ...) is provided only if its `require` textually appears in the
+   program, matching CRuby's uninitialized-constant / NoMethodError. Default off
+   keeps the historical always-available behaviour. The feature name is the
+   require argument verbatim ("stringio", "io/console"). Marked as each plain
+   require is resolved (file-backed or native); read at analyze/codegen time via
+   sp_feature_enabled(). Definitions here (spinel_parse.c includes no project
+   headers); declared extern in compiler.h. */
+int g_require_gate = 0;
+static char *sp_req_feats[128];
+static int sp_req_feats_n = 0;
+
+void sp_feature_mark(const char *name) {
+  if (!name) return;
+  for (int i = 0; i < sp_req_feats_n; i++)
+    if (strcmp(sp_req_feats[i], name) == 0) return;
+  if (sp_req_feats_n < 128) sp_req_feats[sp_req_feats_n++] = strdup(name);
+}
+
+int sp_feature_enabled(const char *name) {
+  if (!g_require_gate) return 1;   /* gate off: always provide (baseline) */
+  if (!name) return 1;
+  for (int i = 0; i < sp_req_feats_n; i++)
+    if (strcmp(sp_req_feats[i], name) == 0) return 1;
+  return 0;
+}
+
 /* Resolve a path to its canonical form for dedup. realpath() returns NULL
    on missing files; in that case fall back to the literal path. */
 /* Issue #749: realpath/_fullpath + strdup can both fail under OOM,
@@ -1953,7 +1981,7 @@ else {
    reach the not-found branch, so they don't belong here -- only the
    C-native modules that map to a stdlib require name do. */
 static int sp_lib_is_native(const char *name) {
-  static const char *const natives[] = { "json", NULL };
+  static const char *const natives[] = { "json", "io/console", NULL };
   for (int i = 0; natives[i]; i++) {
     if (strcmp(name, natives[i]) == 0) return 1;
   }
@@ -2058,7 +2086,9 @@ else {
       if (!content) {
         if (sp_lib_is_native(lib_name)) {
           /* Provided natively by the Spinel runtime; the require is a
-             harmless no-op, so don't warn. */
+             harmless no-op, so don't warn. The require-gate still records it
+             so the C-native feature (e.g. io/console) becomes available. */
+          sp_feature_mark(lib_name);
           content = strdup("# require provided by Spinel runtime");
         }
 else {
@@ -2069,6 +2099,9 @@ else {
         }
       }
 else {
+        /* A bundled lib/<name>.rb was found and spliced; record the feature so
+           the require-gate enables any C-native methods it stands in for. */
+        sp_feature_mark(lib_name);
         char *resolved = resolve_requires(content, lib_path);
         free(content);
         content = resolved;
@@ -2385,6 +2418,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
     sp_mark_path_included(entry_canon);
     free(entry_canon);
   }
+  g_require_gate = getenv("SPINEL_REQUIRE_GATE") ? 1 : 0;
   char *resolved = resolve_requires(source, source_file);
   free(source);
   source = resolve_plain_requires(resolved, argv0);
