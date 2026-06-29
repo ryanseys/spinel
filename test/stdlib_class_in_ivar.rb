@@ -6,10 +6,10 @@
 # A class Spinel models as a no-op (Mutex, single-threaded) and user-defined
 # classes are unaffected. The ivar slot still compiles either way (the raise
 # expression is int-typed, so no undeclared `sp_<Class> *` field is emitted).
-require 'thread'
-require 'pathname'
-require 'ostruct'
-require 'ipaddr'
+#
+# pathname/ostruct/ipaddr are unimplemented stdlib: under SPINEL_REQUIRE_GATE the
+# `require` itself is a compile error, so a real program omits it and the .new
+# still raises NameError at the use site. Mutex is core (no require needed).
 
 class WithMutex
   def initialize

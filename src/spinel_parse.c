@@ -1988,6 +1988,18 @@ static int sp_lib_is_native(const char *name) {
   return 0;
 }
 
+/* A `require "X"` for a capability Spinel provides as core, without a bundled
+   file -- Thread/Mutex/Queue, Enumerator, Fiber. Modern CRuby treats these as
+   no-ops (the feature is already loaded), so the require-gate tolerates them
+   rather than failing with "cannot load such file". */
+static int sp_require_tolerated(const char *name) {
+  static const char *const tolerated[] = { "thread", "enumerator", "fiber", NULL };
+  for (int i = 0; tolerated[i]; i++) {
+    if (strcmp(name, tolerated[i]) == 0) return 1;
+  }
+  return 0;
+}
+
 /* ---- Plain require resolution ---- */
 static char *resolve_plain_requires(char *source, const char *exe_path) {
   /* Find lib/ directory relative to this executable */
@@ -2090,6 +2102,20 @@ else {
              so the C-native feature (e.g. io/console) becomes available. */
           sp_feature_mark(lib_name);
           content = strdup("# require provided by Spinel runtime");
+        }
+else if (g_require_gate && sp_require_tolerated(lib_name)) {
+          /* A core capability Spinel provides without a file (Thread, Enumerator,
+             Fiber); the require is a harmless no-op, like modern CRuby. */
+          content = strdup("# require no-op (core feature)");
+        }
+else if (g_require_gate) {
+          /* Whole-program AOT: an unsatisfiable require can never be provided, so
+             it is a compile-time refusal (symmetric with the require_relative
+             missing-file hard error), not a runtime LoadError. */
+          fprintf(stderr,
+                  "spinel: cannot load such file -- %s (require \"%s\")\n",
+                  lib_name, lib_name);
+          exit(1);
         }
 else {
           fprintf(stderr,

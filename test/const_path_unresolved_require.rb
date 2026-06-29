@@ -1,8 +1,9 @@
-# A qualified constant supplied by a require Spinel cannot honor used to
-# emit a bare `Mylib_VERSION` C identifier (undeclared -> C compile error).
-# It now degrades to a runtime NameError, mirroring an unqualified
-# unresolved constant, so the program compiles and the error is rescuable.
-require "mylib/version"
+# An unresolved qualified constant (`Mylib::VERSION`, Mylib undefined) degrades
+# to a rescuable runtime NameError rather than emitting a bare `Mylib_VERSION` C
+# identifier (undeclared -> C compile error). The constant would once have come
+# from `require "mylib/version"`, but under SPINEL_REQUIRE_GATE an unsatisfiable
+# require is itself a compile error, so the realistic program just references the
+# constant; the rescuable-NameError behaviour is what matters here.
 begin
   puts Mylib::VERSION
 rescue NameError => e

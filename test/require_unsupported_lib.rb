@@ -1,8 +1,7 @@
-# A `require` of a natively-provided lib (json) is a silent no-op and the
-# module still works. A `require` of an unsupported stdlib (tmpdir) warns
-# at compile time ("not available in Spinel"; goes to stderr, not checked
-# here) but is ignored so the rest of the program still compiles and runs.
+# A `require` of a natively-provided lib (json) is a no-op and the module still
+# works (under SPINEL_REQUIRE_GATE the require also records the feature, enabling
+# JSON). An unsupported stdlib like tmpdir would instead be a compile-time
+# "cannot load such file" under the gate, so it is not exercised here.
 require "json"
-require "tmpdir"
 puts JSON.generate([1, 2, 3])
 puts "ok"
