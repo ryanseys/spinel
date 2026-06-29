@@ -128,6 +128,10 @@ root satisfies is the compile error from the previous section.
   link boundary.
 - A default vendored root and a project manifest will sit on top of `-I`, so
   packages resolve without passing `-I` by hand.
+- Feature directories (a `-I` root, a vendored package) are read-only inputs:
+  Spinel never writes build artifacts next to a feature's sources. A C-backed
+  feature's compiled objects go to a separate build cache, so a feature tree can
+  be shared or mounted read-only.
 - Spinel's own require-gated stdlib will eventually be carved out of the
   compiler into ordinary feature packages, resolved exactly like a third-party
   one.
