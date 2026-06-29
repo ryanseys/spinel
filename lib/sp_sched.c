@@ -22,12 +22,9 @@ void  sp_exc_ctx_free(void *p);
    at loop back-edges (codegen) and at blocking points. Defined unconditionally
    (see sp_sched.h) so a threaded program's poll links against either archive;
    the flag is only ever set in the threaded build. sp_safepoint() parks the
-   worker at the GC barrier -- a no-op stub until the workers + stop-the-world
-   protocol land. At N=1 the flag is never set, so neither path runs. */
+   worker at the GC barrier (defined below, after the lock). At N=1 the flag is
+   never set by another worker, so a single worker never parks here. */
 volatile int sp_safepoint_flag = 0;
-void sp_safepoint(void) {
-  /* STW barrier park: implemented with the worker pool + stop-the-world. */
-}
 
 /* ---- scheduler lock (design 3, Appendix B) ----
  * One mutex guards all scheduler/sync metadata: the run queue, the live-thread
@@ -48,10 +45,72 @@ void sp_safepoint(void) {
 static pthread_mutex_t g_sched_lock = PTHREAD_MUTEX_INITIALIZER;
 #define SCHED_LOCK()    pthread_mutex_lock(&g_sched_lock)
 #define SCHED_UNLOCK()  pthread_mutex_unlock(&g_sched_lock)
+
+/* ---- stop-the-world GC barrier (design 6.2) ----
+ * All state guarded by g_sched_lock. g_stw_active is the authoritative
+ * "collection in progress" predicate; sp_safepoint_flag is a lock-free hint the
+ * codegen polls at loop back-edges so a running worker checks in cheaply. The
+ * triggering worker (over the alloc threshold) either becomes the sole collector
+ * or, if one is already running, parks like everyone else -- there is no
+ * separate collector lock to block on, so a worker that crossed the threshold
+ * can never stall the collector by being un-parkable. */
+static int            g_nworkers = 1;   /* worker count; C-3 raises it past 1 */
+static int            g_nparked  = 0;   /* workers parked at the barrier right now */
+static int            g_stw_active = 0; /* a collection is in progress */
+static pthread_cond_t g_stw_request = PTHREAD_COND_INITIALIZER;  /* collector waits for parks */
+static pthread_cond_t g_stw_release = PTHREAD_COND_INITIALIZER;  /* parked workers wait for clear */
+
+/* Park the calling worker at the barrier until the collection finishes,
+   publishing its running green thread's roots first. PRE: g_sched_lock held. */
+static void sp_stw_park_locked(void) {
+  sp_fiber_publish_current_roots();
+  g_nparked++;
+  if (g_nparked >= g_nworkers - 1) pthread_cond_signal(&g_stw_request);
+  while (g_stw_active) pthread_cond_wait(&g_stw_release, &g_sched_lock);
+  g_nparked--;
+}
 #else
 #define SCHED_LOCK()    ((void)0)
 #define SCHED_UNLOCK()  ((void)0)
 #endif
+
+/* Safepoint poll body: codegen emits `if (sp_safepoint_flag) sp_safepoint();` at
+   loop back-edges. If a stop-the-world is in progress, park until it clears. */
+void sp_safepoint(void) {
+#ifdef SP_THREADS
+  SCHED_LOCK();
+  if (g_stw_active) sp_stw_park_locked();
+  SCHED_UNLOCK();
+#endif
+}
+
+/* Stop the world and collect (design 6.2). Called by sp_gc_alloc once over the
+   threshold, with the heap lock released. Either become the collector -- set the
+   barrier, wait for every other worker to park, then mark+sweep with exclusive
+   heap access -- or, if a collection is already running, just park through it.
+   At N=1 there are no other workers, so the wait is a no-op and this is exactly
+   today's inline collect, routed through the barrier. */
+void sp_stw_collect(void) {
+#ifdef SP_THREADS
+  SCHED_LOCK();
+  if (g_stw_active) { sp_stw_park_locked(); SCHED_UNLOCK(); return; }
+  extern size_t sp_gc_bytes, sp_gc_threshold;
+  if (sp_gc_bytes <= sp_gc_threshold) { SCHED_UNLOCK(); return; }  /* already collected */
+  g_stw_active = 1;
+  sp_safepoint_flag = 1;
+  while (g_nparked < g_nworkers - 1) pthread_cond_wait(&g_stw_request, &g_sched_lock);
+  SCHED_UNLOCK();
+  /* exclusive: every other worker is parked at a safepoint with roots published */
+  sp_gc_collect_retune();
+  SCHED_LOCK();
+  sp_safepoint_flag = 0;
+  g_stw_active = 0;
+  pthread_cond_broadcast(&g_stw_release);
+  SCHED_UNLOCK();
+#else
+  sp_gc_collect_retune();
+#endif
+}
 
 /* ---- scheduler state (single OS worker, so plain globals) ---- */
 static sp_thread  g_main_thread;         /* the main thread: runs on root, fiber == NULL */

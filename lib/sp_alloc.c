@@ -23,17 +23,33 @@ int sp_gc_stress_checked = 0;
 pthread_mutex_t sp_heap_lock = PTHREAD_MUTEX_INITIALIZER;   /* see sp_alloc.h */
 #endif
 
+/* Collect and re-tune the threshold. The caller guarantees exclusive access to
+   the heap: in the single-threaded build sp_gc_alloc holds sp_heap_lock; in the
+   threaded build sp_stw_collect runs this with the world stopped (every other
+   worker parked at a safepoint), so no allocator or mutator races the sweep. */
+void sp_gc_collect_retune(void) {
+  size_t before = sp_gc_bytes;
+  sp_gc_collect();
+  size_t freed = before - sp_gc_bytes;
+  if (freed < before / 4) { sp_gc_threshold = before * 2; }
+  else if (sp_gc_bytes > 0) { sp_gc_threshold = sp_gc_bytes * 4; if (sp_gc_threshold < sp_gc_threshold_init) sp_gc_threshold = sp_gc_threshold_init; }
+  else { sp_gc_threshold = sp_gc_threshold_init; }
+  sp_gc_enforce_mem_limit();
+}
+
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   SP_HEAP_LOCK();
   if (!sp_gc_stress_checked) { sp_gc_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { sp_gc_threshold = 2048; sp_gc_threshold_init = 2048; } }
   if (sp_gc_bytes > sp_gc_threshold) {
-    size_t before = sp_gc_bytes;
-    sp_gc_collect();
-    size_t freed = before - sp_gc_bytes;
-    if (freed < before / 4) { sp_gc_threshold = before * 2; }
-    else if (sp_gc_bytes > 0) { sp_gc_threshold = sp_gc_bytes * 4; if (sp_gc_threshold < sp_gc_threshold_init) sp_gc_threshold = sp_gc_threshold_init; }
-    else { sp_gc_threshold = sp_gc_threshold_init; }
-    sp_gc_enforce_mem_limit();
+#ifdef SP_THREADS
+    /* Drop the heap lock before stopping the world: a worker stalled here on the
+       heap lock could never reach a safepoint, deadlocking the collector. */
+    SP_HEAP_UNLOCK();
+    sp_stw_collect();
+    SP_HEAP_LOCK();
+#else
+    sp_gc_collect_retune();
+#endif
   }
   size_t need = sizeof(sp_gc_hdr) + sz;
   sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
