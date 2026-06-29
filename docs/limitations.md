@@ -64,7 +64,7 @@ Limited today, but additively fixable; listed roughly easiest-first.
 | Feature | Today | Path to relax |
 |---|---|---|
 | `Exception#backtrace` / `Kernel#caller` | return `[]` (class + message work) | populate frames from a compile-time call-site→source side-table (the `--line-map` map already exists) |
-| `Thread` real parallelism | `Thread`/`Mutex` are modelled as single-threaded Fibers (`Thread.new{}.value` works, `synchronize` runs inline) | true parallelism needs a concurrent GC and scheduler — large |
+| `Thread` real parallelism | implemented as a true M:N runtime (no GVL): N OS workers (`min(online cores, SPINEL_WORKERS)`) run green threads in parallel over a stop-the-world GC, with real `Mutex`/`Queue`/`SizedQueue`/`ConditionVariable`. The single-threaded archive is unchanged (a non-`Thread` program is byte-identical). Still hardening under sustained heavy per-thread allocation | remaining: SIGURG-based async preemption (so `Thread#raise`/`#kill` to a thread running on another worker is precise rather than delivered at its next safepoint), non-blocking scheduler-aware I/O, and per-worker allocation (TLAB) + work stealing |
 | `Marshal` of user objects with container-typed ivars | primitives + Array + Hash + Bignum + Complex + Rational + plain user objects work, including cyclic and shared references (`Marshal.dump`/`load`, CRuby 4.8 wire format, byte-compatible for the supported subset); an object whose ivar is a *statically typed* Array/Hash (not a poly ivar) is not yet dumpable | a user object dumps/loads through a compile-time-generated per-class dispatcher. Supported ivar types: scalars (Integer/Float/String/true/false/Symbol/Bignum), `poly` (mixed) ivars, and nested user objects. A typed-container ivar would mismatch the loader's always-poly containers, so such a class raises `TypeError` on dump; value-type and Exception-subclass objects are also out of scope. Complex's components are float-only, so they round-trip as Floats |
 | Mixin/inheritance lifecycle hooks (`included` / `inherited` / `extended`) | defined but not fired | emit a startup call with the literal class arg (the include/inherit graph is known at compile time) |
 | External `Enumerator` — `.each` with no block is only an Enumerator on `Array` / `Range`, not on an arbitrary user method | mostly supported | `Array#each` / `Range#each` with no block return a working external Enumerator (`#next` / `#peek` / `#rewind` / `#size`, `loop` stops on `StopIteration`). `Enumerator.new { \|y\| ... }` is a fiber-backed generator (`y << v`, `y.yield(v)`, and the bare `y.yield v` without parentheses, plus `#next` / `#peek` / `#rewind` / `#take` / `#first`, infinite generators work). `Enumerator::Lazy` over an int range (incl. endless) or int array fuses map/select/reject/filter/take_while chains terminated by `first(n)` / `to_a` / `force`. Chained block→`.to_a` forms (`each_slice(n).to_a`, `filter_map`, `map{}.to_a`) also work. |
@@ -82,6 +82,15 @@ Limited today, but additively fixable; listed roughly easiest-first.
   follows CRuby (Integer for `round` with 0 digits, Float otherwise).
 - **Frozen literals** — explicit `.freeze` then mutation raises `FrozenError`,
   matching CRuby. (String literals are *not* implicitly frozen — see below.)
+- **Thread data races are observable** — Spinel runs threads with real
+  parallelism and no GVL, so two threads mutating the same `Array`/`Hash`/object
+  without a `Mutex` is undefined at the Ruby level, exactly as in JRuby and
+  TruffleRuby. CRuby's GVL makes individual operations appear atomic; Spinel does
+  not, and adds no implicit per-object locking — correctness across threads is the
+  program's responsibility via `Mutex`/`Queue`/`ConditionVariable`. Relatedly,
+  thread *interleaving* (and so the ordering of `Thread.pass`, `Thread.list`
+  membership, and the exact moment a `Thread#raise`/`#kill` is delivered) is
+  nondeterministic, where the single-worker model was deterministic.
 
 ### Intentional incompatibilities with CRuby
 
