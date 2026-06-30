@@ -3,7 +3,7 @@
 Golden tests for `spinel_rbs_extract` — the tool that reads `*.rbs`
 files and emits the line-oriented seed format `spinel_analyze` consumes
 under `spinel --rbs DIR`. See `docs/RBS-EXTRACT.md` for the supported
-subset and `experiments/rbs/` for an end-to-end seeding spike.
+subset and `tools/rbs-seed-spike/` for an end-to-end seeding spike.
 
 The extractor is a pure, deterministic text transform (`*.rbs` in →
 seed lines on stdout) and a compiled C binary, so it golden-tests

@@ -5,9 +5,15 @@
 # rows. The diff is the evidence that RBS seeding flowed through to
 # the analyzer's type tables.
 #
+# This is a historical bring-up spike: it exercises the LEGACY Ruby
+# analyzer (legacy/spinel_analyze.rb), not the current C analyzer. The
+# shipped C `--rbs` flow has its own coverage under test/rbs (extractor)
+# and test/rbs-seed (analyzer seeding); this harness is kept as the
+# original worked example of the mechanism.
+#
 # Run from the spinel repo root after `make parse`:
 #
-#   ruby experiments/rbs/harness.rb
+#   ruby tools/rbs-seed-spike/harness.rb
 #
 # Exit 0 = the expected diff was observed (Box#relabel's param
 # changed from int to string). Exit 1 = either the harness couldn't
@@ -20,7 +26,7 @@ SPINEL_ROOT = File.expand_path("../..", __dir__)
 FIXTURE_RB = File.join(__dir__, "box.rb")
 SEED_FILE  = File.join(__dir__, "box.seed")
 
-PARSE_BIN    = File.join(SPINEL_ROOT, "spinel_parse")
+PARSE_BIN    = File.join(SPINEL_ROOT, "legacy", "spinel_parse")
 ANALYZE_RB   = File.join(SPINEL_ROOT, "legacy", "spinel_analyze.rb")
 
 unless File.executable?(PARSE_BIN)
