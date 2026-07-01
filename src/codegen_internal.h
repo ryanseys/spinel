@@ -430,6 +430,15 @@ int recv_is_const(const NodeTable *nt, int recv, const char *name);
 int sp_is_fiber_storage_recv(const NodeTable *nt, int recv);
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b);
+/* Receiver-typed method-call emitters (codegen_call_recv.c). Each returns 1 if
+   it handled the call and emitted into `b`, else 0 (emit_call falls through). */
+int emit_array_call(Compiler *c, int id, Buf *b);
+int emit_hash_call(Compiler *c, int id, Buf *b);
+int emit_scalar_call(Compiler *c, int id, Buf *b);
+int emit_object_call(Compiler *c, int id, Buf *b);
+int emit_value_recv_call(Compiler *c, int id, Buf *b);
+int emit_range_call(Compiler *c, int id, Buf *b);
+int emit_poly_call(Compiler *c, int id, Buf *b);
 int diagnose_eval_call(Compiler *c, int id);
 int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
