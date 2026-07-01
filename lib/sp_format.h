@@ -44,4 +44,7 @@ sp_Rational sp_rational_pow(sp_Rational a, mrb_int e);
 mrb_int sp_rational_cmp(sp_Rational a, sp_Rational b);
 mrb_bool sp_rational_eq(sp_Rational a, sp_Rational b);
 mrb_float sp_rational_to_f(sp_Rational a);
+sp_Rational sp_float_to_rational(mrb_float f);          /* Float#to_r (exact) */
+sp_Rational sp_float_rationalize(mrb_float f, mrb_float eps);  /* Float#rationalize(eps) */
+sp_Rational sp_float_rationalize0(mrb_float f);         /* Float#rationalize (no arg) */
 #endif /* SP_FORMAT_H */
