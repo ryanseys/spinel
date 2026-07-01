@@ -2583,6 +2583,8 @@ else {
         sp_streq(name, "abs") || sp_streq(name, "magnitude") ||
         sp_streq(name, "modulo") || sp_streq(name, "to_f") ||
         (sp_streq(name, "fdiv") && argc == 1)) return TY_FLOAT;
+    if ((sp_streq(name, "to_r") && argc == 0) ||
+        (sp_streq(name, "rationalize") && (argc == 0 || argc == 1))) return TY_RATIONAL;
     if (sp_streq(name, "eql?") && argc == 1) return TY_BOOL;
     /* clamp with float bounds returns a float (matches codegen in codegen_call.c);
        a mixed/int bound can return the Integer bound, so leave that poly. */

@@ -181,6 +181,80 @@ mrb_bool sp_rational_eq(sp_Rational a, sp_Rational b) {
 mrb_float sp_rational_to_f(sp_Rational a) {
   return (mrb_float)a.num / (mrb_float)a.den;
 }
+/* 2^e as a wide integer, raising RangeError past the mrb_int range. */
+static sp_rat_wide sp_rat_pow2(int e) {
+  sp_rat_wide r = 1;
+  for (int i = 0; i < e; i++) {
+    r <<= 1;
+    if (r > (sp_rat_wide)INTPTR_MAX) sp_raise_cls("RangeError", "Rational out of mrb_int range");
+  }
+  return r;
+}
+/* Float#to_r : the exact rational value of the double. A finite double equals
+   m * 2^e for a 53-bit integer mantissa m, so the conversion is exact. When the
+   exact numerator/denominator does not fit in mrb_int (huge magnitude or a tiny
+   subnormal), it raises RangeError -- spinel's Rational is int64/int64 and does
+   not promote to a Bignum (matching the existing Rational-overflow behavior). */
+sp_Rational sp_float_to_rational(mrb_float f) {
+  if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", isnan(f) ? "NaN" : "Infinity");
+  if (f == 0.0) { sp_Rational z; z.num = 0; z.den = 1; return z; }
+  int e;
+  double m = frexp((double)f, &e);          /* f = m * 2^e, 0.5 <= |m| < 1 */
+  for (int i = 0; i < 53 && m != floor(m); i++) { m *= 2.0; e--; }
+  sp_rat_wide num = (sp_rat_wide)m;          /* integer mantissa (fits in 54 bits) */
+  if (e >= 0) {
+    /* num * 2^e can exceed sp_rat_wide on a 32-bit build (long long); guard the
+       product first. p > INTPTR_MAX/|num| is exactly "num*p won't fit mrb_int",
+       so this raises rather than overflowing. */
+    sp_rat_wide p = sp_rat_pow2(e), an = num < 0 ? -num : num;
+    if (an != 0 && p > (sp_rat_wide)INTPTR_MAX / an)
+      sp_raise_cls("RangeError", "Rational out of mrb_int range");
+    return sp_rational_new_wide(num * p, 1);
+  }
+  return sp_rational_new_wide(num, sp_rat_pow2(-e));
+}
+/* Simplest p/q with lo <= p/q <= hi, for 0 < lo <= hi. Classic continued-fraction
+   "simplest rational in an interval" recursion; the convergent depth is bounded by
+   the interval, so q stays small for sane epsilons. */
+static void sp_simplest_pos(double lo, double hi, sp_rat_wide *np, sp_rat_wide *dp) {
+  double fl = floor(lo);
+  if (fl == lo) { *np = (sp_rat_wide)fl; *dp = 1; return; }   /* lo is an integer */
+  if (fl == floor(hi)) {                                       /* no integer in (lo,hi) */
+    sp_rat_wide n, d;
+    sp_simplest_pos(1.0 / (hi - fl), 1.0 / (lo - fl), &n, &d);
+    *np = ((sp_rat_wide)fl * n) + d;
+    *dp = n;
+    return;
+  }
+  *np = (sp_rat_wide)fl + 1; *dp = 1;                          /* fl+1 lies in [lo,hi] */
+}
+static sp_Rational sp_rationalize_interval(double lo, double hi) {
+  if (lo > hi) { double t = lo; lo = hi; hi = t; }
+  if (lo <= 0.0 && hi >= 0.0) { sp_Rational z; z.num = 0; z.den = 1; return z; }
+  int neg = 0;
+  if (hi < 0.0) { double t = -lo; lo = -hi; hi = t; neg = 1; } /* fold to positives */
+  /* Any p/q in [lo,hi] has p >= lo*q >= lo, so lo past mrb_int can't fit and
+     floor(lo) would also overflow the (double->sp_rat_wide) cast below. */
+  if (lo > (double)INTPTR_MAX) sp_raise_cls("RangeError", "Rational out of mrb_int range");
+  sp_rat_wide n, d;
+  sp_simplest_pos(lo, hi, &n, &d);
+  if (neg) n = -n;
+  return sp_rational_new_wide(n, d);
+}
+sp_Rational sp_float_rationalize(mrb_float f, mrb_float eps) {
+  if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", isnan(f) ? "NaN" : "Infinity");
+  double e = eps < 0 ? -eps : eps;
+  return sp_rationalize_interval((double)f - e, (double)f + e);
+}
+/* No-arg rationalize: simplest rational that round-trips to this exact double,
+   i.e. lying in the half-ulp interval around f. */
+sp_Rational sp_float_rationalize0(mrb_float f) {
+  if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", isnan(f) ? "NaN" : "Infinity");
+  if (f == 0.0) { sp_Rational z; z.num = 0; z.den = 1; return z; }
+  double lo = ((double)f + nextafter((double)f, -INFINITY)) / 2.0;
+  double hi = ((double)f + nextafter((double)f,  INFINITY)) / 2.0;
+  return sp_rationalize_interval(lo, hi);
+}
 static sp_rat_wide sp_rat_ipow(sp_rat_wide base, mrb_int e) {
   sp_rat_wide r = 1;
   for (mrb_int i = 0; i < e; i++) {
