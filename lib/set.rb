@@ -18,29 +18,23 @@ class Set
   end
 
   def <<(x)
-    @data.push(x) unless @data.include?(x)
-    self
+    add(x)
   end
 
   def include?(x)
     @data.include?(x)
   end
-
-  def member?(x)
-    @data.include?(x)
-  end
+  alias member? include?
 
   def each
     @data.each { |x| yield x }
+    self
   end
 
   def size
     @data.size
   end
-
-  def length
-    @data.size
-  end
+  alias length size
 
   def empty?
     @data.empty?
