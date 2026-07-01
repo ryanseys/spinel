@@ -278,6 +278,7 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent);
 void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar);
 int  emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent);
 int  emit_output_call(Compiler *c, int id, Buf *b, int indent);
+TyKind emit_range_step_array(Compiler *c, int id, Buf *b);
 int  emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
 int  subtree_has_own_redo(const NodeTable *nt, int id);
