@@ -684,6 +684,239 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = NULL;
+  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  /* Thread instance methods (a green thread on the scheduler) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_THREAD) {
+    if (sp_streq(name, "value") && argc == 0) {
+      buf_puts(b, "sp_Thread_value("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "join") && argc == 0) {
+      buf_puts(b, "sp_Thread_join("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "alive?") && argc == 0) {
+      buf_puts(b, "sp_Thread_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "report_on_exception") && argc == 0) {
+      buf_puts(b, "sp_Thread_get_report("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "report_on_exception=") && argc == 1) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_thread *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Thread_set_report(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, "); })");
+      return 1;
+    }
+    if (sp_streq(name, "status") && argc == 0) {
+      buf_puts(b, "sp_Thread_status("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "name") && argc == 0) {
+      buf_puts(b, "sp_Thread_get_name("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "name=") && argc == 1) {
+      buf_puts(b, "sp_Thread_set_name("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_boxed(c, argv[0], b); buf_puts(b, ")"); return 1;
+    }
+    if ((sp_streq(name, "kill") || sp_streq(name, "exit") || sp_streq(name, "terminate")) && argc == 0) {
+      buf_puts(b, "sp_Thread_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "equal?") && argc == 1 && comp_ntype(c, argv[0]) == TY_THREAD) {
+      buf_puts(b, "((void *)("); emit_expr(c, recv, b);
+      buf_puts(b, ") == (void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return 1;
+    }
+    if (sp_streq(name, "raise")) {
+      /* #raise: deliver an exception to the thread (it fires when the thread next
+         runs). Argument forms mirror Kernel#raise; an exception object is unpacked
+         into (cls, msg, obj) since sp_exc_* are TU-static (cf Fiber#raise). */
+      TyKind a0t = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      int arg0_const = argc >= 1 && nt_type(nt, argv[0]) &&
+        (sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ||
+         sp_streq(nt_type(nt, argv[0]), "ConstantPathNode"));
+      int arg0_exc = a0t == TY_EXCEPTION ||
+        (ty_is_object(a0t) && class_is_exc_subclass(c, ty_object_class(a0t)));
+      if (argc >= 1 && arg0_exc) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_thread *_tr%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Exception *_te%d = (sp_Exception *)(", t); emit_expr(c, argv[0], b);
+        buf_printf(b, "); sp_Thread_raise(_tr%d, sp_exc_class_name(_te%d), sp_exc_message(_te%d), _te%d); })",
+                   t, t, t, t);
+        return 1;
+      }
+      buf_puts(b, "sp_Thread_raise("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (arg0_const) {
+        buf_printf(b, "\"%s\", ", nt_str(nt, argv[0], "name"));
+        if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
+        buf_puts(b, ", NULL");
+      }
+      else if (argc >= 1) { buf_puts(b, "\"RuntimeError\", "); emit_expr(c, argv[0], b); buf_puts(b, ", NULL"); }
+      else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
+      buf_puts(b, ")");
+      return 1;
+    }
+    /* thread-local storage: t[:key] / t[:key]=v / t.key?(:key) (symbol keys) */
+    if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      buf_puts(b, "sp_Thread_tls_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "[]=") && argc == 2 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      buf_puts(b, "sp_Thread_tls_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "key?") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      buf_puts(b, "sp_Thread_tls_key("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
+    }
+  }
+
+  /* Mutex instance methods. synchronize is handled by the generic block handler
+     below (it wraps the block in lock/unlock for a TY_MUTEX receiver). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_MUTEX) {
+    if ((sp_streq(name, "lock") || sp_streq(name, "unlock")) && argc == 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_mutex *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Mutex_%s(_t%d); _t%d; })", sp_streq(name, "lock") ? "lock" : "unlock", t, t);
+      return 1;
+    }
+    if (sp_streq(name, "try_lock") && argc == 0) {
+      buf_puts(b, "sp_Mutex_try_lock("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "locked?") && argc == 0) {
+      buf_puts(b, "sp_Mutex_locked("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "owned?") && argc == 0) {
+      buf_puts(b, "sp_Mutex_owned("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+  }
+
+  /* ConditionVariable instance methods */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_CONDVAR) {
+    if (sp_streq(name, "wait") && argc >= 1) {
+      /* wait(mutex): release the mutex, park, re-acquire. A timeout arg (argc==2)
+         is accepted but ignored at N=1 (no real clock blocking). */
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
+      buf_printf(b, "); _t%d; })", t);
+      return 1;
+    }
+    if ((sp_streq(name, "signal") || sp_streq(name, "broadcast")) && argc == 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_CondVar_%s(_t%d); _t%d; })", sp_streq(name, "signal") ? "signal" : "broadcast", t, t);
+      return 1;
+    }
+  }
+
+  /* Queue instance methods (a thread-safe FIFO on the scheduler) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_QUEUE) {
+    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq")) && argc == 1) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_queue *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Queue_push(_t%d, ", t); emit_boxed(c, argv[0], b);
+      buf_printf(b, "); _t%d; })", t);
+      return 1;
+    }
+    if ((sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) && argc == 0) {
+      buf_puts(b, "sp_Queue_pop("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
+      buf_puts(b, "sp_Queue_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "max") && argc == 0) {
+      buf_puts(b, "sp_Queue_max("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "empty?") && argc == 0) {
+      buf_puts(b, "sp_Queue_empty("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "closed?") && argc == 0) {
+      buf_puts(b, "sp_Queue_closed("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if ((sp_streq(name, "close") || sp_streq(name, "clear")) && argc == 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_queue *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Queue_%s(_t%d); _t%d; })", sp_streq(name, "close") ? "close" : "clear", t, t);
+      return 1;
+    }
+  }
+
+  /* Fiber instance methods */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
+    if (sp_streq(name, "resume")) {
+      buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b);
+      for (int k = 0; k < argc; k++) {
+        buf_puts(b, ", ");
+        if (comp_ntype(c, argv[k]) == TY_POLY) emit_expr(c, argv[k], b);
+        else emit_boxed(c, argv[k], b);
+      }
+      if (argc == 0) buf_puts(b, ", sp_box_nil()");
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (sp_streq(name, "alive?")) {
+      buf_puts(b, "sp_Fiber_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "kill") && argc == 0) {
+      buf_puts(b, "sp_Fiber_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (sp_streq(name, "transfer")) {
+      buf_puts(b, "sp_Fiber_transfer("); emit_expr(c, recv, b);
+      for (int k = 0; k < argc; k++) {
+        buf_puts(b, ", ");
+        if (comp_ntype(c, argv[k]) == TY_POLY) emit_expr(c, argv[k], b);
+        else emit_boxed(c, argv[k], b);
+      }
+      if (argc == 0) buf_puts(b, ", sp_box_nil()");
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (sp_streq(name, "value")) {
+      /* Fiber#value: resume until fiber finishes and return last yielded value. */
+      buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b); buf_puts(b, ", sp_box_nil())");
+      return 1;
+    }
+    if (sp_streq(name, "raise")) {
+      /* Fiber#raise: inject an exception at the fiber's suspension point. The
+         argument forms mirror Kernel#raise: (), ("msg"), (Class), (Class, "msg"),
+         or (exc_object). The object form is unpacked into class-name/message here
+         because sp_exc_class_name/_message are TU-static (unreachable from the
+         fiber runtime), so the runtime takes (cls, msg, obj). */
+      TyKind a0t = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      int arg0_const = argc >= 1 && nt_type(nt, argv[0]) &&
+        (sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ||
+         sp_streq(nt_type(nt, argv[0]), "ConstantPathNode"));
+      int arg0_exc = a0t == TY_EXCEPTION ||
+        (ty_is_object(a0t) && class_is_exc_subclass(c, ty_object_class(a0t)));
+      if (argc >= 1 && arg0_exc) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Fiber *_fr%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Exception *_fe%d = (sp_Exception *)(", t); emit_expr(c, argv[0], b);
+        buf_printf(b, "); sp_Fiber_raise(_fr%d, sp_exc_class_name(_fe%d), sp_exc_message(_fe%d), _fe%d); })",
+                   t, t, t, t);
+        return 1;
+      }
+      buf_puts(b, "sp_Fiber_raise("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (arg0_const) {
+        buf_printf(b, "\"%s\", ", nt_str(nt, argv[0], "name"));
+        if (argc >= 2) emit_expr(c, argv[1], b);
+        else buf_puts(b, "(&(\"\\xff\")[1])");
+        buf_puts(b, ", NULL");
+      }
+      else if (argc >= 1) {
+        buf_puts(b, "\"RuntimeError\", "); emit_expr(c, argv[0], b); buf_puts(b, ", NULL");
+      }
+      else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
+      buf_puts(b, ")");
+      return 1;
+    }
+  }
+  return 0;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
@@ -1548,228 +1781,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
 
-  /* Thread instance methods (a green thread on the scheduler) */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_THREAD) {
-    if (sp_streq(name, "value") && argc == 0) {
-      buf_puts(b, "sp_Thread_value("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "join") && argc == 0) {
-      buf_puts(b, "sp_Thread_join("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "alive?") && argc == 0) {
-      buf_puts(b, "sp_Thread_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "report_on_exception") && argc == 0) {
-      buf_puts(b, "sp_Thread_get_report("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "report_on_exception=") && argc == 1) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_thread *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Thread_set_report(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, "); })");
-      return;
-    }
-    if (sp_streq(name, "status") && argc == 0) {
-      buf_puts(b, "sp_Thread_status("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "name") && argc == 0) {
-      buf_puts(b, "sp_Thread_get_name("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "name=") && argc == 1) {
-      buf_puts(b, "sp_Thread_set_name("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_boxed(c, argv[0], b); buf_puts(b, ")"); return;
-    }
-    if ((sp_streq(name, "kill") || sp_streq(name, "exit") || sp_streq(name, "terminate")) && argc == 0) {
-      buf_puts(b, "sp_Thread_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "equal?") && argc == 1 && comp_ntype(c, argv[0]) == TY_THREAD) {
-      buf_puts(b, "((void *)("); emit_expr(c, recv, b);
-      buf_puts(b, ") == (void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
-    }
-    if (sp_streq(name, "raise")) {
-      /* #raise: deliver an exception to the thread (it fires when the thread next
-         runs). Argument forms mirror Kernel#raise; an exception object is unpacked
-         into (cls, msg, obj) since sp_exc_* are TU-static (cf Fiber#raise). */
-      TyKind a0t = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-      int arg0_const = argc >= 1 && nt_type(nt, argv[0]) &&
-        (sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ||
-         sp_streq(nt_type(nt, argv[0]), "ConstantPathNode"));
-      int arg0_exc = a0t == TY_EXCEPTION ||
-        (ty_is_object(a0t) && class_is_exc_subclass(c, ty_object_class(a0t)));
-      if (argc >= 1 && arg0_exc) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_thread *_tr%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_Exception *_te%d = (sp_Exception *)(", t); emit_expr(c, argv[0], b);
-        buf_printf(b, "); sp_Thread_raise(_tr%d, sp_exc_class_name(_te%d), sp_exc_message(_te%d), _te%d); })",
-                   t, t, t, t);
-        return;
-      }
-      buf_puts(b, "sp_Thread_raise("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      if (arg0_const) {
-        buf_printf(b, "\"%s\", ", nt_str(nt, argv[0], "name"));
-        if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
-        buf_puts(b, ", NULL");
-      }
-      else if (argc >= 1) { buf_puts(b, "\"RuntimeError\", "); emit_expr(c, argv[0], b); buf_puts(b, ", NULL"); }
-      else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
-      buf_puts(b, ")");
-      return;
-    }
-    /* thread-local storage: t[:key] / t[:key]=v / t.key?(:key) (symbol keys) */
-    if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
-      buf_puts(b, "sp_Thread_tls_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "[]=") && argc == 2 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
-      buf_puts(b, "sp_Thread_tls_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "key?") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
-      buf_puts(b, "sp_Thread_tls_key("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
-    }
-  }
-
-  /* Mutex instance methods. synchronize is handled by the generic block handler
-     below (it wraps the block in lock/unlock for a TY_MUTEX receiver). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_MUTEX) {
-    if ((sp_streq(name, "lock") || sp_streq(name, "unlock")) && argc == 0) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_mutex *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Mutex_%s(_t%d); _t%d; })", sp_streq(name, "lock") ? "lock" : "unlock", t, t);
-      return;
-    }
-    if (sp_streq(name, "try_lock") && argc == 0) {
-      buf_puts(b, "sp_Mutex_try_lock("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "locked?") && argc == 0) {
-      buf_puts(b, "sp_Mutex_locked("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "owned?") && argc == 0) {
-      buf_puts(b, "sp_Mutex_owned("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-  }
-
-  /* ConditionVariable instance methods */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_CONDVAR) {
-    if (sp_streq(name, "wait") && argc >= 1) {
-      /* wait(mutex): release the mutex, park, re-acquire. A timeout arg (argc==2)
-         is accepted but ignored at N=1 (no real clock blocking). */
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
-      buf_printf(b, "); _t%d; })", t);
-      return;
-    }
-    if ((sp_streq(name, "signal") || sp_streq(name, "broadcast")) && argc == 0) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_CondVar_%s(_t%d); _t%d; })", sp_streq(name, "signal") ? "signal" : "broadcast", t, t);
-      return;
-    }
-  }
-
-  /* Queue instance methods (a thread-safe FIFO on the scheduler) */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_QUEUE) {
-    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq")) && argc == 1) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_queue *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Queue_push(_t%d, ", t); emit_boxed(c, argv[0], b);
-      buf_printf(b, "); _t%d; })", t);
-      return;
-    }
-    if ((sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) && argc == 0) {
-      buf_puts(b, "sp_Queue_pop("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
-      buf_puts(b, "sp_Queue_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "max") && argc == 0) {
-      buf_puts(b, "sp_Queue_max("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "empty?") && argc == 0) {
-      buf_puts(b, "sp_Queue_empty("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "closed?") && argc == 0) {
-      buf_puts(b, "sp_Queue_closed("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if ((sp_streq(name, "close") || sp_streq(name, "clear")) && argc == 0) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_queue *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Queue_%s(_t%d); _t%d; })", sp_streq(name, "close") ? "close" : "clear", t, t);
-      return;
-    }
-  }
-
-  /* Fiber instance methods */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
-    if (sp_streq(name, "resume")) {
-      buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b);
-      for (int k = 0; k < argc; k++) {
-        buf_puts(b, ", ");
-        if (comp_ntype(c, argv[k]) == TY_POLY) emit_expr(c, argv[k], b);
-        else emit_boxed(c, argv[k], b);
-      }
-      if (argc == 0) buf_puts(b, ", sp_box_nil()");
-      buf_puts(b, ")");
-      return;
-    }
-    if (sp_streq(name, "alive?")) {
-      buf_puts(b, "sp_Fiber_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "kill") && argc == 0) {
-      buf_puts(b, "sp_Fiber_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "transfer")) {
-      buf_puts(b, "sp_Fiber_transfer("); emit_expr(c, recv, b);
-      for (int k = 0; k < argc; k++) {
-        buf_puts(b, ", ");
-        if (comp_ntype(c, argv[k]) == TY_POLY) emit_expr(c, argv[k], b);
-        else emit_boxed(c, argv[k], b);
-      }
-      if (argc == 0) buf_puts(b, ", sp_box_nil()");
-      buf_puts(b, ")");
-      return;
-    }
-    if (sp_streq(name, "value")) {
-      /* Fiber#value: resume until fiber finishes and return last yielded value. */
-      buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b); buf_puts(b, ", sp_box_nil())");
-      return;
-    }
-    if (sp_streq(name, "raise")) {
-      /* Fiber#raise: inject an exception at the fiber's suspension point. The
-         argument forms mirror Kernel#raise: (), ("msg"), (Class), (Class, "msg"),
-         or (exc_object). The object form is unpacked into class-name/message here
-         because sp_exc_class_name/_message are TU-static (unreachable from the
-         fiber runtime), so the runtime takes (cls, msg, obj). */
-      TyKind a0t = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-      int arg0_const = argc >= 1 && nt_type(nt, argv[0]) &&
-        (sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ||
-         sp_streq(nt_type(nt, argv[0]), "ConstantPathNode"));
-      int arg0_exc = a0t == TY_EXCEPTION ||
-        (ty_is_object(a0t) && class_is_exc_subclass(c, ty_object_class(a0t)));
-      if (argc >= 1 && arg0_exc) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_Fiber *_fr%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_Exception *_fe%d = (sp_Exception *)(", t); emit_expr(c, argv[0], b);
-        buf_printf(b, "); sp_Fiber_raise(_fr%d, sp_exc_class_name(_fe%d), sp_exc_message(_fe%d), _fe%d); })",
-                   t, t, t, t);
-        return;
-      }
-      buf_puts(b, "sp_Fiber_raise("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      if (arg0_const) {
-        buf_printf(b, "\"%s\", ", nt_str(nt, argv[0], "name"));
-        if (argc >= 2) emit_expr(c, argv[1], b);
-        else buf_puts(b, "(&(\"\\xff\")[1])");
-        buf_puts(b, ", NULL");
-      }
-      else if (argc >= 1) {
-        buf_puts(b, "\"RuntimeError\", "); emit_expr(c, argv[0], b); buf_puts(b, ", NULL");
-      }
-      else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
-      buf_puts(b, ")");
-      return;
-    }
-  }
+  if (emit_concurrency_call(c, id, b)) return;
 
   /* arr.each / arr.reverse_each with no block -> an external Enumerator over a
      snapshot of the array's (boxed) elements. Block-form and chained
