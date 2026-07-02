@@ -2312,14 +2312,33 @@ void analyze_program(Compiler *c) {
         if (p && p->type == TY_POLY && !p->is_block_param) { p->type = TY_UNKNOWN; any = 1; }
       }
     }
+    /* Plain locals ratchet through the same monotonic unify, so a local read
+       before its feeding ivar settled (Pulse#sample's `sum` <- @timer) locks
+       poly and re-poisons the ivars this loop just re-narrowed. Reset and
+       re-clear them per iteration exactly like the ivars. */
+    int lcap = 16, nlrec = 0;
+    int *recLs = (int *)malloc(sizeof(int) * lcap), *recLi = (int *)malloc(sizeof(int) * lcap);
+    for (int s = 0; s < c->nscopes; s++) {
+      Scope *sc = &c->scopes[s];
+      for (int i = 0; i < sc->nlocals; i++) {
+        LocalVar *lv = &sc->locals[i];
+        if (lv->type != TY_POLY || lv->is_param || lv->is_block_param) continue;
+        lv->type = TY_UNKNOWN; any = 1;
+        if (nlrec >= lcap) { lcap *= 2; recLs = realloc(recLs, sizeof(int) * lcap); recLi = realloc(recLi, sizeof(int) * lcap); }
+        recLs[nlrec] = s; recLi[nlrec] = i; nlrec++;
+      }
+    }
     if (reset_locked_iter_block_params(c)) any = 1;
     if (any) {
       TyKind *prev = (TyKind *)malloc(sizeof(TyKind) * (nrec > 0 ? nrec : 1));
+      TyKind *lprev = (TyKind *)malloc(sizeof(TyKind) * (nlrec > 0 ? nlrec : 1));
       for (int iter = 0; iter < 128; iter++) {
         /* stash last-settled values, then re-clear the reset ivars so they
            recompute fresh (narrowing) this iteration. */
         for (int k = 0; k < nrec; k++) prev[k] = c->classes[recCi[k]].ivar_types[recIv[k]];
         for (int k = 0; k < nrec; k++) c->classes[recCi[k]].ivar_types[recIv[k]] = TY_UNKNOWN;
+        for (int k = 0; k < nlrec; k++) lprev[k] = c->scopes[recLs[k]].locals[recLi[k]].type;
+        for (int k = 0; k < nlrec; k++) c->scopes[recLs[k]].locals[recLi[k]].type = TY_UNKNOWN;
         sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
         int ch = 0;
         ch |= infer_write_types(c);
@@ -2340,17 +2359,19 @@ void analyze_program(Compiler *c) {
            every iteration, so converge on ivar value-stability instead. With
            none (only poly params/returns reset), fall back to the normal
            no-change fixpoint so the param/return passes fully settle. */
-        if (nrec > 0) {
+        if (nrec > 0 || nlrec > 0) {
           int stable = 1;
           for (int k = 0; k < nrec; k++)
             if (c->classes[recCi[k]].ivar_types[recIv[k]] != prev[k]) { stable = 0; break; }
+          for (int k = 0; stable && k < nlrec; k++)
+            if (c->scopes[recLs[k]].locals[recLi[k]].type != lprev[k]) stable = 0;
           if (stable) break;
         }
         else if (!ch) break;
       }
-      free(prev);
+      free(prev); free(lprev);
     }
-    free(recCi); free(recIv);
+    free(recCi); free(recIv); free(recLs); free(recLi);
   }
 
   /* Backstop: a parameter still unknown but with a `= nil` default is a
