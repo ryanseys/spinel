@@ -3866,12 +3866,17 @@ static void sp_throw(const char *tag, mrb_int val) {
    (SP_UNWIND_BREAK) so `ensure` bodies run, exactly like sp_throw and
    sp_proc_return above. The value channel is poly so any break value carries
    faithfully. Per-worker (SP_TLS) and fiber-context-saved like the catch
-   arrays; the push is unchecked like sp_exc_arm / the catch push. */
+   arrays; the push is unchecked like sp_exc_arm / the catch push.
+   The backing storage is heap-allocated on the first push (like
+   sp_gc_mark_stack), NOT inline TLS arrays: ~14KB of TLS (a jmp_buf is
+   ~200 bytes) shifts every hot TLS variable's layout and cost optcarrot
+   ~8% fps in a program that never breaks from a block. TLS holds only
+   the pointers, so break-free programs pay nothing. */
 #define SP_BRK_STACK_MAX 64
-static SP_TLS jmp_buf sp_brk_stack[SP_BRK_STACK_MAX];
-static SP_TLS sp_RbVal sp_brk_val[SP_BRK_STACK_MAX];
-static SP_TLS mrb_int sp_brk_serial[SP_BRK_STACK_MAX];
-static SP_TLS int sp_brk_exc_top[SP_BRK_STACK_MAX];   /* sp_exc_top at scope entry */
+static SP_TLS jmp_buf *sp_brk_stack;              /* lazily allocated */
+static SP_TLS sp_RbVal *sp_brk_val;
+static SP_TLS mrb_int *sp_brk_serial;
+static SP_TLS int *sp_brk_exc_top;                /* sp_exc_top at scope entry */
 static SP_TLS volatile int sp_brk_top = 0;
 /* shared counter (not SP_TLS) so serials are globally unique; see
    sp_proc_home_seq for the same shape */
@@ -3883,6 +3888,14 @@ static mrb_int sp_brk_push(void) {
   if (sp_brk_top >= SP_BRK_STACK_MAX) {
     fputs("unhandled exception: stack level too deep\n", stderr);
     exit(1);
+  }
+  if (!sp_brk_stack) {
+    sp_brk_stack = (jmp_buf *)malloc(sizeof(jmp_buf) * SP_BRK_STACK_MAX);
+    sp_brk_val = (sp_RbVal *)malloc(sizeof(sp_RbVal) * SP_BRK_STACK_MAX);
+    sp_brk_serial = (mrb_int *)malloc(sizeof(mrb_int) * SP_BRK_STACK_MAX);
+    sp_brk_exc_top = (int *)malloc(sizeof(int) * SP_BRK_STACK_MAX);
+    if (!sp_brk_stack || !sp_brk_val || !sp_brk_serial || !sp_brk_exc_top)
+      sp_oom_die();
   }
 #ifdef SP_THREADS
   mrb_int s = __atomic_fetch_add(&sp_brk_seq, 1, __ATOMIC_RELAXED);
