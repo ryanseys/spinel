@@ -7,7 +7,12 @@ Status: requirements draft, not yet implemented. Companion to
 Naming (decided): the ecosystem is **spinelgems**; one unit is a **gem** (a
 "spinelgem" where CRuby gems need distinguishing). One manifest filename,
 `gem.toml`, serves both a gem and an application (cargo-style: the
-application is simply the gem at the compile root). Project workflows live in a separate tool, `spin` (R9);
+application is simply the gem at the compile root) — but the identity
+fields are **optional**: an application's manifest may be nothing but a
+`[dependencies]` table (name defaults to the directory basename, no version
+required), so it reads like a Gemfile while staying structurally a gem;
+publishing (Phase 2) is what makes `[gem] name`/`version` mandatory.
+Project workflows live in a separate tool, `spin` (R9);
 the compiler CLI stays compile-only. The community compatibility catalog of the same name is
 the intended seed for the Phase-2 index (see R5/R8) — to be coordinated with
 its author rather than renamed around. The rest of this document says
@@ -111,8 +116,10 @@ Spinel port next to a same-named CRuby gem); the gem *name* in the manifest
 carries **no prefix**, because the name is the `require` string and
 `require "json"` must keep working verbatim (R5's name policy). mrbgems can
 conflate the two because mruby has no `require`; Spinel cannot. The prefix is
-a scaffolding default (`spin new foo` creates `spinel-foo/`), not a
-resolution rule — the index maps names to repos, wherever they live.
+a *publishing* convention for library repos, not a resolution rule or a
+scaffolding default — the index maps names to repos wherever they live, and
+`spin new foo` scaffolds a plain `foo/` application (`--lib` for a library,
+where the publish-time repo naming is suggested, not imposed).
 
 There are no per-language role directories (RubyGems' `lib/` is a load-path
 unit and mrbgems' `mrblib/`/`src/` split follows its two build pipelines;
@@ -176,9 +183,11 @@ happens only as part of building an application that depends on it.
 
 ### R3 — consumer surface
 
-- A project manifest at the application root (`gem.toml`, `[gem]` +
-  `[dependencies]` tables) declaring name-and-constraint pairs; sources:
-  index name, git URL + ref, or local path.
+- A project manifest at the application root (`gem.toml`) declaring
+  name-and-constraint pairs; sources: index name, git URL + ref, or local
+  path. For an application the `[gem]` identity table is optional — a
+  `[dependencies]` table alone is a complete manifest (Gemfile-flat UX on
+  the gem structure).
 - A lockfile (`gem.lock`) recording the machine-resolved result of the
   manifest's human intent: exact versions *including transitive
   dependencies*, plus content hashes for integrity. Reproducibility matters
@@ -322,6 +331,12 @@ outside the XDG cache directory.
 ## 7. Decided
 
 - Manifest is **TOML**, never executable (R2's no-code-at-fetch guarantee).
+- **An application is a gem with optional identity**: the same `gem.toml`
+  structure everywhere, but `[gem] name`/`version` may be omitted (name
+  defaults to the directory basename) so an application's manifest is just
+  its `[dependencies]`. Publishing is what makes identity mandatory. One
+  resolver, one test/build path, and a continuous graduation from app to
+  library — without making app authors face gem ceremony.
 - Ecosystem name **spinelgems**; unit "gem"; one `gem.toml` for gems
   and applications alike (short over self-branding: inside a `spinel-*`
   checkout the context is clear, and the `spinel = "~> x.y"` constraint key
