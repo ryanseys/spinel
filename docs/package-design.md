@@ -178,6 +178,18 @@ happens only as part of building an application that depends on it.
   the same gate (a package's `require "foo"` resolves against *its* declared
   dependencies + stdlib, so undeclared cross-package reach is an error —
   mrbgems does not enforce this and suffers for it).
+- **Feature-namespace ownership.** A gem implicitly owns the feature subtree
+  under each name it provides: gem `json` owns `json` and `json/*` (the
+  natural reading of root-as-require-root — any `json/pure.rb` in its tree is
+  a feature). `provides` may declare additional top-level names for the
+  CRuby-realistic cases where gem name and require string differ
+  (`concurrent-ruby` providing `concurrent`). Two gems in one resolved set
+  providing overlapping features is a resolution error, named as such.
+  Backend-selection requires from CRuby (`require "json/pure"` forcing the
+  pure implementation) are just subfeatures here — and the C-vs-pure
+  distinction itself dissolves under AOT: a pure-Ruby implementation compiles
+  to native and takes whole-program inference, so `json/pure.rb` may simply
+  splice the same implementation while keeping the require string valid.
 
 ### R5 — distribution (phased)
 
