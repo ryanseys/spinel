@@ -149,9 +149,23 @@ are separate compile roots, a *dependent* of the gem never compiles or pays
 for them — the reason mrbgems splits `mruby-bin-*` into separate gems does
 not apply, and library + CLI live in one gem.
 
+**Tests.** Each top-level `test/*.rb` is one test program — an independent
+compile root through exactly the `bin/` mechanics (gem sources + resolved
+dependencies spliced in), no runner framework. Subdirectories of `test/` are
+not entries; they hold `require_relative` helpers. Pass/fail is the
+compiler's own oracle convention: a committed `test/<name>.rb.expected` is
+diffed against the compiled run's stdout (`.rb.err.expected` for stderr);
+with no snapshot and a CRuby available, `spin test` runs the same file under
+`ruby` and diffs directly — for a port, the test *is* the subset-parity
+check. `spin test --regen` refreshes snapshots from CRuby. A non-zero exit
+or a diff fails, so assert-and-raise style works unchanged (raise → non-zero
+→ fail); test-only helper gems go in `[dev-dependencies]`, resolved for
+`spin test` but never for consumers.
+
 Manifest fields (minimum): `name`, `version` (semver), `provides` (feature
 names its sources satisfy; defaults to `name`), `dependencies` (name +
-version constraint), `spinel` (compiler version constraint), plus `license`,
+version constraint), `dev-dependencies` (test-only, resolved for `spin test`
+and never for consumers), `spinel` (compiler version constraint), plus `license`,
 `source`. C-carrying packages add a `[native]` table (sources, cflags, libs —
 the FFI DSL remains usable *inside* the Ruby sources for external libraries).
 
