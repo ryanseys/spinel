@@ -84,18 +84,39 @@ Three layers, physically separated and named:
 | stdlib | require-gated features (`set`, `erb`, `json`, …) | the compiler, versioned with it | via `require`, no manifest entry |
 | packages | everything else | fetched/vendored per project | via `require` + manifest entry |
 
-`lib/` reorganizes to make the boundary visible (e.g. `lib/runtime/` vs
-`lib/stdlib/`); the bundled pure-Ruby stdlib becomes ordinary packages
-pre-installed with the compiler, proving the package format on day one
-(dogfooding requirement).
+The boundary is directory-level: `lib/` reduces to the runtime C only
+(`sp_*.c/h`, archives), and a dedicated top-level `gems/` directory holds the
+pre-installed gems — the bundled pure-Ruby stdlib becomes ordinary gems in
+there, proving the gem format on day one (dogfooding requirement). Every
+directory that holds gems holds *only* gems:
+
+```
+<install / compiler repo>
+  bin/spinel
+  lib/                    # runtime C only
+  gems/<name>/            # pre-installed (version = the compiler's)
+
+<project>
+  spinelgem.toml, spinelgem.lock
+  vendor/gems/<name>-<version>/    # vendored for hermetic builds
+
+~/.cache/spinel/gems/<name>-<version>/   # fetch cache (XDG)
+```
 
 ### R2 — package format
 
-A package is a directory (typically a git repo):
+A package is a directory (typically a git repo). The directory/repository is
+named `spinel-<name>` (the mruby-\* convention: discoverable, and visibly a
+Spinel port next to a same-named CRuby gem); the gem *name* in the manifest
+carries **no prefix**, because the name is the `require` string and
+`require "json"` must keep working verbatim (R5's name policy). mrbgems can
+conflate the two because mruby has no `require`; Spinel cannot. The prefix is
+a scaffolding default (`spinel gem new foo` creates `spinel-foo/`), not a
+resolution rule — the index maps names to repos, wherever they live.
 
 ```
-mypkg/
-  spinelgem.toml      # manifest (name, version, deps, provides)
+spinel-mypkg/
+  spinelgem.toml      # manifest: name = "mypkg" (no prefix), version, deps, provides
   lib/                # Ruby sources; lib/<feature>.rb per provided feature
   src/                # optional C sources (in-TU or objects; see R6)
   sig/                # optional .rbs pinning the public surface
@@ -217,6 +238,11 @@ outside an XDG cache directory.
 - Manifest is **TOML**, never executable (R2's no-code-at-fetch guarantee).
 - Ecosystem name **spinelgems**; unit "gem"; one `spinelgem.toml` for gems
   and applications alike; CLI `spinel gem <cmd>`.
+- Gem *directories/repos* are `spinel-<name>` by convention; gem *names* (and
+  therefore `require` strings) carry no prefix (R2). Gems-only directories:
+  `gems/<name>/` in the compiler tree (pre-installed), `vendor/gems/
+  <name>-<version>/` in a project, `~/.cache/spinel/gems/` for fetches;
+  `lib/` reduces to runtime C only (R1).
 - rubygems.org interop is **name policy only** (R5): same name means the same
   library (possibly a subset-compatible port); divergent forks rename.
   Publishing spinel gems on rubygems.org itself is out of scope.
