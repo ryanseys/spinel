@@ -263,6 +263,92 @@ static int ivar_array_elems_all_int_array(Compiler *c, int cid, const char *ivna
   return v;
 }
 
+/* Whether every element of poly-array constant `CNAME` is an int array
+   (e.g. `WAVE_FORM = [..].map { (0..7).map { .. } }`). Element reads then
+   yield sp_IntArray* instead of a boxed poly. All writes to the constant and
+   any `CNAME[i] = v` mutation must agree. */
+static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) {
+  const NodeTable *nt = c->nt;
+  int saw = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty) continue;
+    if (sp_streq(ty, "CallNode")) {
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm || !sp_streq(nm, "[]=")) continue;
+      int recv = nt_ref(nt, id, "receiver");
+      if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "ConstantReadNode")) continue;
+      const char *rn = nt_str(nt, recv, "name");
+      if (!rn || !sp_streq(rn, cname)) continue;
+      int args = nt_ref(nt, id, "arguments");
+      int an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an < 2) continue;
+      TyKind vt = comp_ntype(c, av[1]);
+      if (vt == TY_INT_ARRAY) { saw = 1; continue; }
+      if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
+      return 0;
+    }
+    if (!sp_streq(ty, "ConstantWriteNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, cname)) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0) return 0;
+    const char *vty = nt_type(nt, v);
+    int arr = -1;
+    if (vty && sp_streq(vty, "ArrayNode")) arr = v;
+    else if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+             (sp_streq(nt_str(nt, v, "name"), "map") || sp_streq(nt_str(nt, v, "name"), "collect"))) {
+      int blk = nt_ref(nt, v, "block");
+      int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
+      int bn = 0;
+      const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      if (bn <= 0) return 0;
+      TyKind et = comp_ntype(c, bb[bn - 1]);
+      if (et == TY_INT_ARRAY) { saw = 1; continue; }
+      return 0;
+    }
+    if (arr < 0) return 0;
+    int en = 0;
+    const int *els = nt_arr(nt, arr, "elements", &en);
+    for (int e = 0; e < en; e++) {
+      TyKind et = comp_ntype(c, els[e]);
+      if (et == TY_INT_ARRAY) { saw = 1; continue; }
+      if (et == TY_NIL || et == TY_UNKNOWN) continue;
+      return 0;
+    }
+  }
+  return saw;
+}
+
+static int const_array_elems_all_int_array(Compiler *c, const char *cname) {
+  long k = narrow_key(2, 0, cname);
+  int hit; int v = narrow_memo_get(k, &hit);
+  if (hit) return v;
+  v = const_array_elems_all_int_array_impl(c, cname);
+  narrow_memo_put(k, v);
+  return v;
+}
+
+/* `CONST[i]` on a poly-array constant of int arrays yields an int array. */
+static int const_poly_index_int_array(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !sp_streq(nm, "[]")) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1) return 0;
+  const char *aty = nt_type(nt, av[0]);
+  if (aty && sp_streq(aty, "RangeNode")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "ConstantReadNode")) return 0;
+  const char *cname = nt_str(nt, recv, "name");
+  LocalVar *cv = cname ? comp_const(c, cname) : NULL;
+  if (!cv || cv->type != TY_POLY_ARRAY) return 0;
+  return const_array_elems_all_int_array(c, cname);
+}
+
 static int poly_index_int_array(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
@@ -418,6 +504,10 @@ TyKind infer_call(Compiler *c, int id) {
      array of int arrays -- @chr_banks / @nmt_mem). Without this the element
      read is a boxed poly and cascades poly through the PPU. */
   if (recv >= 0 && sp_streq(name, "[]") && argc == 1 && poly_index_int_array(c, id))
+    return TY_INT_ARRAY;
+  /* `CONST[i]` on a poly-array constant of int arrays (WAVE_FORM / TILE_LUT
+     shapes) yields an int array; codegen unboxes the poly element. */
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 1 && const_poly_index_int_array(c, id))
     return TY_INT_ARRAY;
 
   /* Complex / Rational value types. */
