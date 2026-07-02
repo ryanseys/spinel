@@ -381,6 +381,9 @@ int infer_write_types(Compiler *c) {
       /* a `x = nil` write doesn't pin the type: flow it as TY_NIL so ty_unify
          can narrow it against an object write (NULL encodes nil); a purely-nil
          local is mapped to poly by a post-fixpoint backstop. */
+      /* `x = y = nil` writes nil to every target; flow TY_NIL instead of the
+         inner slot's unified type. */
+      if (comp_nil_chain_bottom(nt, val_id) >= 0) newt = TY_NIL;
       /* Empty-collection literal `x = []` / `x = {}` returns TY_UNKNOWN from
          infer_type. If the container-fold from a prior iteration already gave
          this local a meaningful type (stored in gc_root), preserve it so that

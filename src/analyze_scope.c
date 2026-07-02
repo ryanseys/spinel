@@ -2485,6 +2485,9 @@ int infer_ivar_types(Compiler *c) {
       int vnode = nt_ref(nt, id, "value");
       TyKind vt = infer_type(c, vnode);
       if (vt == TY_NIL) continue;  /* nil write doesn't pin the ivar type */
+      /* `@a = @b = nil`: the chain writes nil to every target; don't let the
+         inner slot's unified type (from its other writes) pin this ivar. */
+      if (comp_nil_chain_bottom(nt, vnode) >= 0) continue;
       if (vt == TY_POLY && ivar_nullable_int_ternary(c, vnode) == TY_INT) vt = TY_INT;
       Scope *s = comp_scope_of(c, id);
       int cls_id2 = s->class_id;

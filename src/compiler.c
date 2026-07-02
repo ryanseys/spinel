@@ -23,6 +23,26 @@ int comp_ternary_arms(const NodeTable *nt, int id, int *then_node, int *else_nod
   return 1;
 }
 
+int comp_nil_chain_bottom(const NodeTable *nt, int v) {
+  /* `a = b = ... = nil` writes nil to EVERY target, but a nested write node
+     evaluates to its slot's unified type, so the inner slot's other writes
+     would leak into the outer target's type. Detect the chain so analyze can
+     treat the outer write as a nil write and codegen can give each target its
+     own typed nil. Only plain local/ivar writes chain; or-/and-/op-writes
+     have their own value semantics. Returns the terminal NilNode, or -1. */
+  int depth = 0;
+  while (v >= 0 && depth < 64) {
+    const char *t = nt_type(nt, v);
+    if (!t) return -1;
+    if (sp_streq(t, "NilNode")) return depth > 0 ? v : -1;
+    if (!sp_streq(t, "LocalVariableWriteNode") &&
+        !sp_streq(t, "InstanceVariableWriteNode")) return -1;
+    v = nt_ref(nt, v, "value");
+    depth++;
+  }
+  return -1;
+}
+
 Compiler *comp_new(const NodeTable *nt) {
   Compiler *c = calloc(1, sizeof(Compiler));
   if (!c) return NULL;

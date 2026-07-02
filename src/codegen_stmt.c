@@ -485,6 +485,12 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *nm = nt_str(c->nt, id, "name");
   int v = nt_ref(c->nt, id, "value");
   LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+  /* `x = y = nil`: emit the inner writes as their own statements (each target
+     renders nil for its own slot type), then write nil here too. */
+  {
+    int ncb = comp_nil_chain_bottom(c->nt, v);
+    if (ncb >= 0) { emit_stmt_inner(c, v, b, indent); v = ncb; }
+  }
   emit_indent(b, indent);
   /* A TY_PROC value lives in an int cell as (mrb_int)(uintptr_t)sp_Proc*. The
      write target must be the raw cell deref (an lvalue) with the pointer
@@ -3504,6 +3510,12 @@ else {
   if (sp_streq(ty, "InstanceVariableWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
+    /* `@a = @b = nil`: emit the inner writes as their own statements (each
+       target renders nil for its own slot type), then write nil here too. */
+    {
+      int ncb = comp_nil_chain_bottom(nt, v);
+      if (ncb >= 0) { emit_stmt_inner(c, v, b, indent); v = ncb; }
+    }
     Scope *cws = comp_scope_of(c, id);
     /* Ivar write inside instance_eval block: access ivar via receiver pointer. */
     if (cws && cws->class_id < 0 && !cws->is_cmethod && g_ie_class_id >= 0) {

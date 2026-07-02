@@ -496,6 +496,21 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     const char *nm = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
     LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+    /* `x = y = nil` as expression: inner writes become statements inside the
+       stmt-expr; this target takes its own typed nil (not the inner slot). */
+    {
+      int ncb = comp_nil_chain_bottom(nt, v);
+      if (ncb >= 0) {
+        buf_puts(b, "({ ");
+        emit_stmt_inner(c, v, b, 0);
+        emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
+        if (lv && lv->type == TY_RANGE) buf_puts(b, "(sp_Range){0}");
+        else if (lv) buf_puts(b, default_value(lv->type));
+        else buf_puts(b, "sp_box_nil()");
+        buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
+        return;
+      }
+    }
     buf_puts(b, "({ ");
     emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
     if (lv && lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
@@ -550,6 +565,24 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", nm + 1);
     else
       snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, nm + 1);
+    /* `@a = @b = nil` as expression: inner writes become statements inside the
+       stmt-expr; this target takes its own typed nil (not the inner slot). */
+    {
+      int ncb = comp_nil_chain_bottom(nt, v);
+      if (ncb >= 0) {
+        buf_puts(b, "({ ");
+        emit_stmt_inner(c, v, b, 0);
+        buf_printf(b, "%s = ", ref2e);
+        if (ivt2 == TY_RANGE) buf_puts(b, "(sp_Range){0}");
+        else if (ivt2 == TY_POLY) buf_puts(b, "sp_box_nil()");
+        else if (ivt2 == TY_INT) buf_puts(b, "SP_INT_NIL");
+        else if (ivt2 == TY_FLOAT) buf_puts(b, "sp_float_nil()");
+        else if (ivt2 == TY_STRING) buf_puts(b, "NULL");
+        else buf_puts(b, default_value(ivt2));
+        buf_printf(b, "; %s; })", ref2e);
+        return;
+      }
+    }
     buf_puts(b, "({ ");
     buf_printf(b, "%s = ", ref2e);
     if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");

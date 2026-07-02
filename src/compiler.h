@@ -243,6 +243,11 @@ void comp_grow_node_arrays(Compiler *c);
    0. Shared by the nullable-int recognition in analyze and codegen. */
 int comp_ternary_arms(const NodeTable *nt, int id, int *then_node, int *else_node);
 
+/* Is `v` a chain of plain local/ivar writes ending in a literal nil
+   (`a = b = nil` seen from a's value)? Returns the terminal NilNode id or -1.
+   Shared by analyze (write-type collection) and codegen (chain lowering). */
+int comp_nil_chain_bottom(const NodeTable *nt, int v);
+
 /* Scopes. */
 Scope *comp_scope_new(Compiler *c, const char *name, int def_node);
 Scope *comp_scope_of(Compiler *c, int node_id);        /* owning scope */
