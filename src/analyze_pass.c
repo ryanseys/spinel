@@ -3527,6 +3527,7 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter") ||
               sp_streq(name, "find") || sp_streq(name, "detect") ||
               sp_streq(name, "max_by") || sp_streq(name, "min_by") || sp_streq(name, "sort_by") ||
+              sp_streq(name, "sort_by!") ||
               sp_streq(name, "take_while") || sp_streq(name, "drop_while") ||
               sp_streq(name, "reverse_each") || sp_streq(name, "each_entry") ||
               sp_streq(name, "sum") || sp_streq(name, "count") ||

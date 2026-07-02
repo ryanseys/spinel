@@ -2048,6 +2048,7 @@ else {
       }
       if (sp_streq(name, "select") || sp_streq(name, "reject") ||
           sp_streq(name, "filter") || sp_streq(name, "sort_by") ||
+          sp_streq(name, "sort_by!") ||
           sp_streq(name, "take_while") || sp_streq(name, "drop_while"))
         return rt;
       if ((sp_streq(name, "max_by") || sp_streq(name, "min_by")) && argc >= 1)

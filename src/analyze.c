@@ -1435,7 +1435,7 @@ static int iter_elem_block_method(const char *n) {
   static const char *names[] = {
     "each","map","collect","select","reject","filter","find","detect",
     "find_all","flat_map","filter_map","reverse_each","each_entry",
-    "take_while","drop_while","sort_by","min_by","max_by","group_by",
+    "take_while","drop_while","sort_by","sort_by!","min_by","max_by","group_by",
     "partition","count","sum","any?","all?","none?","one?","keep_if",
     "delete_if","uniq","find_index","each_with_index","reduce","inject", NULL };
   for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;

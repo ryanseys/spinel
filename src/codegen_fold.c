@@ -2277,7 +2277,8 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   int block = nt_ref(nt, id, "block");
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
-  if (!sp_streq(name, "sort_by")) return 0;
+  int is_bang = sp_streq(name, "sort_by!");
+  if (!sp_streq(name, "sort_by") && !is_bang) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
@@ -2337,6 +2338,19 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tg, tg, tn, tg);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, sp_IntArray_get(_t%d, _t%d)));\n", k, tres, k, trv, tidx, tg);
+  if (is_bang) {
+    /* sort_by!: write the gathered order back through the receiver pointer
+       (aliases observe it) and yield the receiver -- CRuby returns self.
+       The gather copy is needed anyway: writing in place while reading by
+       sorted index would clobber the source. */
+    int tw = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tw, tw, tn, tw);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d));\n", k, trv, tw, k, tres, tw);
+    buf_printf(b, "_t%d", trv);
+    return 1;
+  }
   buf_printf(b, "_t%d", tres);
   return 1;
 }
