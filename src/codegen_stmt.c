@@ -883,7 +883,11 @@ void emit_cond(Compiler *c, int id, Buf *b) {
   }
   if (t == TY_INT)   { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != SP_INT_NIL)"); return; }
   if (t == TY_FLOAT) { buf_puts(b, "(!sp_float_is_nil("); emit_expr(c, id, b); buf_puts(b, "))"); return; }
-  if (t == TY_SYMBOL) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return; }
+  /* a nilable symbol slot holds (sp_sym)-1 for nil (default_value), so
+     truthiness must test the sentinel -- `if @exit_triggered` with
+     `@exit_triggered = nil` read always-true and ended doom's level on
+     the first tic. */
+  if (t == TY_SYMBOL) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != (sp_sym)-1)"); return; }
   /* Always-truthy concrete value types: a Range / Class / Complex / Rational /
      Time value is never nil or false, so it is truthy in condition position.
      Evaluate it for side effects and yield 1. */
@@ -3449,6 +3453,12 @@ else {
       buf_printf(b, "if (%slv_%s) lv_%s = ", is_or ? "!" : "", en, en);
       emit_expr(c, v, b); buf_puts(b, ";\n");
     }
+    else if (t == TY_SYMBOL) {
+      emit_indent(b, indent);
+      /* nilable symbol: (sp_sym)-1 is the nil sentinel */
+      buf_printf(b, "if (lv_%s %s= (sp_sym)-1) lv_%s = ", en, is_or ? "=" : "!", en);
+      emit_expr(c, v, b); buf_puts(b, ";\n");
+    }
     else if (!is_or) {  /* a &&= v on an always-truthy var: always assign */
       emit_indent(b, indent);
       buf_printf(b, "lv_%s = ", en); emit_expr(c, v, b); buf_puts(b, ";\n");
@@ -3483,6 +3493,13 @@ else {
       emit_indent(b, indent);
       if (is_or) buf_printf(b, "if (%s == SP_INT_NIL) %s = ", ref2, ref2);
       else       buf_printf(b, "if (%s != SP_INT_NIL) %s = ", ref2, ref2);
+      emit_expr(c, v, b); buf_puts(b, ";\n");
+    }
+    else if (ivt2 == TY_SYMBOL) {
+      emit_indent(b, indent);
+      /* nilable symbol: (sp_sym)-1 is the nil sentinel */
+      if (is_or) buf_printf(b, "if (%s == (sp_sym)-1) %s = ", ref2, ref2);
+      else       buf_printf(b, "if (%s != (sp_sym)-1) %s = ", ref2, ref2);
       emit_expr(c, v, b); buf_puts(b, ";\n");
     }
     else if (ivt2 == TY_STRING) {
