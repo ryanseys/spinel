@@ -1105,7 +1105,7 @@ else {
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     if ((sp_streq(name, "escape") || sp_streq(name, "quote")) && argc >= 1) return TY_STRING;
-    if (sp_streq(name, "union") && argc >= 1) return TY_REGEX;
+    if (sp_streq(name, "union")) return TY_REGEX;  /* argc 0 = the never-matching /(?!)/ */
     if (sp_streq(name, "last_match") && argc == 0) return TY_POLY;
     if (sp_streq(name, "last_match") && argc == 1) return TY_STRING;
     if (sp_streq(name, "linear_time?") && argc == 1) return TY_BOOL;
@@ -2021,6 +2021,11 @@ else {
   }
 
   /* array receiver methods */
+  /* a bare [] literal receiver types UNKNOWN until pushes promote it, but
+     its blockless each is still an Enumerator */
+  if (recv >= 0 && rt == TY_UNKNOWN && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
+      nt_ref(nt, id, "block") < 0 && argc == 0 &&
+      (sp_streq(name, "each") || sp_streq(name, "reverse_each"))) return TY_ENUMERATOR;
   if (recv >= 0 && ty_is_array(rt)) {
     int block = nt_ref(nt, id, "block");
     /* arr.each with no block -> an external Enumerator (#next/#peek/#rewind).

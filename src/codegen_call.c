@@ -1278,6 +1278,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         buf_printf(b, " case SP_BUILTIN_STR_INT_HASH: _t%d = %s((sp_StrIntHash *)_t%d.v.p)->len == 0%s; break;", tr, ebopen, tv, ebclose);
         buf_printf(b, " case SP_BUILTIN_INT_STR_HASH: _t%d = %s((sp_IntStrHash *)_t%d.v.p)->len == 0%s; break;", tr, ebopen, tv, ebclose);
       }
+      /* compare_by_identity? on a poly-carried hash: every spinel hash is
+         value-keyed (the mutating variant is a compile error), so any hash
+         tag answers false; a non-hash receiver falls through to the gate. */
+      if (sp_streq(name, "compare_by_identity?")) {
+        buf_printf(b, " case SP_BUILTIN_POLY_POLY_HASH: case SP_BUILTIN_SYM_POLY_HASH:"
+                      " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_STR_STR_HASH:"
+                      " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_INT_STR_HASH:"
+                      " _t%d = %s0%s; break;", tr, ebopen, ebclose);
+      }
       /* to_s / inspect are universal: a poly value that is a builtin scalar
          (int, float, string, ...) rather than one of the enumerated user
          classes still answers them. Without a default arm the result stayed
@@ -3574,8 +3583,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* arr.each / arr.reverse_each with no block -> an external Enumerator over a
      snapshot of the array's (boxed) elements. Block-form and chained
      (each.with_index, each.map) uses are matched earlier and never reach here. */
-  if (recv >= 0 && ty_is_array(comp_ntype(c, recv)) && argc == 0 &&
-      nt_ref(nt, id, "block") < 0 &&
+  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      (ty_is_array(comp_ntype(c, recv)) ||
+       /* a bare [] literal types UNKNOWN until pushes promote it */
+       (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
+        sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
       (sp_streq(name, "each") || sp_streq(name, "reverse_each"))) {
     buf_printf(b, "sp_Enumerator_new_from%s(", sp_streq(name, "reverse_each") ? "_rev" : "");
     emit_boxed(c, recv, b); buf_puts(b, ")");
@@ -8169,25 +8181,28 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      errors -- that is a genuine missing method worth catching at compile time. */
   if (recv >= 0) {
     TyKind grt = comp_ntype(c, recv);
+    /* compare_by_identity? on a poly-carried value resolves here, not at the
+       gate: every spinel hash is value-keyed (the mutating variant is a
+       compile error), so a hash answers false and anything else raises
+       CRuby's NoMethodError -- accurate in both gate modes. */
+    if ((grt == TY_POLY || grt == TY_UNKNOWN) &&
+        nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "compare_by_identity?")) {
+      buf_puts(b, "sp_poly_cbi_p(");
+      emit_boxed(c, recv, b);
+      buf_puts(b, ")");
+      return;
+    }
     if (grt == TY_POLY || grt == TY_NIL || grt == TY_INT || grt == TY_UNKNOWN ||
         grt == TY_STRING) {
       TyKind ret = comp_ntype(c, id);
-      /* Opt-in visibility: this call silently becomes nil/0 where CRuby would
-         raise NoMethodError. The degradation is deliberate (a dead poly-dispatch
-         arm or an inference gap), but it can also hide a genuine missing method.
-         SPINEL_WARN_UNRESOLVED lists every such site so a port can be audited
-         without changing runtime behaviour.
-
-         TODO(staged): the goal is to raise NoMethodError here instead of the
-         silent default (CRuby raises; a silent wrong answer is the worst failure
-         mode). That is blocked on a prerequisite: the gate's value flows into
-         coercion paths (return slots, string/int receiver+arg slots, ...) that
-         assume a side-effect-free poly box and either text-match sp_box_nil() or
-         pass it through by its declared type. A side-effecting raise breaks
-         them, and comp_ntype is not a reliable proxy for the emitted C
-         representation (it diverges -- bm_micro_lisp), so the coercion must be
-         made robust site by site before the gate can flip. Land that groundwork,
-         then change this to a sp_raise_cls("NoMethodError", ...) comma-expr. */
+      /* An unresolved call raises NoMethodError by default, matching CRuby
+         (a dead poly-dispatch arm still emits nothing; a live one raising here
+         is exactly what CRuby would do). SPINEL_WARN_UNRESOLVED lists every
+         such site at compile time for auditing a port; SPINEL_GATE_RAISE=0 is
+         the transition escape hatch back to the old silent typed default. The
+         coercion paths the raise value flows through (return slots, string/int
+         receiver+arg slots, ...) recognize the sp_raise_nomethod token and
+         keep the side-effect -- see the staged groundwork notes below. */
       const char *nm = nt_str(nt, id, "name");
       if (warn_unresolved_pos(c, id)) {
         fprintf(stderr, "unresolved call '%s' on %s receiver -> %s\n",

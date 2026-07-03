@@ -96,10 +96,13 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg);
    detect and coerce it (sp_poly_to_i(sp_raise_nomethod(...)) etc.) rather than
    parse a comma-expression. Returns sp_RbVal so it composes in a poly slot;
    NORETURN, so the value is never produced. Unused when the gate stays silent. */
-SP_NORETURN SP_COLD static sp_RbVal sp_raise_nomethod(const char *msg) __attribute__((unused));
-SP_NORETURN SP_COLD static sp_RbVal sp_raise_nomethod(const char *msg) {
-  sp_raise_cls("NoMethodError", msg);
-}
+/* Deliberately an extern, NOT declared noreturn (lib/sp_core.c): gate arms
+   sit inside hot dispatch functions (PPU update_scroll_address_line), and a
+   noreturn call there restructures the CFG -- blocks reorder and optcarrot
+   pays ~5-7% fps. As a plain value-returning extern call the arm keeps the
+   exact shape of the sp_box_nil() it replaced; the raise still never
+   returns at runtime (sp_raise_cls longjmps). */
+sp_RbVal sp_raise_nomethod(const char *msg);
 
 static inline mrb_int sp_idiv(mrb_int a, mrb_int b) {
   if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
@@ -3528,6 +3531,23 @@ static sp_RbVal sp_poly_slot_set(sp_RbVal outer, mrb_int oidx, mrb_int ikey, sp_
   sp_RbVal res = sp_poly_arr_widen_and_set(inner, ikey, val);
   sp_poly_set_poly(outer, sp_box_int(oidx), res);
   return val;
+}
+/* Hash#compare_by_identity? for a poly-carried receiver: spinel hashes are
+   always value-keyed (the mutating variant is a compile error), so any hash
+   answers false; anything else raises CRuby's NoMethodError. */
+static mrb_bool sp_poly_cbi_p(sp_RbVal v) __attribute__((unused));
+static mrb_bool sp_poly_cbi_p(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ) {
+    switch (v.cls_id) {
+    case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_STR_STR_HASH:
+    case SP_BUILTIN_INT_STR_HASH: case SP_BUILTIN_STR_POLY_HASH:
+    case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH:
+      return FALSE;
+    default: break;
+    }
+  }
+  sp_raise_cls("NoMethodError", "undefined method 'compare_by_identity?' for poly");
+  return FALSE;
 }
 static mrb_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_STR)return v.v.s?(mrb_int)strlen(v.v.s):0;if(v.tag==SP_TAG_SYM)return sp_sym_name_fn?(mrb_int)strlen(sp_sym_name_fn((sp_sym)v.v.i)):0;if(v.tag!=SP_TAG_OBJ)return 0;switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_FLT_ARRAY:return sp_FloatArray_length((sp_FloatArray*)v.v.p);case SP_BUILTIN_STR_ARRAY:return sp_StrArray_length((sp_StrArray*)v.v.p);case SP_BUILTIN_SYM_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_POLY_ARRAY:return sp_PolyArray_length((sp_PolyArray*)v.v.p);case SP_BUILTIN_STR_INT_HASH:return sp_StrIntHash_length((sp_StrIntHash*)v.v.p);case SP_BUILTIN_STR_STR_HASH:return sp_StrStrHash_length((sp_StrStrHash*)v.v.p);case SP_BUILTIN_INT_STR_HASH:return sp_IntStrHash_length((sp_IntStrHash*)v.v.p);case SP_BUILTIN_STR_POLY_HASH:return sp_StrPolyHash_length((sp_StrPolyHash*)v.v.p);case SP_BUILTIN_SYM_POLY_HASH:return sp_SymPolyHash_length((sp_SymPolyHash*)v.v.p);case SP_BUILTIN_POLY_POLY_HASH:return sp_PolyPolyHash_length((sp_PolyPolyHash*)v.v.p);default:return 0;}}
 
