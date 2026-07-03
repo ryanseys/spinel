@@ -28,3 +28,18 @@ puts c.nil?
 # 1
 # 2
 # true
+
+# a poly SCALAR RHS keeps Ruby semantics: first target takes the whole
+# value, the rest nil-fill (no Integer#[] bit reads / String#[] chars)
+x = widen(42)
+a2, b2 = x
+puts a2
+puts b2.nil?
+s2 = widen("hi")
+c2, d2 = s2
+puts c2
+puts d2.nil?
+h2 = widen({ k: 1 })
+e2, f2 = h2
+puts e2 == h2
+puts f2.nil?

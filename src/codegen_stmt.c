@@ -2408,13 +2408,13 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
                     scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
         emit_indent(b, indent + 2);
         if (vt == TY_INT || vt == TY_UNKNOWN)
-          buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_arr_get_hash(_t%d, %d));\n", lnm, tv, i);
+          buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
         else if (vt == TY_FLOAT)
-          buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_arr_get_hash(_t%d, %d));\n", lnm, tv, i);
+          buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
         else if (vt == TY_STRING)
-          buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_arr_get_hash(_t%d, %d));\n", lnm, tv, i);
+          buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
         else
-          buf_printf(b, "lv_%s = sp_poly_arr_get_hash(_t%d, %d);\n", lnm, tv, i);
+          buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d);\n", lnm, tv, i);
       }
       emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
@@ -4255,7 +4255,7 @@ else {
           if (sp_streq(lty, "LocalVariableTargetNode")) {
             const char *lnm = nt_str(nt, lefts[i], "name");
             emit_indent(b, indent);
-            buf_printf(b, "lv_%s = sp_poly_arr_get_hash(_t%d, %dLL);\n", lnm, tarr, i);
+            buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %dLL);\n", lnm, tarr, i);
           }
           else if (sp_streq(lty, "InstanceVariableTargetNode") &&
                    rt_scope_p && rt_scope_p->class_id >= 0) {
@@ -4265,7 +4265,7 @@ else {
             if (iv_rt < 0) continue;
             TyKind ivt = c->classes[rt_scope_p->class_id].ivar_types[iv_rt];
             emit_indent(b, indent);
-            char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_poly_arr_get_hash(_t%d, %dLL)", tarr, i);
+            char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
             if (rt_scope_p->is_cmethod)
               buf_printf(b, "civ_%s_%s = ", c->classes[rt_scope_p->class_id].name, ivnm + 1);
             else
