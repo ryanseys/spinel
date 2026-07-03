@@ -233,7 +233,7 @@ static inline mrb_bool sp_int_mul_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
 /* sp_gcd / sp_lcm / sp_powmod / sp_ceildiv / sp_int_clamp / sp_int_sqrt
    now live in libspinel_rt.a (lib/sp_core.c); declared via sp_core.h. */
 static inline char *sp_str_alloc_raw(size_t total_with_null);  /* fwd decl */
-static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;return s;}
+static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;sp_str_set_len(s,1);return s;}
 /* sp_ipow10 / sp_int_round / sp_int_ceil / sp_int_floor /
    sp_int_truncate / sp_str_oct now live in libspinel_rt.a
    (lib/sp_core.c); declared via sp_core.h. */
@@ -463,7 +463,16 @@ static const char *sp_int_codepoint_to_str(mrb_int n) {
    dereference NULL on either side. nil-vs-string equality is false in
    Ruby; nil == nil is true, so falling back to pointer equality on the
    NULL path covers both. */
-static inline int sp_str_eq(const char*a,const char*b){if(a==b)return 1;if(!a||!b)return 0;return strcmp(a,b)==0;}
+static inline int sp_str_eq(const char*a,const char*b){
+  if(a==b)return 1;
+  if(!a||!b)return 0;
+  if(strcmp(a,b)!=0)return 0;
+  /* strcmp equality is only prefix equality when a length header records
+     an embedded NUL ("a\0b" vs "a"): confirm byte-exact equality. The
+     miss path above stays a single strcmp. */
+  size_t la=sp_str_byte_len(a);
+  return la==sp_str_byte_len(b)&&memcmp(a,b,la)==0;
+}
 /* Issue #762: check malloc/realloc returns. On OOM, return an empty
    array rather than dereferencing NULL. */
 
@@ -888,7 +897,7 @@ const char *sp_crypto_hmac_sha256_b64url(const char *key, const char *msg);
      other       -> FFI / unknown provenance, treated as frozen
    Returns the byte value (CRuby setbyte return). */
 static inline mrb_int sp_str_getbyte(const char *s, mrb_int i) {
-  if (!s) return 0;
+  if (!s) sp_nil_recv("getbyte");
   mrb_int bl = (mrb_int)sp_str_byte_len(s);
   if (i < 0) i += bl;
   if (i < 0 || i >= bl) return 0;
@@ -896,10 +905,7 @@ static inline mrb_int sp_str_getbyte(const char *s, mrb_int i) {
 }
 
 static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
-  if (!s) {
-    sp_raise_cls("FrozenError", "can't modify frozen String");
-    return v;
-  }
+  if (!s) sp_nil_recv("setbyte");
   unsigned char m = ((const unsigned char *)s)[-1];
   if (m == 0xfe || m == 0xfc) {
     (((sp_str_hdr *)(s - 1)) - 1)->hash = 0;  /* invalidate cached key hash */
@@ -946,7 +952,7 @@ static inline const char *sp_str_freeze_val(const char *s) {
    across to the fresh buffer. */
 static inline const char *sp_str_clone_val(const char *s) {
   if (!s) return NULL;
-  const char *r = sp_str_dup_external(s);
+  const char *r = sp_str_dup(s);  /* byte_len-aware: clone carries embedded NULs */
   if (r && sp_str_is_frozen_val(s)) ((unsigned char *)r)[-1] = 0xf1;
   return r;
 }
@@ -4477,6 +4483,7 @@ static const char *sp_file_read(const char *path) {
     n = fread(buf, 1, sz, f);
   }
   buf[n] = 0;
+  sp_str_set_len(buf, n);  /* a short read must not leave the size as length */
   fclose(f);
   return buf;
 }
@@ -4671,6 +4678,31 @@ else {
   sp_StrArray_sort_bang(a);
   return a;
 }
+/* Dir.entries / Dir.children: every entry of one directory, dotfiles
+   included; children drops "." / "..". Sorted for determinism (CRuby
+   leaves readdir order unspecified). A missing directory raises like
+   CRuby, not the glob-style empty result. */
+static sp_StrArray *sp_dir_entries_impl(const char *path, int children) {
+  if (!path) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  DIR *d = opendir(path);
+  if (!d) sp_raise_cls("Errno::ENOENT", sp_sprintf("No such file or directory @ dir_initialize - %s", path));
+  sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    const char *name = e->d_name;
+    if (children && name[0] == '.' &&
+        (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
+    char *copy = sp_str_alloc(strlen(name));
+    strcpy(copy, name);
+    sp_StrArray_push(a, copy);
+  }
+  closedir(d);
+  sp_StrArray_sort_bang(a);
+  return a;
+}
+static sp_StrArray *sp_dir_entries(const char *path) { return sp_dir_entries_impl(path, 0); }
+static sp_StrArray *sp_dir_children(const char *path) { return sp_dir_entries_impl(path, 1); }
 
 /* File.expand_path(path[, base]) -- CRuby-compatible pure-string
    expansion (does NOT require the path to exist). A leading `~` / `~/`
@@ -4889,7 +4921,7 @@ static sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
 static sp_PolyArray *sp_str_chars_poly(const char *s) {
   sp_PolyArray *a = sp_PolyArray_new();
   SP_GC_ROOT(a);
-  if (!s) return a;
+  if (!s) sp_nil_recv("chars");
   for (const char *p = s; *p; ) {
     int n = sp_utf8_advance(p);
     char *c = sp_str_alloc(n); memcpy(c, p, n); c[n] = 0;

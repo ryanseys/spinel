@@ -345,6 +345,32 @@ static int loop_has_valued_break(Compiler *c, int root) {
   return 0;
 }
 
+/* One arm of a value-position if/unless: box a concrete arm into a poly
+   result, and give empty []/{} literals the result's container type. */
+static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *bty = nt_type(nt, nd);
+  if (res == TY_POLY && comp_ntype(c, nd) != TY_POLY) { emit_boxed(c, nd, b); return; }
+  if (ty_is_array(res) && bty && sp_streq(bty, "ArrayNode")) {
+    int bn = 0; nt_arr(nt, nd, "elements", &bn);
+    if (bn == 0) {
+      const char *rk = (res == TY_POLY_ARRAY) ? "Poly" : array_kind(res);
+      buf_printf(b, "sp_%sArray_new()", rk ? rk : "Int");
+      return;
+    }
+    emit_expr(c, nd, b);
+    return;
+  }
+  if (ty_is_hash(res) && bty && (sp_streq(bty, "HashNode") || sp_streq(bty, "KeywordHashNode"))) {
+    int bn = 0; nt_arr(nt, nd, "elements", &bn);
+    const char *hc = ty_hash_cname(res);
+    if (bn == 0 && hc) { buf_printf(b, "sp_%sHash_new()", hc); return; }
+    emit_expr(c, nd, b);
+    return;
+  }
+  emit_expr(c, nd, b);
+}
+
 void emit_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -906,7 +932,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
     if (ct == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "(%s = sp_str_concat(%s, ", ref, ref);
+      buf_printf(b, "(%s = sp_str_plus(%s, ", ref, ref);
       emit_expr(c, v, b); buf_puts(b, "))");
     }
     else if (ct == TY_POLY) {
@@ -1351,7 +1377,8 @@ else {
   }
   if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode")) {
     /* if/unless as a value: a ternary when both branches are single
-       value-expressions */
+       value-expressions. Arm emission (boxing / empty-literal typing) lives
+       in emit_ternary_arm below the switch. */
     int pred = nt_ref(nt, id, "predicate");
     int then_b = nt_ref(nt, id, "statements");
     int is_unless = sp_streq(ty, "UnlessNode");
@@ -1365,43 +1392,47 @@ else {
     const int *eb = else_stmts >= 0 ? nt_arr(nt, else_stmts, "body", &en) : NULL;
     if (tn == 1 && en == 1) {
       TyKind res = comp_ntype(c, id);
-      buf_puts(b, "(");
-      if (is_unless) buf_puts(b, "!(");
-      emit_cond(c, pred, b);
-      if (is_unless) buf_puts(b, ")");
-      buf_puts(b, " ? ");
-      /* a poly result with concrete-typed branches boxes each branch;
-         for typed-array results, an empty [] literal uses the result type */
-      { int nd = tb[0]; const char *_bty = nt_type(nt, nd);
-        if (res == TY_POLY && comp_ntype(c, nd) != TY_POLY) emit_boxed(c, nd, b);
-        else if (ty_is_array(res) && _bty && sp_streq(_bty, "ArrayNode")) {
-          int _bn = 0; nt_arr(nt, nd, "elements", &_bn);
-          if (_bn == 0) { const char *_rk = (res == TY_POLY_ARRAY) ? "Poly" : array_kind(res);
-            buf_printf(b, "sp_%sArray_new()", _rk ? _rk : "Int"); }
-          else emit_expr(c, nd, b);
-        }
-        else if (ty_is_hash(res) && _bty && (sp_streq(_bty, "HashNode") || sp_streq(_bty, "KeywordHashNode"))) {
-          int _bn = 0; nt_arr(nt, nd, "elements", &_bn); const char *_hc = ty_hash_cname(res);
-          if (_bn == 0 && _hc) buf_printf(b, "sp_%sHash_new()", _hc);
-          else emit_expr(c, nd, b);
-        }
-        else emit_expr(c, nd, b); }
-      buf_puts(b, " : ");
-      { int nd = eb[0]; const char *_bty = nt_type(nt, nd);
-        if (res == TY_POLY && comp_ntype(c, nd) != TY_POLY) emit_boxed(c, nd, b);
-        else if (ty_is_array(res) && _bty && sp_streq(_bty, "ArrayNode")) {
-          int _bn = 0; nt_arr(nt, nd, "elements", &_bn);
-          if (_bn == 0) { const char *_rk = (res == TY_POLY_ARRAY) ? "Poly" : array_kind(res);
-            buf_printf(b, "sp_%sArray_new()", _rk ? _rk : "Int"); }
-          else emit_expr(c, nd, b);
-        }
-        else if (ty_is_hash(res) && _bty && (sp_streq(_bty, "HashNode") || sp_streq(_bty, "KeywordHashNode"))) {
-          int _bn = 0; nt_arr(nt, nd, "elements", &_bn); const char *_hc = ty_hash_cname(res);
-          if (_bn == 0 && _hc) buf_printf(b, "sp_%sHash_new()", _hc);
-          else emit_expr(c, nd, b);
-        }
-        else emit_expr(c, nd, b); }
-      buf_puts(b, ")");
+      /* Emit each arm with a CAPTURED prelude: an arm whose sub-expressions
+         hoist statements (a rooted call argument, a constructed receiver, ...)
+         cannot ride a flat C ternary -- a shared prelude would evaluate BOTH
+         arms eagerly (`File.exist?(f) ? File.read(f) : x` raised on the
+         untaken read). Preludeless arms keep the flat form; otherwise the
+         arms become real branches with their preludes scoped inside. */
+      Buf ta; memset(&ta, 0, sizeof ta);
+      Buf te; memset(&te, 0, sizeof te);
+      Buf pa; memset(&pa, 0, sizeof pa);
+      Buf pe; memset(&pe, 0, sizeof pe);
+      Buf *sv_pre = g_pre;
+      g_pre = &pa; emit_ternary_arm(c, tb[0], res, &ta);
+      g_pre = &pe; emit_ternary_arm(c, eb[0], res, &te);
+      g_pre = sv_pre;
+      int hoists = (pa.p && pa.p[0]) || (pe.p && pe.p[0]);
+      if (!hoists) {
+        buf_puts(b, "(");
+        if (is_unless) buf_puts(b, "!(");
+        emit_cond(c, pred, b);
+        if (is_unless) buf_puts(b, ")");
+        buf_puts(b, " ? ");
+        buf_puts(b, ta.p ? ta.p : "0");
+        buf_puts(b, " : ");
+        buf_puts(b, te.p ? te.p : "0");
+        buf_puts(b, ")");
+      }
+      else {
+        int tr = ++g_tmp;
+        buf_puts(b, "({ ");
+        emit_ctype(c, res, b);
+        /* braced zero: valid for scalars, pointers, AND by-value structs
+           (value-class objects, sp_Range); both branches assign over it */
+        buf_printf(b, " _t%d = {0}; if (", tr);
+        if (is_unless) buf_puts(b, "!(");
+        emit_cond(c, pred, b);
+        if (is_unless) buf_puts(b, ")");
+        buf_printf(b, ") {\n%s _t%d = %s;\n} else {\n%s _t%d = %s;\n} _t%d; })",
+                   pa.p ? pa.p : "", tr, ta.p ? ta.p : "0",
+                   pe.p ? pe.p : "", tr, te.p ? te.p : "0", tr);
+      }
+      free(ta.p); free(te.p); free(pa.p); free(pe.p);
       return;
     }
     /* Multi-stmt branches or no-else: emit as if/else block with a result temp.
