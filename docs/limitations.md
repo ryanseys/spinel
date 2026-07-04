@@ -132,6 +132,26 @@ poly-dispatched paths, and is catchable as usual (`rescue RangeError`).
 representable (`2.0 ** -1 # => 0.5`). A `Rational` base is also fine
 (`Rational(1,2) ** -1 # => (2/1)`).
 
+#### `object_id` of distinct equal string literals
+
+Two textually equal, unfrozen string literals are distinct objects in CRuby, so
+they have different `object_id`s:
+
+```ruby
+a = "x"
+b = "x"
+a.object_id == b.object_id   # CRuby: false; Spinel: true
+```
+
+Spinel represents an unfrozen string literal as a shared static buffer, so two
+equal literals compile to the same pointer and report the same `object_id`.
+Giving every literal evaluation a fresh heap allocation solely to distinguish
+their identities would add an allocation to every string literal for a case real
+programs rarely depend on, so Spinel keeps the shared representation. The
+identity that programs do rely on still holds: the same string object compared
+to itself has a stable, equal `object_id` (`s = "y"; t = s; s.object_id ==
+t.object_id`).
+
 #### Embedded NUL bytes: byte-exact core, C-string transforms
 
 Strings store embedded NUL bytes, and the byte-exact core matches CRuby:
