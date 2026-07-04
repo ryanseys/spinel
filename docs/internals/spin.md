@@ -164,7 +164,15 @@ entry; external libraries use the `ffi_lib` DSL in the Ruby source), and
   possibly a subset-compatible port"; divergent forks rename
   (`foo-spinel`). The probe corpus is the intended seed for the index
   (coordination still open).
-- *Still specification:* `spin publish` (index PR automation).
+- `spin publish` (implemented): validates identity + a pushed,
+  version-consistent release commit, runs `spin test` as a hard gate (R8's
+  spirit ahead of its metadata), then writes `gems/<name>.toml` and submits
+  -- a gh-driven fork + PR when `gh` exists, printed instructions
+  otherwise, or a direct push with `--direct` for index write access. The
+  GitHub ssh remote form normalizes to https; file:// and local-path repos
+  are refused (consumers must be able to fetch). Same-name/different-repo
+  is rejected per the name policy. No tarballs, no accounts, no yank
+  (removals are hand-written index PRs).
 
 **Selection is MVS** (decided, implemented): among releases admitted by the
 constraint (`~>` pessimistic, `>=`, exact, `*`), every gem resolves to the
@@ -325,9 +333,8 @@ string parameters downstream (tab/newline-packed record strings instead),
 3. **Toolchain versioning**: the `spinel` manifest constraint, R8 probe
    warnings, and spin↔spinel skew handling all wait on the compiler
    carrying a version.
-4. **`spin publish`** (index PR automation).
-5. R4 enforcement below resolution granularity (per-root provenance on top
+4. R4 enforcement below resolution granularity (per-root provenance on top
    of `-I`).
-6. Native-cache eviction (currently: never).
-7. `spin lock --update`, `--frozen`, `--dev`/`[dev-dependencies]`,
+5. Native-cache eviction (currently: never).
+6. `spin lock --update`, `--frozen`, `--dev`/`[dev-dependencies]`,
    `spin install`, `-q`/`-v`/`-j`, `spin clean --cache`.

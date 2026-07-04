@@ -80,14 +80,24 @@ string). Consumers then use it directly:
 spin add mylib --git https://github.com/you/spinel-mylib
 ```
 
-or, once it has releases, through [the index](#the-index): open a pull
-request at [spinel-index](https://github.com/matz/spinel-index) adding
-`gems/mylib.toml` with one `[[release]]` per published version — each `ref`
-a full commit SHA whose tree carries the matching `version` in `gem.toml`.
-From then on `spin add mylib --version "~> 0.1"` works, and bumping
-`version` + adding a release entry is how you publish an update. Libraries
-do not commit a `gem.lock`; version selection belongs to the consuming
-application.
+or, once it has releases, through [the index](#the-index). Publishing a
+release is one command:
+
+```sh
+spin publish
+```
+
+It validates the release (committed and pushed, `[gem] name`/`version`
+present, the tree at the release commit carrying that same version, the
+name not owned by another repo in the index), **runs `spin test` as a hard
+gate**, then submits `gems/mylib.toml` with a `[[release]]` entry pinning
+the full commit SHA: as a pull request to
+[spinel-index](https://github.com/matz/spinel-index) when the `gh` CLI is
+available, by printed instructions otherwise, or pushed directly with
+`--direct` if you have index write access. From then on
+`spin add mylib --version "~> 0.1"` works, and bumping `version` +
+`spin publish` again is how you ship an update. Libraries do not commit a
+`gem.lock`; version selection belongs to the consuming application.
 
 ## Dependencies
 
@@ -201,6 +211,7 @@ objects are reused from the cache. `spin clean` removes `build/`.
 | `spin add` / `remove` | edit `[dependencies]` and relock |
 | `spin lock` / `fetch` / `vendor` | pin / warm the cache / copy into `vendor/` |
 | `spin list` / `tree` / `search` (`--json`) | inspect the resolved set / the index |
+| `spin publish [--direct]` | validate + test, then submit this release to the index |
 | `spin clean` | remove `build/` |
 
 Environment: `SPIN_INDEX` (index URL), `SPIN_OFFLINE=1` (cache/vendor

@@ -18,6 +18,7 @@ usage: spin <command> [args]
   clean                remove build/
   list [--json]        resolved dependency set (name, version, source)
   tree [--json]        dependency tree from this gem
+  publish [--direct]   validate + test, then submit this release to the index
 USAGE
 
 def spin_die(msg)
@@ -794,6 +795,118 @@ def cmd_remove(root, name)
   puts "removed " + name
 end
 
+# --- publish (index PR automation) --------------------------------------------
+# `spin publish` folds "get my release into the index" into one command:
+# validate identity + a pushed, version-consistent commit, run the tests as a
+# hard gate (R8), write gems/<name>.toml, then submit -- straight push with
+# --direct (index write access), a gh-driven fork + PR when gh is available,
+# or printed instructions otherwise. No tarballs, no accounts: the git
+# identity is the identity, and nothing executes at fetch time.
+
+def publish_repo_url(root, override)
+  u = override
+  u = sh_read("git -C " + root + " remote get-url origin") if u == ""
+  spin_die("publish: no git remote (set one or pass --repo URL)") if u == ""
+  # normalize the GitHub ssh form; consumers clone anonymously
+  if u.start_with?("git@github.com:")
+    u = "https://github.com/" + u[15..-1].to_s
+  end
+  u = u[0..-5] if u.end_with?(".git")
+  spin_die("publish: " + u + " is not fetchable by others (file:// and local paths cannot be published)") if u.start_with?("file://") || u.start_with?("/") || u.start_with?(".")
+  u
+end
+
+def cmd_publish(root, repo_override, ref_override, direct)
+  toml = TomlDoc.parse(File.read(File.join(root, "gem.toml")))
+  name = toml.get("gem", "name")
+  version = toml.get("gem", "version")
+  spin_die("publish makes identity mandatory: set [gem] name and version in gem.toml") if name == "" || version == ""
+  repo = publish_repo_url(root, repo_override)
+
+  dirty = sh_read("git -C " + root + " status --porcelain")
+  spin_die("publish: uncommitted changes (commit and push first)") if dirty != "" && ref_override == ""
+  ref = ref_override == "" ? sh_read("git -C " + root + " rev-parse HEAD") : ref_override
+  spin_die("publish: cannot resolve HEAD (is this a git repo?)") if ref == ""
+
+  # the commit must be reachable by consumers: some remote branch contains it
+  reach = sh_read("git -C " + root + " branch -r --contains " + ref)
+  spin_die("publish: commit " + ref[0..11].to_s + " is not on any remote branch (git push first)") if reach == ""
+
+  # the tree at the release ref must carry the version being published
+  tv = ""
+  sh_read("git -C " + root + " show " + ref + ":gem.toml").split("\n").each do |l|
+    tv = TomlDoc.parse(l + "\n").get("", "version") if l.strip.start_with?("version")
+  end
+  spin_die("publish: gem.toml at " + ref[0..11].to_s + " says version \"" + tv + "\", manifest says \"" + version + "\"") if tv != version
+
+  # hard test gate (R8): a gem publishes with passing tests or not at all
+  prj = Project.new(root)
+  spin_die("publish requires tests: add test/*.rb (spin test)") if prj.tests.empty?
+  cmd_test(prj, [], false)   # exits non-zero on any failure
+
+  # write the index entry
+  index_refresh(false)
+  idir = index_dir(false)
+  gf = File.join(idir, "gems", name + ".toml")
+  entry = ""
+  if File.exist?(gf)
+    gdoc = TomlDoc.parse(File.read(gf))
+    erepo = gdoc.get("", "repo")
+    spin_die("publish: index name \"" + name + "\" belongs to " + erepo + " (same name means the same library; rename per the name policy)") if erepo != repo
+    i = 0
+    while i < gdoc.array_len("release")
+      spin_die("publish: " + name + " " + version + " is already in the index") if gdoc.get("release." + i.to_s, "version") == version
+      i += 1
+    end
+    entry = File.read(gf)
+  else
+    entry = "name = \"" + name + "\"\nrepo = \"" + repo + "\"\n"
+  end
+  entry += "\n[[release]]\nversion = \"" + version + "\"\nref = \"" + ref + "\"\n"
+
+  if direct
+    File.write(gf, entry)
+    ok = system("git -C " + idir + " add gems/" + name + ".toml") &&
+         system("git -C " + idir + " -c user.email=spin@publish -c user.name=spin commit -qm \"" + name + " " + version + "\"") &&
+         system("git -C " + idir + " push -q origin HEAD")
+    spin_die("publish --direct: push to the index failed (no write access?)") unless ok
+    puts "published " + name + " " + version + " (direct)"
+    return
+  end
+
+  if system("gh --version > /dev/null 2>&1")
+    # work in a scratch clone so the cache index stays on main
+    tmp = File.join(File.dirname(idir), ".publish-" + name)
+    system("rm -rf " + tmp)
+    spin_die("publish: cannot clone the index") unless system("git clone -q " + idir + " " + tmp)
+    File.write(File.join(tmp, "gems", name + ".toml"), entry)
+    br = "publish-" + name + "-" + version.gsub(".", "-")
+    login = sh_read("gh api user -q .login")
+    spin_die("publish: gh is installed but not authenticated (gh auth login)") if login == ""
+    system("gh repo fork " + spin_index_url + " --clone=false > /dev/null 2>&1")
+    ok = system("git -C " + tmp + " checkout -qb " + br) &&
+         system("git -C " + tmp + " add gems/" + name + ".toml") &&
+         system("git -C " + tmp + " -c user.email=spin@publish -c user.name=spin commit -qm \"" + name + " " + version + "\"") &&
+         system("git -C " + tmp + " push -q https://github.com/" + login + "/spinel-index.git " + br + ":" + br)
+    spin_die("publish: pushing the fork branch failed") unless ok
+    body = "spin publish: " + name + " " + version + "%0A%0Arepo: " + repo + "%0Aref: " + ref + "%0Atests: pass (spin test gate)"
+    body = body.gsub("%0A", "\n")
+    okpr = system("gh pr create --repo " + spin_index_url.sub("https://github.com/", "") +
+                  " --head " + login + ":" + br +
+                  " --title \"" + name + " " + version + "\"" +
+                  " --body \"" + body + "\"")
+    system("rm -rf " + tmp)
+    spin_die("publish: gh pr create failed") unless okpr
+    puts "published " + name + " " + version + " (PR opened)"
+    return
+  end
+
+  puts "gh not found -- open a pull request against " + spin_index_url
+  puts "adding this as gems/" + name + ".toml:"
+  puts ""
+  puts entry
+end
+
 def cmd_vendor(prj)
   vg = File.join(prj.root, "vendor")
   Dir.mkdir(vg) unless Dir.exist?(vg)
@@ -902,6 +1015,24 @@ when "lock", "fetch", "vendor"
   cmd_vendor(prj) if cmd == "vendor"
 when "search"
   cmd_search(rest.empty? ? "" : rest[0])
+when "publish"
+  root = find_root(Dir.pwd)
+  spin_die("no gem.toml found") if root == ""
+  rp = ""
+  rf = ""
+  i3 = 0
+  while i3 < rest.length
+    a3 = rest[i3]
+    if a3 == "--repo"
+      i3 += 1
+      rp = rest[i3].to_s
+    elsif a3 == "--ref"
+      i3 += 1
+      rf = rest[i3].to_s
+    end
+    i3 += 1
+  end
+  cmd_publish(root, rp, rf, rest.include?("--direct"))
 when "list", "tree"
   root = find_root(Dir.pwd)
   spin_die("no gem.toml found") if root == ""

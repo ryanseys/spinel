@@ -173,4 +173,38 @@ rm -rf "$XDG_CACHE_HOME/spinel/gems" "$XDG_CACHE_HOME/spinel/index"
 expect "index offline (locked, vendored)" "hello v1" "$(SPIN_OFFLINE=1 "$SPIN" run 2>&1 | tail -1)"
 unset SPIN_INDEX
 
+# --- publish (M4): validations + --direct into the index -------------------------
+export SPIN_INDEX="file://$WORK/index"
+git -C "$WORK/index" config receive.denyCurrentBranch updateInstead
+cd "$WORK"
+"$SPIN" new publib --lib >/dev/null
+cd publib
+printf '[gem]\nname = "publib"\nversion = "0.1.0"\n' > gem.toml
+printf 'module Publib\n  def self.hi = "hi"\nend\n' > publib.rb
+git init -q
+git add gem.toml publib.rb .gitignore
+git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm v1
+git init -q --bare "$WORK/publib-remote.git"
+git remote add origin "$WORK/publib-remote.git"
+git push -q origin HEAD
+git fetch -q origin
+OUT=$("$SPIN" publish --direct --repo https://example.com/you/spinel-publib 2>&1) \
+  && fail "publish without tests must be refused"
+echo "$OUT" | grep -q "publish requires tests" || fail "missing-tests message"
+printf 'require "publib"\nputs Publib.hi\n' > test/hi_test.rb
+git add test/hi_test.rb
+git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm tests
+git push -q origin HEAD
+git fetch -q origin
+expect "publish --direct" "published publib 0.1.0 (direct)" "$("$SPIN" publish --direct --repo https://example.com/you/spinel-publib 2>&1 | tail -1)"
+grep -q '^ref = "[0-9a-f]\{40\}"$' "$WORK/index/gems/publib.toml" || fail "published entry lacks a full SHA"
+OUT=$("$SPIN" publish --direct --repo https://example.com/you/spinel-publib 2>&1) \
+  && fail "duplicate publish must be refused"
+echo "$OUT" | grep -q "already in the index" || fail "duplicate message"
+OUT=$("$SPIN" publish --direct --repo https://example.com/other/spinel-publib 2>&1) \
+  && fail "same name, different repo must be refused"
+echo "$OUT" | grep -q "name policy" || fail "name-policy message"
+"$SPIN" search publib | grep -q "^publib 0.1.0 " || fail "published gem missing from search"
+unset SPIN_INDEX
+
 echo "spin-e2e: ALL GREEN"
