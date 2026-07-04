@@ -4275,15 +4275,6 @@ static int node_is_empty_hash_construct(Compiler *c, int node) {
   return 0;
 }
 
-/* True when `node` is a `Hash.new(default)` -- an element-less Hash.new with a
-   default argument (vs a bare `{}` / argless `Hash.new`). */
-static int hash_new_has_default(const NodeTable *nt, int node) {
-  if (nt_kind(nt, node) != NK_CallNode) return 0;
-  int ha = nt_ref(nt, node, "arguments"); int hac = 0;
-  if (ha >= 0) nt_arr(nt, ha, "arguments", &hac);
-  return hac >= 1;
-}
-
 /* If method scope `mi`'s value is an element-less hash -- the body's tail
    expression (or a trailing `return {}`) is an empty `{}` / `Hash.new` -- return
    that tail node, else -1. Such a return infers TY_UNKNOWN with no in-body
@@ -4375,10 +4366,6 @@ int backprop_hash_return_types(Compiler *c) {
     if (m->ret_rbs_seeded || m->ret_specialized || m->cs_synth || m->is_lowered_yield) continue;
     int tail = scope_tail_empty_hash(c, mi);
     if (tail < 0) continue;
-    /* `Hash.new(default)` has no runtime constructor for a PolyPolyHash (#1673):
-       don't pin a return codegen can't emit -- leave it void (the honest error)
-       rather than emitting a nonexistent sp_PolyPolyHash_new_with_default. */
-    if (lv->type == TY_POLY_POLY_HASH && hash_new_has_default(nt, tail)) { want[mi] = TY_POLY; continue; }
     if (want[mi] == TY_UNKNOWN) want[mi] = lv->type;
     else if (want[mi] != lv->type) want[mi] = TY_POLY;   /* callers disagree */
   }
