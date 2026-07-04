@@ -50,6 +50,9 @@ int  g_indent = 0;
 int  g_argov_node[MAX_ARG_OVERRIDE];
 char g_argov_text[MAX_ARG_OVERRIDE][16];
 int  g_n_argov = 0;
+/* Node id whose safe-nav (&.) guard is already emitted; the re-entrant
+   emit_call skips the guard block for exactly this node. */
+int  g_sn_skip = -1;
 /* True if evaluating the subtree at `id` may allocate (and so may trigger
    a GC): any call, container literal, or string interpolation qualifies. */
 int subtree_may_allocate(const NodeTable *nt, int id) {
