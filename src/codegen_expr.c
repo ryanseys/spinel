@@ -1002,7 +1002,15 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return; }
     if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_status"); return; }
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return; }
-    if (nm && (sp_streq(nm, "$!") || sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }
+    if (nm && sp_streq(nm, "$!")) {
+      /* $! is the exception currently being handled: build it from the active
+         rescue's class/message (g_rescue_cls set only inside a rescue body), or
+         a NULL exception (which the exception readers treat as nil) outside. */
+      if (g_rescue_cls) buf_printf(b, "sp_exc_new_for_catch(%s, %s)", g_rescue_cls, g_rescue_msg);
+      else buf_puts(b, "0");
+      return;
+    }
+    if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }
     /* regex match globals that Prism may emit as GlobalVariableReadNode */
     if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&")))  { buf_puts(b, "sp_re_match_str");  return; }
     if (nm && sp_streq(nm, "$`"))                          { buf_puts(b, "sp_re_match_pre");  return; }
