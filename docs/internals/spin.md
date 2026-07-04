@@ -73,11 +73,15 @@ compile-into-the-binary producer model.**
 | stdlib | require-gated features (`set`, `erb`, `json`, …) | the compiler | via `require`, no manifest entry |
 | gems | everything else | fetched/vendored per project | via `require` + manifest entry |
 
-The boundary is directory-level. *Still specification:* the carve-out that
-reduces `lib/` to runtime C only and moves the bundled pure-Ruby stdlib
-into a gems-only `gems/<name>/` directory (proving the gem format on the
-compiler's own stdlib). Today the stdlib still lives in `lib/`. Gems-only
-directories that do exist: `vendor/gems/<name>-<version>/` in a project,
+The boundary is directory-level and implemented: `lib/` holds runtime C
+only, and the bundled pure-Ruby stdlib (`set`, `erb`, `optparse`,
+`forwardable`, plus the `stringio`/`strscan` marker shims) lives as
+pre-installed gems under `gems/<name>/` -- each an ordinary spinelgem with
+a `spin.toml`, proving the format on the compiler's own stdlib. The
+compiler resolves `require` against `gems/` beside its runtime (repo and
+installed tree alike, through symlinked invocation). Gems-only
+directories: `gems/<name>/` (pre-installed),
+`vendor/gems/<name>-<version>/` in a project,
 `$XDG_CACHE_HOME/spinel/gems/<name>-<version>/` for fetches.
 
 ### R2 — package format (implemented)

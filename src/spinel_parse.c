@@ -21,6 +21,10 @@
 #include <string.h>
 #include <stdarg.h>
 #include <limits.h>
+#include <unistd.h>      /* readlink: resolve the executable for gem lookup */
+#if defined(__APPLE__)
+#include <mach-o/dyld.h> /* _NSGetExecutablePath */
+#endif
 #include <prism.h>
 
 /* ---- In-memory output buffer ----
@@ -2170,9 +2174,33 @@ static int sp_require_tolerated(const char *name) {
 /* ---- Plain require resolution ---- */
 static char *resolve_plain_requires(char *source, const char *exe_path,
                                     unsigned char **fsl, size_t *fsl_n) {
-  /* Find lib/ directory relative to this executable */
+  /* Find lib/ relative to this executable, resolving symlinks the same way
+     the compiler locates its runtime (#1663): an installed tree runs through
+     the /usr/local/bin/spinel symlink, and dirname(argv0) would point the
+     bundled-gem lookup at bin/. */
   char lib_dir[1024];
-  strncpy(lib_dir, exe_path, sizeof(lib_dir) - 1);
+  {
+    char self[1024];
+    self[0] = '\0';
+#if defined(__APPLE__)
+    uint32_t bsz = (uint32_t)sizeof self;
+    if (_NSGetExecutablePath(self, &bsz) != 0) self[0] = '\0';
+    if (self[0]) {
+      char rp[1024];
+      if (realpath(self, rp)) snprintf(self, sizeof self, "%s", rp);
+    }
+#else
+    ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
+    if (n > 0) self[n] = '\0'; else self[0] = '\0';
+#endif
+    if (!self[0]) {
+      char rp[1024];
+      if (exe_path && realpath(exe_path, rp)) snprintf(self, sizeof self, "%s", rp);
+      else snprintf(self, sizeof self, "%s", exe_path ? exe_path : ".");
+    }
+    strncpy(lib_dir, self, sizeof(lib_dir) - 1);
+    lib_dir[sizeof(lib_dir) - 1] = '\0';
+  }
   char *slash = strrchr(lib_dir, '/');
   if (slash) *slash = '\0';
   else strcpy(lib_dir, ".");
@@ -2263,6 +2291,31 @@ else {
           strcat(alt_path, ".rb");
         content = read_file(alt_path);
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", alt_path);
+      }
+      if (!content) {
+        /* pre-installed gems (the carved-out stdlib): gems/ sits beside lib/
+           in both the repo and the installed tree. The gem root is the
+           require root, so `require "erb"` is gems/erb/erb.rb and
+           `require "erb/util"` is gems/erb/erb/util.rb. */
+        char gp[1024];
+        char first[256];
+        {
+          const char *sl = strchr(lib_name, '/');
+          size_t fl2 = sl ? (size_t)(sl - lib_name) : strlen(lib_name);
+          if (fl2 >= sizeof(first)) fl2 = sizeof(first) - 1;
+          memcpy(first, lib_name, fl2);
+          first[fl2] = 0;
+        }
+        int base_len = (int)strlen(lib_dir);
+        if (base_len >= 4 && strcmp(lib_dir + base_len - 4, "/lib") == 0) base_len -= 4;
+        snprintf(gp, sizeof(gp), "%.*s/gems/%s/%s.rb", base_len, lib_dir, first, lib_name);
+        content = read_file(gp);
+        if (!content) {
+          /* dev binary one level below the repo root (build/spinel) */
+          snprintf(gp, sizeof(gp), "%.*s/../gems/%s/%s.rb", base_len, lib_dir, first, lib_name);
+          content = read_file(gp);
+        }
+        if (content) snprintf(lib_path, sizeof(lib_path), "%s", gp);
       }
       if (!content) {
         /* `-I <dir>` feature roots: <root>/X.rb, else <root>/X/<last>.rb. */
