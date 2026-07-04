@@ -97,14 +97,50 @@ static int pk_utf8(unsigned char *out, int64_t v) {
   return 0;
 }
 
-static int64_t pk_parse_count(const char **pp) {
+/* Consume any '<' '>' '!' '_' modifiers after a directive letter, then the
+   optional count. Without this, `pack('l<l<l<l<')` treated each '<' as its
+   own directive -- and since the element cursor advances per directive, every
+   other value was silently dropped (doom's SDL_Rect bytes came out as
+   {x,w,0,0}). '!'/'_' pick the native size (what the plain directive
+   already is here); '<'/'>' set *big. CRuby raises RangeError on a
+   repeated endian modifier ("l><"); spinel's pack has no exception
+   path, so the last one wins instead. */
+static int64_t pk_parse_count_mods(const char **pp, int *big) {
   const char *p = *pp;
+  while (*p == '<' || *p == '>' || *p == '!' || *p == '_') {
+    if (big) {
+      if (*p == '>') *big = 1;
+      else if (*p == '<') *big = 0;
+    }
+    p++;
+  }
   if (*p == '*') { *pp = p + 1; return -1; }
-  if (*p < '0' || *p > '9') return 1;
+  if (*p < '0' || *p > '9') { *pp = p; return 1; }
   int64_t n = 0;
   while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
   *pp = p;
   return n;
+}
+static int64_t pk_parse_count(const char **pp) {
+  return pk_parse_count_mods(pp, NULL);
+}
+/* Serialize / deserialize an integer as `n` bytes, little- or
+   big-endian, via shifts (host-endianness independent, like the
+   n/N/v/V paths). */
+static void pk_put_int(char *out, int64_t v, size_t n, int big) {
+  uint64_t uv = (uint64_t)v;
+  for (size_t i = 0; i < n; i++) {
+    size_t sh = big ? (n - 1 - i) : i;
+    out[i] = (char)((uv >> (8 * sh)) & 0xff);
+  }
+}
+static uint64_t pk_get_int(const unsigned char *u, size_t n, int big) {
+  uint64_t v = 0;
+  for (size_t i = 0; i < n; i++) {
+    size_t sh = big ? (n - 1 - i) : i;
+    v |= (uint64_t)u[i] << (8 * sh);
+  }
+  return v;
 }
 
 static int64_t pk_poly_to_int(sp_RbVal v) {
@@ -140,7 +176,8 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {
   while (*p) {
     char spec = *p++;
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
-    int64_t count = pk_parse_count(&p);
+    int big = 0;
+    int64_t count = pk_parse_count_mods(&p, &big);
     if (count < 0) count = arr->len - idx;
     if (count < 0) count = 0;
     for (int64_t k = 0; k < count; k++) {
@@ -171,15 +208,15 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {
           pk_append(&buf, &len, &cap, tmp, 4);
           break;
         case 's': case 'S':
-          memcpy(tmp, &v, 2);
+          pk_put_int(tmp, v, 2, big);
           pk_append(&buf, &len, &cap, tmp, 2);
           break;
         case 'l': case 'L':
-          memcpy(tmp, &v, 4);
+          pk_put_int(tmp, v, 4, big);
           pk_append(&buf, &len, &cap, tmp, 4);
           break;
         case 'q': case 'Q':
-          memcpy(tmp, &v, 8);
+          pk_put_int(tmp, v, 8, big);
           pk_append(&buf, &len, &cap, tmp, 8);
           break;
         case 'x':
@@ -218,7 +255,8 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
   while (*p) {
     char spec = *p++;
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
-    int64_t count = pk_parse_count(&p);
+    int big = 0;
+    int64_t count = pk_parse_count_mods(&p, &big);
     if (spec == 'a' || spec == 'A' || spec == 'Z') {
       const char *s = (idx < arr->len) ? pk_poly_to_str(arr->data[idx]) : "";
       idx++;
@@ -263,15 +301,15 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
           pk_append(&buf, &len, &cap, tmp, 4);
           break;
         case 's': case 'S':
-          memcpy(tmp, &v, 2);
+          pk_put_int(tmp, v, 2, big);
           pk_append(&buf, &len, &cap, tmp, 2);
           break;
         case 'l': case 'L':
-          memcpy(tmp, &v, 4);
+          pk_put_int(tmp, v, 4, big);
           pk_append(&buf, &len, &cap, tmp, 4);
           break;
         case 'q': case 'Q':
-          memcpy(tmp, &v, 8);
+          pk_put_int(tmp, v, 8, big);
           pk_append(&buf, &len, &cap, tmp, 8);
           break;
         case 'x':
@@ -311,7 +349,8 @@ sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {
   while (*p) {
     char spec = *p++;
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
-    int64_t count = pk_parse_count(&p);
+    int big = 0;
+    int64_t count = pk_parse_count_mods(&p, &big);
     size_t fsize = 0;
     switch (spec) {
       case 'C': case 'c': case 'x': fsize = 1; break;
@@ -372,12 +411,12 @@ else if (spec == 'Z') {
         case 'N': v = ((int64_t)u[0] << 24) | ((int64_t)u[1] << 16) | ((int64_t)u[2] << 8) | u[3]; break;
         case 'v': v = ((int64_t)u[1] << 8) | u[0]; break;
         case 'V': v = ((int64_t)u[3] << 24) | ((int64_t)u[2] << 16) | ((int64_t)u[1] << 8) | u[0]; break;
-        case 's': { int16_t s16; memcpy(&s16, u, 2); v = s16; } break;
-        case 'S': { uint16_t s16; memcpy(&s16, u, 2); v = s16; } break;
-        case 'l': { int32_t s32; memcpy(&s32, u, 4); v = s32; } break;
-        case 'L': { uint32_t s32; memcpy(&s32, u, 4); v = s32; } break;
-        case 'q': { int64_t s64; memcpy(&s64, u, 8); v = s64; } break;
-        case 'Q': { uint64_t s64; memcpy(&s64, u, 8); v = (int64_t)s64; } break;
+        case 's': v = (int16_t)pk_get_int(u, 2, big); break;
+        case 'S': v = (uint16_t)pk_get_int(u, 2, big); break;
+        case 'l': v = (int32_t)pk_get_int(u, 4, big); break;
+        case 'L': v = (uint32_t)pk_get_int(u, 4, big); break;
+        case 'q': v = (int64_t)pk_get_int(u, 8, big); break;
+        case 'Q': v = (int64_t)pk_get_int(u, 8, big); break;
         case 'x': break;
       }
       off += fsize;
