@@ -1,4 +1,4 @@
-# Minimal TOML reader for spin (M0). Covers the gem.toml subset: [tables],
+# Minimal TOML reader for spin (M0). Covers the spin.toml subset: [tables],
 # key = "string", key = { k = "v", ... } inline tables, and comments. This
 # ships inside spin for bootstrap and graduates to the stdlib `toml` feature
 # later (docs/spin.md §7). Storage is deliberately string->string only.

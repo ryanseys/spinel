@@ -25,7 +25,7 @@ expect "scaffold run" "Hello from app" "$("$SPIN" run 2>&1 | tail -1)"
 cd "$WORK"
 "$SPIN" new spinel-ansi >/dev/null
 rm -rf spinel-ansi/bin
-printf '[gem]\nname = "ansi"\n' > spinel-ansi/gem.toml
+printf '[gem]\nname = "ansi"\n' > spinel-ansi/spin.toml
 cat > spinel-ansi/ansi.rb <<'EOF'
 module Ansi
   def self.red(s) = "\e[31m" + s + "\e[0m"
@@ -36,13 +36,13 @@ EOF
 mkdir gitgem
 cd gitgem
 git init -q
-printf '[gem]\nname = "greet"\n' > gem.toml
+printf '[gem]\nname = "greet"\n' > spin.toml
 printf 'module Greet\n  def self.hi(n) = "hi " + n\nend\n' > greet.rb
-git add gem.toml greet.rb
+git add spin.toml greet.rb
 git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm init
 cd "$WORK/app"
 
-printf '[gem]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\n' "$WORK" > gem.toml
+printf '[gem]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\n' "$WORK" > spin.toml
 printf 'require "ansi"\nrequire "greet"\nputs Ansi.red(Greet.hi("spin"))\n' > bin/app.rb
 
 expect "fetch" "fetched 2 gem(s)" "$("$SPIN" fetch 2>&1 | tail -1)"
@@ -51,15 +51,15 @@ expect "run with deps" "$WANT_OUT" "$("$SPIN" run 2>&1 | tail -1)"
 
 # --- lock ----------------------------------------------------------------------
 "$SPIN" lock >/dev/null
-[ -f gem.lock ] || fail "gem.lock not written"
-grep -q '^\[lock\.greet\]$' gem.lock || fail "gem.lock lacks [lock.greet]"
-grep -q '^ref = "[0-9a-f]\{40\}"$' gem.lock || fail "gem.lock lacks a full-SHA ref"
+[ -f spin.lock ] || fail "spin.lock not written"
+grep -q '^\[lock\.greet\]$' spin.lock || fail "spin.lock lacks [lock.greet]"
+grep -q '^ref = "[0-9a-f]\{40\}"$' spin.lock || fail "spin.lock lacks a full-SHA ref"
 
 # --- add / remove edit the manifest --------------------------------------------
 "$SPIN" add extra --path ../spinel-ansi >/dev/null
-grep -q '^extra = ' gem.toml || fail "spin add didn't edit gem.toml"
+grep -q '^extra = ' spin.toml || fail "spin add didn't edit spin.toml"
 "$SPIN" remove extra >/dev/null
-grep -q '^extra = ' gem.toml && fail "spin remove didn't edit gem.toml"
+grep -q '^extra = ' spin.toml && fail "spin remove didn't edit spin.toml"
 
 # --- test: snapshot regen + CRuby parity fallback (both need dep -I) ------------
 printf 'require "ansi"\nputs Ansi.red("t")\n' > test/color_test.rb
@@ -71,7 +71,7 @@ expect "test (snapshot)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
 # --- carried native C (M2): gem .c compiled to the shared cache, --link'ed ------
 cd "$WORK"
 mkdir -p spinel-fast
-printf '[gem]\nname = "fast"\n' > spinel-fast/gem.toml
+printf '[gem]\nname = "fast"\n' > spinel-fast/spin.toml
 cat > spinel-fast/fast.rb <<'EOF'
 module Fast
   ffi_func :fast_quad, [:int], :int
@@ -82,7 +82,7 @@ cat > spinel-fast/fast_ext.c <<'EOF'
 intptr_t fast_quad(intptr_t x) { return x * 4; }
 EOF
 cd "$WORK/app"
-printf '[gem]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\nfast = { path = "../spinel-fast" }\n' "$WORK" > gem.toml
+printf '[gem]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\nfast = { path = "../spinel-fast" }\n' "$WORK" > spin.toml
 printf 'require "ansi"\nrequire "greet"\nrequire "fast"\nputs Ansi.red(Greet.hi("spin"))\nputs Fast.fast_quad(10)\n' > bin/app.rb
 OUT=$("$SPIN" run 2>&1)
 echo "$OUT" | grep -q "^cc fast/fast_ext.c$" || fail "native compile line missing"
@@ -113,7 +113,7 @@ rm -rf "$XDG_CACHE_HOME"
 OUT=$(SPIN_OFFLINE=1 "$SPIN" run 2>&1)
 expect "offline (locked, vendored)" "$WANT_OUT
 40" "$(echo "$OUT" | tail -2)"
-rm -f gem.lock
+rm -f spin.lock
 "$SPIN" clean >/dev/null
 OUT=$(SPIN_OFFLINE=1 "$SPIN" run 2>&1)
 expect "offline (no lock)" "$WANT_OUT
@@ -131,14 +131,14 @@ cd "$WORK"
 mkdir hello
 cd hello
 git init -q
-printf '[gem]\nname = "hello"\nversion = "1.0.0"\n' > gem.toml
+printf '[gem]\nname = "hello"\nversion = "1.0.0"\n' > spin.toml
 printf 'module Hello\n  def self.greet = "hello v1"\nend\n' > hello.rb
-git add gem.toml hello.rb
+git add spin.toml hello.rb
 git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm v1
 SHA1=$(git rev-parse HEAD)
-printf '[gem]\nname = "hello"\nversion = "1.1.0"\n' > gem.toml
+printf '[gem]\nname = "hello"\nversion = "1.1.0"\n' > spin.toml
 printf 'module Hello\n  def self.greet = "hello v11"\nend\n' > hello.rb
-git add gem.toml hello.rb
+git add spin.toml hello.rb
 git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm v11
 SHA2=$(git rev-parse HEAD)
 cd "$WORK"
@@ -152,20 +152,20 @@ cd "$WORK"
 export SPIN_INDEX="file://$WORK/index"
 "$SPIN" new idxapp >/dev/null
 cd idxapp
-printf '[gem]\nname = "idxapp"\n\n[dependencies]\nhello = ">= 1.0"\n' > gem.toml
+printf '[gem]\nname = "idxapp"\n\n[dependencies]\nhello = ">= 1.0"\n' > spin.toml
 printf 'require "hello"\nputs Hello.greet\n' > bin/idxapp.rb
 expect "index MVS (lowest satisfying)" "hello v1" "$("$SPIN" run 2>&1 | tail -1)"
 "$SPIN" lock >/dev/null
-grep -q '^version = "1.0.0"$' gem.lock || fail "index lock lacks the selected version"
-grep -q "^ref = \"$SHA1\"$" gem.lock || fail "index lock lacks the release SHA"
-printf '[gem]\nname = "idxapp"\n\n[dependencies]\nhello = "~> 1.1"\n' > gem.toml
+grep -q '^version = "1.0.0"$' spin.lock || fail "index lock lacks the selected version"
+grep -q "^ref = \"$SHA1\"$" spin.lock || fail "index lock lacks the release SHA"
+printf '[gem]\nname = "idxapp"\n\n[dependencies]\nhello = "~> 1.1"\n' > spin.toml
 OUT=$("$SPIN" run 2>&1)
 echo "$OUT" | grep -q "reselecting 1.1.0" || fail "constraint change didn't reselect"
 expect "index reselect" "hello v11" "$(echo "$OUT" | tail -1)"
 "$SPIN" search hell | grep -q "^hello 1.1.0 " || fail "spin search misses the gem"
-printf '[gem]\nname = "idxapp"\n\n[dependencies]\n' > gem.toml
+printf '[gem]\nname = "idxapp"\n\n[dependencies]\n' > spin.toml
 "$SPIN" add hello --version "~> 1.0" >/dev/null
-grep -q '^hello = "~> 1.0"$' gem.toml || fail "spin add --version didn't write the constraint"
+grep -q '^hello = "~> 1.0"$' spin.toml || fail "spin add --version didn't write the constraint"
 "$SPIN" lock >/dev/null
 "$SPIN" vendor >/dev/null
 rm -rf "$XDG_CACHE_HOME/spinel/gems" "$XDG_CACHE_HOME/spinel/index"
@@ -179,10 +179,10 @@ git -C "$WORK/index" config receive.denyCurrentBranch updateInstead
 cd "$WORK"
 "$SPIN" new publib --lib >/dev/null
 cd publib
-printf '[gem]\nname = "publib"\nversion = "0.1.0"\n' > gem.toml
+printf '[gem]\nname = "publib"\nversion = "0.1.0"\n' > spin.toml
 printf 'module Publib\n  def self.hi = "hi"\nend\n' > publib.rb
 git init -q
-git add gem.toml publib.rb .gitignore
+git add spin.toml publib.rb .gitignore
 git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm v1
 git init -q --bare "$WORK/publib-remote.git"
 git remote add origin "$WORK/publib-remote.git"
@@ -216,7 +216,7 @@ git -C "$WORK/index" -c user.email=spin@e2e -c user.name=spin-e2e commit -qm fai
 cd "$WORK"
 "$SPIN" new probeapp >/dev/null
 cd probeapp
-printf '[gem]\nname = "probeapp"\n\n[dependencies]\npublib = "0.1.0"\n' > gem.toml
+printf '[gem]\nname = "probeapp"\n\n[dependencies]\npublib = "0.1.0"\n' > spin.toml
 rm -rf "$XDG_CACHE_HOME/spinel/index"
 OUT=$("$SPIN" fetch 2>&1 || true)
 echo "$OUT" | grep -q "recorded FAILING with this compiler build" || fail "exact-build fail probe didn't warn"

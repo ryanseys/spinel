@@ -12,14 +12,14 @@ know the shape. The design record lives in
 ## Starting an application
 
 ```sh
-spin new myapp        # scaffold: gem.toml, bin/myapp.rb, test/, .gitignore
+spin new myapp        # scaffold: spin.toml, bin/myapp.rb, test/, .gitignore
 cd myapp
 spin run              # compile bin/myapp.rb and run it
 ```
 
 ```
 myapp/
-  gem.toml            # the manifest (name, [dependencies])
+  spin.toml            # the manifest (name, [dependencies])
   myapp.rb            # library code: require "myapp" resolves here
   myapp/              # subfeatures: require "myapp/util" -> myapp/util.rb
   bin/myapp.rb        # each bin/*.rb is an executable (a compile root)
@@ -31,7 +31,7 @@ An application **is** a gem: there is no separate project kind. Executables
 live in `bin/` (one per file, `spin run <name>` when there are several).
 Grow the app by putting shared code in `myapp.rb` / `myapp/*.rb` and
 requiring it from `bin/`; more `bin/*.rb` files become more executables.
-`spin init` writes a `gem.toml` into an existing directory instead of
+`spin init` writes a `spin.toml` into an existing directory instead of
 scaffolding. When the CLI is ready for daily use, `spin install` builds it
 and copies the executables to `~/.local/bin` (`$XDG_BIN_HOME` / `--prefix`
 override; `--uninstall` removes them).
@@ -44,7 +44,7 @@ special directory names.
 ## Starting a library
 
 ```sh
-spin new mylib --lib  # gem.toml with [gem] name/version, mylib.rb, test/
+spin new mylib --lib  # spin.toml with [gem] name/version, mylib.rb, test/
 cd mylib
 ```
 
@@ -99,11 +99,11 @@ available, by printed instructions otherwise, or pushed directly with
 `--direct` if you have index write access. From then on
 `spin add mylib --version "~> 0.1"` works, and bumping `version` +
 `spin publish` again is how you ship an update. Libraries do not commit a
-`gem.lock`; version selection belongs to the consuming application.
+`spin.lock`; version selection belongs to the consuming application.
 
 ## Dependencies
 
-Declare dependencies in `gem.toml`; `spin` computes the compiler's `-I`
+Declare dependencies in `spin.toml`; `spin` computes the compiler's `-I`
 list from them. Three source forms:
 
 ```toml
@@ -114,7 +114,7 @@ hello = "~> 1.1"                                 # index constraint (see below)
 ```
 
 ```sh
-spin add ansi --path ../spinel-ansi   # edits gem.toml and relocks
+spin add ansi --path ../spinel-ansi   # edits spin.toml and relocks
 spin add hello --version "~> 1.1"     # index form
 spin remove ansi
 spin list                             # resolved set: name, version, source
@@ -136,7 +136,7 @@ repository (no server) mapping names to repos and releases:
 
 Selection is MVS: `spin` picks the **lowest** release satisfying the
 constraint, so a build without a lockfile is still deterministic;
-`gem.lock` then pins the exact commit. `spin search [term]` lists index
+`spin.lock` then pins the exact commit. `spin search [term]` lists index
 entries. Set `SPIN_INDEX` to use another index (a `file://` URL works).
 
 Index entries also carry **probe records** — which compiler build a release
@@ -146,9 +146,9 @@ you depend on a release with a recorded failure, resolution warns before
 fetching — strongly when the failure was recorded against your exact
 compiler build — but never blocks: your own build is the final answer.
 
-### gem.lock
+### spin.lock
 
-`spin lock` (and `spin add`/`remove`) writes `gem.lock`: one `[lock.<name>]`
+`spin lock` (and `spin add`/`remove`) writes `spin.lock`: one `[lock.<name>]`
 entry per dependency with the resolved version and, for git/index sources,
 the full commit SHA. Commit it for applications. Resolution *verifies*
 against the lock rather than reselecting; if you change a constraint so the

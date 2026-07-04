@@ -5,8 +5,13 @@ project tool (**`spin`**). The user-facing guide is [../spin.md](../spin.md);
 this document is the *why* and the *contract*: the constraints, the
 requirements (R1–R9), the resolution semantics, and what remains open.
 
+Naming note: the manifest is **`spin.toml`** and the lockfile **`spin.lock`**
+(renamed from gem.toml/gem.lock): the manifest is the tool's contract file,
+Cargo.toml-style, and the name can never collide with another ecosystem's
+generic `gem.toml`. The *unit* is still a gem and the ecosystem spinelgems.
+
 Status: implemented through M3 — scaffold, path/git/index dependencies with
-MVS selection, `gem.lock`, vendor + offline, snapshot tests, carried native
+MVS selection, `spin.lock`, vendor + offline, snapshot tests, carried native
 C, `list`/`tree`/`search`. The hermetic end-to-end check
 (`tools/spin_e2e.sh`) runs inside `make check`. Sections below note the
 pieces that are still specification.
@@ -101,7 +106,7 @@ same file runs under `ruby` and diffs directly — the subset-parity check.
 `spin test --regen` refreshes snapshots. Subdirectories of `test/` hold
 `require_relative` helpers, not entries.
 
-**Manifest** (`gem.toml`) is TOML and never executable: fetching or
+**Manifest** (`spin.toml`) is TOML and never executable: fetching or
 vendoring a gem runs no gem code, and compilation of gem C happens only
 while building a dependent application. Implemented fields: `[gem]
 name`/`version`, `[dependencies]`. *Still specification:*
@@ -113,9 +118,9 @@ entry; external libraries use the `ffi_lib` DSL in the Ruby source), and
 
 ### R3 — consumer surface (implemented)
 
-- `gem.toml` declares dependencies; sources are an index constraint string,
+- `spin.toml` declares dependencies; sources are an index constraint string,
   `{ git = URL[, ref = R] }`, or `{ path = DIR }`.
-- `gem.lock` records the machine-resolved result: exact versions including
+- `spin.lock` records the machine-resolved result: exact versions including
   transitive dependencies, full commit SHAs for git/index sources.
   Reproducibility matters more than in CRuby: under whole-program inference
   a dependency bump can change whether the application *compiles*.
@@ -148,7 +153,7 @@ entry; external libraries use the `ffi_lib` DSL in the Ruby source), and
 - **Phase 2: an index, not a server** (implemented): a git repository —
   <https://github.com/matz/spinel-index> by default, `SPIN_INDEX`
   overrides, `file://` works — mapping names to repos and releases. One
-  TOML file per gem, read by the same reader as `gem.toml`:
+  TOML file per gem, read by the same reader as `spin.toml`:
 
   ```toml
   # gems/<name>.toml
@@ -178,7 +183,7 @@ entry; external libraries use the `ffi_lib` DSL in the Ruby source), and
 constraint (`~>` pessimistic, `>=`, exact, `*`), every gem resolves to the
 *lowest* admissible version.
 
-- Deterministic without a lockfile — which is what makes `gem.lock`
+- Deterministic without a lockfile — which is what makes `spin.lock`
   droppable for libraries instead of load-bearing.
 - No SAT solving. Constraint gathering is first-encounter: a later
   conflicting constraint on an already-resolved gem is an error, not a
@@ -186,7 +191,7 @@ constraint (`~>` pessimistic, `>=`, exact, `*`), every gem resolves to the
 - Not auto-riding the newest release is intentional under whole-program
   inference; upgrades are opt-in and diffable.
 
-Order of authority: `gem.lock` when it satisfies the manifest (a pinned
+Order of authority: `spin.lock` when it satisfies the manifest (a pinned
 version that no longer satisfies a changed constraint is reselected with a
 warning, and the next `spin lock` rewrites the pin); `vendor/gems/` then the
 cache for sources; path deps always read live and are recorded unpinned.
@@ -261,14 +266,14 @@ daemon; no per-machine state outside `$XDG_CACHE_HOME/spinel/`.
 
 ## 5. Project model
 
-- **Project root** = the nearest ancestor directory containing `gem.toml`
+- **Project root** = the nearest ancestor directory containing `spin.toml`
   (upward walk; commands run from any subdirectory).
 - Build artifacts are per-project and disposable: `build/bin/<target>`,
   `build/test/<name>` (`spin clean` removes `build/`). `spin` writes
-  nowhere else in the project except `gem.toml` (`add`/`remove`),
-  `gem.lock`, and `vendor/gems/`.
+  nowhere else in the project except `spin.toml` (`add`/`remove`),
+  `spin.lock`, and `vendor/gems/`.
 - Rebuild tracking is the newest-input-mtime of the project and its
-  dependency trees (`.rb`/`.rbs`/`.c`/`.h`/`gem.toml` plus the compiler
+  dependency trees (`.rb`/`.rbs`/`.c`/`.h`/`spin.toml` plus the compiler
   binary) against each output — a flat input set; there is deliberately no
   per-file dependency graph, because type specialization spans every
   source. *Aspiration:* content-hash stamps (the compiler-repo scheme)
@@ -285,14 +290,14 @@ daemon; no per-machine state outside `$XDG_CACHE_HOME/spinel/`.
   deliberately a separate, deferred verb so the rubygems reading of
   `install <name>` never collides with `bin/<name>`.
 
-## 6. gem.lock
+## 6. spin.lock
 
 TOML, one table per resolved gem, written by `spin add`/`remove`/`lock`,
 consumed by every build; something you *diff*, never edit:
 
 ```toml
 [lock.ansi]
-version = "0.1.0"        # from the gem's own gem.toml at the pinned ref
+version = "0.1.0"        # from the gem's own spin.toml at the pinned ref
 git = "https://…"        # git and index sources: repo URL
 ref = "<commit SHA>"     # always a full SHA, never a branch name
 
