@@ -2047,6 +2047,12 @@ else {
       if (sp_streq(name, "to_a") || sp_streq(name, "entries") ||
           (two_param && (sp_streq(name, "select") || sp_streq(name, "filter") || sp_streq(name, "reject"))))
         return TY_POLY_ARRAY;   /* an array of [element, index] pairs */
+      if (blk < 0 && sp_streq(name, "to_h")) {
+        /* an array of [element, index] pairs collected into {element => index};
+           the block form instead maps each pair, so leave it to its own rule. */
+        TyKind h = ty_hash_of(elem, TY_INT);
+        return h != TY_UNKNOWN ? h : TY_POLY_POLY_HASH;
+      }
       if (two_param && sp_streq(name, "count")) return TY_INT;
       if (two_param && (sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?")))
         return TY_BOOL;
