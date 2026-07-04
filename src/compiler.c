@@ -562,6 +562,43 @@ int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
   return comp_sg_const_candidates(c, ci, nm, out, max);
 }
 
+/* Statically-false `defined?(Const)` guard: the predicate is a DefinedNode
+   (or a `defined?(Const) && ...` AndNode, whose left arm short-circuits the
+   whole conjunction to nil) over a constant / constant path that resolves to
+   nothing at compile time: not a registered class/module, not a value
+   constant, and not a well-known builtin the DefinedNode emit answers
+   "constant" for. Such an if-branch is compile-time dead -- doom's
+   `if defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled?` MRI hack -- so call
+   reachability must not walk it and codegen must not emit it. Deliberately
+   narrow: only constants/constant paths, no dynamic defined? forms. */
+int comp_defined_guard_false(Compiler *c, int pred) {
+  const NodeTable *nt = c->nt;
+  if (pred < 0) return 0;
+  const char *pt = nt_type(nt, pred);
+  if (!pt) return 0;
+  /* `defined?(X) && rest`: falseness of the left arm decides the whole
+     predicate (recurses to cover chained `&&`s, which nest leftward). */
+  if (sp_streq(pt, "AndNode"))
+    return comp_defined_guard_false(c, nt_ref(nt, pred, "left"));
+  if (!sp_streq(pt, "DefinedNode")) return 0;
+  int v = nt_ref(nt, pred, "value");
+  if (v < 0) return 0;
+  const char *vt = nt_type(nt, v);
+  if (!vt || (!sp_streq(vt, "ConstantReadNode") && !sp_streq(vt, "ConstantPathNode"))) return 0;
+  const char *cn = nt_str(nt, v, "name");
+  if (!cn) return 0;
+  if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) return 0;
+  /* keep in sync with the DefinedNode ConstantReadNode emit (codegen_expr.c) */
+  static const char *const builtins[] = {
+    "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
+    "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
+    "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
+    "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
+    "STDOUT", "STDERR", "STDIN", NULL };
+  for (int bi = 0; builtins[bi]; bi++) if (sp_streq(cn, builtins[bi])) return 0;
+  return 1;
+}
+
 /* A literal ArrayNode whose elements are all integer literals (or empty). */
 static int is_int_array_literal(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
