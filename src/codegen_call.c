@@ -3258,7 +3258,53 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "; })");
         return;
       }
-      /* non-nil typed receiver: for concrete types, dispatch as normal (always non-nil) */
+      /* A concretely-typed OBJECT receiver is still a nullable C pointer
+         (a nil-able ivar like doom's `@combat&.sprites` after death):
+         dropping the `&.` deref'd NULL. The same holds for a concrete
+         STRING receiver (NULL is the string nil, e.g. the nil arm of a
+         chained `obj&.field&.length`). Emit a guard, then re-enter the
+         normal call emission with the receiver substituted by the guarded
+         temp (via the arg-override table); g_sn_skip suppresses this block
+         on re-entry. */
+      int sn_obj = ty_is_object(rrt) && !comp_ty_value_obj(c, rrt);
+      if ((sn_obj || rrt == TY_STRING) && g_sn_skip != id) {
+        int tsn2 = ++g_tmp;
+        TyKind ret2 = comp_ntype(c, id);
+        /* The temp lives in g_pre (statement scope), not an inline ({ }):
+           the re-entered dispatch hoists its (substituted) receiver into
+           g_pre too, which lands before the statement and must still see
+           the temp. Rooted: the guarded call's args may allocate. */
+        Buf rsn = expr_buf(c, recv);
+        emit_indent(g_pre, g_indent);
+        if (sn_obj)
+          buf_printf(g_pre, "sp_%s *_sn%d = %s; SP_GC_ROOT(_sn%d);\n",
+                     c->classes[ty_object_class(rrt)].name, tsn2,
+                     rsn.p ? rsn.p : "NULL", tsn2);
+        else
+          buf_printf(g_pre, "const char *_sn%d = %s; SP_GC_ROOT_STR(_sn%d);\n",
+                     tsn2, rsn.p ? rsn.p : "NULL", tsn2);
+        free(rsn.p);
+        buf_printf(b, "(_sn%d == NULL ? ", tsn2);
+        if (ret2 == TY_POLY) buf_puts(b, "sp_box_nil()");
+        else if (ret2 == TY_INT) buf_puts(b, "SP_INT_NIL");
+        else if (ret2 == TY_FLOAT) buf_puts(b, "sp_float_nil()");
+        else if (ret2 == TY_STRING) buf_puts(b, "((const char *)NULL)");  /* string nil, not "" */
+        else buf_puts(b, default_value(ret2) ? default_value(ret2) : "0");
+        buf_puts(b, " : (");
+        if (g_n_argov < MAX_ARG_OVERRIDE) {
+          int slot2 = g_n_argov++;
+          g_argov_node[slot2] = recv;
+          snprintf(g_argov_text[slot2], sizeof g_argov_text[0], "_sn%d", tsn2);
+          int sv_skip = g_sn_skip; g_sn_skip = id;
+          emit_expr(c, id, b);
+          g_sn_skip = sv_skip;
+          g_n_argov--;
+        }
+        else emit_expr(c, recv, b);  /* override table full: degrade to unguarded */
+        buf_puts(b, "))");
+        return;
+      }
+      /* other concrete receivers (scalars, value types): never nil, dispatch as normal */
     }
   }
 

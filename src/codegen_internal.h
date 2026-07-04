@@ -56,6 +56,7 @@ extern int  g_block_id;
 extern int  g_argov_node[MAX_ARG_OVERRIDE];
 extern char g_argov_text[MAX_ARG_OVERRIDE][16];
 extern int  g_n_argov;
+extern int  g_sn_skip;   /* safe-nav re-entry marker (see codegen_util.c) */
 int subtree_may_allocate(const NodeTable *nt, int id);
 /* When a yielding method is inlined, g_yield_block_fallback holds the block
    that was active in the CALLER's context so nested `yield`s inside the
