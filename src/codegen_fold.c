@@ -2111,7 +2111,8 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   int is_cnt = sp_streq(name, "count");
   int is_any = sp_streq(name, "any?"), is_all = sp_streq(name, "all?"), is_none = sp_streq(name, "none?");
   int is_each = sp_streq(name, "each");
-  if (!(is_map || is_fmap || is_sel || is_rej || is_toa || is_cnt || is_any || is_all || is_none || is_each)) return 0;
+  int is_toh = sp_streq(name, "to_h");
+  if (!(is_map || is_fmap || is_sel || is_rej || is_toa || is_cnt || is_any || is_all || is_none || is_each || is_toh)) return 0;
 
   int arr = -1, off = -1;
   if (!ewi_chain(c, id, &arr, &off)) return 0;
@@ -2122,7 +2123,8 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   TyKind elem_t = ty_array_elem(rt);
 
   int block = nt_ref(nt, id, "block");
-  if (!is_toa && block < 0) return 0;   /* only to_a/entries work without a block */
+  if (is_toh && block >= 0) return 0;   /* block-form to_h maps each pair; not this {elem => index} lowering */
+  if (!is_toa && !is_toh && block < 0) return 0;   /* only to_a/entries/to_h work without a block */
 
   /* each.with_index yields (element, index) as multiple values, so block-arg
      semantics are ordinary: |v, i| binds both; a single |x| binds the element
@@ -2146,6 +2148,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
 
   int ta = ++g_tmp, ti = ++g_tmp, tidx = ++g_tmp;
   int tres = 0, tcnt = 0, tflag = 0;
+  TyKind toh_ht = TY_UNKNOWN; const char *toh_hcn = NULL;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, arr, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);
@@ -2164,6 +2167,15 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   else if (collect_pair) {
     tres = ++g_tmp;
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+  }
+  else if (is_toh) {
+    /* each_with_index.to_h builds {element => index}; the key type is the
+       element type, the value type is the index (int). */
+    toh_ht = comp_ntype(c, id);
+    if (!ty_is_hash(toh_ht)) toh_ht = TY_POLY_POLY_HASH;
+    toh_hcn = ty_hash_cname(toh_ht);
+    tres = ++g_tmp;
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);\n", toh_hcn, tres, toh_hcn, tres);
   }
   else if (is_cnt) {
     tcnt = ++g_tmp; emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = 0;\n", tcnt);
@@ -2219,6 +2231,16 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, din); buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tres);
     Buf bx; memset(&bx, 0, sizeof bx); char pe[32]; snprintf(pe, sizeof pe, "_t%d", tpair); emit_boxed_text(c, pair_ty, pe, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
     buf_puts(g_pre, ");\n");
+  }
+  else if (is_toh) {   /* to_h: set {element => index} directly into the hash */
+    emit_indent(g_pre, din);
+    TyKind kty = ty_hash_key(toh_ht), vty = ty_hash_val(toh_ht);
+    char keyexpr[96]; snprintf(keyexpr, sizeof keyexpr, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+    buf_printf(g_pre, "sp_%sHash_set(_t%d, ", toh_hcn, tres);
+    if (kty == TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, elem_t, keyexpr, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+    else buf_puts(g_pre, keyexpr);
+    if (vty == TY_POLY) buf_printf(g_pre, ", sp_box_int(_t%d));\n", tidx);
+    else buf_printf(g_pre, ", _t%d);\n", tidx);
   }
   else {   /* map / select / reject / count / any? / all? / none? -- need the block value */
     /* collect the block's value (next-aware) into a temp so an interior or tail
@@ -2287,7 +2309,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
 
   if (lv) lv->type = sv; if (li) li->type = si;
 
-  if (is_map || is_fmap || collect_pair) buf_printf(b, "_t%d", tres);
+  if (is_map || is_fmap || collect_pair || is_toh) buf_printf(b, "_t%d", tres);
   else if (is_cnt) buf_printf(b, "_t%d", tcnt);
   else if (is_any || is_all || is_none) buf_printf(b, "_t%d", tflag);
   else buf_printf(b, "_t%d", ta);   /* each -> receiver */
