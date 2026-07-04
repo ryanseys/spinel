@@ -2956,8 +2956,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         if (!node_is_pure_literal(c->nt, vn)) { buf_puts(b, "(void)("); emit_expr(c, vn, b); buf_puts(b, "); "); }
       }
     }
-    if (g_exc_frame_depth > g_method_pr_exc_depth)
-      buf_printf(b, "sp_exc_top -= %d; ", g_exc_frame_depth - g_method_pr_exc_depth);
+    emit_frame_unwind(b, g_method_pr_exc_depth, NULL);
     buf_printf(b, "goto %s; }\n", g_method_pr_label);
     return;
   }
@@ -2988,6 +2987,9 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     {
       int pops = g_exc_frame_depth - ctx->exc_base;
       if (pops < 1) pops = 1;   /* at least the ensure frame itself */
+      /* pop the handlers for rescue bodies inside this ensure region we are
+         leaving; rescues outside it are popped at the ensure re-dispatch. */
+      emit_cur_exc_restore(b, ctx->exc_base);
       buf_printf(b, "_retf%d = 1; sp_exc_top -= %d; goto _ensure%d; }\n",
                  ctx->lid, pops, ctx->lid);
     }
@@ -2997,8 +2999,9 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   emit_indent(b, indent);
   /* leaving through live begin/rescue frames: pop them, or their jmp_bufs
      dangle into this soon-dead C frame and the next raise longjmps into
-     garbage (doom's SoundManager#[] early cache returns). */
-  if (g_exc_frame_depth > 0) buf_printf(b, "sp_exc_top -= %d; ", g_exc_frame_depth);
+     garbage (doom's SoundManager#[] early cache returns). Also restores
+     the sp_rescue_sp handler for every rescue body this return leaves. */
+  emit_frame_unwind(b, 0, NULL);
   if (n > 1) {
     int ta = ++g_tmp;
     buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
@@ -3139,48 +3142,53 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   }
 
   g_rescue_cls = clsbuf; g_rescue_msg = msgbuf;
-  if (ref >= 0 && nt_type(nt, ref) && sp_streq(nt_type(nt, ref), "LocalVariableTargetNode")) {
-    /* If the analyzer specialized this binding to a user exception subclass
-       object (one arm, one class, no name collision -- see the rescue-var
-       typing in analyze_program), bind the original carried object so its
-       ivars survive the raise (#1415). The carried slot is at sp_exc_top (the
-       just-popped frame, same index _rmsg reads). A degenerate no-object raise
-       of that class falls back to a freshly built subclass struct so ivar
-       reads stay in-bounds rather than NULL-deref. */
-    int spec_cid = -1;
-    {
-      LocalVar *vlv = scope_local(comp_scope_of(c, ref), nt_str(nt, ref, "name"));
-      if (vlv && ty_is_object(vlv->type)) {
-        int xc = ty_object_class(vlv->type);
-        if (xc >= 0 && class_is_exc_subclass(c, xc)) spec_cid = xc;
-      }
+  /* If the analyzer specialized a `=> e` binding to a user exception subclass
+     object (one arm, one class, no name collision -- see the rescue-var typing
+     in analyze_program), the carried object must be kept so its ivars survive
+     the raise (#1415). The carried slot is at sp_exc_top (the just-popped frame,
+     same index _rmsg reads). A degenerate no-object raise of that class falls
+     back to a freshly built subclass struct so ivar reads stay in-bounds. */
+  int spec_cid = -1;
+  int has_bind = (ref >= 0 && nt_type(nt, ref) && sp_streq(nt_type(nt, ref), "LocalVariableTargetNode"));
+  if (has_bind) {
+    LocalVar *vlv = scope_local(comp_scope_of(c, ref), nt_str(nt, ref, "name"));
+    if (vlv && ty_is_object(vlv->type)) {
+      int xc = ty_object_class(vlv->type);
+      if (xc >= 0 && class_is_exc_subclass(c, xc)) spec_cid = xc;
     }
-    emit_indent(b, indent);
-    if (spec_cid >= 0) {
-      const char *xn = c->classes[spec_cid].name;
-      buf_printf(b, "lv_%s = sp_exc_obj[sp_exc_top] ? (sp_%s *)sp_exc_obj[sp_exc_top]"
-                    " : (sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), _rcls_%d, _rmsg_%d);\n",
-                 nt_str(nt, ref, "name"), xn, xn, xn, rc, rc);
-    }
-    else
-      /* prefer the CARRIED object (raise <exception-object> / raise Cls.new):
-         the rescue variable, $!, and the raised object must be one identity;
-         synthesize only when nothing was carried (sp_raise_cls paths). */
-      buf_printf(b, "lv_%s = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
-                    " : sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n", nt_str(nt, ref, "name"), rc, rc);
   }
-  /* $! tracks the exception this arm is handling; save/restore so nesting
-     and normal completion behave like CRuby (raise-continuation leaves it
-     set, which the next arm overwrites anyway). */
-  int bangs = ++g_tmp;
+  /* Materialize the exception being handled exactly once -- the carried object
+     if any, else a freshly built one -- then thread the cause captured at raise
+     time onto it. Pushing the same object onto sp_exc_handling (so a re-raise in
+     the body threads it as #cause) and binding it to `=> e` keeps the cause chain
+     consistent, and covers an explicitly raised object too (it has a carried
+     object, so it flows through the same path). */
   emit_indent(b, indent);
-  buf_printf(b, "sp_Exception *volatile _svbang_%d = sp_bang_exc;\n", bangs);
-  emit_indent(b, indent);
-  if (ref >= 0 && nt_str(nt, ref, "name"))
-    buf_printf(b, "sp_bang_exc = (sp_Exception *)lv_%s;\n", nt_str(nt, ref, "name"));
+  if (spec_cid >= 0) {
+    const char *xn = c->classes[spec_cid].name;
+    buf_printf(b, "sp_Exception *_ce_%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                  " : (sp_Exception *)sp_exc_new_sub_sized(sizeof(sp_%s), _rcls_%d, _rmsg_%d);\n",
+               rc, xn, rc, rc);
+  }
   else
-    buf_printf(b, "sp_bang_exc = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
-                  " : sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n", rc, rc);
+    buf_printf(b, "sp_Exception *_ce_%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                  " : sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n", rc, rc, rc);
+  emit_indent(b, indent);
+  buf_printf(b, "_ce_%d->cause = (sp_Exception *)sp_pending_cause; sp_pending_cause = NULL;\n", rc);
+  emit_indent(b, indent);
+  buf_printf(b, "sp_rescue_push((void *)_ce_%d);\n", rc);
+  g_rescue_save_stack[g_rescue_save_depth++] = (RescueSave){ g_exc_frame_depth };
+  if (has_bind) {
+    emit_indent(b, indent);
+    if (spec_cid >= 0)
+      buf_printf(b, "lv_%s = (sp_%s *)_ce_%d;\n", nt_str(nt, ref, "name"), c->classes[spec_cid].name, rc);
+    else
+      /* bind the materialized object (which already prefers the CARRIED object
+         from `raise <exception-object>` / `raise Cls.new`): the rescue variable,
+         $!, and the raised object are one identity, since $! reads the same
+         sp_exc_handling top this arm just pushed. */
+      buf_printf(b, "lv_%s = _ce_%d;\n", nt_str(nt, ref, "name"), rc);
+  }
   if (resultvar) {
     const char *sv = g_result_var; g_result_var = resultvar;
     emit_stmts_tail(c, stmts, b, indent);
@@ -3189,8 +3197,9 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   else {
     emit_stmts(c, stmts, b, indent);
   }
+  g_rescue_save_depth--;
   emit_indent(b, indent);
-  buf_printf(b, "sp_bang_exc = _svbang_%d;\n", bangs);
+  buf_puts(b, "sp_rescue_sp--;\n");
   g_rescue_cls = save_cls; g_rescue_msg = save_msg;
 
   if (!catchall) {
@@ -3248,7 +3257,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     }
     g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth };
 
-    emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
+    emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     g_exc_frame_depth++;
@@ -3273,7 +3282,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
-    emit_indent(b, indent + 1); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top];\n");
+    emit_indent(b, indent + 1); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];\n");
     /* A non-local unwind (proc return / throw) only passes through here; it is
        not an exception, so skip rescue -- only the ensure (below) runs. */
     emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) {\n");
@@ -3344,9 +3353,9 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     else {
       /* the deferred return leaves through every enclosing live begin frame:
          pop them or their jmp_bufs dangle into this soon-dead C frame */
-      if (g_exc_frame_depth > 0) {
-        buf_printf(b, "if (_retf%d) sp_exc_top -= %d;\n", eid, g_exc_frame_depth);
-        emit_indent(b, indent);
+      {
+        char g[24]; snprintf(g, sizeof g, "_retf%d", eid);
+        if (emit_frame_unwind(b, 0, g)) { buf_puts(b, "\n"); emit_indent(b, indent); }
       }
       /* inside a poly-slot proc body (g_result_var, e.g. a break-capable
          lambda) the deferred value returns through the slot ABI, not a raw
@@ -3377,7 +3386,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   const char *saved_retry = g_retry_label;
   if (has_retry) g_retry_label = retry_label;
 
-  emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
+  emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
   emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
   emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
   g_exc_frame_depth++;
@@ -3406,7 +3415,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   emit_indent(b, indent); buf_puts(b, "}\n");
   emit_indent(b, indent); buf_puts(b, "else {\n");
   emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
-  emit_indent(b, indent + 1); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top];\n");
+  emit_indent(b, indent + 1); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];\n");
   /* Drop home nodes a real exception unwound past (no-op for a throw/proc-return
      pass-through, where sp_unwind_kind is set); see the tail-position begin. */
   emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n");
@@ -5558,6 +5567,9 @@ else {
                      strncmp(g_brk_ser_var, "_brkser", 7) == 0;
       const char *sfx = brk_goto ? g_brk_ser_var + 7 : NULL;   /* wrapper temp id */
       emit_indent(b, indent);
+      /* leaving the block pops the handler for every rescue body opened inside
+         it; the throw longjmps, so pop before it (the value persists). */
+      if (!brk_goto) emit_cur_exc_restore(b, g_brk_exc_base);
       if (brk_goto) buf_printf(b, "sp_brk_val[_brkslot%s - 1] = ", sfx);
       else buf_printf(b, "sp_brk_throw(%s, ", g_brk_ser_var);
       if (bvargc == 0) buf_puts(b, "sp_box_nil()");
@@ -5571,7 +5583,7 @@ else {
         }
         buf_printf(b, "sp_box_poly_array(_t%d); })", t);
       }
-      if (brk_goto) buf_printf(b, "; goto _brklbl%s;\n", sfx);
+      if (brk_goto) { buf_puts(b, "; "); emit_cur_exc_restore(b, g_brk_exc_base); buf_printf(b, "goto _brklbl%s;\n", sfx); }
       else buf_puts(b, ");\n");
       return;
     }
@@ -5632,8 +5644,7 @@ else {
     emit_indent(b, indent);
     /* leaving through live begin/rescue frames opened inside the loop body:
        pop them, or their jmp_bufs dangle (same accounting as emit_return) */
-    if (g_exc_frame_depth > g_loop_exc_base)
-      buf_printf(b, "sp_exc_top -= %d; ", g_exc_frame_depth - g_loop_exc_base);
+    emit_frame_unwind(b, g_loop_exc_base, NULL);
     buf_puts(b, "break;\n"); return;
   }
   if (sp_streq(ty, "NextNode")) {
@@ -5678,8 +5689,7 @@ else {
       }
     }
     emit_indent(b, indent);
-    if (g_exc_frame_depth > g_loop_exc_base)
-      buf_printf(b, "sp_exc_top -= %d; ", g_exc_frame_depth - g_loop_exc_base);
+    emit_frame_unwind(b, g_loop_exc_base, NULL);
     buf_puts(b, "continue;\n"); return;
   }
   if (sp_streq(ty, "RedoNode"))   {
@@ -5689,7 +5699,14 @@ else {
     return;
   }
   if (sp_streq(ty, "RetryNode")) {
-    if (g_retry_label) { emit_indent(b, indent); buf_printf(b, "goto %s;\n", g_retry_label); }
+    if (g_retry_label) {
+      emit_indent(b, indent);
+      /* leaving this rescue body back to its begin: pop its handler (exactly the
+         innermost rescue save). */
+      if (g_rescue_save_depth > 0)
+        buf_puts(b, "sp_rescue_sp--; ");
+      buf_printf(b, "goto %s;\n", g_retry_label);
+    }
     else unsupported(c, id, "retry (outside rescue)");
     return;
   }
@@ -5701,7 +5718,7 @@ else {
        fall through to the rescue expression on any exception. */
     int e = nt_ref(nt, id, "expression");
     int r = nt_ref(nt, id, "rescue_expression");
-    emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
+    emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     if (e >= 0) emit_stmt(c, e, b, indent + 1);
@@ -5709,7 +5726,7 @@ else {
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
-    emit_indent(b, indent + 1); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top];\n");
+    emit_indent(b, indent + 1); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];\n");
     emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n");
     /* A non-local unwind only passes through (no ensure here): continue it. */
     emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
