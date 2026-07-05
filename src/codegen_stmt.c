@@ -4148,8 +4148,31 @@ else {
     const char *raw_key = isg ? nm + 1 : nm;
     const char *key = isg ? comp_resolve_gvar(c, raw_key) : raw_key;
     LocalVar *lv = isg ? comp_gvar(c, key) : comp_const(c, key);
-    if (!lv || (!isg && lv->type == TY_UNKNOWN)) { /* untyped -> skip */ return; }
     int v = nt_ref(nt, id, "value");
+    if (!lv || (!isg && lv->type == TY_UNKNOWN)) {
+      /* The struct-def constant itself (`Foo = Struct.new(...) do ... end`) has
+         no C runtime value and is skipped -- but any top-level constant writes
+         INSIDE that block still need init code emitted. register_structs only
+         consumes the block for class/ivar/method registration, never as
+         executable statements, so without this such constants stay NULL/default
+         despite being declared and typed (a method reading them, e.g. a Linedef
+         FLAGS[:TWOSIDED] flag helper, silently sees an empty constant). Mirrors
+         fix_struct_block_scopes, which does the analogous fixup for DefNodes. */
+      if (!isg && v >= 0 && is_struct_call(c, v)) {
+        int blk = nt_ref(nt, v, "block");
+        int bbody = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
+        if (bbody >= 0) {
+          int bn = 0;
+          const int *stmts = nt_arr(nt, bbody, "body", &bn);
+          for (int k = 0; k < bn; k++) {
+            const char *sty = nt_type(nt, stmts[k]);
+            if (sty && sp_streq(sty, "ConstantWriteNode"))
+              emit_stmt(c, stmts[k], b, indent);
+          }
+        }
+      }
+      return;
+    }
     if (!isg && lv->init_guarded) {
       /* flag the const as in-progress while its Class.new runs, so a
          self-referential read inside initialize raises NameError */
