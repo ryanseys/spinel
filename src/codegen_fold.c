@@ -2104,13 +2104,14 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   int is_map = sp_streq(name, "map") || sp_streq(name, "collect");
+  int is_fmap = sp_streq(name, "filter_map");
   int is_sel = sp_streq(name, "select") || sp_streq(name, "filter");
   int is_rej = sp_streq(name, "reject");
   int is_toa = sp_streq(name, "to_a") || sp_streq(name, "entries");
   int is_cnt = sp_streq(name, "count");
   int is_any = sp_streq(name, "any?"), is_all = sp_streq(name, "all?"), is_none = sp_streq(name, "none?");
   int is_each = sp_streq(name, "each");
-  if (!(is_map || is_sel || is_rej || is_toa || is_cnt || is_any || is_all || is_none || is_each)) return 0;
+  if (!(is_map || is_fmap || is_sel || is_rej || is_toa || is_cnt || is_any || is_all || is_none || is_each)) return 0;
 
   int arr = -1, off = -1;
   if (!ewi_chain(c, id, &arr, &off)) return 0;
@@ -2153,7 +2154,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   buf_puts(g_pre, ";\n");
 
   const char *rk = NULL;
-  if (is_map) {
+  if (is_map || is_fmap) {
     TyKind restype = comp_ntype(c, id);
     rk = (restype == TY_POLY_ARRAY) ? "Poly" : array_kind(restype);
     if (!rk) rk = "Poly";
@@ -2242,6 +2243,13 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
       else buf_puts(g_pre, tvb);
       buf_puts(g_pre, ");\n");
     }
+    else if (is_fmap) {
+      /* filter_map: keep the block value only when truthy (nil/false dropped) */
+      emit_indent(g_pre, din); buf_printf(g_pre, "if (%s) sp_%sArray_push(_t%d, ", truth, rk, tres);
+      if (sp_streq(rk, "Poly") && !vpoly) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bt, tvb, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+      else buf_puts(g_pre, tvb);
+      buf_puts(g_pre, ");\n");
+    }
     else if (is_sel || is_rej) {
       emit_indent(g_pre, din); buf_printf(g_pre, "if (%s%s) sp_PolyArray_push(_t%d, ", is_rej ? "!" : "", truth, tres);
       Buf bx; memset(&bx, 0, sizeof bx); char pe[32]; snprintf(pe, sizeof pe, "_t%d", tpair); emit_boxed_text(c, pair_ty, pe, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
@@ -2265,7 +2273,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
 
   if (lv) lv->type = sv; if (li) li->type = si;
 
-  if (is_map || collect_pair) buf_printf(b, "_t%d", tres);
+  if (is_map || is_fmap || collect_pair) buf_printf(b, "_t%d", tres);
   else if (is_cnt) buf_printf(b, "_t%d", tcnt);
   else if (is_any || is_all || is_none) buf_printf(b, "_t%d", tflag);
   else buf_printf(b, "_t%d", ta);   /* each -> receiver */
