@@ -345,6 +345,10 @@ sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {
      each trigger a GC that would sweep the input out from under us (a
      use-after-free read of the freed bytes). Root the result array too. */
   SP_GC_ROOT_STR(str);
+  /* `fmt` is walked (via `p`) across the very same allocations, so it is just as
+     exposed as `str`: a fresh, unrooted format string (e.g. `unpack1("V" * n)`)
+     could be swept mid-parse, leaving `p` dangling. Root it too. NUL-safe. */
+  SP_GC_ROOT_STR(fmt);
   sp_PolyArray *out = sp_PolyArray_new();
   SP_GC_ROOT(out);
   if (!str || !fmt) return out;
