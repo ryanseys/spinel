@@ -243,6 +243,13 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
   }
+  else if (t == TY_EXCEPTION) {
+    /* p of an exception inspects as #<ClassName: message>; a NULL receiver
+       (nil $! outside a rescue) prints "nil". */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_Exception *_t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(_t%d ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d)) : \"nil\", stdout); putchar('\\n'); }\n", tv, tv, tv);
+  }
   else if (ty_is_array(t) && array_kind(t)) {
     buf_printf(b, "fputs(sp_%sArray_inspect(", array_kind(t));
     emit_expr(c, arg, b);
@@ -3123,7 +3130,12 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
                  nt_str(nt, ref, "name"), xn, xn, xn, rc, rc);
     }
     else
-      buf_printf(b, "lv_%s = sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n", nt_str(nt, ref, "name"), rc, rc);
+      /* bind the actual raised object (materialized at the raise), so
+         `rescue => e` and `$!` share one identity; fall back to a fresh
+         reconstruction only if none was carried. */
+      buf_printf(b, "lv_%s = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                    " : sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n",
+                 nt_str(nt, ref, "name"), rc, rc);
   }
   if (resultvar) {
     const char *sv = g_result_var; g_result_var = resultvar;
