@@ -749,11 +749,45 @@ TyKind native_spec_to_ty(const char *spec) {
   if (!spec) return TY_UNKNOWN;
   if (sp_streq(spec, "any"))    return TY_POLY;
   if (sp_streq(spec, "string")) return TY_STRING;
+  if (sp_streq(spec, "string?")) return TY_POLY;  /* nullable string -> boxed */
   if (sp_streq(spec, "int"))    return TY_INT;
   if (sp_streq(spec, "float"))  return TY_FLOAT;
   if (sp_streq(spec, "bool"))   return TY_BOOL;
   if (sp_streq(spec, "nil") || sp_streq(spec, "void")) return TY_NIL;
   return TY_UNKNOWN;
+}
+
+/* Find a native method binding on a class: kind 0 = instance method, 1 =
+   constructor. Arity-keyed -- prefer an exact nargs==argc match, else the first
+   same-name binding. Returns the index in c->native_methods, or -1. */
+int comp_native_method_find(Compiler *c, int class_id, const char *name, int argc, int kind) {
+  return comp_native_method_find_typed(c, class_id, name, argc, kind, NULL);
+}
+
+/* Type-keyed variant: among same-name same-arity bindings, prefer one whose
+   arg specs match the call's inferred arg types (putc(65) -> the [:int]
+   binding, putc("A") -> [:string]). argtys may be NULL (arity-only). */
+int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, int argc, int kind,
+                                  const TyKind *argtys) {
+  if (class_id < 0 || !name) return -1;
+  int arity_match = -1, loose = -1;
+  for (int i = 0; i < c->n_native_methods; i++) {
+    NativeMethod *m = &c->native_methods[i];
+    if (m->class_id != class_id || m->kind != kind || !sp_streq(m->name, name)) continue;
+    if (m->nargs == argc) {
+      if (argtys) {
+        int all = 1;
+        for (int a = 0; a < argc; a++) {
+          TyKind want = native_spec_to_ty(m->args[a]);
+          if (want != TY_POLY && argtys[a] != TY_UNKNOWN && argtys[a] != TY_POLY && argtys[a] != want) { all = 0; break; }
+        }
+        if (all) return i;
+      }
+      if (arity_match < 0) arity_match = i;
+    }
+    if (loose < 0) loose = i;
+  }
+  return arity_match >= 0 ? arity_match : loose;
 }
 
 int comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {

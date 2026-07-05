@@ -1478,6 +1478,34 @@ void register_ffi_decls(Compiler *c) {
         break;
       }
     }
+    /* Pre-scan for `native_struct "Name", "sp_CStruct"[, "free_sym"]`: registers
+       Name as a native (C-backed) class so native_new/native_method below can
+       bind to its class index, regardless of declaration order. */
+    int native_cid = -1;
+    for (int k = 0; k < sn; k++) {
+      int s = stmts[k];
+      const char *sty = nt_type(nt, s);
+      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      if (nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, s, "name");
+      if (!dn || !sp_streq(dn, "native_struct")) continue;
+      int a = nt_ref(nt, s, "arguments");
+      int na = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &na) : NULL;
+      if (na < 2) break;
+      const char *clsname = ffi_arg_str(nt, av[0]);
+      const char *cstruct = ffi_arg_str(nt, av[1]);
+      const char *freesym = na >= 3 ? ffi_arg_str(nt, av[2]) : NULL;
+      if (!clsname || !cstruct) break;
+      int ex = comp_class_index(c, clsname);
+      if (ex >= 0) native_cid = ex;
+      else { comp_class_new(c, clsname, -1); native_cid = c->nclasses - 1; }
+      ClassInfo *nc = &c->classes[native_cid];
+      nc->is_native_class = 1;
+      free(nc->c_struct); nc->c_struct = strdup(cstruct);
+      if (freesym) { free(nc->native_free); nc->native_free = strdup(freesym); }
+      break;
+    }
     for (int k = 0; k < sn; k++) {
       int s = stmts[k];
       const char *sty = nt_type(nt, s);
@@ -1517,6 +1545,64 @@ void register_ffi_decls(Compiler *c) {
         c->native_funcs[ni].feat = strdup(mod_feat ? mod_feat : "");
         c->native_funcs[ni].args = arg_specs;
         c->native_funcs[ni].nargs = en;
+        continue;
+      }
+
+      /* native_new [arg_specs], "csym"  and
+         native_method :name, [arg_specs], ret_spec, "csym"
+         bind a native class's constructor / instance methods to C symbols. */
+      if ((sp_streq(dname, "native_new") || sp_streq(dname, "native_method")) && native_cid >= 0) {
+        int is_ctor = sp_streq(dname, "native_new");
+        int need = is_ctor ? 2 : 4;
+        if (an < need) continue;
+        const char *mname_m = is_ctor ? "new" : ffi_arg_str(nt, args[0]);
+        int arr_i = is_ctor ? 0 : 1;
+        const char *arr_ty = nt_type(nt, args[arr_i]);
+        const char *ret_spec = is_ctor ? "" : ffi_arg_str(nt, args[2]);
+        const char *csym = ffi_arg_str(nt, args[is_ctor ? 1 : 3]);
+        if (!mname_m || !csym || !ret_spec || !arr_ty || !sp_streq(arr_ty, "ArrayNode")) continue;
+        int en = 0;
+        const int *elems = nt_arr(nt, args[arr_i], "elements", &en);
+        char **arg_specs = malloc(sizeof(char *) * (size_t)(en + 1));
+        for (int ei = 0; ei < en; ei++) {
+          const char *spec = ffi_arg_str(nt, elems[ei]);
+          arg_specs[ei] = strdup(spec ? spec : "");
+        }
+        if (c->n_native_methods >= c->c_native_methods) {
+          c->c_native_methods = c->c_native_methods ? c->c_native_methods * 2 : 16;
+          c->native_methods = realloc(c->native_methods, sizeof(NativeMethod) * (size_t)c->c_native_methods);
+        }
+        int mi = c->n_native_methods++;
+        c->native_methods[mi].class_id = native_cid;
+        c->native_methods[mi].kind = is_ctor ? 1 : 0;
+        c->native_methods[mi].name = strdup(mname_m);
+        c->native_methods[mi].ret  = strdup(ret_spec);
+        c->native_methods[mi].csym = strdup(csym);
+        c->native_methods[mi].args = arg_specs;
+        c->native_methods[mi].nargs = en;
+        continue;
+      }
+      /* native_struct is handled in the pre-scan above; skip it here. */
+      if (sp_streq(dname, "native_struct")) continue;
+
+      /* native_obj_reflect: the package consumes the generic object->hash
+         reflection (sp_obj_to_hash); codegen installs it when Structs exist. */
+      if (sp_streq(dname, "native_obj_reflect")) { c->native_obj_reflect = 1; continue; }
+
+      /* native_obj "packages/<pkg>/<file>.o": a carried C object linked only
+         when this module's require-gate feature is present (Path B). */
+      if (sp_streq(dname, "native_obj")) {
+        if (an < 1) continue;
+        const char *objp = ffi_arg_str(nt, args[0]);
+        if (!objp) continue;
+        if (c->n_native_objs >= c->c_native_objs) {
+          c->c_native_objs = c->c_native_objs ? c->c_native_objs * 2 : 8;
+          c->native_objs = realloc(c->native_objs, sizeof(NativeObj) * (size_t)c->c_native_objs);
+        }
+        int oi = c->n_native_objs++;
+        c->native_objs[oi].mod  = strdup(mname);
+        c->native_objs[oi].path = strdup(objp);
+        c->native_objs[oi].feat = strdup(mod_feat ? mod_feat : "");
         continue;
       }
 

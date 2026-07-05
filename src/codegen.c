@@ -1016,7 +1016,7 @@ int scope_creates_returning_proc(Compiler *c, int si) {
 int fiber_cap_needs_root(TyKind t) {
   return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) ||
          ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR ||
-         t == TY_EXCEPTION || t == TY_STRINGIO || t == TY_STRINGSCANNER ||
+         t == TY_EXCEPTION || t == TY_STRINGSCANNER ||
          t == TY_MATCHDATA || t == TY_REGEX || t == TY_TIME;
 }
 
@@ -1932,6 +1932,9 @@ const char *exc_builtin_parent(Compiler *c, int ci) {
 }
 
 void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
+  /* Native (C-backed) class: the package owns the struct; the generated TU has
+     only its forward-decl (`typedef struct sp_X_s sp_X;`) and holds pointers. */
+  if (ci->is_native_class) return;
   /* Exception subclasses share sp_Exception as their underlying type. */
   int cid = comp_class_index(c, ci->name);
   if (cid >= 0 && class_is_exc_subclass(c, cid)) {
@@ -1989,6 +1992,7 @@ int class_needs_scan(ClassInfo *ci) {
    through an unscanned ivar would be swept out from under the object
    (poly ivars holding tree children were the canonical case). */
 void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
+  if (ci->is_native_class) return;  /* the package owns the struct + its GC scan */
   int cid = comp_class_index(c, ci->name);
   int is_exc_iv = cid >= 0 && ci->nivars > 0 && class_is_exc_subclass(c, cid);
   /* An ivar-bearing exception subclass always needs a scan: even with no
@@ -2040,6 +2044,9 @@ static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
 }
 
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
+  /* Native (C-backed) class: constructor + methods live in the package; nothing
+     is generated here (see the native_method externs + .new emission). */
+  if (ci->is_native_class) return;
   int cid = comp_class_index(c, ci->name);
   if (ci->is_struct) {
     int sinit_def = cid;
@@ -2299,6 +2306,7 @@ static int marshal_ivar_type_ok(TyKind t) {
 static int class_marshalable(Compiler *c, int i) {
   ClassInfo *ci = &c->classes[i];
   if (is_builtin_reopen(ci->name)) return 0;
+  if (ci->is_native_class) return 0;  /* the package owns the struct; not generically marshalable */
   if (class_is_exc_subclass(c, i)) return 0;
   if (comp_ty_value_obj(c, ty_object(i))) return 0;  /* value types: out of scope for v1 */
   for (int j = 0; j < ci->nivars; j++)
@@ -2342,6 +2350,41 @@ static void emit_marshal_unbox_ivar(Compiler *c, TyKind t, Buf *b) {
     default:        buf_puts(b, "0"); break;
   }
 }
+/* Generic object->hash reflection, installed as sp_obj_to_hash_fn. Given a
+   boxed Struct, build a StrPoly hash of its members {name -> boxed value} and
+   return it boxed. No output-format knowledge -- a consumer (e.g. the json
+   package) serializes the resulting hash. This is the compiler's whole role in
+   serializing a user object: expose its fields; the format lives in the
+   package. Only emitted when g_gen_obj_hash (a package declared it wants this
+   and a Struct exists). */
+static void emit_obj_to_hash_dispatch(Compiler *c, Buf *b) {
+  if (!g_gen_obj_hash) return;
+  buf_puts(b, "static sp_RbVal sp_obj_to_hash(sp_RbVal v) {\n");
+  buf_puts(b, "  switch (v.cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    if (!ci->is_struct) continue;
+    buf_printf(b, "    case %d: {\n", i);
+    buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->name, ci->name);
+    buf_puts(b, "      sp_StrPolyHash *h = sp_StrPolyHash_new(); SP_GC_ROOT(h);\n");
+    for (int j = 0; j < ci->nivars; j++) {
+      TyKind mt = ci->ivar_types[j];
+      const char *iv = ci->ivars[j] + 1;  /* member name, sans @ */
+      buf_printf(b, "      sp_StrPolyHash_set(h, SPL(\"%s\"), ", iv);
+      if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", iv, iv);
+      else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", iv, iv);
+      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float(o->iv_%s)", iv);
+      else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", iv);
+      else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", iv);
+      else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", iv);
+      else buf_puts(b, "sp_box_nil()");
+      buf_puts(b, ");\n");
+    }
+    buf_puts(b, "      return sp_box_obj(h, SP_BUILTIN_STR_POLY_HASH);\n    }\n");
+  }
+  buf_puts(b, "    default: return sp_box_nil();\n  }\n}\n");
+}
+
 static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n");
   buf_puts(b, "  switch (cls_id) {\n");
@@ -2723,6 +2766,8 @@ void emit_regex_section(Buf *b) {
   }
   if (g_has_user_cmp)
     buf_puts(b, "static mrb_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, mrb_bool *comparable);\n");
+  if (g_gen_obj_hash)
+    buf_puts(b, "static sp_RbVal sp_obj_to_hash(sp_RbVal v);\n");
   buf_puts(b, "static void sp_re_init(void) {\n");
   if (g_uses_symbols)
     buf_puts(b, "  sp_sym_name_fn = sp_sym_to_s;\n");
@@ -2751,6 +2796,8 @@ void emit_regex_section(Buf *b) {
       "  sp_marshal_v.obj_load = sp_marshal_obj_load;\n"
       "  sp_marshal_v.raise = sp_marv_raise;\n");
   }
+  if (g_gen_obj_hash)
+    buf_puts(b, "  sp_obj_to_hash_fn = sp_obj_to_hash;\n");
   if (g_re_count > 0) {
     buf_puts(b, "  sp_re_set_error_handler(sp_re_startup_error_handler);\n");
     for (int i = 0; i < g_re_count; i++) {
@@ -2917,12 +2964,11 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_RANGE:                 buf_puts(b, "Range[Integer]"); break;
     case TY_TIME:                  buf_puts(b, "Time"); break;
     case TY_REGEX:                 buf_puts(b, "Regexp"); break;
+    case TY_STRINGSCANNER:         buf_puts(b, "StringScanner"); break;
     case TY_MATCHDATA:             buf_puts(b, "MatchData"); break;
     case TY_EXCEPTION:             buf_puts(b, "Exception"); break;
     case TY_COMPLEX:               buf_puts(b, "Complex"); break;
     case TY_RATIONAL:              buf_puts(b, "Rational"); break;
-    case TY_STRINGIO:              buf_puts(b, "StringIO"); break;
-    case TY_STRINGSCANNER:         buf_puts(b, "StringScanner"); break;
     case TY_PROC: case TY_CURRY:   buf_puts(b, "Proc"); break;
     case TY_FIBER:                 buf_puts(b, "Fiber"); break;
     case TY_THREAD:                buf_puts(b, "Thread"); break;
@@ -3222,6 +3268,15 @@ static void scan_prologue_features(Compiler *c) {
                sp_streq(nm, "shuffle") || sp_streq(nm, "shuffle!")) g_uses_random = 1;
     }
   }
+  /* Generic object reflection: when a native package declared it consumes
+     object->hash reflection (native_obj_reflect, e.g. json) and the program
+     defines any Struct, emit + install sp_obj_to_hash. No feature is named
+     here -- the package's require is the declaration. */
+  g_gen_obj_hash = 0;
+  if (c->native_obj_reflect) {
+    for (int i = 0; i < c->nclasses; i++)
+      if (c->classes[i].is_struct) { g_gen_obj_hash = 1; break; }
+  }
 }
 
 /* Emit one top-level output unit (a method, constructor, BEGIN/END block, or the
@@ -3396,6 +3451,56 @@ char *codegen_program(const NodeTable *nt) {
     }
     /* Byte count for the :binstr return mode (defined in sp_net.c). */
     if (any_binstr) buf_puts(&b, "extern int sp_net_bin_len;\n");
+
+    /* native_func externs (Path B): prototype each bound C symbol so the
+       generated TU needs no package header. Deduped by symbol (generate and
+       dump may share one). Type specs are the spinel type language. */
+    for (int nvi = 0; nvi < cf->n_native_funcs; nvi++) {
+      const char *csym = cf->native_funcs[nvi].csym;
+      int seen = 0;
+      for (int pj = 0; pj < nvi; pj++)
+        if (sp_streq(cf->native_funcs[pj].csym, csym)) { seen = 1; break; }
+      if (seen) continue;
+      buf_puts(&b, "extern ");
+      buf_puts(&b, native_c_type(cf->native_funcs[nvi].ret));
+      buf_puts(&b, " "); buf_puts(&b, csym); buf_puts(&b, "(");
+      for (int ai = 0; ai < cf->native_funcs[nvi].nargs; ai++) {
+        if (ai) buf_puts(&b, ", ");
+        buf_puts(&b, native_c_type(cf->native_funcs[nvi].args[ai]));
+      }
+      if (cf->native_funcs[nvi].nargs == 0) buf_puts(&b, "void");
+      buf_puts(&b, ");\n");
+    }
+    /* forward-declare each native class's package struct (incomplete: the TU
+       holds only pointers) so the method externs below can name it. */
+    for (int nci = 0; nci < cf->nclasses; nci++)
+      if (cf->classes[nci].is_native_class && cf->classes[nci].c_struct)
+        buf_printf(&b, "typedef struct %s_s %s;\n", cf->classes[nci].c_struct, cf->classes[nci].c_struct);
+    /* native_method/native_new externs: prototype each C-backed method so the
+       generated TU needs no package header. A constructor returns the struct
+       pointer and takes cls_id first (the compiler stamps the assigned id); an
+       instance method takes the receiver pointer first. Deduped by symbol. */
+    for (int mi = 0; mi < cf->n_native_methods; mi++) {
+      NativeMethod *m = &cf->native_methods[mi];
+      int seen = 0;
+      for (int pj = 0; pj < mi; pj++)
+        if (sp_streq(cf->native_methods[pj].csym, m->csym)) { seen = 1; break; }
+      if (seen) continue;
+      const char *cstruct = cf->classes[m->class_id].c_struct;
+      buf_puts(&b, "extern ");
+      if (m->kind == 1) buf_printf(&b, "%s *%s(mrb_int", cstruct, m->csym);   /* ctor: cls_id first */
+      else if (sp_streq(m->ret, "self")) buf_printf(&b, "%s *%s(%s *", cstruct, m->csym, cstruct);
+      else { buf_printf(&b, "%s %s(%s *", native_c_type(m->ret), m->csym, cstruct); }
+      for (int ai = 0; ai < m->nargs; ai++) { buf_puts(&b, ", "); buf_puts(&b, native_c_type(m->args[ai])); }
+      buf_puts(&b, ");\n");
+    }
+    /* native_obj link markers: the spinel driver links each object only when
+       its module's require-gate feature is enabled (i.e. the require appears). */
+    for (int noi = 0; noi < cf->n_native_objs; noi++) {
+      const char *feat = cf->native_objs[noi].feat;
+      if (!feat || !feat[0] || sp_feature_enabled(feat))
+        buf_printf(&b, "/* SPINEL_LINK_OBJ: %s */\n", cf->native_objs[noi].path);
+    }
     for (int bi = 0; bi < cf->n_ffi_bufs; bi++) {
       buf_printf(&b, "static char sp_ffi_buf_%s_%s[%d];\n",
                  cf->ffi_bufs[bi].mod, cf->ffi_bufs[bi].name, cf->ffi_bufs[bi].size);
@@ -3717,6 +3822,7 @@ char *codegen_program(const NodeTable *nt) {
      a class struct may embed a pointer to a class defined later. */
   for (int i = 0; i < c->nclasses; i++) {
     if (is_builtin_reopen(c->classes[i].name)) continue;
+    if (c->classes[i].is_native_class) continue;  /* forward-declared with the native externs */
     if (class_is_exc_subclass(c, i) && c->classes[i].nivars == 0)
       buf_printf(&b, "typedef sp_Exception sp_%s;\n", c->classes[i].name);
     else
@@ -3784,6 +3890,7 @@ char *codegen_program(const NodeTable *nt) {
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
     if (is_builtin_reopen(ci->name)) continue;
+    if (ci->is_native_class) continue;  /* constructor lives in the package */
     if (ci->is_struct) {
       /* struct constructor takes typed member params -- the prototype must
          match the definition (an empty () prototype + a _Bool param differ) */
@@ -3915,7 +4022,7 @@ char *codegen_program(const NodeTable *nt) {
 
   /* sp_re_init is worth emitting only if it would set at least one hook. */
   g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||
-                     g_has_user_global_marks || g_has_user_cmp;
+                     g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash;
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any
      proc literals they contain accumulate static functions into g_procs /
@@ -3927,6 +4034,7 @@ char *codegen_program(const NodeTable *nt) {
       EMIT_COLLECT_UNIT(emit_class_new(c, &c->classes[i], body));
   /* user-object Marshal dispatchers (after every class struct + pool define) */
   emit_marshal_dispatch(c, body);
+  emit_obj_to_hash_dispatch(c, body);
   for (int s = 1; s < c->nscopes; s++) {
     if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
   }

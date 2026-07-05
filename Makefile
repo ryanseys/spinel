@@ -57,7 +57,13 @@ endif
 # beside lib/ so the binary resolves its runtime lib via ../lib, same as before.
 SPINEL = bin/spinel
 
-all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools
+# Bundled carried-C spin packages (Path B). Defined here, before `all`, because
+# GNU Make expands a rule's prerequisites immediately when the rule is read -- a
+# definition further down would expand to empty in `all`'s prereq list. The
+# build rule + rationale live further below (near the runtime archive).
+BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o
+
+all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS)
 
 # ---- Dependencies ----
 deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
@@ -233,17 +239,26 @@ build/sp_alloc.o: lib/sp_alloc.c lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_alloc.c -o build/sp_alloc.o
 
-build/sp_json.o: lib/sp_json.c lib/sp_json.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
-	@mkdir -p build
-	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_json.c -o build/sp_json.o
+# Bundled carried-C spin packages (Path B): compiled standalone, NOT into the
+# runtime archive, and linked on demand only when the program requires them
+# (native_obj markers -> src/main.c). Package C compiles against the stable
+# spinel/runtime.h ABI (-Ilib) plus its own package headers. BUNDLED_NATIVE_OBJS
+# is defined near the top (before `all`, whose prereqs expand at parse time).
+packages/json/sp_json.o: packages/json/sp_json.c packages/json/sp_json.h \
+                         lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib -Ipackages/json packages/json/sp_json.c -o $@
+
+# stringio is a native-bound spin package (Path B typed object): the struct,
+# every method, and the header live in the package; the compiler knows it only
+# through the native_* declarations in stringio.rb.
+packages/stringio/sp_stringio.o: packages/stringio/sp_stringio.c packages/stringio/sp_stringio.h \
+                                 lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib -Ipackages/stringio packages/stringio/sp_stringio.c -o $@
 
 build/sp_format.o: lib/sp_format.c lib/sp_format.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_format.c -o build/sp_format.o
 
-build/sp_stringio.o: lib/sp_stringio.c lib/sp_stringio.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
-	@mkdir -p build
-	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_stringio.c -o build/sp_stringio.o
 
 build/sp_string.o: lib/sp_string.c lib/sp_string.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
@@ -275,7 +290,7 @@ build/sp_io.o: lib/sp_io.c lib/sp_io.h lib/sp_gc.h lib/sp_types.h
 
 SP_RT_LIB = lib/libspinel_rt.a
 
-RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_strscan sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_json sp_marshal sp_format sp_stringio sp_string sp_inspect sp_array sp_str sp_re sp_fiber sp_sched sp_io
+RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_strscan sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_marshal sp_format sp_string sp_inspect sp_array sp_str sp_re sp_fiber sp_sched sp_io
 
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS)))
 	ar rcs $@ $^
@@ -488,7 +503,7 @@ endif
 
 # The .ok target is the test's stamp. Order-only $(SPINEL) keeps a
 # compiler relink from invalidating every test.
-build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) | $(SPINEL)
+build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) | $(SPINEL)
 	@mkdir -p build/test-results
 	@tmpdir=$$(mktemp -d /tmp/spinel-test.XXXXXX); \
 	ast=$$tmpdir/test.ast; \
@@ -503,7 +518,7 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) | $(SPINEL)
 	if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
 	rm -f "$@.diff"; \
 	$(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
-	$(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib "$$cfile" $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
+	$(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib "$$cfile" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
 	if [ $$? -eq 0 ]; then \
 	  if [ -f "$<.expected" ]; then \
 	    LC_ALL=C sed 's/\r$$//' "$<.expected" >"$$exp.n"; \
@@ -697,10 +712,10 @@ install: all bin/spin
 	install -m 644 lib/sp_system.h       $(SPNLDIR)/lib/
 	install -m 644 lib/sp_gc.h           $(SPNLDIR)/lib/
 	install -m 644 lib/sp_alloc.h        $(SPNLDIR)/lib/
-	install -m 644 lib/sp_json.h         $(SPNLDIR)/lib/
+	install -d $(SPNLDIR)/lib/spinel
+	install -m 644 lib/spinel/runtime.h  $(SPNLDIR)/lib/spinel/
 	install -m 644 lib/sp_marshal.h      $(SPNLDIR)/lib/
 	install -m 644 lib/sp_format.h       $(SPNLDIR)/lib/
-	install -m 644 lib/sp_stringio.h     $(SPNLDIR)/lib/
 	install -m 644 lib/sp_string.h       $(SPNLDIR)/lib/
 	install -m 644 lib/sp_inspect.h      $(SPNLDIR)/lib/
 	install -m 644 lib/sp_array.h        $(SPNLDIR)/lib/

@@ -3,6 +3,7 @@
 # compiler knowledge of this module — the DSL declaration alone drives return
 # type inference (:string) and emission (Mod.method(x) -> sp_json_val(<boxed x>)).
 module NB
+  native_obj "packages/json/sp_json.o"   # carry+link the C on demand
   native_func :gen, [:any], :string, "sp_json_val"
 end
 

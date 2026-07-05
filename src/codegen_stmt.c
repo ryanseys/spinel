@@ -902,7 +902,7 @@ void emit_cond(Compiler *c, int id, Buf *b) {
   /* a value-type object is never a NULL pointer -- it is always truthy */
   if (comp_ty_value_obj(c, t)) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return; }
   if (t == TY_STRING || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t) ||
-      t == TY_PROC || t == TY_STRINGIO || t == TY_STRINGSCANNER || t == TY_MATCHDATA || t == TY_EXCEPTION ||
+      t == TY_PROC || t == TY_MATCHDATA || t == TY_EXCEPTION ||
       t == TY_BIGINT || t == TY_REGEX || t == TY_CURRY || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_RANDOM ||
       t == TY_METHOD || t == TY_IO || t == TY_ARGF) {
     buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != 0)"); return;
@@ -3642,8 +3642,8 @@ else {
        `@fiber ||= Fiber.new { ... }`). Without this the init was dropped. */
     else if (ty_is_object(ivt2) || ty_is_array(ivt2) || ty_is_hash(ivt2) ||
              ivt2 == TY_FIBER || ivt2 == TY_THREAD || ivt2 == TY_QUEUE || ivt2 == TY_MUTEX || ivt2 == TY_CONDVAR || ivt2 == TY_PROC || ivt2 == TY_IO ||
-             ivt2 == TY_STRINGIO || ivt2 == TY_STRINGSCANNER ||
-             ivt2 == TY_MATCHDATA || ivt2 == TY_EXCEPTION || ivt2 == TY_REGEX) {
+             
+             ivt2 == TY_STRINGSCANNER || ivt2 == TY_MATCHDATA || ivt2 == TY_EXCEPTION || ivt2 == TY_REGEX) {
       emit_indent(b, indent);
       if (is_or) buf_printf(b, "if (!%s) %s = ", ref2, ref2);
       else       buf_printf(b, "if (%s) %s = ", ref2, ref2);

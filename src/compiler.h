@@ -133,6 +133,15 @@ typedef struct {
                           order and there is no user `initialize`. */
   int is_data;         /* defined via Data.define(...): a Struct-like value class
                           that additionally supports the `#with` copy-update. */
+  /* Native-bound class (Path B typed object): C-backed, declared by a package
+     via native_struct/native_new/native_method. It is a first-class object
+     (ty_object(i), a runtime cls_id, GC-managed) whose methods dispatch to
+     declared C symbols instead of generated bodies. c_struct is the carried C
+     struct name; free_sym its optional finalizer. Method bindings live in the
+     compiler's native_methods registry, keyed by this class's index. */
+  int is_native_class;
+  char *c_struct;      /* e.g. "sp_StringIO", or NULL */
+  char *native_free;   /* finalizer C symbol, or NULL */
   int is_value_type;   /* small immutable scalar-ivar class represented by value
                           (sp_X, not sp_X *): no heap alloc / GC. Set by
                           detect_value_types after analysis. */
@@ -190,6 +199,26 @@ typedef struct {
   char **args;     /* arg type specs (malloc'd) */
   int nargs;
 } NativeFunc;
+
+/* One `native_obj` declaration: a carried C object the package links on demand
+   (only when its module's feature is required). path is root-relative, e.g.
+   "packages/json/sp_json.o"; feat is the require-gate feature or "". */
+typedef struct { char *mod; char *path; char *feat; } NativeObj;
+
+/* One `native_method`/`native_new` binding on a native class. class_id indexes
+   the class table; kind 0 = instance method, 1 = constructor (class method
+   `new`). Arity-keyed: several entries may share a name with different nargs.
+   ret uses the spinel type language plus "string?"/"poly?" nullable specs.
+   csym is the C symbol; NULL ret means the emitted call yields no value. */
+typedef struct {
+  int class_id;
+  int kind;        /* 0 = instance, 1 = constructor */
+  char *name;      /* Ruby method name */
+  char *ret;       /* return type spec, or "" */
+  char *csym;      /* C symbol to call */
+  char **args;     /* arg type specs */
+  int nargs;
+} NativeMethod;
 
 typedef struct {
   const NodeTable *nt;
@@ -250,6 +279,20 @@ typedef struct {
   /* native-binding registry: native_func declarations (Path B) */
   NativeFunc *native_funcs;
   int n_native_funcs, c_native_funcs;
+
+  /* native-binding registry: native_obj (carried C objects to link on demand) */
+  NativeObj *native_objs;
+  int n_native_objs, c_native_objs;
+
+  /* native-binding registry: native_method/native_new on native classes */
+  NativeMethod *native_methods;
+  int n_native_methods, c_native_methods;
+
+  /* a native package declared `native_obj_reflect`: it consumes the generic
+     "plain object -> hash of members" reflection, so codegen emits and installs
+     sp_obj_to_hash when the program defines Structs. No feature is named in the
+     compiler -- the package's require is the declaration. */
+  int native_obj_reflect;
   /* body-node id -> enclosing BlockNode id (lazy; emit_stmts block-local
      resets). Sized nt->count; -1 = not a block body. */
   int *blk_body_map;
@@ -288,6 +331,9 @@ int comp_sym_intern(Compiler *c, const char *name);
 /* native-binding registry (Path B): find a native_func by (module, name),
    return its index in c->native_funcs or -1; map a spec to a TyKind. */
 int comp_native_find(Compiler *c, const char *mod, const char *name);
+int comp_native_method_find(Compiler *c, int class_id, const char *name, int argc, int kind);
+int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, int argc, int kind,
+                                  const TyKind *argtys);
 TyKind native_spec_to_ty(const char *spec);
 
 /* Global variables and top-level constants. *_intern finds or creates. */

@@ -129,6 +129,11 @@ extern void (*sp_json_hpair_fn)(sp_RbVal, mrb_int, sp_RbVal *, sp_RbVal *);
 /* Recursive #inspect of a boxed value, for lib/sp_inspect.c's container walker
    (set to sp_poly_inspect; same idiom as the JSON hooks). */
 extern const char *(*sp_poly_inspect_fn)(sp_RbVal);
+/* Convert a plain object (a Struct) to a boxed StrPoly hash of its members,
+   generic (no format knowledge). The generated program installs it (switch on
+   cls_id) when it has Structs and a package consumes it; a consumer such as
+   the json package reads it to serialize an object as a hash. NULL otherwise. */
+extern sp_RbVal (*sp_obj_to_hash_fn)(sp_RbVal);
 
 /* ---- Hot inline mark helpers (inlined into both sides) ----
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked; others skipped. */

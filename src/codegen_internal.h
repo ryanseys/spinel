@@ -230,6 +230,7 @@ extern int g_has_user_global_marks;
    global marks); when 0, neither sp_re_init nor its call is emitted. */
 extern int g_uses_symbols;
 extern int g_uses_marshal;
+extern int g_gen_obj_hash;  /* a package wants obj reflection + >=1 struct: emit+install sp_obj_to_hash */
 extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_random;
@@ -389,6 +390,7 @@ int is_builtin_class_name(const char *n);
 const char *c_type_name(TyKind t);
 int is_scalar_ret(TyKind t);
 const char *ffi_c_type(const char *spec);
+const char *native_c_type(const char *spec);
 const char *default_value(TyKind t);
 void emit_ctype(Compiler *c, TyKind t, Buf *b);
 void emit_box_open(Compiler *c, TyKind t, Buf *b);
@@ -433,6 +435,7 @@ void emit_block_param_assign(Compiler *c, int scope_id, const char *nm, int tidx
 int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b);
 int emit_partition_expr(Compiler *c, int id, Buf *b);
 int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b);
+int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b);
 int emit_collect_expr(Compiler *c, int id, Buf *b);
 int emit_with_index_expr(Compiler *c, int id, Buf *b);
 int emit_each_with_index_chain(Compiler *c, int id, Buf *b);

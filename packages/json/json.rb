@@ -11,6 +11,8 @@
 #   specs: any (sp_RbVal) | string | int | float | bool | nil
 module JSON
   native_lib "json"
+  native_obj "packages/json/sp_json.o"   # carried C, linked only when required
+  native_obj_reflect                     # serialize a Struct via generic obj->hash reflection
   native_func :generate, [:any], :string, "sp_json_val"
   native_func :dump,     [:any], :string, "sp_json_val"
 end

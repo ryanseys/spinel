@@ -1182,7 +1182,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     int is_empty = sp_streq(name, "empty?");
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++)
-      if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)) ncand++;
+      if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
+          (c->classes[k].is_native_class && comp_native_method_find(c, k, name, 0, 0) >= 0)) ncand++;
     if (ncand > 0 || is_lengthlike) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
@@ -1222,6 +1223,30 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            so drop its arm (method or reader); the referenced symbol then DCEs
            as an unreferenced static (#1608). */
         if (!c->classes[k].instantiated) continue;
+        /* native (C-backed) class arm: dispatch a declared no-arg method to its
+           C symbol on the cast receiver, coercing the result into the slot. */
+        if (c->classes[k].is_native_class) {
+          int nmi = comp_native_method_find(c, k, name, 0, 0);
+          if (nmi >= 0) {
+            NativeMethod *nmet = &c->native_methods[nmi];
+            char nbuf[300];
+            if (sp_streq(nmet->ret, "string?"))
+              snprintf(nbuf, sizeof nbuf, "sp_box_nullable_str(%s((%s *)_t%d.v.p))", nmet->csym, c->classes[k].c_struct, tv);
+            else
+              snprintf(nbuf, sizeof nbuf, "%s((%s *)_t%d.v.p)", nmet->csym, c->classes[k].c_struct, tv);
+            TyKind mret = native_spec_to_ty(nmet->ret);
+            buf_printf(b, " case %d: ", k);
+            if (mret == TY_NIL) buf_puts(b, nbuf);
+            else {
+              buf_printf(b, "_t%d = ", tr);
+              if (ret == TY_POLY && mret != TY_POLY) emit_boxed_text(c, mret, nbuf, b);
+              else if (ret != TY_POLY && mret == TY_POLY) emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, nbuf, b);
+              else buf_puts(b, nbuf);
+            }
+            buf_puts(b, "; break;");
+          }
+          continue;
+        }
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
         /* Skip a method with no standalone definition to call: DCE-pruned (its
@@ -1712,6 +1737,32 @@ else {
   return 0;
 }
 
+/* native (C-backed) class constructor: call the declared C symbol with the
+   assigned cls_id first (runtime cls_id == class index), then the args in
+   their native representation. The returned pointer is GC-allocated by the
+   package. Shared by every `.new` shape (ConstantRead, ConstantPath). */
+int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b) {
+  if (ci < 0 || !c->classes[ci].is_native_class) return 0;
+  TyKind natys[8];
+  int nta = argc < 8 ? argc : 8;
+  for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);
+  int nn = comp_native_method_find_typed(c, ci, "new", argc, 1, nta == argc ? natys : NULL);
+  if (nn < 0) return 0;
+  NativeMethod *m = &c->native_methods[nn];
+  buf_printf(b, "%s(%d", m->csym, ci);
+  for (int ai = 0; ai < m->nargs && ai < argc; ai++) {
+    buf_puts(b, ", ");
+    if (sp_streq(m->args[ai], "any")) emit_boxed(c, argv[ai], b);
+    else if (sp_streq(m->args[ai], "string") && comp_ntype(c, argv[ai]) == TY_POLY) {
+      buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[ai], b); buf_puts(b, ")");
+    }
+    else emit_expr(c, argv[ai], b);
+  }
+  buf_puts(b, ")");
+  (void)id;
+  return 1;
+}
+
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -1723,6 +1774,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
     const char *rty = nt_type(nt, recv);
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      /* native (C-backed) class: the declared constructor (see emit_native_ctor) */
+      if (emit_native_ctor(c, id, ci, argc, argv, b)) return 1;
       if (ci >= 0 && c->classes[ci].is_struct) {
         /* Struct.new members: positional args, or keyword args mapping each
            member by name; each coerced to the member ivar type. */
@@ -1817,10 +1870,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       if (cn && sp_streq(cn, "ConditionVariable")) {
         buf_puts(b, "sp_CondVar_new()"); return 1;
       }
-      if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) {
-        if (argc == 0) buf_puts(b, "sp_StringIO_new()");
-        else if (argc == 1) { buf_puts(b, "sp_StringIO_new_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else { buf_puts(b, "sp_StringIO_new_sm("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      if (cn && sp_streq(cn, "StringScanner") && argc == 1 && sp_feature_enabled("strscan")) {
+        buf_puts(b, "sp_StringScanner_new("); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
       if (cn && sp_streq(cn, "Enumerator") && nt_ref(nt, id, "block") >= 0) {
@@ -1937,10 +1988,6 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(pb, "}\n");
         if (dp_self) buf_printf(b, "sp_StrPolyHash_new_dproc(_sp_hash_dproc_%d, (void *)self)", dn);
         else buf_printf(b, "sp_StrPolyHash_new_dproc(_sp_hash_dproc_%d, NULL)", dn);
-        return 1;
-      }
-      if (cn && sp_streq(cn, "StringScanner") && argc == 1 && sp_feature_enabled("strscan")) {
-        buf_puts(b, "sp_StringScanner_new("); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
       if (cn && sp_streq(cn, "Regexp") && argc >= 1) {
@@ -2195,7 +2242,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, eq ? "sp_float_is_nil(" : "(!sp_float_is_nil(");
         emit_expr(c, other, b); buf_puts(b, eq ? ")" : "))");
       }
-      else if (ot == TY_STRING || ot == TY_MATCHDATA || ot == TY_STRINGIO || ot == TY_STRINGSCANNER ||
+      else if (ot == TY_STRING || ot == TY_MATCHDATA || ot == TY_STRINGSCANNER ||
                ty_is_hash(ot) || ty_is_array(ot) || ot == TY_PROC || ot == TY_IO ||
                ot == TY_FIBER || ot == TY_EXCEPTION || ot == TY_REGEX) {
         /* nullable heap pointer: a NULL pointer encodes nil (a `@h = {}` slot is
@@ -5643,6 +5690,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
     const char *cn = nt_str(nt, recv, "name");
     int ci = cn ? comp_class_index(c, cn) : -1;
+    /* native (C-backed) class reached as ::Name (root-qualified) */
+    if (emit_native_ctor(c, id, ci, argc, argv, b)) return;
     if (ci >= 0) {
       if (class_is_exc_subclass(c, ci)) {
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
@@ -5724,46 +5773,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   if (emit_class_new_call(c, id, b)) return;
 
-  /* StringIO.open(args) { |io| body } -> run the block with a fresh IO,
-     return the block's value, then close. */
-  if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
-      sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-      sp_streq(nt_str(nt, recv, "name"), "StringIO") && sp_feature_enabled("stringio")) {
-    int block = nt_ref(nt, id, "block");
-    if (block < 0) {
-      /* no block: behaves like StringIO.new */
-      if (argc == 0) buf_puts(b, "sp_StringIO_new()");
-      else if (argc == 1) { buf_puts(b, "sp_StringIO_new_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else { buf_puts(b, "sp_StringIO_new_sm("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      return;
-    }
-    const char *fp = block_param_name(c, block, 0); if (fp) fp = rename_local(fp);
-    int bbody = nt_ref(nt, block, "body");
-    int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-    TyKind res = comp_ntype(c, id);
-    int rv = ++g_tmp;
-    int scalar = is_scalar_ret(res);
-    buf_puts(b, "({ ");
-    if (fp) {
-      buf_printf(b, "lv_%s = ", fp);
-      if (argc == 0) buf_puts(b, "sp_StringIO_new()");
-      else if (argc == 1) { buf_puts(b, "sp_StringIO_new_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else { buf_puts(b, "sp_StringIO_new_sm("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      buf_puts(b, "; ");
-    }
-    /* leading statements first, then capture the last as the value */
-    for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
-    if (scalar && bn > 0) {
-      emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
-      if (res == TY_POLY && comp_ntype(c, bb[bn - 1]) != TY_POLY) emit_boxed(c, bb[bn - 1], b);
-      else emit_expr(c, bb[bn - 1], b);
-      buf_puts(b, "; ");
-    }
-    else if (bn > 0) emit_stmt(c, bb[bn - 1], b, 0);
-    if (fp) buf_printf(b, "sp_StringIO_close(lv_%s); ", fp);
-    buf_printf(b, "%s; })", scalar && bn > 0 ? ({ static char _tb[16]; snprintf(_tb, sizeof _tb, "_t%d", rv); _tb; }) : "0");
-    return;
-  }
+  /* StringIO is a native-bound package class; .open is Ruby in the package. */
 
   /* GC module methods */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
@@ -5907,43 +5917,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* JSON.generate(x) / JSON.dump(x) -> serialize a boxed value */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "JSON") &&
-      (sp_streq(name, "generate") || sp_streq(name, "dump")) && argc == 1 && sp_feature_enabled("json")) {
-    TyKind at = comp_ntype(c, argv[0]);
-    /* a Struct serializes as a JSON object of its members */
-    if (ty_is_object(at) && c->classes[ty_object_class(at)].is_struct) {
-      ClassInfo *cls = &c->classes[ty_object_class(at)];
-      int ts = ++g_tmp;
-      buf_printf(b, "({ sp_%s *_t%d = ", cls->name, ts); emit_expr(c, argv[0], b); buf_puts(b, "; sp_sprintf(\"{");
-      for (int a = 0; a < cls->nivars; a++) {
-        if (a) buf_puts(b, ",");
-        buf_printf(b, "\\\"%s\\\":%%s", cls->ivars[a] + 1);  /* member name, sans @ */
-      }
-      buf_puts(b, "}\"");
-      for (int a = 0; a < cls->nivars; a++) {
-        TyKind mt = cls->ivar_types[a];
-        const char *iv = cls->ivars[a] + 1;  /* field name, sans @ */
-        buf_puts(b, ", ");
-        if (mt == TY_INT) buf_printf(b, "(_t%d->iv_%s == SP_INT_NIL ? SPL(\"null\") : sp_int_to_s(_t%d->iv_%s))", ts, iv, ts, iv);
-        else if (mt == TY_STRING) buf_printf(b, "(_t%d->iv_%s ? sp_json_str(_t%d->iv_%s) : SPL(\"null\"))", ts, iv, ts, iv);
-        else if (mt == TY_FLOAT) buf_printf(b, "sp_float_to_s(_t%d->iv_%s)", ts, iv);
-        else if (mt == TY_BOOL) buf_printf(b, "(_t%d->iv_%s ? SPL(\"true\") : SPL(\"false\"))", ts, iv);
-        else if (mt == TY_POLY) buf_printf(b, "sp_json_val(_t%d->iv_%s)", ts, iv);
-        else buf_puts(b, "SPL(\"null\")");
-      }
-      buf_printf(b, "); })");
-      return;
-    }
-    /* non-struct arg: when `require "json"` registered packages/json, the
-       native binding (native_func generate/dump -> sp_json_val) emits this;
-       fall through to it. Keep the direct emission as a fallback for gate-off
-       programs that use JSON without the require, so nothing regresses. */
-    if (!ty_is_object(at) && comp_native_find(c, "JSON", name) < 0) {
-      buf_puts(b, "sp_json_val("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-      return;
-    }
-  }
+  /* JSON.generate/dump have NO special-case here: they flow through the native
+     binding (packages/json -> sp_json_val). A Struct arg serializes via the
+     generic sp_obj_to_hash reflection hook (codegen.c), reached from
+     sp_json_val, which then serializes the resulting hash. */
 
   /* Dir.exist? / Dir.exists? -> directory test */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
@@ -7121,7 +7098,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_INT) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)"); }
     else if (rt == TY_FLOAT) { buf_puts(b, "sp_float_is_nil("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     else if (rt == TY_STRING || ty_is_array(rt) || ty_is_hash(rt) || ty_is_object(rt) ||
-             rt == TY_PROC || rt == TY_STRINGIO || rt == TY_STRINGSCANNER ||
+             rt == TY_PROC || rt == TY_STRINGSCANNER ||
              rt == TY_MATCHDATA || rt == TY_EXCEPTION || rt == TY_FIBER || rt == TY_IO) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");  /* NULL pointer is falsy */
     }
@@ -7565,7 +7542,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* nil? on a pointer-backed concrete type: nil is the NULL pointer. */
   if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") &&
       (rt == TY_FIBER || rt == TY_PROC || rt == TY_CURRY || rt == TY_RANDOM ||
-       rt == TY_METHOD || rt == TY_IO || rt == TY_STRINGIO || rt == TY_STRINGSCANNER ||
+       rt == TY_METHOD || rt == TY_IO || rt == TY_STRINGSCANNER ||
        rt == TY_MATCHDATA || rt == TY_REGEX || rt == TY_EXCEPTION || rt == TY_BIGINT)) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
     return;

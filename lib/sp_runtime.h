@@ -7,10 +7,8 @@
    the first system header. Must precede <stdio.h>. */
 #include "sp_types.h"
 #include "sp_alloc.h"   /* shared string-heap state + allocators (extern; see sp_alloc.c) */
-#include "sp_json.h"    /* JSON.generate serializers (lib/sp_json.c); calls emitted by codegen */
 #include "sp_marshal.h" /* Marshal.dump/load (lib/sp_marshal.c) + the sp_marshal_v vtable */
 #include "sp_format.h"  /* cold value-type display helpers (lib/sp_format.c) */
-#include "sp_stringio.h" /* StringIO (lib/sp_stringio.c) */
 #include "sp_string.h"  /* sp_String builder (hot core inline; cold mutators in lib/sp_string.c) */
 #include "sp_inspect.h" /* generic container #inspect (lib/sp_inspect.c) */
 #include "sp_array.h"   /* typed arrays: hot core inline + cold ops in lib/sp_array.c */
@@ -5298,7 +5296,7 @@ static const char *sp_Random_bytes(sp_Random *r, mrb_int n) {
   return b;
 }
 
-/* StringIO moved to lib/sp_stringio.c (cold; included as sp_stringio.h). */
+/* StringIO is a native-bound spin package (packages/stringio). */
 
 /* ---- Lambda/closure runtime (sp_Val) ---- */
 typedef struct sp_Val sp_Val;

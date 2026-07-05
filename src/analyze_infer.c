@@ -1061,7 +1061,6 @@ else {
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY;
       if (cn && sp_streq(cn, "Object")) return TY_POLY;
       if (cn && sp_streq(cn, "String")) return TY_STRING;
-      if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) return TY_STRINGIO;
       if (cn && sp_streq(cn, "StringScanner") && sp_feature_enabled("strscan")) return TY_STRINGSCANNER;
       if (cn && sp_streq(cn, "Hash")) return TY_UNKNOWN;
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
@@ -1097,7 +1096,6 @@ else {
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
       if (cn && sp_streq(cn, "Object")) return TY_POLY;  /* identity sentinel */
       if (cn && sp_streq(cn, "String")) return TY_STRING;
-      if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) return TY_STRINGIO;
       if (cn && sp_streq(cn, "StringScanner") && sp_feature_enabled("strscan")) return TY_STRINGSCANNER;
       /* Hash.new { |hash, key| default } : a string-keyed poly hash with a
          default-proc (the block computes the missing-key value). */
@@ -1173,29 +1171,9 @@ else {
     if (sp_streq(name, "nil?")) return TY_BOOL;
   }
 
-  /* StringIO.open(args) { |io| body } -> the block body's value */
-  if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
-      sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-      sp_streq(nt_str(nt, recv, "name"), "StringIO") && sp_feature_enabled("stringio")) {
-    int block = nt_ref(nt, id, "block");
-    int bbody = block >= 0 ? nt_ref(nt, block, "body") : -1;
-    if (bbody >= 0) {
-      int bn = 0; const int *bb = nt_arr(nt, bbody, "body", &bn);
-      return bn > 0 ? infer_type(c, bb[bn - 1]) : TY_NIL;
-    }
-    return TY_STRINGIO;
-  }
-
-  /* StringIO instance methods */
-  if (recv >= 0 && rt == TY_STRINGIO) {
-    if (sp_streq(name, "string") || sp_streq(name, "read")) return TY_STRING;
-    if (sp_streq(name, "gets") || sp_streq(name, "getc")) return TY_POLY;  /* nil at eof */
-    if (sp_streq(name, "eof?") || sp_streq(name, "eof") || sp_streq(name, "closed?") ||
-        sp_streq(name, "sync") || sp_streq(name, "isatty") || sp_streq(name, "tty?")) return TY_BOOL;
-    if (sp_streq(name, "flush")) return TY_STRINGIO;
-    /* pos/tell/size/length/lineno/write/puts/print/putc/getbyte/seek/... */
-    return TY_INT;
-  }
+  /* StringIO: a native-bound class (packages/stringio); no arms here. .new
+     resolves through the class table, .open is Ruby in the package, and
+     instance methods use the native_method declarations. */
 
   /* Time.now / at / local / mktime / utc / gm -> a Time value */
   if (recv >= 0) {
@@ -1244,10 +1222,9 @@ else {
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
         sp_streq(name, "lgamma") && argc == 1)
       return TY_POLY_ARRAY;  /* [log(|gamma|), sign] */
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "JSON") &&
-        (sp_streq(name, "generate") || sp_streq(name, "dump")) && sp_feature_enabled("json"))
-      return TY_STRING;
+    /* JSON.generate/dump return type comes from the native binding
+       (packages/json, inferred in the FFI/native block above), not a hardcoded
+       arm. */
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
         (sp_streq(name, "exist?") || sp_streq(name, "exists?")))
@@ -1613,6 +1590,17 @@ else {
     if (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?") ||
         sp_streq(name, "respond_to?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
         sp_streq(name, "nil?") || sp_streq(name, "equal?") || sp_streq(name, "frozen?")) return TY_BOOL;
+    /* native class (C-backed): a declared instance method returns its spec type */
+    if (cls->is_native_class) {
+      TyKind natys[8];
+      int nta = argc < 8 ? argc : 8;
+      for (int a = 0; a < nta; a++) natys[a] = infer_type(c, argv[a]);
+      int nm = comp_native_method_find_typed(c, cid, name, argc, 0, nta == argc ? natys : NULL);
+      if (nm >= 0) {
+        if (sp_streq(c->native_methods[nm].ret, "self")) return rt;  /* returns the receiver's class */
+        return native_spec_to_ty(c->native_methods[nm].ret);
+      }
+    }
     /* Comparable#clamp returns self or the APPLIED BOUND: the receiver's
        class only when each bound is statically that class or nil (a nil
        bound clamps one-sided and is never returned); a mixed-class or
@@ -2496,6 +2484,15 @@ else {
          defines `name` (the runtime cls_id picks the impl). */
       TyKind r = TY_UNKNOWN; int found = 0;
       for (int k = 0; k < c->nclasses; k++) {
+        if (c->classes[k].is_native_class) {
+          int nmk = comp_native_method_find(c, k, name, argc, 0);
+          if (nmk >= 0) {
+            TyKind nr = sp_streq(c->native_methods[nmk].ret, "self")
+                          ? ty_object(k) : native_spec_to_ty(c->native_methods[nmk].ret);
+            r = found ? ty_unify(r, nr) : nr; found = 1;
+          }
+          continue;
+        }
         int mi = comp_method_in_chain(c, k, name, NULL);
         if (mi >= 0) { r = found ? ty_unify(r, c->scopes[mi].ret) : c->scopes[mi].ret; found = 1; continue; }
         int rdcls = -1;

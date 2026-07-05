@@ -3368,6 +3368,32 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   /* object method call: sp_<DefClass>_<m>((sp_<DefClass>*)&recv, args) */
   if (recv >= 0 && ty_is_object(rt)) {
     int cid = ty_object_class(rt);
+    /* native (C-backed) class: dispatch a declared instance method to its C
+       symbol, receiver first. `string?` returns are wrapped nil-safe. Overload
+       selection is type-keyed (putc(65) vs putc("A")). */
+    if (c->classes[cid].is_native_class) {
+      TyKind natys[8];
+      int nta = argc < 8 ? argc : 8;
+      for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);
+      int nm = comp_native_method_find_typed(c, cid, name, argc, 0, nta == argc ? natys : NULL);
+      if (nm >= 0) {
+        NativeMethod *m = &c->native_methods[nm];
+        int wrap = sp_streq(m->ret, "string?");
+        if (wrap) buf_puts(b, "sp_box_nullable_str(");
+        buf_puts(b, m->csym); buf_puts(b, "("); emit_expr(c, recv, b);
+        for (int ai = 0; ai < m->nargs && ai < argc; ai++) {
+          buf_puts(b, ", ");
+          if (sp_streq(m->args[ai], "any")) emit_boxed(c, argv[ai], b);
+          else if (sp_streq(m->args[ai], "string") && comp_ntype(c, argv[ai]) == TY_POLY) {
+            buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[ai], b); buf_puts(b, ")");
+          }
+          else emit_expr(c, argv[ai], b);
+        }
+        buf_puts(b, ")");
+        if (wrap) buf_puts(b, ")");
+        return 1;
+      }
+    }
     /* undef'd method: raise NoMethodError */
     if (comp_is_undeffed_in_chain(c, cid, name)) {
       TyKind ret_ty = comp_ntype(c, id);
@@ -3668,41 +3694,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   }
 
   /* StringIO instance methods (a non-GC heap buffer behind sp_StringIO *). */
-  if (recv >= 0 && rt == TY_STRINGIO) {
-    Buf rs = expr_buf(c, recv);
-    const char *r = rs.p ? rs.p : "";
-    int done = 1;
-    if (sp_streq(name, "string")) buf_printf(b, "sp_StringIO_string(%s)", r);
-    else if (sp_streq(name, "pos") || sp_streq(name, "tell")) buf_printf(b, "sp_StringIO_pos(%s)", r);
-    else if (sp_streq(name, "size") || sp_streq(name, "length")) buf_printf(b, "sp_StringIO_size(%s)", r);
-    else if (sp_streq(name, "lineno")) buf_printf(b, "(%s)->lineno", r);
-    else if (sp_streq(name, "puts") && argc == 0) buf_printf(b, "sp_StringIO_puts_empty(%s)", r);
-    else if (sp_streq(name, "puts") && argc == 1) { buf_printf(b, "sp_StringIO_puts(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "print") && argc == 1) { buf_printf(b, "sp_StringIO_print(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if ((sp_streq(name, "write") || sp_streq(name, "<<")) && argc == 1) { buf_printf(b, "sp_StringIO_write(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "putc") && argc == 1) {
-      if (comp_ntype(c, argv[0]) == TY_STRING) { buf_printf(b, "sp_StringIO_putc(%s, (mrb_int)(unsigned char)(", r); emit_expr(c, argv[0], b); buf_puts(b, ")[0])"); }
-      else { buf_printf(b, "sp_StringIO_putc(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    }
-    else if (sp_streq(name, "fsync") || sp_streq(name, "fileno") || sp_streq(name, "pid")) buf_printf(b, "((void)(%s), 0)", r);
-    else if (sp_streq(name, "read") && argc == 0) buf_printf(b, "sp_StringIO_read(%s)", r);
-    else if (sp_streq(name, "read") && argc == 1) { buf_printf(b, "sp_StringIO_read_n(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "gets")) buf_printf(b, "sp_box_nullable_str(sp_StringIO_gets(%s))", r);
-    else if (sp_streq(name, "getc")) buf_printf(b, "sp_box_nullable_str(sp_StringIO_getc(%s))", r);
-    else if (sp_streq(name, "getbyte")) buf_printf(b, "sp_StringIO_getbyte(%s)", r);
-    else if (sp_streq(name, "rewind")) buf_printf(b, "sp_StringIO_rewind(%s)", r);
-    else if (sp_streq(name, "seek") && argc >= 1) { buf_printf(b, "sp_StringIO_seek(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "truncate") && argc == 1) { buf_printf(b, "sp_StringIO_truncate(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "eof?") || sp_streq(name, "eof")) buf_printf(b, "sp_StringIO_eof_p(%s)", r);
-    else if (sp_streq(name, "close")) buf_printf(b, "sp_StringIO_close(%s)", r);
-    else if (sp_streq(name, "closed?")) buf_printf(b, "sp_StringIO_closed_p(%s)", r);
-    else if (sp_streq(name, "flush")) buf_printf(b, "sp_StringIO_flush(%s)", r);
-    else if (sp_streq(name, "sync")) buf_printf(b, "sp_StringIO_sync(%s)", r);
-    else if (sp_streq(name, "isatty") || sp_streq(name, "tty?")) buf_printf(b, "sp_StringIO_isatty(%s)", r);
-    else done = 0;
-    free(rs.p);
-    if (done) return 1;
-  }
+  /* StringIO dispatch: native-bound (packages/stringio); no arms here. */
   return 0;
 }
 

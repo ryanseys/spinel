@@ -6,8 +6,8 @@
    TU installs at startup. Result strings are built in an off-heap scratch buffer
    and finalized onto the shared GC string heap (sp_alloc.h), so a nested
    allocation can't free a piece already copied in. */
-#include "sp_alloc.h"   /* sp_str_alloc, sp_int_to_s, sp_float_to_s */
-#include "sp_json.h"    /* sp_gc.h: sp_RbVal, SP_TAG_*, the sp_json_* hooks */
+#include "spinel/runtime.h"  /* sp_RbVal, SP_TAG_*, hooks, sp_str_alloc, sp_int_to_s, sp_float_to_s */
+#include "sp_json.h"          /* this package's sp_json_str / sp_json_val API */
 #include <string.h>
 
 /* A 0xff-marked rodata literal, so sp_str_byte_len reads its length correctly
@@ -100,6 +100,11 @@ const char *sp_json_val(sp_RbVal v) {
         jb_c(&b, '}');
         return jb_finish(&b);
       }
+      /* a plain object (Struct/Data): reflect it into a hash of its members
+         (the generated program installs sp_obj_to_hash when it has Structs)
+         and serialize that -- reusing the hash path above. No object-format
+         knowledge lives here or in the compiler; only the generic reflection. */
+      if (sp_obj_to_hash_fn) return sp_json_val(sp_obj_to_hash_fn(v));
       return JSPL("null");
     }
     default: return JSPL("null");

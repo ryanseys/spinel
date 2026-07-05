@@ -412,9 +412,13 @@ int main(int argc, char **argv) {
   char lib_dir[4096];
   resolve_lib_dir(argv[0], lib_dir, sizeof lib_dir);
 
-  Str ffi_links = {0}, ffi_cflags = {0};
+  Str ffi_links = {0}, ffi_cflags = {0}, native_objs = {0};
   scrape_ffi_markers(csrc, "/* SPINEL_LINK: ", &ffi_links);
   scrape_ffi_markers(csrc, "/* SPINEL_CFLAGS: ", &ffi_cflags);
+  /* native_obj (Path B): root-relative carried-C object paths to link, one
+     package's C linked only when its require appeared. Resolved against the
+     compiler's base dir (beside lib/ and packages/) at the link step below. */
+  scrape_ffi_markers(csrc, "/* SPINEL_LINK_OBJ: ", &native_objs);
   /* A program that uses Thread/Mutex/Queue/... links the -DSP_THREADS runtime
      variant (libspinel_rt_mt.a) plus -lpthread; everything else links the
      byte-identical single-threaded archive. See codegen's SPINEL_USES_THREADS
@@ -455,6 +459,36 @@ int main(int argc, char **argv) {
      right. --link -l flags go after -lm below, where DSOs belong. */
   for (int li = 0; li < n_link_extra; li++)
     if (strncmp(link_extra[li], "-l", 2) != 0) s_add_arg(&cmd, link_extra[li]);
+  /* native_obj carried-C objects: resolve each root-relative path against the
+     base dir (lib_dir minus its trailing "/lib", where packages/ also lives)
+     and add as a link input, before the runtime archive. Try the dev-tree
+     "<base>/../" fallback like the require resolver. Same left-to-right rule:
+     they reference sp_ runtime symbols resolved from the archive that follows. */
+  if (native_objs.p && native_objs.p[0]) {
+    int blen = (int)strlen(lib_dir);
+    if (blen >= 4 && strcmp(lib_dir + blen - 4, "/lib") == 0) blen -= 4;
+    char *toks = strdup(native_objs.p);
+    for (char *t = strtok(toks, " "); t; t = strtok(NULL, " ")) {
+      /* Dedup against --link inputs: spin links a package's carried C from its
+         own cache while the package also declares it via native_obj -- both on
+         the link line is a multiple-definition error. The same basename in an
+         explicit --link object means it is already covered. */
+      const char *tb = strrchr(t, '/'); tb = tb ? tb + 1 : t;
+      int dup = 0;
+      for (int li = 0; li < n_link_extra && !dup; li++) {
+        const char *lb = strrchr(link_extra[li], '/');
+        lb = lb ? lb + 1 : link_extra[li];
+        if (strcmp(lb, tb) == 0) dup = 1;
+      }
+      if (dup) continue;
+      char op[4096];
+      snprintf(op, sizeof op, "%.*s/%s", blen, lib_dir, t);
+      if (access(op, F_OK) != 0)
+        snprintf(op, sizeof op, "%.*s/../%s", blen, lib_dir, t);
+      s_add_arg(&cmd, op);
+    }
+    free(toks);
+  }
   snprintf(tmp, sizeof tmp, "\"%s%c%s\" ", lib_dir, PATH_SEP, rt_lib); s_add(&cmd, tmp);
   /* -lm AFTER the archive: ld processes inputs left to right and (with the
      GNU default --as-needed) drops a DSO no preceding input references.
