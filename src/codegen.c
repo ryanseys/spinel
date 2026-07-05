@@ -142,6 +142,33 @@ void emit_str_expr(Compiler *c, int node, Buf *b) {
 
 void emit_boxed(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
+  /* An inlined yield's value type is per-CALL-SITE: the method AST has ONE
+     YieldNode but each call site supplies its own block, so the node's cached
+     type is whichever site inference visited (a string-block site poisoned an
+     int-block site into sp_box_str(int) -- a segfault). Box by the CURRENT
+     block's inferred result instead. */
+  if (nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode") && g_block_id < 0) {
+    /* no block at this call site: the yield arm is dead; a boxed nil keeps the
+       C well-typed (the cached node type would box the SP_INT_NIL sentinel). */
+    buf_puts(b, "sp_box_nil()");
+    return;
+  }
+  if (g_block_id >= 0 && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode")) {
+    int bbody = nt_ref(c->nt, g_block_id, "body");
+    int bn = 0; const int *bb = bbody >= 0 ? nt_arr(c->nt, bbody, "body", &bn) : NULL;
+    TyKind bt = bn > 0 ? comp_ntype(c, bb[bn - 1]) : TY_NIL;
+    if (bt != t && bt != TY_UNKNOWN) {
+      if (bt == TY_POLY) { emit_expr(c, node, b); return; }
+      Buf yb; memset(&yb, 0, sizeof yb);
+      emit_expr(c, node, &yb);
+      if (bt == TY_NIL || bt == TY_VOID)
+        buf_printf(b, "({ %s; sp_box_nil(); })", yb.p ? yb.p : "0");
+      else
+        emit_boxed_text(c, bt, yb.p ? yb.p : "0", b);
+      free(yb.p);
+      return;
+    }
+  }
   if (t == TY_POLY) { emit_expr(c, node, b); return; }
   /* Reference-backed builtins (IO/Fiber/Thread/Queue/Mutex/ConditionVariable/
      Enumerator/Exception/Proc/Method) are nilable C pointers -- box NULL as nil
