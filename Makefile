@@ -245,6 +245,10 @@ packages/json/sp_json.o: packages/json/sp_json.c packages/json/sp_json.h \
                          lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib -Ipackages/json packages/json/sp_json.c -o $@
 
+build/sp_format.o: lib/sp_format.c lib/sp_format.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
+	@mkdir -p build
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_format.c -o build/sp_format.o
+
 # stringio is a native-bound spin package (Path B typed object): the struct,
 # every method, and the header live in the package; the compiler knows it only
 # through the native_* declarations in stringio.rb.
@@ -263,11 +267,6 @@ packages/strscan/sp_strscan.o: packages/strscan/sp_strscan.c \
 packages/base64/sp_base64.o: packages/base64/sp_base64.c \
                              lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib packages/base64/sp_base64.c -o $@
-
-build/sp_format.o: lib/sp_format.c lib/sp_format.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
-	@mkdir -p build
-	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_format.c -o build/sp_format.o
-
 
 build/sp_string.o: lib/sp_string.c lib/sp_string.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
@@ -399,6 +398,15 @@ TESTS := $(filter-out test/promote_%.rb,$(TESTS))
 endif
 TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 
+# Bundled spin packages carry their own test/*.rb (the same snapshot contract,
+# runnable with `spin test` inside the package). The compiler gate runs them
+# too -- bundled packages are versioned with the compiler, so a compiler change
+# that breaks one must fail here, not at package-publish time. Targets are
+# namespaced pkg.<package>.<test>.ok to avoid colliding with test/ names.
+PKG_TESTS := $(wildcard packages/*/test/*.rb)
+pkg_of = $(word 2,$(subst /, ,$(1)))
+PKG_TEST_TARGETS := $(foreach t,$(PKG_TESTS),build/test-results/pkg.$(call pkg_of,$(t)).$(notdir $(t:.rb=)).ok)
+
 # Warnings the generated-C -Werror check should not gate on. clang enables
 # -Wunused-value by default (gcc only under -Wall, which the build disables),
 # so a discarded value-producing statement-expression -- e.g. the
@@ -417,7 +425,7 @@ test:
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: rbs-test rbs-seed-test $(TEST_TARGETS)
+test-run: rbs-test rbs-seed-test $(TEST_TARGETS) $(PKG_TEST_TARGETS)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@if [ -t 1 ]; then printf '\n'; fi
 	@pass=$$(grep -l '^PASS' build/test-results/*.ok 2>/dev/null | wc -l); \
@@ -512,55 +520,70 @@ endif
 
 # The .ok target is the test's stamp. Order-only $(SPINEL) keeps a
 # compiler relink from invalidating every test.
+# One snapshot test: compile $< with the integrated pipeline, run, diff
+# against $<.expected (or CRuby), write PASS/FAIL/ERR to $@. Shared by the
+# test/ rule and the per-package rules below.
+define RUN_ONE_TEST
+@mkdir -p build/test-results
+@tmpdir=$$(mktemp -d /tmp/spinel-test.XXXXXX); \
+ast=$$tmpdir/test.ast; \
+ir=$$tmpdir/test.ir; \
+cfile=$$tmpdir/test.c; \
+bin=$$tmpdir/test_bin; \
+exp=$$tmpdir/expected; \
+act=$$tmpdir/actual; \
+experr=$$tmpdir/experr; \
+acterr=$$tmpdir/acterr; \
+args=""; \
+if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
+rm -f "$@.diff"; \
+$(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
+$(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib "$$cfile" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
+if [ $$? -eq 0 ]; then \
+  if [ -f "$<.expected" ]; then \
+    LC_ALL=C sed 's/\r$$//' "$<.expected" >"$$exp.n"; \
+  else \
+    $(TIMEOUT10) $(REF_RUBY) "$<" $$args >"$$exp" 2>/dev/null; \
+    ruby_rc=$$?; \
+    if [ $$ruby_rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
+      $(TIMEOUT10) ruby "$<" $$args >"$$exp" 2>/dev/null; \
+    fi; \
+    LC_ALL=C sed 's/\r$$//' "$$exp" >"$$exp.n"; \
+  fi; \
+  $(TIMEOUT10) "$$bin" $$args >"$$act" 2>"$$acterr"; \
+  LC_ALL=C sed 's/\r$$//' "$$act" >"$$act.n"; \
+  LC_ALL=C sed 's/\r$$//' "$$acterr" >"$$acterr.n"; \
+  if [ -f "$<.err.expected" ]; then \
+    LC_ALL=C sed 's/\r$$//' "$<.err.expected" >"$$experr.n"; \
+  else \
+    : > "$$experr.n"; \
+  fi; \
+  if cmp -s "$$exp.n" "$$act.n" && cmp -s "$$experr.n" "$$acterr.n"; then \
+    echo PASS > "$@"; \
+    if [ -t 1 ]; then printf .; fi; \
+  else \
+    echo FAIL > "$@"; \
+    { echo "=== stdout diff (expected vs actual) ==="; diff -u "$$exp.n" "$$act.n" || true; \
+      echo "=== stderr diff (expected vs actual) ==="; diff -u "$$experr.n" "$$acterr.n" || true; } > "$@.diff" 2>&1; \
+    if [ -t 1 ]; then printf F; fi; \
+  fi; \
+else \
+  echo ERR > "$@"; \
+  if [ -t 1 ]; then printf E; fi; \
+fi; \
+rm -rf "$$tmpdir"
+endef
+
+# Per-package test rules (one pattern rule per bundled package: GNU Make
+# patterns allow a single %, so the package name is fixed per rule).
+define PKG_TEST_RULE
+build/test-results/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) | $$(SPINEL)
+	$$(RUN_ONE_TEST)
+endef
+$(foreach d,$(wildcard packages/*/test),$(eval $(call PKG_TEST_RULE,$(patsubst packages/%/test,%,$(d)))))
+
 build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) | $(SPINEL)
-	@mkdir -p build/test-results
-	@tmpdir=$$(mktemp -d /tmp/spinel-test.XXXXXX); \
-	ast=$$tmpdir/test.ast; \
-	ir=$$tmpdir/test.ir; \
-	cfile=$$tmpdir/test.c; \
-	bin=$$tmpdir/test_bin; \
-	exp=$$tmpdir/expected; \
-	act=$$tmpdir/actual; \
-	experr=$$tmpdir/experr; \
-	acterr=$$tmpdir/acterr; \
-	args=""; \
-	if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
-	rm -f "$@.diff"; \
-	$(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
-	$(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib "$$cfile" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
-	if [ $$? -eq 0 ]; then \
-	  if [ -f "$<.expected" ]; then \
-	    LC_ALL=C sed 's/\r$$//' "$<.expected" >"$$exp.n"; \
-	  else \
-	    $(TIMEOUT10) $(REF_RUBY) "$<" $$args >"$$exp" 2>/dev/null; \
-	    ruby_rc=$$?; \
-	    if [ $$ruby_rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
-	      $(TIMEOUT10) ruby "$<" $$args >"$$exp" 2>/dev/null; \
-	    fi; \
-	    LC_ALL=C sed 's/\r$$//' "$$exp" >"$$exp.n"; \
-	  fi; \
-	  $(TIMEOUT10) "$$bin" $$args >"$$act" 2>"$$acterr"; \
-	  LC_ALL=C sed 's/\r$$//' "$$act" >"$$act.n"; \
-	  LC_ALL=C sed 's/\r$$//' "$$acterr" >"$$acterr.n"; \
-	  if [ -f "$<.err.expected" ]; then \
-	    LC_ALL=C sed 's/\r$$//' "$<.err.expected" >"$$experr.n"; \
-	  else \
-	    : > "$$experr.n"; \
-	  fi; \
-	  if cmp -s "$$exp.n" "$$act.n" && cmp -s "$$experr.n" "$$acterr.n"; then \
-	    echo PASS > "$@"; \
-	    if [ -t 1 ]; then printf .; fi; \
-	  else \
-	    echo FAIL > "$@"; \
-	    { echo "=== stdout diff (expected vs actual) ==="; diff -u "$$exp.n" "$$act.n" || true; \
-	      echo "=== stderr diff (expected vs actual) ==="; diff -u "$$experr.n" "$$acterr.n" || true; } > "$@.diff" 2>&1; \
-	    if [ -t 1 ]; then printf F; fi; \
-	  fi; \
-	else \
-	  echo ERR > "$@"; \
-	  if [ -t 1 ]; then printf E; fi; \
-	fi; \
-	rm -rf "$$tmpdir"
+	$(RUN_ONE_TEST)
 
 clean-test-results:
 	@rm -rf build/test-results
@@ -737,6 +760,7 @@ install: all bin/spin
 	install -m 644 lib/sp_time.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_net.h          $(SPNLDIR)/lib/
 	cp -r packages $(SPNLDIR)/packages
+	rm -rf $(SPNLDIR)/packages/*/build
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
 	ln -sf $(SPNLDIR)/spin   $(PREFIX)/bin/spin
