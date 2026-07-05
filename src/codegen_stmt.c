@@ -284,6 +284,14 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_Class _t%d = ", cv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_class_to_s(_t%d), stdout); putchar('\\n'); }\n", cv);
   }
+  else if (t == TY_EXCEPTION) {   /* an exception inspects as "#<ClassName: message>" */
+    int ev = ++g_tmp;
+    buf_printf(b, "{ sp_Exception *_t%d = ", ev); emit_expr(c, arg, b);
+    /* Root the temp across sp_sprintf's allocation (it may GC, and the exception
+       can be an unrooted temporary). A NULL exception models a nil $! outside a
+       rescue: inspect it as "nil". */
+    buf_printf(b, "; SP_GC_ROOT(_t%d); fputs(_t%d ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d)) : \"nil\", stdout); putchar('\\n'); }\n", ev, ev, ev, ev);
+  }
   else if (t == TY_NIL || t == TY_VOID) {
     buf_puts(b, "(void)("); emit_expr(c, arg, b); buf_puts(b, "); fputs(\"nil\\n\", stdout);\n");
   }

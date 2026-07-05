@@ -1,0 +1,5 @@
+#<RuntimeError: boom>
+#<RuntimeError: boom>
+#<ArgumentError: bad arg>
+#<TypeError: no good>
+#<RuntimeError: RuntimeError>
