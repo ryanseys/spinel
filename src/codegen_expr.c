@@ -1792,6 +1792,18 @@ else {
     return;
   }
 
+  if (sp_streq(ty, "SplatNode")) {
+    /* `*x` in unboxed value position (a next/break value flowing into a
+       typed PolyArray slot): splat-to-array, then unwrap the pointer. */
+    int sp_inner = nt_ref(nt, id, "expression");
+    /* splat semantics first (nil -> [], scalar -> [v], array kept), then
+       normalize the KIND: the slot is sp_PolyArray*, and a kept IntArray
+       must be rebuilt, not pointer-cast (different layout). */
+    buf_puts(b, "sp_poly_to_poly_array(sp_splat_to_array(");
+    if (sp_inner >= 0) emit_boxed(c, sp_inner, b); else buf_puts(b, "sp_box_nil()");
+    buf_puts(b, "))");
+    return;
+  }
   unsupported(c, id, "expression");
 }
 

@@ -3589,7 +3589,14 @@ TyKind infer_uncached(Compiler *c, int id) {
        infer nil, so the delivered value was discarded at the call site. */
     int nargs = nt_ref(nt, id, "arguments");
     int nvc = 0; const int *nv = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nvc) : NULL;
-    return nvc > 0 ? infer_type(c, nv[0]) : TY_NIL;
+    if (nvc > 0) {
+      const char *aty = nt_type(nt, nv[0]);
+      /* `next *x` delivers the splat-built ARRAY (the SplatNode arm above
+         answers with the ELEMENT type, for array-literal splices). */
+      if (aty && sp_streq(aty, "SplatNode")) return TY_POLY_ARRAY;
+      return infer_type(c, nv[0]);
+    }
+    return TY_NIL;
   }
   if (nk == NK_YieldNode)
     return yield_value_type(c, (int)(comp_scope_of(c, id) - c->scopes));

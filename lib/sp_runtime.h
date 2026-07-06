@@ -2164,6 +2164,22 @@ static mrb_int sp_poly_arr_len(sp_RbVal a) {
     default: return 0;
   }
 }
+/* `when *arr`: does any element of arr match the scrutinee? Value equality
+   via sp_poly_eq (the splat form is used with value lists; Class/Regexp
+   elements inside a splat are not dispatched through #=== here). */
+static mrb_bool sp_case_splat_match(sp_RbVal scrut, sp_RbVal arr) {
+  mrb_int n = sp_poly_length(arr);
+  for (mrb_int i = 0; i < n; i++)
+    if (sp_poly_eq(scrut, sp_poly_arr_get(arr, i))) return TRUE;
+  return FALSE;
+}
+/* `break *x` / `next *x`: Ruby's splat-to-array -- nil becomes [], an array
+   stays itself, any other value wraps in a one-element array. */
+static sp_RbVal sp_splat_to_array(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return sp_box_poly_array(sp_PolyArray_new());
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return v;
+  { sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); sp_PolyArray_push(r, v); return sp_box_poly_array(r); }
+}
 static sp_RbVal sp_poly_arr_get(sp_RbVal a, mrb_int i) {
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
   switch (a.cls_id) {

@@ -141,6 +141,18 @@ void emit_str_expr(Compiler *c, int node, Buf *b) {
 }
 
 void emit_boxed(Compiler *c, int node, Buf *b) {
+  {
+    const char *bty0 = nt_type(c->nt, node);
+    /* `*x` in a boxed value position (break *x / next *x): Ruby's
+       splat-to-array (nil -> [], array -> itself, scalar -> [v]). */
+    if (bty0 && sp_streq(bty0, "SplatNode")) {
+      int inner0 = nt_ref(c->nt, node, "expression");
+      buf_puts(b, "sp_splat_to_array(");
+      if (inner0 >= 0) emit_boxed(c, inner0, b); else buf_puts(b, "sp_box_nil()");
+      buf_puts(b, ")");
+      return;
+    }
+  }
   TyKind t = comp_ntype(c, node);
   /* An inlined yield's value type is per-CALL-SITE: the method AST has ONE
      YieldNode but each call site supplies its own block, so the node's cached
