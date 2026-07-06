@@ -692,6 +692,19 @@ bench: $(SPINEL) $(SP_RT_LIB)
 	echo "Benchmarks: $$pass pass, $$fail fail, $$err error, $$skip skip"; \
 	if [ $$fail -ne 0 ] || [ $$err -ne 0 ]; then exit 1; fi
 
+# ---- ruby/spec coverage harness (tools/rubyspec/) ----
+# Measures CRuby-compatibility coverage: extracts ruby/spec into one program
+# per example, classifies each as PASS/FAIL/REJECT/ERROR against spinel, and
+# ranks the reject diagnostics -- the "what to implement next" list. Not part
+# of the gate (it measures the frontier, it does not defend it).
+RUBYSPEC_DIR := build/rubyspec
+rubyspec: $(SPINEL)
+	@if [ ! -d $(RUBYSPEC_DIR) ]; then \
+	  git clone --depth=1 https://github.com/ruby/spec $(RUBYSPEC_DIR); \
+	fi
+	@rm -rf build/rubyspec-ex && ruby tools/rubyspec/extract.rb $(RUBYSPEC_DIR)/language build/rubyspec-ex
+	@bash tools/rubyspec/run.sh build/rubyspec-ex build/rubyspec-results.tsv
+
 # ---- Optcarrot integration test ----
 OPTCARROT_DIR  := build/optcarrot
 OPTCARROT_REPO := https://github.com/mame/optcarrot.git
