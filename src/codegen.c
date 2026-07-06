@@ -937,6 +937,25 @@ const char *proc_post_name(Compiler *c, int create, int idx) {
   return idx < n ? nt_str(c->nt, posts[idx], "name") : NULL;
 }
 
+int proc_opt_count(Compiler *c, int create) {
+  int pn = proc_params_node(c, create);
+  if (pn < 0) return 0;
+  int n = 0; nt_arr(c->nt, pn, "optionals", &n);
+  return n;
+}
+const char *proc_opt_name(Compiler *c, int create, int idx) {
+  int pn = proc_params_node(c, create);
+  if (pn < 0) return NULL;
+  int n = 0; const int *opts = nt_arr(c->nt, pn, "optionals", &n);
+  return idx < n ? nt_str(c->nt, opts[idx], "name") : NULL;
+}
+int proc_opt_value(Compiler *c, int create, int idx) {
+  int pn = proc_params_node(c, create);
+  if (pn < 0) return -1;
+  int n = 0; const int *opts = nt_arr(c->nt, pn, "optionals", &n);
+  return idx < n ? nt_ref(c->nt, opts[idx], "value") : -1;
+}
+
 /* The StatementsNode body of a proc-creating node. */
 int proc_body_node(Compiler *c, int create) {
   const char *ty = nt_type(c->nt, create);
@@ -1463,44 +1482,38 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
     const char *pp = proc_post_name(c, create, j);
     if (pp) nameset_add(&params, pp);
   }
-  /* optionals / keyword params: no binding yet. Their NAMES still join the
-     param set so they are never misdiagnosed as uncaptured outer variables,
-     and a proc that only carries them for its .arity metadata (never touching
-     them in the body) still compiles; a body that actually READS one gets the
+  /* optional params bind below (CRuby distribution); keyword params still
+     have no binding -- their NAMES join the param set so they are never
+     misdiagnosed as uncaptured outer variables, a proc carrying them only
+     for .arity metadata compiles, and a body that READS one gets the
      precise diagnostic below. */
+  int nopts = proc_opt_count(c, create);
   int opt_kw_used = 0;
   { int pn0 = proc_params_node(c, create);
-    int nopt = 0, nkw = 0;
-    const int *opts = pn0 >= 0 ? nt_arr(nt, pn0, "optionals", &nopt) : NULL;
+    int nkw = 0;
     const int *kws  = pn0 >= 0 ? nt_arr(nt, pn0, "keywords", &nkw) : NULL;
-    for (int j = 0; j < nopt; j++) {
-      const char *on = nt_str(nt, opts[j], "name");
+    for (int j = 0; j < nopts; j++) {
+      const char *on = proc_opt_name(c, create, j);
       if (on) nameset_add(&params, on);
     }
     for (int j = 0; j < nkw; j++) {
       const char *kn = nt_str(nt, kws[j], "name");
       if (kn) nameset_add(&params, kn);
     }
-    /* defer the used-check until `used` is populated below */
-    opt_kw_used = -(nopt + nkw);   /* <0: pending, count stashed */
+    opt_kw_used = -nkw;   /* <0: pending keyword used-check */
   }
   proc_collect_used(c, body, &used);
   if (opt_kw_used < 0) {
     int pn0 = proc_params_node(c, create);
-    int nopt = 0, nkw = 0;
-    const int *opts = pn0 >= 0 ? nt_arr(nt, pn0, "optionals", &nopt) : NULL;
+    int nkw = 0;
     const int *kws  = pn0 >= 0 ? nt_arr(nt, pn0, "keywords", &nkw) : NULL;
-    for (int j = 0; j < nopt && opt_kw_used < 0; j++) {
-      const char *on = nt_str(nt, opts[j], "name");
-      if (on && nameset_has(&used, on)) opt_kw_used = 1;
-    }
     for (int j = 0; j < nkw && opt_kw_used < 0; j++) {
       const char *kn = nt_str(nt, kws[j], "name");
       if (kn && nameset_has(&used, kn)) opt_kw_used = 1;
     }
     if (opt_kw_used == 1) {
       free(params.v); free(used.v); free(locals.v); free(caps.v);
-      unsupported(c, create, "proc reading an optional or keyword parameter (later slice)");
+      unsupported(c, create, "proc reading a keyword parameter (later slice)");
       return;
     }
   }
@@ -1785,10 +1798,10 @@ else if (orecv >= 0 && onm) {
     buf_printf(pb, "    sp_%s *self = (sp_%s *)((_proc_cap_%d *)_cap)->__self;\n", self_cls, self_cls, pid);
     buf_puts(pb, "    (void)self;\n");
   }
-  /* Lambda: strict arity -- requireds + trailing posts mandatory, a splat rest
-     lifts the upper bound. (Optionals/keywords are rejected above.) */
-  if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, 0, %s);\n",
-                            arity + nposts, restn ? "TRUE" : "FALSE");
+  /* Lambda: strict arity -- requireds + trailing posts mandatory, optionals
+     widen the max, a splat rest lifts it entirely. */
+  if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, %d, %s);\n",
+                            arity + nposts, nopts, restn ? "TRUE" : "FALSE");
   for (int k = 0; k < arity; k++) {
     const char *p = proc_param_name(c, create, k);
     LocalVar *lv = scope_local(bs, p);
@@ -1829,16 +1842,47 @@ else if (orecv >= 0 && onm) {
      callee's static types. CRuby non-lambda distribution: leading requireds
      from the front, posts from the back, the remainder (possibly empty) is
      the rest; missing posts bind nil. */
-  if ((restn && restn[0]) || nposts > 0) {
+  if ((restn && restn[0]) || nposts > 0 || nopts > 0) {
     if (!g_needs_proc_poly_argslot) {
       g_needs_proc_poly_argslot = 1;
       buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
     }
+    /* Optionals fill from the front with whatever arguments remain after the
+       requireds and the trailing posts; a slot with no argument evaluates its
+       default (which may reference earlier params -- they are bound above /
+       to the left). Boxed like rest/post: a first-class proc's optionals are
+       type-erased at the call site. */
+    for (int j = 0; j < nopts; j++) {
+      const char *on = proc_opt_name(c, create, j);
+      if (!on) continue;
+      /* A default that reads another parameter needs that read renamed into
+         the per-block namespace, which the parse-time block rename does not
+         reach inside default expressions yet -- reject precisely rather than
+         emit an unrenamed (undeclared or wrong) variable reference. */
+      { int dv0 = proc_opt_value(c, create, j);
+        NameSet dused = {0};
+        if (dv0 >= 0) proc_collect_used(c, dv0, &dused);
+        int refs_param = 0;
+        for (int u2 = 0; u2 < dused.n && !refs_param; u2++)
+          if (nameset_has(&params, dused.v[u2])) refs_param = 1;
+        free(dused.v);
+        if (refs_param) {
+          unsupported(c, create, "proc optional default referencing another parameter (later slice)");
+          return;
+        } }
+      buf_printf(pb, "    sp_RbVal lv_%s = (%d + %d < argc - %d && %d + %d < 16)\n", on, arity, j, nposts, arity, j);
+      buf_printf(pb, "      ? _sp_proc_poly_args[%d + %d] : ", arity, j);
+      { int dv = proc_opt_value(c, create, j);
+        if (dv >= 0) emit_boxed(c, dv, pb); else buf_puts(pb, "sp_box_nil()"); }
+      buf_puts(pb, ";\n");
+      buf_printf(pb, "    (void)lv_%s;\n", on);
+    }
     if (restn && restn[0]) {
       buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", restn, restn);
-      buf_printf(pb, "    { mrb_int __k, __hi = argc - %d; if (__hi > 16) __hi = 16;\n", nposts);
-      buf_printf(pb, "      for (__k = %d; __k < __hi; __k++) sp_PolyArray_push(lv_%s, _sp_proc_poly_args[__k]); }\n",
-                 arity, restn);
+      buf_printf(pb, "    { mrb_int __k = %d + %d, __hi = argc - %d; if (__hi > 16) __hi = 16;\n",
+                 arity, nopts, nposts);
+      buf_printf(pb, "      for (; __k < __hi; __k++) sp_PolyArray_push(lv_%s, _sp_proc_poly_args[__k]); }\n",
+                 restn);
     }
     for (int j = 0; j < nposts; j++) {
       const char *pp = proc_post_name(c, create, j);

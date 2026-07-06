@@ -3126,6 +3126,14 @@ int infer_block_params(Compiler *c) {
           lv->is_block_param = 1;
           if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
         }
+        int nop = 0; const int *opts = nt_arr(nt, pn, "optionals", &nop);
+        for (int j = 0; j < nop; j++) {
+          const char *pname = nt_str(nt, opts[j], "name");
+          if (!pname) continue;
+          LocalVar *lv = scope_local_intern(bs, pname);
+          lv->is_block_param = 1;
+          if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+        }
       }
     }
   }
@@ -3147,6 +3155,14 @@ int infer_block_params(Compiler *c) {
     int np = 0; const int *posts = nt_arr(nt, pn, "posts", &np);
     for (int j = 0; j < np; j++) {
       const char *pname = nt_str(nt, posts[j], "name");
+      if (!pname) continue;
+      LocalVar *lv = scope_local_intern(bs, pname);
+      lv->is_block_param = 1;
+      if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+    }
+    int nop = 0; const int *opts = nt_arr(nt, pn, "optionals", &nop);
+    for (int j = 0; j < nop; j++) {
+      const char *pname = nt_str(nt, opts[j], "name");
       if (!pname) continue;
       LocalVar *lv = scope_local_intern(bs, pname);
       lv->is_block_param = 1;
