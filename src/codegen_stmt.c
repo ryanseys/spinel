@@ -2674,6 +2674,13 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
   else if (strncmp(txt, "sp_raise_nomethod(", 18) == 0 &&
            g_ret_type != TY_POLY && g_ret_type != TY_UNKNOWN)
     emit_unbox_text(c, g_ret_type, txt, b);
+  /* A NameError-raising constant read is a comma expression whose dummy value
+     (e.g. ((sp_Class){-1})) need not match the slot: the raise longjmps first.
+     Evaluate it for the raise and yield the slot's default instead of letting
+     the mismatched C type flow into the return. */
+  else if (strncmp(txt, "(sp_raise_cls(", 14) == 0 &&
+           g_ret_type != TY_POLY && g_ret_type != TY_UNKNOWN)
+    buf_printf(b, "({ (void)%s; %s; })", txt, default_value(g_ret_type));
   else buf_puts(b, txt);
   free(tmp.p);
 }

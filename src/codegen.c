@@ -1796,6 +1796,13 @@ else if (orecv >= 0 && onm) {
     buf_puts(pb, "  return 0;\n");
   }
   else {
+    /* Direct-slot return (mrb_int carrier). A TY_UNKNOWN tail can still emit
+       an sp_RbVal-valued expression -- the unresolved-call gate's
+       sp_raise_nomethod(...), or a NameError-raising constant read -- which
+       must not flow into the mrb_int return raw. Present the carrier type to
+       emit_stmts_tail so its existing gate-token coercion fires (that
+       coercion deliberately skips when g_ret_type is UNKNOWN). */
+    if (ret == TY_UNKNOWN) g_ret_type = TY_INT;
     emit_stmts_tail(c, body, pb, 1);
     buf_puts(pb, "  return 0;\n");
   }
