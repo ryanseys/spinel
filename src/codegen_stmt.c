@@ -4759,7 +4759,7 @@ else {
             buf_puts(b, ");\n");
           }
           emit_indent(b, indent);
-          buf_printf(b, "lv_%s = _t%d;\n", rest_var, tr0);
+          buf_printf(b, "lv_%s = _t%d;\n", rename_local(rest_var), tr0);
           if (ln == 0) return;
         }
         for (int i = 0; i < ln; i++) {
@@ -4767,7 +4767,7 @@ else {
           if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) continue;
           emit_indent(b, indent);
           const char *lvn = nt_str(nt, lefts[i], "name");
-          buf_printf(b, "lv_%s = ", lvn);
+          buf_printf(b, "lv_%s = ", rename_local(lvn));
           LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
           int lpoly = llv && llv->type == TY_POLY;
           if (i == 0) { if (lpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b); }
@@ -4808,7 +4808,7 @@ else {
           else if (sp_streq(lty, "LocalVariableTargetNode")) {
             emit_indent(b, indent);
             const char *lvn = nt_str(nt, lefts[i], "name");
-            buf_printf(b, "lv_%s = ", lvn);
+            buf_printf(b, "lv_%s = ", rename_local(lvn));
             LocalVar *llv = lvn ? scope_local(rt_scope, lvn) : NULL;
             TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
             char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
@@ -4912,7 +4912,7 @@ else {
           emit_indent(b, indent);
           buf_printf(b, "SP_GC_ROOT(_t%d);\n", tr);
           emit_indent(b, indent);
-          buf_printf(b, "lv_%s = _t%d;\n", rest_var, tr);
+          buf_printf(b, "lv_%s = _t%d;\n", rename_local(rest_var), tr);
         }
         for (int j = 0; j < rn; j++) {
           const char *lty = nt_type(nt, rights[j]);
@@ -4931,7 +4931,7 @@ else {
             buf_printf(b, "mrb_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
                        tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
             emit_indent(b, indent);
-            buf_printf(b, "lv_%s = ", rlvn);
+            buf_printf(b, "lv_%s = ", rename_local(rlvn));
             char rgx[96]; snprintf(rgx, sizeof rgx, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
             if (rllv && rllv->type == TY_POLY && !sp_streq(k, "Poly")) {
               Buf bx; memset(&bx, 0, sizeof bx);
@@ -5009,7 +5009,7 @@ else {
           else if (sp_streq(lty, "LocalVariableTargetNode")) {
             const char *lnm = nt_str(nt, lefts[i], "name");
             emit_indent(b, indent);
-            buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %dLL);\n", lnm, tarr, i);
+            buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %dLL);\n", rename_local(lnm), tarr, i);
           }
           else if (sp_streq(lty, "InstanceVariableTargetNode") &&
                    rt_scope_p && rt_scope_p->class_id >= 0) {
@@ -5214,7 +5214,7 @@ else {
           LocalVar *ilv = inm ? scope_local(comp_scope_of(c, inner_lefts[j]), inm) : NULL;
           char getexpr[80]; snprintf(getexpr, sizeof getexpr, "sp_%sArray_get(_t%d, %d)", k, tmps[i], j);
           emit_indent(b, indent);
-          buf_printf(b, "lv_%s = ", inm);
+          buf_printf(b, "lv_%s = ", rename_local(inm));
           /* box the scalar element into a widened (poly) target slot */
           if (ilv && ilv->type == TY_POLY && elemty != TY_POLY)
             emit_boxed_text(c, elemty, getexpr, b);
@@ -5327,7 +5327,7 @@ else {
         }
       }
       emit_indent(b, indent);
-      buf_printf(b, "lv_%s = _t%d;\n", rest_var, tr);
+      buf_printf(b, "lv_%s = _t%d;\n", rename_local(rest_var), tr);
     }
     if (rest_gvar && comp_gvar(c, rest_gvar)) {
       int rstart = ln, rend = en - rn;
@@ -5363,7 +5363,7 @@ else {
         LocalVar *rjlv = rnm_j ? scope_local(comp_scope_of(c, id), rnm_j) : NULL;
         int rjpoly = rjlv && rjlv->type == TY_POLY;
         if (ridx >= 0 && ridx < en) {
-          buf_printf(b, "lv_%s = ", rnm_j);
+          buf_printf(b, "lv_%s = ", rename_local(rnm_j));
           TyKind valt = comp_ntype(c, els[ridx]);
           if (rjpoly && valt != TY_POLY) {
             char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[ridx]);
@@ -5375,7 +5375,7 @@ else {
           buf_puts(b, ";\n");
         }
         else {
-          buf_printf(b, "lv_%s = ", rnm_j);
+          buf_printf(b, "lv_%s = ", rename_local(rnm_j));
           TyKind tt = comp_ntype(c, rights[j]);
           if (rjpoly) {
             Buf bx; memset(&bx, 0, sizeof bx);
