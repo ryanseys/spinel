@@ -3994,10 +3994,11 @@ static SP_TLS volatile const char *sp_last_exc_cls = sp_str_empty;
    sp_pending_exc_obj is set by sp_raise_exc just before the longjmp and
    consumed into the per-frame slot by sp_raise_cls. */
 static SP_TLS void *sp_exc_obj[SP_EXC_STACK_MAX];
-/* $! -- the exception being handled by the innermost active rescue arm
-   (NULL outside one). The arm prologue saves/sets it; normal arm completion
-   restores the outer value. Rooted alongside the carried exc objects. */
-static SP_TLS struct sp_Exception_s *sp_bang_exc;
+/* Parallel save of the ENCLOSING context's $! at each frame push: a raise
+   into frame i overwrites sp_exc_obj[i] (the handler runs after the pop, at
+   the same index a nested begin will reuse), so the rescue arm restores the
+   outer value from here on normal completion. Indexed like sp_exc_obj. */
+static SP_TLS void *sp_bang_sv[SP_EXC_STACK_MAX];
 static SP_TLS void *sp_pending_exc_obj = NULL;
 /* ---- Native backtrace formatting (spinel --debug) ---------------------- */
 /* True for sp_<name> symbols that are runtime helpers, not user Ruby methods.
@@ -4597,7 +4598,6 @@ static void sp_mark_proc_homes(void) {
    globals. Only in the threaded build (the single-threaded one never parks). */
 static void sp_publish_worker_roots(void) {
   for (int i = 0; i < sp_exc_top; i++) if (sp_exc_obj[i]) _sp_gc_root_push((void **)&sp_exc_obj[i]);
-  if (sp_bang_exc) _sp_gc_root_push((void **)&sp_bang_exc);
   if (sp_pending_exc_obj) _sp_gc_root_push((void **)&sp_pending_exc_obj);
   for (sp_proc_home *h = sp_proc_ret_head; h; h = h->prev)
     _sp_gc_root_push((void **)((uintptr_t)&h->val | (uintptr_t)1));   /* sp_RbVal root */
