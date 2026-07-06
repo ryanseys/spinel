@@ -698,6 +698,23 @@ TyKind infer_call(Compiler *c, int id) {
     }
   }
 
+  /* the empty-hash-literal analog of the array case above: a method on an empty
+     hash literal (`{}.freeze`, `{}.merge(...)`) has no entries to fold key/value
+     types from. Treat it as a string-keyed poly hash -- the same C type codegen
+     emits for a bare `{}` (sp_StrPolyHash) so declaration/initializer/readers
+     all agree -- so hash methods dispatch instead of falling through to
+     unresolved. In particular a `CONST = {}.freeze` value constant then gets a
+     real hash type (via the identity `freeze` below) rather than staying UNKNOWN
+     and being dropped from codegen entirely (whereupon reads of it emit
+     `uninitialized constant`). */
+  if (rt == TY_UNKNOWN && recv >= 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && (sp_streq(rty, "HashNode") || sp_streq(rty, "KeywordHashNode"))) {
+      int en = 0; nt_arr(nt, recv, "elements", &en);
+      if (en == 0) rt = TY_STR_POLY_HASH;
+    }
+  }
+
   /* `<&block-param>.call(...)` inside a yielding method: the explicit-call form
      of yield. Its value is the call-site block's value (resolved like yield). */
   {
