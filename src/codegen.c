@@ -169,6 +169,18 @@ static int call_returns_nullable_int(Compiler *c, int node) {
   return 0;
 }
 
+/* assoc/rassoc/dig return a [k,v] pair (or the dug value) or nil; the miss case
+   yields a NULL sp_PolyArray*, which sp_box_poly_array would box as a truthy
+   SP_TAG_OBJ over NULL (so `== nil` fails). A real result array is never NULL,
+   so a NULL unambiguously means nil -- box these through sp_box_nullable_obj. */
+static int call_returns_nullable_array(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  const char *nty = nt_type(nt, node);
+  if (!nty || !sp_streq(nty, "CallNode")) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  return nm && (sp_streq(nm, "assoc") || sp_streq(nm, "rassoc") || sp_streq(nm, "dig"));
+}
+
 void emit_boxed(Compiler *c, int node, Buf *b) {
   {
     const char *bty0 = nt_type(c->nt, node);
@@ -291,7 +303,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_INT_ARRAY:   fn = "sp_box_int_array";   break;
     case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
     case TY_STR_ARRAY:   fn = "sp_box_str_array";   break;
-    case TY_POLY_ARRAY:  fn = "sp_box_poly_array";  break;
+    case TY_POLY_ARRAY:
+      if (call_returns_nullable_array(c, node)) {
+        buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
+        buf_puts(b, "), SP_BUILTIN_POLY_ARRAY)"); return;
+      }
+      fn = "sp_box_poly_array";  break;
     case TY_NIL: {
       const char *nty = nt_type(c->nt, node);
       if (nty && sp_streq(nty, "NilNode")) { buf_puts(b, "sp_box_nil()"); return; }
