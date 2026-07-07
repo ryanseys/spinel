@@ -8,6 +8,12 @@
 -include $(dir $(lastword $(MAKEFILE_LIST)))local.mk
 
 CC       ?= cc
+# The unwrapped compiler (before the sccache/ccache wrap below). The test
+# harness compiles each generated program with this directly: the per-test
+# compile+link is a one-shot, never-cacheable unit, so routing it through
+# sccache's client/server only adds latency (measured ~35% slower). sccache
+# still wraps $(CC) for the compiler build, which does benefit from caching.
+CC_RAW   := $(CC)
 # Auto-wrap CC with sccache or ccache when present. Skip when CC is
 # already wrapped — the substring guard catches both "ccache" and
 # "sccache" since "ccache" is a substring of "sccache", so CI's
