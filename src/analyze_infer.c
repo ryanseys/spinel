@@ -1025,6 +1025,13 @@ else {
         if (kind && sp_streq(kind, "ptr")) return TY_POLY;
         return TY_INT;
       }
+      /* ffi_write_*: Module.writer_name(buf, val) returns the written value */
+      int wi = ffi_find_writer(c, rcmod, name);
+      if (wi >= 0) {
+        const char *kind = c->ffi_writers[wi].kind;
+        if (kind && sp_streq(kind, "ptr")) return TY_POLY;
+        return TY_INT;
+      }
     }
   }
 

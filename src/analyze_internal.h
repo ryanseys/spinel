@@ -19,6 +19,7 @@ TyKind ffi_spec_to_ty(const char *spec);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
 int ffi_find_reader(Compiler *c, const char *mod, const char *name);
+int ffi_find_writer(Compiler *c, const char *mod, const char *name);
 
 
 
@@ -159,6 +160,7 @@ void register_ffi_decls(Compiler *c);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
 int ffi_find_reader(Compiler *c, const char *mod, const char *name);
+int ffi_find_writer(Compiler *c, const char *mod, const char *name);
 int infer_global_const_types(Compiler *c);
 int infer_multiwrite_const_types(Compiler *c);
 void resolve_parents(Compiler *c);
