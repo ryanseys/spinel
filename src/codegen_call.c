@@ -1935,13 +1935,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            the constructor with the args filled to its signature. */
         int scust = comp_method_in_chain(c, ci, "initialize", NULL);
         if (scust >= 0 && c->scopes[scust].reachable && !c->scopes[scust].yields) {
-          buf_printf(b, "sp_%s_new(", cls->name);
+          buf_printf(b, "sp_%s_new(", cls->c_name);
           emit_args_filled(c, scust, nt_ref(nt, id, "arguments"), "", b);
           buf_puts(b, ")");
           return 1;
         }
         int kwh = (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
-        buf_printf(b, "sp_%s_new(", cls->name);
+        buf_printf(b, "sp_%s_new(", cls->c_name);
         for (int a = 0; a < cls->nivars; a++) {
           if (a) buf_puts(b, ", ");
           int vnode = -1;

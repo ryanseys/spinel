@@ -3374,7 +3374,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
       int t = ++g_tmp;
       Buf rb = expr_buf(c, recv);
-      buf_printf(b, "({ sp_%s *_t%d = %s; sp_%s_new(", sc->name, t, rb.p ? rb.p : "", sc->name); free(rb.p);
+      buf_printf(b, "({ sp_%s *_t%d = %s; sp_%s_new(", sc->c_name, t, rb.p ? rb.p : "", sc->c_name); free(rb.p);
       for (int i = 0; i < sc->nivars; i++) {
         if (i) buf_puts(b, ", ");
         int val = wkwh >= 0 ? kwh_lookup(nt, wkwh, sc->ivars[i] + 1) : -1;
@@ -3427,7 +3427,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         Buf rb = expr_buf(c, recv);
         char fld[300]; snprintf(fld, sizeof fld, "_t%d->iv_%s", t, sc->ivars[mi] + 1);
         TyKind mt = sc->ivar_types[mi];
-        buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->name, t, rb.p ? rb.p : ""); free(rb.p);
+        buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->c_name, t, rb.p ? rb.p : ""); free(rb.p);
         if (argc == 1) buf_puts(b, fld);
         else if (ty_is_hash(mt) && argc == 2) {
           const char *hn = ty_hash_cname(mt);
@@ -3458,7 +3458,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       if (mi >= 0) {
         int t = ++g_tmp;
         Buf rb = expr_buf(c, recv);
-        buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->name, t, rb.p ? rb.p : ""); free(rb.p);
+        buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->c_name, t, rb.p ? rb.p : ""); free(rb.p);
         buf_printf(b, "_t%d->iv_%s; })", t, sc->ivars[mi] + 1);
         return 1;
       }
@@ -3466,7 +3466,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       if (sc->nivars > 0) {
         int t = ++g_tmp, tk = ++g_tmp;
         Buf rb = expr_buf(c, recv);
-        buf_printf(b, "({ sp_%s *_t%d = %s; sp_RbVal _t%d = ", sc->name, t, rb.p ? rb.p : "", tk);
+        buf_printf(b, "({ sp_%s *_t%d = %s; sp_RbVal _t%d = ", sc->c_name, t, rb.p ? rb.p : "", tk);
         free(rb.p);
         emit_boxed(c, argv[0], b);
         buf_puts(b, ";");

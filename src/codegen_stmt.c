@@ -1784,7 +1784,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         emit_indent(b, indent + 1);
         buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
         for (int i = 0; i < sc->nivars; i++) {
-          char fb[300]; snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->name, t, sc->ivars[i] + 1);
+          char fb[300]; snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, sc->ivars[i] + 1);
           emit_indent(b, indent + 1);
           buf_printf(b, "sp_PolyArray_push(_t%d, ", arm_t);
           emit_boxed_text(c, sc->ivar_types[i], fb, b);
@@ -1815,7 +1815,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         emit_indent(b, indent + 1);
         buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
         for (int i = 0; i < sc->nivars; i++) {
-          char fb[300]; snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->name, t, sc->ivars[i] + 1);
+          char fb[300]; snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, sc->ivars[i] + 1);
           emit_indent(b, indent + 1);
           buf_printf(b, "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", arm_t, comp_sym_intern(c, sc->ivars[i] + 1));
           emit_boxed_text(c, sc->ivar_types[i], fb, b);
@@ -4822,7 +4822,7 @@ else {
         ClassInfo *sc = &c->classes[ty_object_class(vt)];
         int tobj = ++g_tmp;
         emit_indent(b, indent);
-        buf_printf(b, "sp_%s *_t%d = ", sc->name, tobj); emit_expr(c, value, b); buf_puts(b, ";\n");
+        buf_printf(b, "sp_%s *_t%d = ", sc->c_name, tobj); emit_expr(c, value, b); buf_puts(b, ";\n");
         /* Root the object: its members are read after sp_PolyArray_new and the
            per-member boxing below, both of which can trigger a GC. */
         emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tobj);
@@ -4893,7 +4893,7 @@ else {
         ClassInfo *sc = &c->classes[ty_object_class(vt)];
         int tobj = ++g_tmp;
         emit_indent(b, indent);
-        buf_printf(b, "sp_%s *_t%d = ", sc->name, tobj); emit_expr(c, value, b); buf_puts(b, ";\n");
+        buf_printf(b, "sp_%s *_t%d = ", sc->c_name, tobj); emit_expr(c, value, b); buf_puts(b, ";\n");
         /* Root the object: its members are read after sp_SymPolyHash_new and the
            per-member boxing below, both of which can trigger a GC. */
         emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tobj);
