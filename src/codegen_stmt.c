@@ -3296,7 +3296,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   if (has_bind) {
     emit_indent(b, indent);
     if (spec_cid >= 0)
-      buf_printf(b, "lv_%s = (sp_%s *)_ce_%d;\n", nt_str(nt, ref, "name"), c->classes[spec_cid].name, rc);
+      buf_printf(b, "lv_%s = (sp_%s *)_ce_%d;\n", nt_str(nt, ref, "name"), c->classes[spec_cid].c_name, rc);
     else
       /* bind the materialized object (which already prefers the CARRIED object
          from `raise <exception-object>` / `raise Cls.new`): the rescue variable,
@@ -3844,7 +3844,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                 TyKind at = comp_ntype(c, argv[0]);
                 int tp = ++g_tmp, tval = ++g_tmp;
                 emit_indent(b, indent);
-                buf_printf(b, "{ sp_%s *_t%d = ", c->classes[ty_object_class(rt)].name, tp);
+                buf_printf(b, "{ sp_%s *_t%d = ", c->classes[ty_object_class(rt)].c_name, tp);
                 emit_expr(c, recv, b); buf_puts(b, "; ");
                 emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval);
                 emit_expr(c, argv[0], b); buf_puts(b, ";");
@@ -3856,7 +3856,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                   int iv = comp_ivar_index(&c->classes[k], ivn);
                   TyKind ivt = iv >= 0 ? c->classes[k].ivar_types[iv] : at;
                   if (at != ivt && at != TY_POLY && ivt != TY_POLY) continue;
-                  buf_printf(b, " case %d: ((sp_%s *)_t%d)->iv_%s = ", k, c->classes[k].name, tp, base);
+                  buf_printf(b, " case %d: ((sp_%s *)_t%d)->iv_%s = ", k, c->classes[k].c_name, tp, base);
                   if (ivt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, src, b);
                   else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
                   else buf_puts(b, src);
@@ -3905,7 +3905,7 @@ else {
                    runtime object isn't that class anyway): a raw assignment
                    between mismatched C types would not compile */
                 if (at_eff != ivt && at_eff != TY_POLY && ivt != TY_POLY) continue;
-                buf_printf(b, " case %d: ((sp_%s *)_t%d.v.p)->iv_%s = ", k, c->classes[k].name, tv, base);
+                buf_printf(b, " case %d: ((sp_%s *)_t%d.v.p)->iv_%s = ", k, c->classes[k].c_name, tv, base);
                 if (ivt == TY_POLY && at_eff != TY_POLY) emit_boxed_text(c, at_eff, src, b);
                 else if (at_eff == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
                 else buf_puts(b, src);
@@ -5071,7 +5071,7 @@ else {
               /* real writer method */
               LocalVar *wp = c->scopes[wmi].nparams >= 1 ? scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[0]) : NULL;
               TyKind pt = wp ? wp->type : elem;
-              buf_printf(b, "sp_%s_%s((sp_%s *)", c->classes[cdef].name, mc(c->scopes[wmi].name), c->classes[cdef].name);
+              buf_printf(b, "sp_%s_%s((sp_%s *)", c->classes[cdef].c_name, mc(c->scopes[wmi].name), c->classes[cdef].c_name);
               emit_expr(c, crecv, b); buf_puts(b, ", ");
               if (pt == TY_POLY && elem != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, elem, get_expr, &bx); buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
               else buf_puts(b, get_expr);

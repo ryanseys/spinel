@@ -115,7 +115,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int st = ++g_tmp;
   buf_puts(b, "({\n");
   emit_indent(b, g_indent + 1);
-  buf_printf(b, "sp_%s *_t%d = sp_%s_new(", c->classes[ci].name, st, c->classes[ci].name);
+  buf_printf(b, "sp_%s *_t%d = sp_%s_new(", c->classes[ci].c_name, st, c->classes[ci].c_name);
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
   buf_puts(b, ");\n");
   snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
@@ -326,7 +326,7 @@ static void emit_ie_param_default(Compiler *c, TyKind t, Buf *b) {
   if (ty_is_object(t)) {
     int cid = ty_object_class(t);
     if (cid >= 0 && cid < c->nclasses && c->classes[cid].is_value_type) {
-      buf_printf(b, "(sp_%s){0}", c->classes[cid].name);
+      buf_printf(b, "(sp_%s){0}", c->classes[cid].c_name);
       return;
     }
   }
@@ -1355,7 +1355,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           /* A reopened primitive (Integer/Float/String/Symbol) method takes the
              unboxed value, not a struct pointer -- read the matching union field
              instead of casting .v.p to a non-existent sp_<Prim> struct. */
-          const char *_dcn = c->classes[defcls].name;
+          const char *_dcn = c->classes[defcls].c_name;
           char _dself[64];
           if (sp_streq(_dcn, "Integer") || sp_streq(_dcn, "Numeric")) snprintf(_dself, sizeof _dself, "_t%d.v.i", tv);
           else if (sp_streq(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
@@ -1394,7 +1394,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (comp_reader_in_chain(c, k, name, &rdcls)) {
           const char *rn3 = comp_resolve_alias(c, k, name);
           char fld[600];
-          snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[rdcls].name, tv, rn3);
+          snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[rdcls].c_name, tv, rn3);
           char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn3);
           int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
           TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
@@ -1655,11 +1655,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         TyKind mret = c->scopes[mi].ret;
         int mnp = c->scopes[mi].nparams;
         Buf cb; memset(&cb, 0, sizeof cb);
-        buf_printf(&cb, "sp_%s_%s((sp_%s *)_t%d.v.p", c->classes[defcls].name,
+        buf_printf(&cb, "sp_%s_%s((sp_%s *)_t%d.v.p", c->classes[defcls].c_name,
                    mc(c->scopes[mi].name), c->classes[defcls].name, tv);
         const char *saved_self = g_self;
         static char selfpbuf2[64];
-        snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_%s *)_t%d.v.p", c->classes[defcls].name, tv);
+        snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_%s *)_t%d.v.p", c->classes[defcls].c_name, tv);
         for (int a = 0; a < mnp; a++) {
           /* box the call-site arg if this candidate's parameter is poly;
              emit default for args beyond the call-site count (padding) */
@@ -1962,7 +1962,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           int initm = comp_method_in_chain(c, ci, "initialize", NULL);
           if (initm >= 0) {
             /* user initialize: sp_ClassName_new(args) calls initialize which calls super(msg) */
-            buf_printf(b, "sp_%s_new(", c->classes[ci].name);
+            buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
             emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
             buf_puts(b, ")");
           }
@@ -1984,12 +1984,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
         if (ucnew >= 0) {
           int defcls2 = -1; comp_cmethod_in_chain(c, ci, "new", &defcls2);
-          buf_printf(b, "sp_%s_s_new(", c->classes[defcls2 >= 0 ? defcls2 : ci].name);
+          buf_printf(b, "sp_%s_s_new(", c->classes[defcls2 >= 0 ? defcls2 : ci].c_name);
           emit_args_filled(c, ucnew, nt_ref(nt, id, "arguments"), "", b);
           buf_puts(b, ")");
           return 1;
         }
-        buf_printf(b, "sp_%s_new(", c->classes[ci].name);
+        buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
         buf_puts(b, ")");
@@ -2728,7 +2728,7 @@ TyKind emit_splice_to_ary_src(Compiler *c, int rhs_node, TyKind rhs_ty,
   int cid = ty_object_class(rhs_ty);
   char selfptr[24];
   snprintf(selfptr, sizeof selfptr, "_tq%d", ta);
-  buf_printf(b, "sp_%s *_tq%d = ", c->classes[cid].name, ta);
+  buf_printf(b, "sp_%s *_tq%d = ", c->classes[cid].c_name, ta);
   emit_expr(c, rhs_node, b);
   buf_printf(b, "; SP_GC_ROOT(_tq%d); ", ta);
   emit_dispatch(c, cid, "to_ary", selfptr, -1, -1, out);
@@ -4596,7 +4596,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int ic = (xc >= 0 && class_is_exc_subclass(c, xc))
                  ? comp_method_in_chain(c, xc, "initialize", NULL) : -1;
       if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
-        buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].name);
+        buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
         emit_args_filled(c, ic, -1, "", b);
         buf_puts(b, "))");
       }
@@ -4614,7 +4614,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (xc >= 0 && class_is_exc_subclass(c, xc) && c->classes[xc].nivars > 0)
         ic = comp_method_in_chain(c, xc, "initialize", NULL);
       if (xc >= 0 && ic >= 0 && c->scopes[ic].nparams >= 1) {
-        buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].name);
+        buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
         /* match the constructor's first-param type, which falls back to poly
            when unknown (same rule emit_class_new uses for the signature). */
         LocalVar *p0 = scope_local(&c->scopes[ic], c->scopes[ic].pnames[0]);
@@ -4772,7 +4772,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          class is that subclass, so `new` resolves to the subclass constructor. */
       int new_cls = (g_emitting_class_id >= 0) ? g_emitting_class_id : encl->class_id;
       if (sp_streq(name, "new")) {
-        buf_printf(b, "sp_%s_new(", c->classes[new_cls].name);
+        buf_printf(b, "sp_%s_new(", c->classes[new_cls].c_name);
         int initm = comp_method_in_chain(c, new_cls, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
         buf_puts(b, ")");
@@ -5429,7 +5429,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int cid = ty_object_class(drt);
       if (!class_is_exc_subclass(c, cid)) {
         ClassInfo *dci = &c->classes[cid];
-        const char *cn = dci->name;
+        const char *cn = dci->c_name;
         int defcls = -1;
         int ic = comp_method_in_chain(c, cid, "initialize_copy", &defcls);
         LocalVar *icp = (ic >= 0 && c->scopes[ic].nparams >= 1)
@@ -5447,13 +5447,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            a subclass are dup'd, so accept ty_is_object, casting the original to
            the param's class. TY_POLY -> box it. */
         if (ic >= 0 && (ty_is_object(ictp) || ictp == TY_POLY)) {
-          buf_printf(b, "sp_%s_initialize_copy(", c->classes[defcls].name);
-          if (defcls != cid) buf_printf(b, "(sp_%s *)", c->classes[defcls].name);
+          buf_printf(b, "sp_%s_initialize_copy(", c->classes[defcls].c_name);
+          if (defcls != cid) buf_printf(b, "(sp_%s *)", c->classes[defcls].c_name);
           if (ictp == TY_POLY) { buf_printf(b, "_t%d, sp_box_obj(_t%d, %d)); ", td, to, cid); }
           else {
             int icid = ty_object_class(ictp);
             buf_printf(b, "_t%d, ", td);
-            if (icid != cid) buf_printf(b, "(sp_%s *)", c->classes[icid].name);
+            if (icid != cid) buf_printf(b, "(sp_%s *)", c->classes[icid].c_name);
             buf_printf(b, "_t%d); ", to);
           }
         }
@@ -5576,7 +5576,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       /* A value-type receiver is a stack struct, not a pointer: bind the
          rebound self by value and dereference its ivars with `.` in the
          splice. Value types are immutable, so the copy is transparent. */
-      buf_printf(g_pre, "sp_%s %s_t%d = %s;\n", c->classes[cls_id].name,
+      buf_printf(g_pre, "sp_%s %s_t%d = %s;\n", c->classes[cls_id].c_name,
                  self_is_val ? "" : "*", tr,
                  rb.p ? rb.p : (self_is_val ? "{0}" : "NULL"));
       free(rb.p);
@@ -5944,7 +5944,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     int has_sub = 0;
     for (int j = 0; cid >= 0 && j < c->nclasses; j++) if (c->classes[j].parent == cid) { has_sub = 1; break; }
     if (cid >= 0 && !has_sub) {
-      buf_printf(b, "sp_%s_new(", c->classes[cid].name);
+      buf_printf(b, "sp_%s_new(", c->classes[cid].c_name);
       for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
       buf_puts(b, ")");
       return;
@@ -5964,7 +5964,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) {
           /* user initialize: call the generated sp_ClassName_new(args) constructor */
-          buf_printf(b, "sp_%s_new(", c->classes[ci].name);
+          buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
           emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
           buf_puts(b, ")");
         }
@@ -5983,13 +5983,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (ucnew >= 0) {
         /* user-defined def self.new: call it as a regular class method */
         int defcls2 = -1; comp_cmethod_in_chain(c, ci, "new", &defcls2);
-        buf_printf(b, "sp_%s_s_new(", c->classes[defcls2 >= 0 ? defcls2 : ci].name);
+        buf_printf(b, "sp_%s_s_new(", c->classes[defcls2 >= 0 ? defcls2 : ci].c_name);
         emit_args_filled(c, ucnew, nt_ref(nt, id, "arguments"), "", b);
         buf_puts(b, ")");
         return;
       }
       if (!c->classes[ci].is_struct) {
-        buf_printf(b, "sp_%s_new(", c->classes[ci].name);
+        buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
         buf_puts(b, ")");
@@ -6677,7 +6677,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int defcls = -1;
       int mi = comp_cmethod_in_chain(c, fold_ci, name, &defcls);
       if (mi >= 0) {
-        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
+        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].c_name, mc(c->scopes[mi].name));
         emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
         emit_cmethod_block_arg(c, id, &c->scopes[mi], -1, b);
         buf_puts(b, ")");
@@ -6721,7 +6721,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             int defcls = -1;
             int mi = comp_cmethod_in_chain(c, cand[k], name, &defcls);
             if (mi < 0) continue;
-            buf_printf(b, "if (_t%d == %d) sp_%s_s_%s(", tcid, cand[k], c->classes[defcls].name, mc(c->scopes[mi].name));
+            buf_printf(b, "if (_t%d == %d) sp_%s_s_%s(", tcid, cand[k], c->classes[defcls].c_name, mc(c->scopes[mi].name));
             emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
             emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, b);
             buf_puts(b, "); ");
@@ -6737,7 +6737,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_printf(b, "if (_t%d == %d) _t%d_r = ", tcid, cand[k], tcid);
           if (res == TY_POLY && c->scopes[mi].ret != TY_POLY) {
             Buf cb; memset(&cb, 0, sizeof cb);
-            buf_printf(&cb, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
+            buf_printf(&cb, "sp_%s_s_%s(", c->classes[defcls].c_name, mc(c->scopes[mi].name));
             emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", &cb);
             emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, &cb);
             buf_puts(&cb, ")");
@@ -6745,7 +6745,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             free(cb.p);
           }
           else {
-            buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
+            buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].c_name, mc(c->scopes[mi].name));
             emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
             emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, b);
             buf_puts(b, ")");
@@ -6766,7 +6766,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int defcls = -1;
       int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, &defcls) : -1;
       if (mi >= 0) {
-        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
+        buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].c_name, mc(c->scopes[mi].name));
         emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
         /* Pass &block as sp_Proc * when the class method keeps a real &blk
            param and isn't yield-inlined -- the instance-method and bare-call

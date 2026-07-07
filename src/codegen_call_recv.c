@@ -4046,7 +4046,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         if (iv < 0) continue;
         TyKind t = c->classes[k].ivar_types[iv];
         char fld[320];
-        snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].name, tv, sym + 1);
+        snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].c_name, tv, sym + 1);
         buf_printf(b, " case %d: _ivg%d = ", k, tv);
         emit_boxed_text(c, t, fld, b);
         buf_puts(b, "; break;");

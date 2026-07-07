@@ -92,7 +92,7 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     default: break;
   }
   if (t == TY_TIME) { buf_printf(b, "(*(sp_Time *)(%s).v.p)", expr); return; }  /* boxed by-value copy */
-  if (ty_is_object(t)) { buf_printf(b, "(sp_%s *)(%s).v.p", c->classes[ty_object_class(t)].name, expr); return; }
+  if (ty_is_object(t)) { buf_printf(b, "(sp_%s *)(%s).v.p", c->classes[ty_object_class(t)].c_name, expr); return; }
   const char *cn = c_type_name(t);
   if (cn) buf_printf(b, "(%s)(%s).v.p", cn, expr);
   else buf_printf(b, "(%s).v.i", expr);
@@ -560,9 +560,9 @@ int method_is_void(Scope *s) {
    for instance methods. */
 void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
   if (s->class_id >= 0 && s->is_cmethod)
-    buf_printf(b, "sp_%s_s_%s", c->classes[s->class_id].name, mc(s->name));
+    buf_printf(b, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
   else if (s->class_id >= 0)
-    buf_printf(b, "sp_%s_%s", c->classes[s->class_id].name, mc(s->name));
+    buf_printf(b, "sp_%s_%s", c->classes[s->class_id].c_name, mc(s->name));
   else
     buf_printf(b, "sp_%s", mc(s->name));
 }
@@ -589,7 +589,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   buf_puts(b, "(");
   int wrote = 0;
   if (s->class_id >= 0 && !s->is_cmethod) {
-    const char *cn = c->classes[s->class_id].name;
+    const char *cn = c->classes[s->class_id].c_name;
     if (sp_streq(cn, "String"))       { buf_puts(b, "const char *self"); }
     else if (sp_streq(cn, "Integer")) { buf_puts(b, "mrb_int self"); }
     else if (sp_streq(cn, "Float"))   { buf_puts(b, "double self"); }
@@ -654,7 +654,7 @@ static void emit_compiler_state_method(Compiler *c, Scope *s, Buf *b) {
       buf_puts(b, "  return lv_buf;\n}\n");
       return;
     }
-    const char *ecn = c->classes[defcls].name;
+    const char *ecn = c->classes[defcls].c_name;
     for (int i = 0; i < ci->ncs; i++) {
       const char *nm = ci->cs_names[i], *k = ci->cs_kinds[i];
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
@@ -817,7 +817,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     emit_stmts_tail(c, s->body, b, 1);
     buf_puts(b, "  return ");
     if (ty_is_object(s->ret)) {
-      if (comp_ty_value_obj(c, s->ret)) buf_printf(b, "(sp_%s){0};\n", c->classes[ty_object_class(s->ret)].name);
+      if (comp_ty_value_obj(c, s->ret)) buf_printf(b, "(sp_%s){0};\n", c->classes[ty_object_class(s->ret)].c_name);
       else buf_puts(b, "NULL;\n"); /* unreachable default (object pointer) */
     }
     else buf_printf(b, "%s;\n", default_value(s->ret));
@@ -1235,7 +1235,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   const char *cap_self_class = NULL;
   if (encl && encl->class_id >= 0 && !encl->is_cmethod && body >= 0 && fiber_body_uses_self(c, body)) {
     cap_self = 1;
-    cap_self_class = c->classes[encl->class_id].name;
+    cap_self_class = c->classes[encl->class_id].c_name;
   }
 
   /* Emit capture struct + GC scan function when there are captured vars or self */
@@ -1787,7 +1787,7 @@ else if (orecv >= 0 && onm) {
   int cap_self = bs && bs->class_id >= 0 && !bs->is_cmethod &&
                  !c->classes[bs->class_id].is_value_type &&
                  proc_body_uses_self(c, body, bs->class_id);
-  const char *self_cls = cap_self ? c->classes[bs->class_id].name : NULL;
+  const char *self_cls = cap_self ? c->classes[bs->class_id].c_name : NULL;
 
   /* parameter metadata for Proc#parameters: kinds (:req for lambdas, :opt for
      procs) + names, as interned symbol ids (pre-interned in analyze). */
@@ -2182,8 +2182,8 @@ const char *obj_str_cname(Compiler *c, int cid, int want_inspect) {
   if (cid < 0 || cid >= c->nclasses) return NULL;
   int defcls = cid;
   if (comp_method_in_chain(c, cid, want_inspect ? "inspect" : "to_s", &defcls) >= 0)
-    return c->classes[defcls].name;
-  if (c->classes[cid].is_struct) return c->classes[cid].name;  /* generated #inspect/#to_s */
+    return c->classes[defcls].c_name;
+  if (c->classes[cid].is_struct) return c->classes[cid].c_name;  /* generated #inspect/#to_s */
   return NULL;
 }
 
@@ -2217,7 +2217,7 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
        cause must be mirrored too: the rescue machinery writes it through the
        base cast, so omitting it would alias the first ivar. */
     if (ci->nivars == 0) return;
-    buf_printf(b, "struct sp_%s_s {\n", ci->name);
+    buf_printf(b, "struct sp_%s_s {\n", ci->c_name);
     buf_puts(b, "  const char *cls_name;\n");
     buf_puts(b, "  const char *parent_cls_name;\n");
     buf_puts(b, "  const char *msg;\n");
@@ -2236,7 +2236,7 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
   }
   /* the typedef is forward-declared for every class first (see codegen_program)
      so a class can embed a pointer to a class defined later in the file */
-  buf_printf(b, "struct sp_%s_s {\n", ci->name);
+  buf_printf(b, "struct sp_%s_s {\n", ci->c_name);
   buf_puts(b, "  mrb_int cls_id;\n");  /* runtime class tag for virtual dispatch */
   for (int i = 0; i < ci->nivars; i++) {
     TyKind t = ci->ivar_types[i];
@@ -2272,8 +2272,8 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
      heap ivar, its `msg` (a managed string in the dedicated struct) must
      be marked or it is swept while the exception is in flight. */
   if (!class_needs_scan(ci) && !is_exc_iv) return;
-  buf_printf(b, "static void sp_%s_scan(void *p) {\n", ci->name);
-  buf_printf(b, "  sp_%s *o = (sp_%s *)p;\n", ci->name, ci->name);
+  buf_printf(b, "static void sp_%s_scan(void *p) {\n", ci->c_name);
+  buf_printf(b, "  sp_%s *o = (sp_%s *)p;\n", ci->c_name, ci->c_name);
   if (is_exc_iv) buf_puts(b, "  sp_mark_string(o->msg);\n");
   for (int i = 0; i < ci->nivars; i++) {
     TyKind t = ci->ivar_types[i];
@@ -2332,8 +2332,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
          is_struct branch), not positionally here, since the args at the .new
          site are the custom initialize's own params, not one-per-member. */
       Scope *si = &c->scopes[sinit];
-      buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->name);
-      buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
+      buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
+      buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
       if (si->nparams > 0) {
         for (int i = 0; i < si->nparams; i++) {
           if (i) buf_puts(b, ", ");
@@ -2345,8 +2345,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       }
       else buf_puts(b, "void");
       buf_printf(b, ") {\n  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
-                ci->name, ci->name,
-                class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
+                ci->c_name, ci->c_name,
+                class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->c_name : "NULL",
                 class_needs_scan(ci) ? "_scan" : "");
       buf_puts(b, "  memset(self, 0, sizeof(*self));\n");
       buf_puts(b, "  SP_GC_ROOT(self);\n");
@@ -2357,8 +2357,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
          sp_<ancestor>_initialize (not sp_<this>_initialize), and self must be
          cast to the ancestor's struct type. (For a direct definition
          sinit_def == cid and this is unchanged.) */
-      buf_printf(b, "  sp_%s_initialize(", c->classes[sinit_def].name);
-      if (sinit_def != cid) buf_printf(b, "(sp_%s *)", c->classes[sinit_def].name);
+      buf_printf(b, "  sp_%s_initialize(", c->classes[sinit_def].c_name);
+      if (sinit_def != cid) buf_printf(b, "(sp_%s *)", c->classes[sinit_def].c_name);
       buf_puts(b, "self");
       for (int i = 0; i < si->nparams; i++) buf_printf(b, ", lv_%s", si->pnames[i]);
       buf_puts(b, ");\n");
@@ -2366,8 +2366,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       goto struct_meta;
     }
     /* Struct constructor: one parameter per member, set the backing ivars. */
-    buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->name);
-    buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
+    buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
+    buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
     for (int i = 0; i < ci->nivars; i++) {
       if (i) buf_puts(b, ", ");
       emit_ctype(c, ci->ivar_types[i], b);
@@ -2392,8 +2392,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       else if (needs_root(mt))  buf_printf(b, "  SP_GC_ROOT(a%d);\n", i);
     }
     buf_printf(b, "  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
-              ci->name, ci->name,
-              class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
+              ci->c_name, ci->c_name,
+              class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->c_name : "NULL",
               class_needs_scan(ci) ? "_scan" : "");
     buf_puts(b, "  memset(self, 0, sizeof(*self));\n");  /* recycled slots are not zeroed */
     buf_puts(b, "  SP_GC_ROOT(self);\n");
@@ -2407,7 +2407,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
        override wins. to_s defers to inspect, which always exists here. */
     if (comp_method_in_chain(c, cid, "inspect", NULL) < 0) {
       const char *rn = class_ruby_name(c, cid); if (!rn) rn = ci->name;
-      buf_printf(b, "static const char *sp_%s_inspect(sp_%s *self) {\n", ci->name, ci->name);
+      buf_printf(b, "static const char *sp_%s_inspect(sp_%s *self) {\n", ci->c_name, ci->c_name);
       buf_puts(b, "  if (!self) return \"nil\";\n");
       buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s %s\"); SP_GC_ROOT(s);\n",
                  ci->is_data ? "data" : "struct", rn);
@@ -2437,7 +2437,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   int init = comp_method_in_chain(c, cid, "initialize", &initcls);
   if (ci->is_value_type) {
     /* value-type: build on the stack and return by value (no heap / GC) */
-    buf_printf(b, "static sp_%s sp_%s_new(", ci->name, ci->name);
+    buf_printf(b, "static sp_%s sp_%s_new(", ci->c_name, ci->c_name);
     if (init >= 0 && c->scopes[init].nparams > 0) {
       Scope *s = &c->scopes[init];
       for (int i = 0; i < s->nparams; i++) {
@@ -2449,10 +2449,10 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       }
     }
     else buf_puts(b, "void");
-    buf_printf(b, ") {\n  sp_%s self = {0};\n  self.cls_id = %d;\n", ci->name, cid);
+    buf_printf(b, ") {\n  sp_%s self = {0};\n  self.cls_id = %d;\n", ci->c_name, cid);
     emit_ivar_nil_inits(b, ci, "self.", "  ", ";\n");
     if (init >= 0 && c->scopes[init].reachable && !c->scopes[init].yields) {
-      buf_printf(b, "  sp_%s_initialize(&self", c->classes[initcls].name);
+      buf_printf(b, "  sp_%s_initialize(&self", c->classes[initcls].c_name);
       Scope *s = &c->scopes[init];
       for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
       buf_puts(b, ");\n");
@@ -2464,8 +2464,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
      the pool instead of free()ing them, and sp_X_new reuses them -- this
      removes the malloc/free churn of allocation-heavy workloads. Exception
      subclasses use sp_exc_new_sub storage, so they are not pooled. */
-  if (!class_is_exc_subclass(c, cid)) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->name);
-  buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
+  if (!class_is_exc_subclass(c, cid)) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
+  buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
   if (init >= 0 && c->scopes[init].nparams > 0) {
     Scope *s = &c->scopes[init];
     for (int i = 0; i < s->nparams; i++) {
@@ -2486,7 +2486,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     const char *par = exc_builtin_parent(c, cid);
     if (ci->nivars == 0) {
       buf_printf(b, ") {\n  sp_%s *self = sp_exc_new_sub(\"%s\", \"%s\", (&(\"\\xff\")[1]));\n",
-                 ci->name, cn2, par);
+                 ci->c_name, cn2, par);
       buf_printf(b, "  SP_GC_ROOT(self);\n");
     }
     else {
@@ -2495,7 +2495,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
          members mirror sp_Exception so the raise/message machinery's casts
          work; the ivars live after and are set by initialize. */
       buf_printf(b, ") {\n  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s_scan);\n",
-                 ci->name, ci->name, ci->name, ci->name);
+                 ci->c_name, ci->c_name, ci->c_name, ci->c_name);
       buf_puts(b, "  memset(self, 0, sizeof(*self));\n");
       buf_printf(b, "  self->cls_name = \"%s\";\n", cn2);
       buf_printf(b, "  self->parent_cls_name = \"%s\";\n", par);
@@ -2506,8 +2506,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   }
   else {
   buf_printf(b, ") {\n  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
-            ci->name, ci->name,
-            class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
+            ci->c_name, ci->c_name,
+            class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->c_name : "NULL",
             class_needs_scan(ci) ? "_scan" : "");
   buf_puts(b, "  memset(self, 0, sizeof(*self));\n");  /* recycled slots are not zeroed */
   buf_printf(b, "  SP_GC_ROOT(self);\n");
@@ -2518,8 +2518,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   emit_ivar_nil_inits(b, ci, "self->", "  ", ";\n");
   } /* close else (non-exception subclass allocation) */
   if (init >= 0 && c->scopes[init].reachable && !c->scopes[init].yields) {
-    buf_printf(b, "  sp_%s_initialize(", c->classes[initcls].name);
-    if (initcls != cid) buf_printf(b, "(sp_%s *)", c->classes[initcls].name);
+    buf_printf(b, "  sp_%s_initialize(", c->classes[initcls].c_name);
+    if (initcls != cid) buf_printf(b, "(sp_%s *)", c->classes[initcls].c_name);
     buf_puts(b, "self");
     Scope *s = &c->scopes[init];
     for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
@@ -2538,7 +2538,7 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
   int is_val = comp_ty_value_obj(c, ty_object(cid));
   int t = ++g_tmp;
   if (is_val) {
-    buf_printf(b, "({ sp_%s _t%d = {0}; _t%d.cls_id = %d;", ci->name, t, t, cid);
+    buf_printf(b, "({ sp_%s _t%d = {0}; _t%d.cls_id = %d;", ci->c_name, t, t, cid);
     char lv[32]; snprintf(lv, sizeof lv, "_t%d.", t);
     emit_ivar_nil_inits(b, ci, lv, " ", ";");
     buf_printf(b, " _t%d; })", t);
@@ -2550,8 +2550,8 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
        allocation. (.new roots self because initialize runs allocating code.) */
     buf_printf(b, "({ sp_%s *_t%d = SP_POOL_NEW(%s, %s%s%s); memset(_t%d, 0, sizeof(*_t%d));"
                   " _t%d->cls_id = %d;",
-               ci->name, t, ci->name,
-               class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
+               ci->c_name, t, ci->c_name,
+               class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->c_name : "NULL",
                class_needs_scan(ci) ? "_scan" : "", t, t, t, cid);
     char lv[32]; snprintf(lv, sizeof lv, "_t%d->", t);
     emit_ivar_nil_inits(b, ci, lv, " ", ";");
@@ -2610,7 +2610,7 @@ static void emit_marshal_box_ivar(TyKind t, const char *expr, Buf *b) {
 static void emit_marshal_unbox_ivar(Compiler *c, TyKind t, Buf *b) {
   if (t == TY_POLY) { buf_puts(b, "val"); return; }
   if (ty_is_object(t)) {
-    buf_printf(b, "(val.tag == SP_TAG_OBJ ? (sp_%s *)val.v.p : NULL)", c->classes[ty_object_class(t)].name);
+    buf_printf(b, "(val.tag == SP_TAG_OBJ ? (sp_%s *)val.v.p : NULL)", c->classes[ty_object_class(t)].c_name);
     return;
   }
   switch (t) {
@@ -2638,7 +2638,7 @@ static void emit_obj_to_hash_dispatch(Compiler *c, Buf *b) {
     ClassInfo *ci = &c->classes[i];
     if (!ci->is_struct) continue;
     buf_printf(b, "    case %d: {\n", i);
-    buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->name, ci->name);
+    buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
     buf_puts(b, "      sp_StrPolyHash *h = sp_StrPolyHash_new(); SP_GC_ROOT(h);\n");
     for (int j = 0; j < ci->nivars; j++) {
       TyKind mt = ci->ivar_types[j];
@@ -2665,7 +2665,7 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     if (!class_marshalable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
     buf_printf(b, "    case %d: {\n", i);
-    buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->name, ci->name);
+    buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n", ci->name);
     buf_printf(b, "      sp_mar_long(b, %d);\n", ci->nivars);
     for (int j = 0; j < ci->nivars; j++) {
@@ -2685,7 +2685,7 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     if (!class_marshalable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
     buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", ci->name);
-    buf_printf(b, "    sp_%s *o = ", ci->name);
+    buf_printf(b, "    sp_%s *o = ", ci->c_name);
     emit_obj_alloc_expr(c, i, b);
     buf_puts(b, ";\n");
     buf_puts(b, "    SP_GC_ROOT(o);\n");
@@ -2931,7 +2931,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
                uname, scn, default_value(comp_ntype(c, id)));
     return;
   }
-  buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, mc(uname), c->classes[defcls].name, g_self);
+  buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(uname), c->classes[defcls].c_name, g_self);
   if (ty && sp_streq(ty, "ForwardingSuperNode")) {
     Scope *pm = &c->scopes[mi];
     int n = s->nparams < pm->nparams ? s->nparams : pm->nparams;
@@ -2980,7 +2980,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     if (m->ret != TY_INT && m->ret != TY_POLY) continue;  /* unusable return -> not-comparable */
     LocalVar *p = scope_local(m, m->pnames[0]);
     TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
-    const char *dcn = c->classes[defcls].name;
+    const char *dcn = c->classes[defcls].c_name;
     int self_vt = c->classes[defcls].is_value_type;
     int cid = comp_class_index(c, c->classes[k].name);
     char argbuf[160];
@@ -3054,7 +3054,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, "hash", &defcls);
     Scope *m = &c->scopes[mi];   /* signature validated in class_is_hashkey */
-    const char *dcn = c->classes[defcls].name;
+    const char *dcn = c->classes[defcls].c_name;
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
     buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
     if (m->ret == TY_INT)
@@ -3081,7 +3081,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     } else {
       snprintf(argbuf, sizeof argbuf, "sp_box_obj(b_, cls_id)");
     }
-    const char *dcn = c->classes[defcls].name;
+    const char *dcn = c->classes[defcls].c_name;
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
     buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
     if (m->ret == TY_BOOL)
@@ -4241,9 +4241,9 @@ char *codegen_program(const NodeTable *nt) {
     if (is_builtin_reopen(c->classes[i].name)) continue;
     if (c->classes[i].is_native_class) continue;  /* forward-declared with the native externs */
     if (class_is_exc_subclass(c, i) && c->classes[i].nivars == 0)
-      buf_printf(&b, "typedef sp_Exception sp_%s;\n", c->classes[i].name);
+      buf_printf(&b, "typedef sp_Exception sp_%s;\n", c->classes[i].c_name);
     else
-      buf_printf(&b, "typedef struct sp_%s_s sp_%s;\n", c->classes[i].name, c->classes[i].name);
+      buf_printf(&b, "typedef struct sp_%s_s sp_%s;\n", c->classes[i].c_name, c->classes[i].c_name);
   }
   for (int i = 0; i < c->nclasses; i++)
     if (!is_builtin_reopen(c->classes[i].name))
@@ -4313,7 +4313,7 @@ char *codegen_program(const NodeTable *nt) {
          match the definition (an empty () prototype + a _Bool param differ) */
       int scust = comp_method_in_chain(c, i, "initialize", NULL);
       int has_custom = scust >= 0 && c->scopes[scust].reachable && !c->scopes[scust].yields;
-      buf_printf(&b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
+      buf_printf(&b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
       if (has_custom) {
         /* custom initialize: the .new params are its params, not one-per-member */
         Scope *s = &c->scopes[scust];
@@ -4333,16 +4333,16 @@ char *codegen_program(const NodeTable *nt) {
       /* forward-declare the generated stringifiers so one struct's #inspect may
          recurse into a struct-typed member regardless of definition order */
       if (comp_method_in_chain(c, i, "inspect", NULL) < 0)
-        buf_printf(&b, "static const char *sp_%s_inspect(sp_%s *self);\n", ci->name, ci->name);
+        buf_printf(&b, "static const char *sp_%s_inspect(sp_%s *self);\n", ci->c_name, ci->c_name);
       if (comp_method_in_chain(c, i, "to_s", NULL) < 0)
-        buf_printf(&b, "static const char *sp_%s_to_s(sp_%s *self);\n", ci->name, ci->name);
+        buf_printf(&b, "static const char *sp_%s_to_s(sp_%s *self);\n", ci->c_name, ci->c_name);
     }
     else {
       int icid = i;
       int init = comp_method_in_chain(c, i, "initialize", &icid);
       const char *star = ci->is_value_type ? "" : "*";
       if (init >= 0 && c->scopes[init].nparams > 0) {
-        buf_printf(&b, "static sp_%s %ssp_%s_new(", ci->name, star, ci->name);
+        buf_printf(&b, "static sp_%s %ssp_%s_new(", ci->c_name, star, ci->c_name);
         Scope *s = &c->scopes[init];
         for (int m = 0; m < s->nparams; m++) {
           if (m) buf_puts(&b, ", ");
@@ -4352,7 +4352,7 @@ char *codegen_program(const NodeTable *nt) {
         }
         buf_puts(&b, ");\n");
       }
-      else buf_printf(&b, "static sp_%s %ssp_%s_new(void);\n", ci->name, star, ci->name);
+      else buf_printf(&b, "static sp_%s %ssp_%s_new(void);\n", ci->c_name, star, ci->c_name);
     }
   }
   if (c->nscopes > 1 || c->nclasses > 0) buf_puts(&b, "\n");

@@ -94,7 +94,12 @@ typedef struct {
 } Scope;
 
 typedef struct {
-  char *name;          /* class name ("Point") */
+  char *name;          /* class name ("Point"); also drives semantic checks
+                          (builtin reopen, name matching) and Ruby-visible output */
+  char *c_name;        /* C-identifier stem for `sp_<c_name>` emission: == name,
+                          unless name collides with a runtime typedef (sp_RbVal,
+                          sp_IntArray, ...) in which case it is disambiguated so a
+                          user `class RbVal` does not redefine the runtime type */
   int def_node;        /* ClassNode id */
   int parent;          /* superclass index, or -1 */
   char **ivars;        /* instance variable names, incl. leading '@' */

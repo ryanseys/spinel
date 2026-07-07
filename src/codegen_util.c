@@ -740,7 +740,7 @@ void emit_ctype(Compiler *c, TyKind t, Buf *b) {
   if (ty_is_object(t)) {
     int cid = ty_object_class(t);
     /* value-type classes are stored inline (sp_X); others are heap pointers */
-    buf_printf(b, "sp_%s %s", c->classes[cid].name, c->classes[cid].is_value_type ? "" : "*");
+    buf_printf(b, "sp_%s %s", c->classes[cid].c_name, c->classes[cid].is_value_type ? "" : "*");
   }
   else {
     const char *n = c_type_name(t);

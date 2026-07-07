@@ -187,6 +187,38 @@ Scope *comp_scope_new(Compiler *c, const char *name, int def_node) {
   return s;
 }
 
+/* Runtime typedefs `sp_<X>` a user class name could redefine. A user class whose
+   name matches one gets a `u_`-prefixed C stem (`sp_u_<name>`) so its emitted
+   struct/typedef/methods never collide with the runtime's own type. (Builtin
+   class names like Range/Complex are reopened via the __oc_ path and never emit
+   a fresh sp_<name> struct, so listing them here is merely harmless.) */
+static int sp_name_collides_runtime(const char *n) {
+  /* ONLY runtime-internal type names that are NOT Ruby classes. A builtin class
+     (String, Range, Complex, Proc, ...) is reopened via the primitive/__oc_ path
+     and never emits a fresh `sp_<name>` struct, so it does not collide -- and it
+     must NOT be mangled, or the builtin-name checks (`sp_streq(dcn,"String")`)
+     that share the C stem would stop matching. */
+  static const char *const reserved[] = {
+    "RbVal", "Val", "Bigint",
+    "IntArray", "FloatArray", "StrArray", "PolyArray", "PtrArray",
+    "IntIntHash", "IntStrHash", "StrIntHash", "StrStrHash", "SymPolyHash",
+    "StrPolyHash", "PolyPolyHash", "BoundMethod", "Curry", "ProcCompose",
+    "StrBuf", "Argf", "Argv", "condvar", "mutex", "queue", "thread",
+    NULL };
+  for (int i = 0; reserved[i]; i++) if (sp_streq(n, reserved[i])) return 1;
+  return 0;
+}
+/* The C-identifier stem for a class: the name, disambiguated if it would clash
+   with a runtime typedef. Caller owns the returned strdup'd string. */
+static char *sp_class_c_name(const char *name) {
+  if (!name) return NULL;
+  if (!sp_name_collides_runtime(name)) return strdup(name);
+  size_t n = strlen(name);
+  char *m = malloc(n + 3);
+  if (!m) return strdup(name);
+  m[0] = 'u'; m[1] = '_'; memcpy(m + 2, name, n + 1);
+  return m;
+}
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   if (c->nclasses >= c->cclasses) {
     c->cclasses = c->cclasses ? c->cclasses * 2 : 8;
@@ -195,6 +227,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   ClassInfo *ci = &c->classes[c->nclasses++];
   memset(ci, 0, sizeof(*ci));
   ci->name = name ? strdup(name) : NULL;
+  ci->c_name = sp_class_c_name(name);
   ci->def_node = def_node;
   ci->parent = -1;
   ci->enclosing_class = -1;

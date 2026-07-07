@@ -151,7 +151,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int self_is_val = c->classes[recv_class].is_value_type;
     int st = ++g_tmp;
     emit_indent(b, indent + 1);
-    buf_printf(b, "sp_%s %s_t%d = ", c->classes[recv_class].name, self_is_val ? "" : "*", st);
+    buf_printf(b, "sp_%s %s_t%d = ", c->classes[recv_class].c_name, self_is_val ? "" : "*", st);
     emit_expr(c, recv, b);
     buf_puts(b, ";\n");
     snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
