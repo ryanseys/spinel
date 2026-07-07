@@ -412,8 +412,9 @@ uint32_t*sp_utf8_decode_charset_n(const char*s,size_t bl,size_t*out_n){
         has_prev=0;
         continue;
       }
-      /* Bad range (hi<prev): fall through, push '-' literally. */
-      cp='-';
+      /* Descending range (hi < prev) is an error in count/tr/delete/squeeze. */
+      free(cps);
+      sp_raise_cls("ArgumentError", "invalid range in string transliteration");
     }
     if(n>=cap){cap*=2;cps=(uint32_t*)realloc(cps,cap*sizeof(uint32_t));}
     cps[n++]=cp;
