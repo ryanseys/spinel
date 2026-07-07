@@ -161,6 +161,7 @@ static int call_returns_nullable_int(Compiler *c, int node) {
      TY_INT when the element/position is an int; box_int_or_nil is a no-op on a
      real int, so the name gate plus the TY_INT case is enough. */
   if (sp_streq(nm, "index") || sp_streq(nm, "rindex") || sp_streq(nm, "delete_at") ||
+      sp_streq(nm, "byteindex") || sp_streq(nm, "byterindex") ||
       sp_streq(nm, "pop") || sp_streq(nm, "shift") || sp_streq(nm, "delete")) return 1;
   if (sp_streq(nm, "begin") || sp_streq(nm, "end")) {
     int r = nt_ref(nt, node, "receiver");

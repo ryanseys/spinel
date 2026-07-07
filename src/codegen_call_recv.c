@@ -2697,6 +2697,24 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[0], b); buf_puts(b, ", ");
         emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       }
+      /* byteindex/byterindex over a String needle: BYTE-offset search (result +
+         start are byte offsets). The runtime helpers already carry nil as
+         SP_INT_NIL. A Regexp needle is a separate feature -- not handled here,
+         so it falls through to the unsupported-call reject. */
+      else if (sp_streq(name, "byteindex") && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+        buf_printf(b, "sp_str_byteindex(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (sp_streq(name, "byteindex") && argc == 2 && comp_ntype(c, argv[0]) == TY_STRING) {
+        buf_printf(b, "sp_str_byteindex_from(%s, ", r); emit_expr(c, argv[0], b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (sp_streq(name, "byterindex") && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+        buf_printf(b, "sp_str_byterindex(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (sp_streq(name, "byterindex") && argc == 2 && comp_ntype(c, argv[0]) == TY_STRING) {
+        buf_printf(b, "sp_str_byterindex_from(%s, ", r); emit_expr(c, argv[0], b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+      }
       else if ((sp_streq(name, "partition") || sp_streq(name, "rpartition")) && argc == 1 &&
                re_lit_index(c, argv[0]) < 0) {
         buf_printf(b, "sp_str_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ")");

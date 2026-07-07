@@ -2896,6 +2896,12 @@ else {
     if (sp_streq(name, "sum") && argc == 0) return TY_INT;
     if (sp_streq(name, "unpack1") && (argc == 1 || argc == 2)) return an_unpack1_lit_type(nt, argv[0]);
     if (sp_streq(name, "rindex")) return TY_INT;
+    /* byteindex/byterindex over a String needle -> byte offset or nil. The
+       Regexp form is a separate (unimplemented) feature, so leave it untyped
+       here and let codegen reject it loudly rather than treat a pattern as a
+       string needle. */
+    if ((sp_streq(name, "byteindex") || sp_streq(name, "byterindex")) &&
+        (argc == 1 || argc == 2) && comp_ntype(c, argv[0]) == TY_STRING) return TY_INT;
     if (sp_streq(name, "partition") || sp_streq(name, "rpartition")) return TY_STR_ARRAY;
     if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
     if (sp_streq(name, "to_f"))  return TY_FLOAT;
