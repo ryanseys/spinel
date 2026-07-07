@@ -3854,6 +3854,14 @@ char *codegen_program(const NodeTable *nt) {
     for (int fi = 0; fi < cf->n_ffi_funcs; fi++) {
       const char *ret = cf->ffi_funcs[fi].ret;
       if (sp_streq(ret, "binstr")) any_binstr = 1;
+      /* A function taking a callback (e.g. qsort, bsearch) is declared by a
+         system header; emitting our own extern -- whose array/pointer specs may
+         not match the header's void* -- conflicts under gcc. Skip it and call
+         the header-declared symbol directly (implicit pointer conversions). */
+      int has_cb = 0;
+      for (int ai = 0; ai < cf->ffi_funcs[fi].nargs; ai++)
+        if (ffi_find_callback(cf, cf->ffi_funcs[fi].mod, cf->ffi_funcs[fi].args[ai]) >= 0) { has_cb = 1; break; }
+      if (has_cb) continue;
       /* A Fiddle-synthesized binding with a pointer/string in its signature
          names a system-header symbol (strlen, memcpy, ...) whose const
          qualification our spec can't reproduce; emitting our own extern would
