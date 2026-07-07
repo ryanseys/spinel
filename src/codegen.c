@@ -140,6 +140,35 @@ void emit_str_expr(Compiler *c, int node, Buf *b) {
   free(tmp.p);
 }
 
+/* A handful of builtins are typed TY_INT but return the SP_INT_NIL sentinel for
+   their nil case (bsearch/bsearch_index find-miss, nonzero?/infinite? on the
+   boundary, MatchData#begin/end of an unmatched optional group). Typed
+   operations sentinel-check, but boxing the raw int into poly (e.g. through a
+   `.should` receiver) would carry the sentinel as a truthy integer, so `== nil`
+   fails. Box these through sp_box_int_or_nil. Kept to the specific nullable
+   builtins so the hot int-into-poly path (optcarrot's pixels) stays sp_box_int. */
+static int call_returns_nullable_int(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  const char *nty = nt_type(nt, node);
+  if (!nty || !sp_streq(nty, "CallNode")) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm) return 0;
+  int blk = nt_ref(nt, node, "block");
+  if ((sp_streq(nm, "bsearch") || sp_streq(nm, "bsearch_index")) && blk >= 0) return 1;
+  if (sp_streq(nm, "nonzero?") || sp_streq(nm, "infinite?")) return 1;
+  /* String#index/rindex (search miss -> nil) and Array element removers
+     (delete_at/pop/shift/delete out of range / not found -> nil) are typed
+     TY_INT when the element/position is an int; box_int_or_nil is a no-op on a
+     real int, so the name gate plus the TY_INT case is enough. */
+  if (sp_streq(nm, "index") || sp_streq(nm, "rindex") || sp_streq(nm, "delete_at") ||
+      sp_streq(nm, "pop") || sp_streq(nm, "shift") || sp_streq(nm, "delete")) return 1;
+  if (sp_streq(nm, "begin") || sp_streq(nm, "end")) {
+    int r = nt_ref(nt, node, "receiver");
+    if (r >= 0 && comp_ntype(c, r) == TY_MATCHDATA) return 1;
+  }
+  return 0;
+}
+
 void emit_boxed(Compiler *c, int node, Buf *b) {
   {
     const char *bty0 = nt_type(c->nt, node);
@@ -248,7 +277,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
        --int-overflow=promote (where int? widens to poly); in default/wrap mode
        a real int is never the sentinel, so skip the per-box check there -- it is
        on the hot path (every int boxed into poly, e.g. optcarrot's pixels). */
-    case TY_INT:    fn = g_promote_mode ? "sp_box_int_or_nil" : "sp_box_int"; break;
+    case TY_INT:    fn = (g_promote_mode || call_returns_nullable_int(c, node)) ? "sp_box_int_or_nil" : "sp_box_int"; break;
     case TY_FLOAT:  fn = "sp_box_float"; break;
     case TY_BIGINT: fn = "sp_box_bigint"; break;
     case TY_STRING: fn = "sp_box_str";   break;
