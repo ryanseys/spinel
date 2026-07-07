@@ -556,6 +556,14 @@ def compile(prj, entry, out, extra)
   cmd = "SPINEL_REQUIRE_GATE=1 #{spinel_bin} #{entry}"
   prj.dep_paths.each { |d| cmd += " -I #{d}" }
   cmd += " -I #{prj.root}"
+  # Feed .rbs sidecars to the compiler's --rbs seed machinery when the project
+  # carries any (issue #1788). `.rbs` participates by extension, so a package's
+  # type sidecars pin its public surfaces (e.g. a Router#match that would
+  # otherwise infer poly) under `spin build`/`test`. --rbs takes one dir and its
+  # extractor scans recursively, so the project root covers every sidecar.
+  if Dir.glob(File.join(prj.root, "**", "*.rbs")).any?
+    cmd += " --rbs #{prj.root}"
+  end
   prj.native_objs.each { |o| cmd += " --link #{o}" }
   cmd += " #{extra}" if extra != ""
   cmd += " -o #{out}"
