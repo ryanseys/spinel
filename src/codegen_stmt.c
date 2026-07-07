@@ -4042,6 +4042,13 @@ else {
       buf_printf(b, "if (%s_t%d->iv_%s) _t%d->iv_%s = ", is_or ? "!" : "", tr, attr, tr, attr);
       emit_expr(c, v, b); buf_puts(b, "; }\n");
     }
+    else if (ivt == TY_INT) {
+      /* nullable-int slot: nil is SP_INT_NIL (false does not inhabit an int
+         slot) -- ||= assigns exactly when nil, &&= exactly when not. */
+      buf_printf(b, "if (_t%d->iv_%s %s SP_INT_NIL) _t%d->iv_%s = ",
+                 tr, attr, is_or ? "==" : "!=", tr, attr);
+      emit_expr(c, v, b); buf_puts(b, "; }\n");
+    }
     else if (!is_or) {  /* &&= on always-truthy type: always assign */
       buf_printf(b, "_t%d->iv_%s = ", tr, attr); emit_expr(c, v, b); buf_puts(b, "; }\n");
     }

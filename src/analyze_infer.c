@@ -3620,6 +3620,22 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     return hv;
   }
+  if (nk == NK_DefNode) return TY_SYMBOL;  /* `def` evaluates to :name */
+  if (nk == NK_CallOrWriteNode || nk == NK_CallAndWriteNode) {
+    /* `a.v ||= x` evaluates to the attribute's (assigned-or-existing) value:
+       the backing ivar's type when the receiver class is known. */
+    int recv = nt_ref(nt, id, "receiver");
+    const char *attr = nt_str(nt, id, "name");
+    TyKind rt2 = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+    if (attr && ty_is_object(rt2)) {
+      int cid2 = ty_object_class(rt2);
+      char ivn2[300]; snprintf(ivn2, sizeof ivn2, "@%s", attr);
+      int ii2 = comp_ivar_index(&c->classes[cid2], ivn2);
+      if (ii2 >= 0) return c->classes[cid2].ivar_types[ii2];
+    }
+    int v2 = nt_ref(nt, id, "value");
+    return v2 >= 0 ? infer_type(c, v2) : TY_UNKNOWN;
+  }
   if (nk == NK_NextNode) {
     /* `next v` produces the BLOCK's value: its type is v's type (nil when
        bare). Leaving it untyped made a yield whose block ends in `next v`

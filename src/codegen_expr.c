@@ -1911,6 +1911,63 @@ else {
     return;
   }
 
+  if (sp_streq(ty, "InterpolatedRegularExpressionNode")) {
+    /* a dynamic regexp in general value position: the shared pattern emitter
+       builds the interpolated source and re_compiles into a prelude temp. */
+    if (emit_regex_pat_to_buf(c, id, b)) return;
+  }
+  if (sp_streq(ty, "DefNode")) {
+    /* a def in value position: the definition emits separately; the
+       expression's value is the method-name symbol. */
+    const char *dn = nt_str(nt, id, "name");
+    buf_printf(b, "(sp_sym)%d", comp_sym_intern(c, dn ? dn : ""));
+    return;
+  }
+  if (sp_streq(ty, "CallOrWriteNode") || sp_streq(ty, "CallAndWriteNode")) {
+    /* value position `x = (a.v ||= 5)`: run the conditional write, then read
+       the attribute back as the expression's value (the assigned-or-existing
+       one, matching CRuby). Mirrors the statement arm's shapes. */
+    int is_or = sp_streq(ty, "CallOrWriteNode");
+    int recv = nt_ref(nt, id, "receiver");
+    const char *attr = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    if (recv >= 0 && attr && ty_is_object(rt)) {
+      int class_id = ty_object_class(rt);
+      char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", attr);
+      int iidx = comp_ivar_index(&c->classes[class_id], ivn);
+      TyKind ivt = iidx >= 0 ? c->classes[class_id].ivar_types[iidx] : TY_UNKNOWN;
+      int tr = ++g_tmp;
+      buf_puts(b, "({ ");
+      emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
+      if (ivt == TY_POLY) {
+        buf_printf(b, "if (%ssp_poly_truthy(_t%d->iv_%s)) _t%d->iv_%s = ",
+                   is_or ? "!" : "", tr, attr, tr, attr);
+        emit_boxed(c, v, b);
+        buf_printf(b, "; _t%d->iv_%s; })", tr, attr);
+      }
+      else if (ivt == TY_BOOL) {
+        buf_printf(b, "if (%s_t%d->iv_%s) _t%d->iv_%s = ", is_or ? "!" : "", tr, attr, tr, attr);
+        emit_expr(c, v, b);
+        buf_printf(b, "; _t%d->iv_%s; })", tr, attr);
+      }
+      else if (ivt == TY_INT) {
+        /* a nullable-int slot: nil is the SP_INT_NIL sentinel (false does not
+           inhabit an int slot), so ||= assigns exactly when the slot is nil
+           and &&= exactly when it is not. */
+        buf_printf(b, "if (_t%d->iv_%s %s SP_INT_NIL) _t%d->iv_%s = ",
+                   tr, attr, is_or ? "==" : "!=", tr, attr);
+        emit_expr(c, v, b);
+        buf_printf(b, "; _t%d->iv_%s; })", tr, attr);
+      }
+      else if (!is_or) {
+        buf_printf(b, "_t%d->iv_%s = ", tr, attr); emit_expr(c, v, b);
+        buf_printf(b, "; _t%d->iv_%s; })", tr, attr);
+      }
+      else buf_printf(b, "_t%d->iv_%s; })", tr, attr);
+      return;
+    }
+  }
   if (sp_streq(ty, "SplatNode")) {
     /* `*x` in unboxed value position (a next/break value flowing into a
        typed PolyArray slot): splat-to-array, then unwrap the pointer. */

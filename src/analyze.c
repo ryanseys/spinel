@@ -2737,6 +2737,11 @@ void analyze_program(Compiler *c) {
       const char *v = nt_str(c->nt, id, "value");
       if (v) comp_sym_intern(c, v);
     }
+    /* a def in value position evaluates to :name */
+    else if (ty && sp_streq(ty, "DefNode")) {
+      const char *dn = nt_str(c->nt, id, "name");
+      if (dn) comp_sym_intern(c, dn);
+    }
     /* __method__ / __callee__ yield the enclosing method's name as a symbol;
        intern it now so the id table is sized before the codegen prologue */
     else if (ty && sp_streq(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) {
