@@ -1,0 +1,6 @@
+[package]
+name = "fiddle"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# The Fiddle DSL is lowered at compile time; this package carries only the
+# Fiddle::Pointer runtime (sp_fiddle.c), linked on demand.

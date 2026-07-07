@@ -4187,6 +4187,18 @@ char *codegen_program(const NodeTable *nt) {
          function pointer, which cannot conflict. A user (non-libc) variadic
          function must be declared via a header supplied through ffi_cflags. */
       if (na > 0 && sp_streq(cf->ffi_funcs[fi].args[na - 1], "varargs")) continue;
+      /* A Fiddle-synthesized binding with a pointer/string in its signature
+         names a system-header symbol (strlen, memcpy, ...) whose const
+         qualification our spec can't reproduce; emitting our own extern would
+         conflict under the header. Skip it and call the header prototype. */
+      if (cf->ffi_funcs[fi].is_fiddle) {
+        int is_ptrish = sp_streq(ret, "ptr") || sp_streq(ret, "str") || sp_streq(ret, "binstr");
+        for (int ai = 0; ai < cf->ffi_funcs[fi].nargs && !is_ptrish; ai++) {
+          const char *s = cf->ffi_funcs[fi].args[ai];
+          if (sp_streq(s, "ptr") || sp_streq(s, "str") || sp_streq(s, "binstr")) is_ptrish = 1;
+        }
+        if (is_ptrish) continue;
+      }
       buf_puts(&b, "extern ");
       buf_puts(&b, ffi_c_type(ret));
       buf_puts(&b, " ");
@@ -4243,6 +4255,20 @@ char *codegen_program(const NodeTable *nt) {
       else { buf_printf(&b, "%s %s(%s *", native_c_type(m->ret), m->csym, cstruct); }
       for (int ai = 0; ai < m->nargs; ai++) { buf_puts(&b, ", "); buf_puts(&b, native_c_type(m->args[ai])); }
       buf_puts(&b, ");\n");
+    }
+    /* Fiddle::Pointer helpers emitted directly by codegen (not native_methods):
+       malloc/plus/minus mint a Pointer (cls_id first), raw unboxes for an FFI arg. */
+    for (int nci = 0; nci < cf->nclasses; nci++) {
+      if (cf->classes[nci].is_native_class && cf->classes[nci].c_struct &&
+          cf->classes[nci].name && sp_streq(cf->classes[nci].name, "Fiddle::Pointer")) {
+        const char *s = cf->classes[nci].c_struct;
+        buf_printf(&b, "extern %s *sp_FiddlePtr_malloc(mrb_int, mrb_int);\n", s);
+        buf_printf(&b, "extern %s *sp_FiddlePtr_new_raw(mrb_int, void *, long);\n", s);
+        buf_printf(&b, "extern %s *sp_FiddlePtr_plus(mrb_int, %s *, mrb_int);\n", s, s);
+        buf_printf(&b, "extern %s *sp_FiddlePtr_minus(mrb_int, %s *, mrb_int);\n", s, s);
+        buf_printf(&b, "extern void *sp_FiddlePtr_raw(%s *);\n", s);
+        break;
+      }
     }
     /* native_obj link markers: the spinel driver links each object only when
        its module's require-gate feature is enabled (i.e. the require appears). */

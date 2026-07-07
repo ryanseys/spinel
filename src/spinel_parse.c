@@ -2168,7 +2168,7 @@ else {
    reach the not-found branch, so they don't belong here -- only the
    C-native modules that map to a stdlib require name do. */
 static int sp_lib_is_native(const char *name) {
-  /* "json" moved to packages/json (a native binding, resolved by file) */
+  /* "json"/"fiddle" moved to packages/ (native bindings resolved by file). */
   static const char *const natives[] = { "io/console", "monitor", "time", NULL };
   for (int i = 0; natives[i]; i++) {
     if (strcmp(name, natives[i]) == 0) return 1;

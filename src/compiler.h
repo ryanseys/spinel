@@ -189,6 +189,10 @@ typedef struct {
   char *ret;       /* return spec */
   char **args;     /* arg specs array (malloc'd) */
   int nargs;
+  int is_fiddle;   /* synthesized from Fiddle (extern/Function.new): the symbol
+                      is system-header-declared, so skip our own extern for a
+                      pointer/string signature (it would conflict with the
+                      header's const-qualified prototype). */
 } FfiFunc;
 
 typedef struct { char *mod; char *name; int val; } FfiConst;     /* ffi_const */
@@ -205,6 +209,20 @@ typedef struct { char *mod; char *name; FfiField *fields; int nfields; } FfiStru
 enum { FFI_SM_NONE = 0, FFI_SM_NEW, FFI_SM_GET, FFI_SM_SET };
 typedef struct { char *mod; char *names; } FfiLib;   /* names: ;-separated lib names, or "" */
 typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags, or "" */
+
+/* A local bound by the low-level Fiddle API (register_fiddle_locals):
+   `h = Fiddle.dlopen(...)` is a HANDLE; `f = Fiddle::Function.new(...)` is a
+   FUNC whose ffi_idx indexes a synthetic ffi_func. Keyed by (scope, name). */
+enum { FIDDLE_HANDLE = 1, FIDDLE_FUNC = 2, FIDDLE_STRUCT = 3, FIDDLE_CLOSURE = 4 };
+/* ffi_idx: FUNC -> ffi_funcs index; STRUCT -> ffi_structs index;
+   CLOSURE -> fiddle_closures index. */
+typedef struct { int scope; char *name; int kind; char *lib; int ffi_idx; } FiddleLocal;
+
+/* A `Fiddle::Closure::BlockCaller.new(ret, [args]) { block }`: the block is
+   desugared to a synthetic top-level method `mname`, and `cbidx` indexes an
+   FfiCallback carrying its arg/ret specs, so passing the closure to a function-
+   pointer argument reuses the ffi_callback trampoline. `node` is the ctor call. */
+typedef struct { int node; char *mname; int cbidx; } FiddleClosure;
 
 /* One `native_func` declaration (typed static binding to carried C). Unlike
    FfiFunc, arg/ret specs are the spinel type language ("any"/"string"/"int"/
@@ -311,6 +329,21 @@ typedef struct {
   FfiCflag *ffi_cflags;
   int n_ffi_cflags, c_ffi_cflags;
 
+  /* Low-level Fiddle local bindings (Fiddle.dlopen / Fiddle::Function.new) */
+  FiddleLocal *fiddle_locals;
+  int n_fiddle_locals, c_fiddle_locals;
+
+  /* Node ids of the dlopen/Function.new calls that register_fiddle_locals
+     actually bound: these carry no runtime value and lower to nil. A ctor NOT
+     in this set (e.g. a computed symbol) was not bound, so it stays a loud
+     reject rather than a silent nil. */
+  int *fiddle_ctors;
+  int n_fiddle_ctors, c_fiddle_ctors;
+
+  /* Fiddle::Closure::BlockCaller declarations (block -> synthetic method). */
+  FiddleClosure *fiddle_closures;
+  int n_fiddle_closures, c_fiddle_closures;
+
   /* native-binding registry: native_func declarations (Path B) */
   NativeFunc *native_funcs;
   int n_native_funcs, c_native_funcs;
@@ -350,6 +383,23 @@ int comp_ternary_arms(const NodeTable *nt, int id, int *then_node, int *else_nod
    Shared by analyze (write-type collection) and codegen (chain lowering). */
 int comp_nil_chain_bottom(const NodeTable *nt, int v);
 
+/* Find a low-level Fiddle local binding by (scope, name); returns its index in
+   c->fiddle_locals or -1. Shared by inference and codegen. */
+int find_fiddle_local(Compiler *c, int scope, const char *name);
+
+/* Was call node `id` a dlopen/Function.new that register_fiddle_locals bound?
+   Such a ctor lowers to nil (no runtime value). Shared by inference and codegen. */
+int fiddle_ctor_is_bound(Compiler *c, int id);
+
+/* The FiddleClosure record index for a Closure ctor node, or -1. */
+int fiddle_closure_at(Compiler *c, int node);
+
+/* Fiddle::Pointer / Fiddle::NULL constant-path detection + the Pointer class id.
+   Shared by inference and codegen for the Pointer runtime special-cases. */
+int is_fiddle_pointer_const(const NodeTable *nt, int node);
+int is_fiddle_null_const(const NodeTable *nt, int node);
+int fiddle_pointer_cid(Compiler *c);
+
 /* Scopes. */
 Scope *comp_scope_new(Compiler *c, const char *name, int def_node);
 Scope *comp_scope_of(Compiler *c, int node_id);        /* owning scope */
@@ -370,6 +420,10 @@ int ffi_find_callback(Compiler *c, const char *mod, const char *name);
    <Name>_get_<field>, <Name>_set_<field>. Returns an FFI_SM_* op kind and,
    via out params, the struct and field indices (field -1 for _new). */
 int ffi_struct_method(Compiler *c, const char *mod, const char *method, int *si, int *fi);
+/* Find an ffi_struct by (module, name), or a field index within one; -1 if none.
+   Used by the Fiddle Importer#struct lowering (Mod::Const.malloc, x.field). */
+int ffi_find_struct(Compiler *c, const char *mod, const char *name);
+int ffi_struct_field(Compiler *c, int si, const char *field);
 
 /* native-binding registry (Path B): find a native_func by (module, name),
    return its index in c->native_funcs or -1; map a spec to a TyKind. */

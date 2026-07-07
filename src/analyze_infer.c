@@ -906,6 +906,17 @@ TyKind infer_call(Compiler *c, int id) {
     }
   }
 
+  /* Low-level Fiddle: `f.call(...)` where `f = Fiddle::Function.new(...)` was
+     bound to a local. Its result type is the synthetic ffi_func's return type.
+     Must precede the generic `<poly>.call` rule (the nil-valued local is poly). */
+  if (sp_feature_enabled("fiddle") && recv >= 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
+      name && (sp_streq(name, "call") || sp_streq(name, "()"))) {
+    int fl = find_fiddle_local(c, c->nscope[recv], nt_str(nt, recv, "name"));
+    if (fl >= 0 && c->fiddle_locals[fl].kind == FIDDLE_FUNC)
+      return ffi_spec_to_ty(c->ffi_funcs[c->fiddle_locals[fl].ffi_idx].ret);
+  }
+
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
 
@@ -1084,6 +1095,48 @@ else {
         }
       }
       else if (comp_is_sg_reader(_cls, name)) return TY_POLY;
+    }
+  }
+
+  /* A bound `Fiddle.dlopen(...)` / `Fiddle::Function.new(...)` carries no runtime
+     value; the local it binds holds nil. */
+  if (fiddle_ctor_is_bound(c, id)) return TY_POLY;
+
+  /* Fiddle::Pointer.malloc(n) and `ptr + n` / `ptr - n` yield a Pointer object. */
+  if (sp_feature_enabled("fiddle") && recv >= 0 && name) {
+    int pcid = fiddle_pointer_cid(c);
+    if (pcid >= 0) {
+      if (sp_streq(name, "malloc") && is_fiddle_pointer_const(nt, recv)) return ty_object(pcid);
+      if ((sp_streq(name, "+") || sp_streq(name, "-")) &&
+          ty_is_object(rt) && ty_object_class(rt) == pcid) return ty_object(pcid);
+    }
+  }
+
+  /* Fiddle Importer#struct: Mod::Const.malloc -> ptr, .size -> int;
+     x.field -> the field's type, x.field= -> nil (x is a struct local). */
+  if (sp_feature_enabled("fiddle") && recv >= 0 && name) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && sp_streq(rty, "ConstantPathNode")) {
+      const char *sn = nt_str(nt, recv, "name");
+      int par = nt_ref(nt, recv, "parent");
+      const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+      int si = (sn && pn) ? ffi_find_struct(c, pn, sn) : -1;
+      if (si >= 0 && sp_streq(name, "malloc")) return TY_POLY;
+      if (si >= 0 && (sp_streq(name, "size") || sp_streq(name, "sizeof"))) return TY_INT;
+    }
+    if (rty && sp_streq(rty, "LocalVariableReadNode")) {
+      int fl = find_fiddle_local(c, c->nscope[recv], nt_str(nt, recv, "name"));
+      if (fl >= 0 && c->fiddle_locals[fl].kind == FIDDLE_STRUCT) {
+        int si = c->fiddle_locals[fl].ffi_idx;
+        size_t nl = strlen(name);
+        int is_set = nl > 0 && name[nl - 1] == '=';
+        char fld[128]; size_t flen = is_set ? nl - 1 : nl;
+        if (flen < sizeof(fld)) {
+          memcpy(fld, name, flen); fld[flen] = '\0';
+          int fi2 = ffi_struct_field(c, si, fld);
+          if (fi2 >= 0) return is_set ? TY_NIL : ffi_spec_to_ty(c->ffi_structs[si].fields[fi2].spec);
+        }
+      }
     }
   }
 
@@ -3714,6 +3767,8 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_NumberedReferenceReadNode) return TY_STRING;  /* $1..$9: capture, or nil (NULL) */
   if (nk == NK_BackReferenceReadNode) return TY_STRING;  /* $&/$`/$'/$~/$+: nullable string */
   if (nk == NK_ConstantPathNode) {
+    /* Fiddle::NULL is a null Fiddle::Pointer. */
+    if (fiddle_pointer_cid(c) >= 0 && is_fiddle_null_const(nt, id)) return ty_object(fiddle_pointer_cid(c));
     /* M::CONST -> resolve by the final path component (constants register
        under their unqualified name) */
     const char *nm = nt_str(nt, id, "name");

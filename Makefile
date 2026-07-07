@@ -61,7 +61,7 @@ SPINEL = bin/spinel
 # GNU Make expands a rule's prerequisites immediately when the rule is read -- a
 # definition further down would expand to empty in `all`'s prereq list. The
 # build rule + rationale live further below (near the runtime archive).
-BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o packages/strscan/sp_strscan.o packages/base64/sp_base64.o
+BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o packages/strscan/sp_strscan.o packages/base64/sp_base64.o packages/fiddle/sp_fiddle.o
 
 all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS)
 
@@ -268,6 +268,12 @@ packages/strscan/sp_strscan.o: packages/strscan/sp_strscan.c \
 packages/base64/sp_base64.o: packages/base64/sp_base64.c \
                              lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib packages/base64/sp_base64.c -o $@
+
+# fiddle carries the Fiddle::Pointer runtime; the Fiddle DSL itself is lowered
+# in the compiler.
+packages/fiddle/sp_fiddle.o: packages/fiddle/sp_fiddle.c \
+                             lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib packages/fiddle/sp_fiddle.c -o $@
 
 build/sp_string.o: lib/sp_string.c lib/sp_string.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
