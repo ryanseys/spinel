@@ -14,7 +14,7 @@ module FiddlePointerPackage
   native_obj "packages/fiddle/sp_fiddle.o"
 
   native_struct "Fiddle::Pointer", "sp_FiddlePtr", "sp_FiddlePtr_gc_free"
-  native_method :[],     [:int, :int],          :any,    "sp_FiddlePtr_slice"
+  native_method :[],     [:int, :int],          :string, "sp_FiddlePtr_slice"
   native_method :[]=,    [:int, :int, :string],  :int,    "sp_FiddlePtr_slice_set"
   native_method :null?,  [],                     :bool,   "sp_FiddlePtr_null_p"
   native_method :free,   [],                     :int,    "sp_FiddlePtr_free"

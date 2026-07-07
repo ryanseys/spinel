@@ -106,6 +106,14 @@ void compute_reachable(Compiler *c) {
       while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
   }
 
+  /* Fiddle::Closure blocks desugar to synthetic methods (desugar_fiddle_closures)
+     that are called only through a C trampoline, with no AST call site; mark
+     them reachable so their bodies are emitted. */
+  if (c->n_fiddle_closures > 0) {
+    for (int i = 0; i < c->n_fiddle_closures; i++) MARK_NAME(c->fiddle_closures[i].mname);
+    while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+  }
+
   /* Alias/prep_to propagation: when alias_new (or alias_old) is in called_names,
      make the counterpart reachable too (aliases have no scope of their own). */
   int changed = 1;
@@ -2564,6 +2572,7 @@ void analyze_program(Compiler *c) {
 
   rename_shadowing_block_params(c);
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
+  desugar_fiddle_closures(c);            /* Fiddle::Closure block -> synthetic top-level def */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
   walk_scope(c, c->nt->root_id, 0, -1);
@@ -2580,6 +2589,7 @@ void analyze_program(Compiler *c) {
   register_ffi_decls(c);
   register_fiddle_decls(c);
   register_fiddle_locals(c);
+  seed_fiddle_closure_params(c);
   topup_forwarding_arity(c);
 
   /* rescue variables (`rescue => e`) are typed as exception objects. When the

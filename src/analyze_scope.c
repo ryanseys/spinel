@@ -1826,6 +1826,22 @@ int ffi_find_callback(Compiler *c, const char *mod, const char *name) {
   return -1;
 }
 
+/* Find an ffi_struct by (module, name). Returns index or -1. */
+int ffi_find_struct(Compiler *c, const char *mod, const char *name) {
+  for (int i = 0; i < c->n_ffi_structs; i++)
+    if (sp_streq(c->ffi_structs[i].mod, mod) && sp_streq(c->ffi_structs[i].name, name))
+      return i;
+  return -1;
+}
+
+/* Find the field index of `field` in ffi_struct `si`, or -1. */
+int ffi_struct_field(Compiler *c, int si, const char *field) {
+  if (si < 0) return -1;
+  for (int f = 0; f < c->ffi_structs[si].nfields; f++)
+    if (sp_streq(c->ffi_structs[si].fields[f].name, field)) return f;
+  return -1;
+}
+
 /* Resolve Module.<method> against ffi_struct declarations. See compiler.h. */
 int ffi_struct_method(Compiler *c, const char *mod, const char *method, int *si, int *fi) {
   for (int i = 0; i < c->n_ffi_structs; i++) {
@@ -1981,6 +1997,57 @@ static int fiddle_parse_signature(const char *sig, char **af, char **at, int na,
   return 1;
 }
 
+/* Parse a Fiddle struct member spelling "ctype name" (e.g. "long tv_sec",
+   "char *label") into an FFI field name + spec. Returns 1 on success. */
+static int fiddle_parse_member(const char *s, char **af, char **at, int na,
+                               char **name_out, char **spec_out) {
+  if (!s) return 0;
+  const char *e = s + strlen(s);
+  while (e > s && e[-1] == ' ') e--;
+  const char *ns = e;
+  while (ns > s && fiddle_ident_ch(ns[-1])) ns--;
+  if (ns == e) return 0;
+  char *ctype = fiddle_dup_range(s, ns);
+  const char *spec = fiddle_ctype_to_spec(ctype, 0, af, at, na);
+  free(ctype);
+  if (!spec) return 0;
+  *name_out = fiddle_dup_range(ns, e);
+  *spec_out = strdup(spec);
+  return 1;
+}
+
+/* Register a Fiddle `Const = struct ["ctype name", ...]` (Importer#struct) as an
+   ffi_struct in module `mod`, so `Mod::Const.malloc` and `x.field` lower onto
+   the ffi_struct accessors. `sdecl` is the struct CallNode. */
+static void fiddle_register_struct(Compiler *c, const char *mod, const char *cname,
+                                   int sdecl, char **af, char **at, int na) {
+  const NodeTable *nt = c->nt;
+  int anode = nt_ref(nt, sdecl, "arguments"); int an = 0;
+  const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+  if (an < 1 || !nt_type(nt, av[0]) || !sp_streq(nt_type(nt, av[0]), "ArrayNode")) return;
+  int en = 0; const int *elems = nt_arr(nt, av[0], "elements", &en);
+  FfiField *fields = malloc(sizeof(FfiField) * (size_t)(en > 0 ? en : 1));
+  if (!fields) { perror("malloc"); exit(1); }
+  int nf = 0;
+  for (int ei = 0; ei < en; ei++) {
+    const char *ms = ffi_arg_str(nt, elems[ei]);
+    char *fn = NULL, *fs = NULL;
+    if (ms && fiddle_parse_member(ms, af, at, na, &fn, &fs)) { fields[nf].name = fn; fields[nf].spec = fs; nf++; }
+  }
+  if (nf == 0 || ffi_find_struct(c, mod, cname) >= 0) { for (int j = 0; j < nf; j++) { free(fields[j].name); free(fields[j].spec); } free(fields); return; }
+  if (c->n_ffi_structs >= c->c_ffi_structs) {
+    c->c_ffi_structs = c->c_ffi_structs ? c->c_ffi_structs * 2 : 8;
+    FfiStruct *grown = realloc(c->ffi_structs, sizeof(FfiStruct) * (size_t)c->c_ffi_structs);
+    if (!grown) { perror("realloc"); exit(1); }
+    c->ffi_structs = grown;
+  }
+  int sidx = c->n_ffi_structs++;
+  c->ffi_structs[sidx].mod     = strdup(mod);
+  c->ffi_structs[sidx].name    = strdup(cname);
+  c->ffi_structs[sidx].fields  = fields;
+  c->ffi_structs[sidx].nfields = nf;
+}
+
 /* Register the Importer `extern` DSL as synthetic ffi_funcs. A module that
    `extend Fiddle::Importer` and declares `extern "C sig"` gets one FfiFunc per
    extern, so `Module.func(args)` resolves through the unchanged FFI inference +
@@ -2032,6 +2099,17 @@ void register_fiddle_decls(Compiler *c) {
       const char *from = ffi_arg_str(nt, av[0]);
       const char *to   = ffi_arg_str(nt, av[1]);
       if (from && to) { afrom[nalias] = (char *)from; ato[nalias] = (char *)to; nalias++; }
+    }
+
+    /* `Const = struct ["ctype name", ...]` (Importer#struct) -> an ffi_struct. */
+    for (int k = 0; k < sn; k++) {
+      int s = stmts[k];
+      if (!nt_type(nt, s) || !sp_streq(nt_type(nt, s), "ConstantWriteNode")) continue;
+      const char *cname = nt_str(nt, s, "name");
+      int val = nt_ref(nt, s, "value");
+      if (!cname || val < 0 || !nt_type(nt, val) || !sp_streq(nt_type(nt, val), "CallNode")) continue;
+      const char *vn = nt_str(nt, val, "name");
+      if (vn && sp_streq(vn, "struct")) fiddle_register_struct(c, mname, cname, val, afrom, ato, nalias);
     }
 
     /* Process dlload + extern. */
@@ -2208,6 +2286,159 @@ static void fiddle_local_append(Compiler *c, int scope, const char *name,
   c->fiddle_locals[i].ffi_idx = ffi_idx;
 }
 
+/* Is `id` a `Fiddle::Closure::BlockCaller.new(ret, [args]) { block }` call?
+   The receiver is the nested constant path BlockCaller <- Closure <- Fiddle. */
+static int is_fiddle_blockcaller_new(const NodeTable *nt, int id) {
+  if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !sp_streq(nm, "new")) return 0;
+  if (nt_ref(nt, id, "block") < 0) return 0;
+  int r = nt_ref(nt, id, "receiver");
+  if (r < 0 || !nt_type(nt, r) || !sp_streq(nt_type(nt, r), "ConstantPathNode")) return 0;
+  const char *rn = nt_str(nt, r, "name");
+  if (!rn || !sp_streq(rn, "BlockCaller")) return 0;
+  int r2 = nt_ref(nt, r, "parent");
+  if (r2 < 0 || !nt_type(nt, r2) || !sp_streq(nt_type(nt, r2), "ConstantPathNode")) return 0;
+  const char *rn2 = nt_str(nt, r2, "name");
+  int r3 = nt_ref(nt, r2, "parent");
+  const char *rn3 = r3 >= 0 ? nt_str(nt, r3, "name") : NULL;
+  return rn2 && rn3 && sp_streq(rn2, "Closure") && sp_streq(rn3, "Fiddle");
+}
+
+/* Collect the names read/written by LocalVariableRead/Write nodes in a subtree. */
+static void fiddle_collect_local_names(const NodeTable *nt, int id, int reads,
+                                       char **names, int *n, int cap) {
+  if (id < 0 || *n >= cap) return;
+  const char *ty = nt_type(nt, id);
+  if (ty) {
+    const char *want = reads ? "LocalVariableReadNode" : "LocalVariableWriteNode";
+    if (sp_streq(ty, want)) { const char *nm = nt_str(nt, id, "name"); if (nm && *n < cap) names[(*n)++] = (char *)nm; }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) fiddle_collect_local_names(nt, nt_ref_at(nt, id, i), reads, names, n, cap);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) { int m = 0; const int *ids = nt_arr_at(nt, id, i, &m); for (int j = 0; j < m; j++) fiddle_collect_local_names(nt, ids[j], reads, names, n, cap); }
+}
+
+/* A block is non-capturing iff every local it reads is one of its own params or
+   a local it assigns itself -- i.e. it references no enclosing-scope variable.
+   `params` are the block's parameter names. */
+static int fiddle_block_noncapturing(const NodeTable *nt, int body, char **params, int nparams) {
+  char *reads[256]; int nr = 0; fiddle_collect_local_names(nt, body, 1, reads, &nr, 256);
+  char *writes[256]; int nw = 0; fiddle_collect_local_names(nt, body, 0, writes, &nw, 256);
+  for (int i = 0; i < nr; i++) {
+    int bound = 0;
+    for (int p = 0; p < nparams && !bound; p++) if (sp_streq(reads[i], params[p])) bound = 1;
+    for (int w = 0; w < nw && !bound; w++) if (sp_streq(reads[i], writes[w])) bound = 1;
+    if (!bound) return 0;   /* reads an enclosing local -> capturing */
+  }
+  return 1;
+}
+
+/* Desugar every non-capturing `Fiddle::Closure::BlockCaller.new(ret,[args]){blk}`
+   into a synthetic top-level method (reusing the block's params + body) plus an
+   FfiCallback carrying the arg/ret specs, so passing the closure to a function-
+   pointer argument reuses the ffi_callback trampoline. Runs before walk_scope so
+   the synthetic method is registered like any def. */
+void desugar_fiddle_closures(Compiler *c) {
+  if (!sp_feature_enabled("fiddle")) return;
+  const NodeTable *nt = c->nt;
+  int closures[256]; int ncl = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    if (ncl < 256 && is_fiddle_blockcaller_new(nt, id)) closures[ncl++] = id;
+  }
+  if (ncl == 0) return;
+  int root = nt_ref(nt, nt->root_id, "statements");
+  int sn = 0; const int *stmts = root >= 0 ? nt_arr(nt, root, "body", &sn) : NULL;
+  int *newbody = malloc(sizeof(int) * (size_t)(sn + ncl));
+  if (!newbody) { perror("malloc"); exit(1); }
+  memcpy(newbody, stmts, sizeof(int) * (size_t)sn);
+  int added = 0, counter = 0;
+  for (int k = 0; k < ncl; k++) {
+    int id = closures[k];
+    int blk = nt_ref(nt, id, "block");
+    int bparams = nt_ref(nt, blk, "parameters");                     /* BlockParametersNode */
+    int params = bparams >= 0 ? nt_ref(nt, bparams, "parameters") : -1; /* ParametersNode */
+    int body = nt_ref(nt, blk, "body");
+    /* block param names for the capture check */
+    char *pnames[16]; int npn = 0;
+    if (params >= 0) { int rn = 0; const int *reqs = nt_arr(nt, params, "requireds", &rn);
+      for (int i = 0; i < rn && npn < 16; i++) { const char *pn = nt_str(nt, reqs[i], "name"); if (pn) pnames[npn++] = (char *)pn; } }
+    if (!fiddle_block_noncapturing(nt, body, pnames, npn)) continue;  /* capturing: leave unlowered -> loud reject */
+    /* callback specs from BlockCaller.new(ret_type, [arg_types]) */
+    int anode = nt_ref(nt, id, "arguments"); int an = 0;
+    const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+    if (an < 2) continue;
+    const char *ret = fiddle_typearg_spec(nt, av[0]);
+    if (!ret || !nt_type(nt, av[1]) || !sp_streq(nt_type(nt, av[1]), "ArrayNode")) continue;
+    int en = 0; const int *elems = nt_arr(nt, av[1], "elements", &en);
+    char **arg_specs = malloc(sizeof(char *) * (size_t)(en + 1));
+    if (!arg_specs) { perror("malloc"); exit(1); }
+    int ok = 1;
+    for (int ei = 0; ei < en; ei++) { const char *sp = fiddle_typearg_spec(nt, elems[ei]); if (!sp) { ok = 0; for (int j = 0; j < ei; j++) free(arg_specs[j]); break; } arg_specs[ei] = strdup(sp); }
+    if (!ok) { free(arg_specs); continue; }
+    /* synthesize `def __fiddle_cb_N(<params>) <body> end` at top level */
+    char mname[64]; snprintf(mname, sizeof mname, "__fiddle_cb_%d", ++counter);
+    int def = nt_new_node(nt, "DefNode");
+    nt_node_set_str(nt, def, "name", mname);
+    if (params >= 0) nt_node_set_ref(nt, def, "parameters", params);
+    nt_node_set_ref(nt, def, "body", body);
+    newbody[sn + added++] = def;
+    nt_node_set_ref(nt, id, "block", -1);   /* detach: walked once, via the def */
+    /* register the FfiCallback + record the closure */
+    if (c->n_ffi_callbacks >= c->c_ffi_callbacks) {
+      c->c_ffi_callbacks = c->c_ffi_callbacks ? c->c_ffi_callbacks * 2 : 8;
+      FfiCallback *g = realloc(c->ffi_callbacks, sizeof(FfiCallback) * (size_t)c->c_ffi_callbacks);
+      if (!g) { perror("realloc"); exit(1); } c->ffi_callbacks = g;
+    }
+    int cbi = c->n_ffi_callbacks++;
+    c->ffi_callbacks[cbi].mod = strdup("__fiddle_closure__");
+    c->ffi_callbacks[cbi].name = strdup(mname);
+    c->ffi_callbacks[cbi].arg_specs = arg_specs;
+    c->ffi_callbacks[cbi].nargs = en;
+    c->ffi_callbacks[cbi].ret_spec = strdup(ret);
+    if (c->n_fiddle_closures >= c->c_fiddle_closures) {
+      c->c_fiddle_closures = c->c_fiddle_closures ? c->c_fiddle_closures * 2 : 8;
+      FiddleClosure *g = realloc(c->fiddle_closures, sizeof(FiddleClosure) * (size_t)c->c_fiddle_closures);
+      if (!g) { perror("realloc"); exit(1); } c->fiddle_closures = g;
+    }
+    int fci = c->n_fiddle_closures++;
+    c->fiddle_closures[fci].node = id;
+    c->fiddle_closures[fci].mname = strdup(mname);
+    c->fiddle_closures[fci].cbidx = cbi;
+  }
+  if (added) { nt_node_set_arr(nt, root, "body", newbody, sn + added); comp_grow_node_arrays(c); }
+  free(newbody);
+}
+
+/* Find the FiddleClosure record for a Closure ctor node, or -1. */
+int fiddle_closure_at(Compiler *c, int node) {
+  for (int i = 0; i < c->n_fiddle_closures; i++) if (c->fiddle_closures[i].node == node) return i;
+  return -1;
+}
+
+/* Seed each Closure block's `:ptr` params as Fiddle::Pointer, so the block body
+   compiles `a[0,4]` as a Pointer slice and the trampoline boxes the C pointer as
+   a Fiddle::Pointer. Runs before the inference fixpoint (rbs_seeded pins it). */
+void seed_fiddle_closure_params(Compiler *c) {
+  if (!sp_feature_enabled("fiddle")) return;
+  int pcid = fiddle_pointer_cid(c);
+  if (pcid < 0) return;
+  for (int i = 0; i < c->n_fiddle_closures; i++) {
+    FiddleClosure *fc = &c->fiddle_closures[i];
+    int mi = comp_method_index(c, fc->mname);
+    if (mi < 0) continue;
+    Scope *ts = &c->scopes[mi];
+    FfiCallback *k = &c->ffi_callbacks[fc->cbidx];
+    for (int a = 0; a < k->nargs && a < ts->nparams; a++) {
+      if (sp_streq(k->arg_specs[a], "ptr") && ts->pnames[a]) {
+        LocalVar *lv = scope_local(ts, ts->pnames[a]);
+        if (lv) { lv->type = ty_object(pcid); lv->rbs_seeded = 1; }
+      }
+    }
+  }
+}
+
 /* Register the low-level Fiddle API bound to locals: `h = Fiddle.dlopen(...)`
    and `f = Fiddle::Function.new(h["sym"], [TYPE...], TYPE)`. A Function local
    gets a synthetic ffi_func (keyed by the C symbol), so `f.call(args)` lowers
@@ -2231,6 +2462,30 @@ void register_fiddle_locals(Compiler *c) {
       const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
 
       if (pass == 0) {
+        /* cb = Fiddle::Closure::BlockCaller.new(...) { block }: track cb so a
+           later `f.call(..., cb)` emits the block trampoline. The ctor carries
+           no runtime value, so it lowers to nil. */
+        int fcl = fiddle_closure_at(c, val);
+        if (fcl >= 0) {
+          fiddle_ctor_mark(c, val);
+          if (find_fiddle_local(c, scope, lname) < 0)
+            fiddle_local_append(c, scope, lname, FIDDLE_CLOSURE, NULL, fcl);
+          continue;
+        }
+        /* x = Mod::Const.malloc where Const is a Fiddle struct: track x so
+           `x.field` / `x.field=` dispatch to the ffi_struct accessors. */
+        if (cname && sp_streq(cname, "malloc") && recv >= 0 &&
+            nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+          const char *sn2 = nt_str(nt, recv, "name");
+          int par = nt_ref(nt, recv, "parent");
+          const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+          int sidx = (sn2 && pn) ? ffi_find_struct(c, pn, sn2) : -1;
+          if (sidx >= 0) {
+            if (find_fiddle_local(c, scope, lname) < 0)
+              fiddle_local_append(c, scope, lname, FIDDLE_STRUCT, NULL, sidx);
+            continue;
+          }
+        }
         if (!cname || !sp_streq(cname, "dlopen")) continue;
         if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "ConstantReadNode")) continue;
         const char *rn = nt_str(nt, recv, "name");

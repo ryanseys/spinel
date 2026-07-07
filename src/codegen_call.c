@@ -3275,7 +3275,12 @@ static int emit_ffi_cb_trampoline(Compiler *c, int cbidx, int mi) {
       if (lv) p = lv->type;
     }
     char a[16]; snprintf(a, sizeof a, "_a%d", i);
-    if (p == TY_POLY || p == TY_UNKNOWN) {           /* param is sp_RbVal: box it */
+    /* A Fiddle::Closure block param (seeded as Fiddle::Pointer) receives a real
+       Pointer wrapping the raw C pointer, so `a[0,n]` reads through it. */
+    if (ty_is_object(p) && ty_object_class(p) == fiddle_pointer_cid(c) && sp_streq(spec, "ptr")) {
+      buf_printf(&call, "sp_FiddlePtr_new_raw(%d, (void *)%s, 0)", fiddle_pointer_cid(c), a);
+    }
+    else if (p == TY_POLY || p == TY_UNKNOWN) {      /* param is sp_RbVal: box it */
       if (sp_streq(spec, "ptr"))                          buf_printf(&call, "sp_box_foreign_ptr((void *)%s)", a);
       else if (sp_streq(spec, "str"))                     buf_printf(&call, "sp_box_str(%s)", a);
       else if (sp_streq(spec, "float") || sp_streq(spec, "double")) buf_printf(&call, "sp_box_float(%s)", a);
@@ -3319,6 +3324,25 @@ static void emit_ffi_callback_arg(Compiler *c, int cbidx, int argnode, Buf *out)
   }
   unsupported(c, argnode, "ffi callback argument (need a statically resolvable method(:name))");
   buf_puts(out, "NULL");
+}
+
+/* Emit a Fiddle closure passed to a function-pointer argument: the block was
+   desugared to a synthetic method + FfiCallback, so reuse the ffi_callback
+   trampoline. `argnode` is the Closure ctor itself (inline) or a local bound to
+   one. Returns 1 if a closure was emitted, 0 if argnode is not a closure. */
+static int emit_fiddle_closure_arg(Compiler *c, int argnode, Buf *out) {
+  const NodeTable *nt = c->nt;
+  int fcl = fiddle_closure_at(c, argnode);
+  if (fcl < 0 && nt_type(nt, argnode) && sp_streq(nt_type(nt, argnode), "LocalVariableReadNode")) {
+    int loc = find_fiddle_local(c, c->nscope[argnode], nt_str(nt, argnode, "name"));
+    if (loc >= 0 && c->fiddle_locals[loc].kind == FIDDLE_CLOSURE) fcl = c->fiddle_locals[loc].ffi_idx;
+  }
+  if (fcl < 0) return 0;
+  int mi = comp_method_index(c, c->fiddle_closures[fcl].mname);
+  if (mi < 0) return 0;
+  int tid = emit_ffi_cb_trampoline(c, c->fiddle_closures[fcl].cbidx, mi);
+  buf_printf(out, "&__sp_ffi_cb_%d", tid);
+  return 1;
 }
 
 /* Emit a call to ffi_func index `fi` with the given actual-argument nodes,
@@ -3367,7 +3391,8 @@ static void emit_ffi_call_from_func(Compiler *c, int fi, int argc, const int *ar
       else emit_expr(c, argv[ai], &call_buf);
     }
     else if (sp_streq(spec, "ptr")) {
-      if (is_fptr) {
+      if (emit_fiddle_closure_arg(c, argv[ai], &call_buf)) { /* block trampoline */ }
+      else if (is_fptr) {
         buf_puts(&call_buf, "sp_FiddlePtr_raw("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")");
       }
       else if (at == TY_POLY) {
@@ -3580,6 +3605,63 @@ void emit_call(Compiler *c, int id, Buf *b) {
         emit_int_expr(c, argv[0], b);
         buf_puts(b, ")");
         return;
+      }
+    }
+  }
+  /* Fiddle Importer#struct: `Mod::Const.malloc` / `.size` allocate/size the
+     ffi_struct; `x.field` / `x.field=` read/write a field of a struct local. */
+  if (sp_feature_enabled("fiddle") && recv >= 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && sp_streq(rty, "ConstantPathNode")) {
+      const char *sn = nt_str(nt, recv, "name");
+      int par = nt_ref(nt, recv, "parent");
+      const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+      int si = (sn && pn) ? ffi_find_struct(c, pn, sn) : -1;
+      if (si >= 0 && sp_streq(name, "malloc")) {
+        buf_printf(b, "sp_box_foreign_ptr(calloc(1, sizeof(sp_ffi_struct_%s_%s)))",
+                   c->ffi_structs[si].mod, c->ffi_structs[si].name);
+        return;
+      }
+      if (si >= 0 && (sp_streq(name, "size") || sp_streq(name, "sizeof"))) {
+        buf_printf(b, "((mrb_int)sizeof(sp_ffi_struct_%s_%s))",
+                   c->ffi_structs[si].mod, c->ffi_structs[si].name);
+        return;
+      }
+    }
+    if (rty && sp_streq(rty, "LocalVariableReadNode")) {
+      int fl = find_fiddle_local(c, c->nscope[recv], nt_str(nt, recv, "name"));
+      if (fl >= 0 && c->fiddle_locals[fl].kind == FIDDLE_STRUCT) {
+        int si = c->fiddle_locals[fl].ffi_idx;
+        size_t nl = strlen(name);
+        int is_set = nl > 0 && name[nl - 1] == '=';
+        char fld[128];
+        size_t flen = is_set ? nl - 1 : nl;
+        if (flen < sizeof(fld)) {
+          memcpy(fld, name, flen); fld[flen] = '\0';
+          int fi2 = ffi_struct_field(c, si, fld);
+          if (fi2 >= 0) {
+            const char *sm = c->ffi_structs[si].mod, *snn = c->ffi_structs[si].name;
+            const char *spec = c->ffi_structs[si].fields[fi2].spec;
+            TyKind ft = ffi_spec_to_ty(spec);
+            if (!is_set) {   /* get */
+              buf_puts(b, ft == TY_POLY ? "sp_box_foreign_ptr((void *)("
+                        : ft == TY_FLOAT ? "((mrb_float)(" : "((mrb_int)(");
+              buf_printf(b, "((sp_ffi_struct_%s_%s *)(", sm, snn); emit_expr(c, recv, b);
+              buf_printf(b, ").v.p)->%s))", fld);
+            } else {         /* set */
+              buf_printf(b, "(((sp_ffi_struct_%s_%s *)(", sm, snn); emit_expr(c, recv, b);
+              buf_printf(b, ").v.p)->%s = (%s)", fld, ffi_c_type(spec));
+              if (ft == TY_POLY) {
+                if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "("); emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
+                else { buf_puts(b, "(void *)(uintptr_t)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+              }
+              else if (ft == TY_FLOAT) { buf_puts(b, "("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+              else { buf_puts(b, "("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+              buf_puts(b, ", sp_box_nil())");
+            }
+            return;
+          }
+        }
       }
     }
   }

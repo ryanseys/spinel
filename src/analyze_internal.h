@@ -158,6 +158,8 @@ TyKind ffi_spec_to_ty(const char *spec);
 void register_ffi_decls(Compiler *c);
 void register_fiddle_decls(Compiler *c);
 void register_fiddle_locals(Compiler *c);
+void desugar_fiddle_closures(Compiler *c);
+void seed_fiddle_closure_params(Compiler *c);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
 int ffi_find_reader(Compiler *c, const char *mod, const char *name);

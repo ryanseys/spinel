@@ -67,10 +67,11 @@ mrb_int sp_FiddlePtr_free(sp_FiddlePtr *fp) {
 
 mrb_bool sp_FiddlePtr_null_p(sp_FiddlePtr *fp) { return fp && fp->ptr == NULL; }
 
-/* p[off, len] -> a String of len bytes (binary-safe). */
-sp_RbVal sp_FiddlePtr_slice(sp_FiddlePtr *fp, mrb_int off, mrb_int len) {
-  if (!fp || !fp->ptr || off < 0 || len < 0) return sp_box_nil();
-  return sp_box_str(sp_str_from_bytes((const char *)fp->ptr + off, (size_t)len));
+/* p[off, len] -> a String of len bytes (binary-safe: the returned spinel string
+   carries its length in its header, so embedded NULs survive). */
+const char *sp_FiddlePtr_slice(sp_FiddlePtr *fp, mrb_int off, mrb_int len) {
+  if (!fp || !fp->ptr || off < 0 || len < 0) return sp_str_empty;
+  return sp_str_from_bytes((const char *)fp->ptr + off, (size_t)len);
 }
 
 /* p[off, len] = str: copy min(len, str.bytesize) bytes into the buffer. */
