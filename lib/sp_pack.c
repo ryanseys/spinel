@@ -162,6 +162,82 @@ static const char *pk_poly_to_str(sp_RbVal v) {
   }
 }
 
+/* ---------- Base64 (`m`) and quoted-printable (`M`) encoders ---------- */
+
+/* Standard Base64 (RFC 4648 §4): `+/` alphabet, `=` padding. Encodes one
+   run of `n` input bytes as ceil(n/3)*4 output chars into the growable buf. */
+static void pk_b64_run(char **buf, size_t *len, size_t *cap,
+                       const unsigned char *s, size_t n) {
+  static const char B64[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  char o[4];
+  size_t i = 0;
+  for (; i + 3 <= n; i += 3) {
+    uint32_t v = ((uint32_t)s[i] << 16) | ((uint32_t)s[i + 1] << 8) | s[i + 2];
+    o[0] = B64[(v >> 18) & 63]; o[1] = B64[(v >> 12) & 63];
+    o[2] = B64[(v >> 6) & 63];  o[3] = B64[v & 63];
+    pk_append(buf, len, cap, o, 4);
+  }
+  size_t rem = n - i;
+  if (rem == 1) {
+    uint32_t v = (uint32_t)s[i] << 16;
+    o[0] = B64[(v >> 18) & 63]; o[1] = B64[(v >> 12) & 63]; o[2] = '='; o[3] = '=';
+    pk_append(buf, len, cap, o, 4);
+  } else if (rem == 2) {
+    uint32_t v = ((uint32_t)s[i] << 16) | ((uint32_t)s[i + 1] << 8);
+    o[0] = B64[(v >> 18) & 63]; o[1] = B64[(v >> 12) & 63];
+    o[2] = B64[(v >> 6) & 63];  o[3] = '=';
+    pk_append(buf, len, cap, o, 4);
+  }
+}
+
+/* `m` directive, matching CRuby pack.c: count 0 (`m0`) = one unbroken base64
+   string, no trailing newline; a bare `m` (count 1) or `m1`/`m2` wraps every
+   45 input bytes; `mN` (N>=3) wraps every N/3*3 bytes. Each wrapped line, and
+   the final one, ends with `\n`. An empty input yields the empty string. */
+static void pk_emit_base64(char **buf, size_t *len, size_t *cap,
+                           const unsigned char *s, size_t sl, int64_t count) {
+  if (count == 0) { pk_b64_run(buf, len, cap, s, sl); return; }
+  size_t chunk = (count <= 2) ? 45 : (size_t)((count / 3) * 3);
+  if (chunk < 3) chunk = 45;
+  for (size_t off = 0; off < sl; off += chunk) {
+    size_t n = (sl - off < chunk) ? (sl - off) : chunk;
+    pk_b64_run(buf, len, cap, s + off, n);
+    pk_append(buf, len, cap, "\n", 1);
+  }
+}
+
+/* `M` directive (quoted-printable), faithful to CRuby pack.c qpencode: a bare
+   `M` (count 1) or `M0`/`M1` uses a 72-char soft-wrap; `MN` wraps at N. */
+static void pk_emit_qp(char **buf, size_t *len, size_t *cap,
+                       const unsigned char *s, size_t sl, int64_t count) {
+  static const char HEX[] = "0123456789ABCDEF";
+  int64_t line = (count <= 1) ? 72 : count;
+  long n = 0;
+  int prev = -1;
+  for (size_t k = 0; k < sl; k++) {
+    unsigned char ch = s[k];
+    if (ch > 126 || (ch < 32 && ch != '\n' && ch != '\t') || ch == '=') {
+      char o[3] = { '=', HEX[ch >> 4], HEX[ch & 0x0f] };
+      pk_append(buf, len, cap, o, 3); n += 3; prev = -1;
+    } else if (ch == '\n') {
+      if (prev == ' ' || prev == '\t') { char e[2] = { '=', '\n' }; pk_append(buf, len, cap, e, 2); }
+      pk_append(buf, len, cap, "\n", 1); n = 0; prev = ch;
+    } else {
+      pk_append(buf, len, cap, (const char *)&ch, 1); n++; prev = ch;
+    }
+    if (n > line) { char e[2] = { '=', '\n' }; pk_append(buf, len, cap, e, 2); n = 0; prev = '\n'; }
+  }
+  if (n > 0) { char e[2] = { '=', '\n' }; pk_append(buf, len, cap, e, 2); }
+}
+
+/* Shared m/M dispatch for the string-directive branch of both pack paths. */
+static void pk_str_directive(char spec, int64_t count, const char *s, size_t sl,
+                             char **buf, size_t *len, size_t *cap) {
+  if (spec == 'm') pk_emit_base64(buf, len, cap, (const unsigned char *)s, sl, count);
+  else             pk_emit_qp(buf, len, cap, (const unsigned char *)s, sl, count);
+}
+
 
 /* ---------- Pack entry points ---------- */
 
@@ -271,6 +347,16 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
       }
       continue;
     }
+    if (spec == 'm' || spec == 'M') {
+      const char *s = ""; size_t sl = 0;
+      if (idx < arr->len) {
+        sp_RbVal e = arr->data[idx];
+        if (e.tag == SP_TAG_STR && e.v.s) { s = e.v.s; sl = sp_str_byte_len(s); }
+      }
+      idx++;
+      pk_str_directive(spec, count, s, sl, &buf, &len, &cap);
+      continue;
+    }
     if (count < 0) count = arr->len - idx;
     if (count < 0) count = 0;
     for (int64_t k = 0; k < count; k++) {
@@ -326,6 +412,47 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
         default:
           break;
       }
+    }
+  }
+  char *r = sp_str_alloc(len);
+  memcpy(r, buf, len);
+  sp_str_set_len(r, len);
+  free(buf);
+  return r;
+}
+
+/* Pack a String array. Only the string directives are meaningful for String
+   elements (CRuby raises TypeError for numeric directives on a String), so we
+   handle a/A/Z padding and m/M base64/quoted-printable; other directives emit
+   nothing. Reads the real byte length (embedded NULs survive base64). */
+const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
+  if (!arr || !fmt) return sp_str_empty;
+  size_t cap = 64;
+  char *buf = (char *)malloc(cap);
+  if (!buf) { perror("malloc"); exit(1); }
+  size_t len = 0;
+  mrb_int idx = 0;
+  const char *p = fmt;
+  while (*p) {
+    char spec = *p++;
+    if (spec == ' ' || spec == '\t' || spec == '\n') continue;
+    int big = 0;
+    int64_t count = pk_parse_count_mods(&p, &big);
+    const char *s = (idx < arr->len) ? sp_StrArray_get(arr, idx) : NULL;
+    size_t sl = s ? sp_str_byte_len(s) : 0;
+    if (!s) s = "";
+    idx++;
+    if (spec == 'a' || spec == 'A' || spec == 'Z') {
+      size_t want = (count < 0) ? sl : (size_t)count;
+      if (spec == 'Z' && count < 0) want = sl + 1;
+      size_t take = sl < want ? sl : want;
+      pk_append(&buf, &len, &cap, s, take);
+      if (take < want) {
+        char pad = (spec == 'A') ? ' ' : 0;
+        for (size_t pi = 0; pi < want - take; pi++) pk_append(&buf, &len, &cap, &pad, 1);
+      }
+    } else if (spec == 'm' || spec == 'M') {
+      pk_str_directive(spec, count, s, sl, &buf, &len, &cap);
     }
   }
   char *r = sp_str_alloc(len);

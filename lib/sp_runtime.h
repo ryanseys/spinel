@@ -5580,6 +5580,7 @@ sp_Bigint *sp_bigint_not(sp_Bigint *a);
    sp_ext_* shims defined further down. */
 const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt);
 const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt);
+const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt);
 sp_PolyArray *sp_str_unpack(const char *str, const char *fmt);
 
 /* Array#pack on a poly (nullable-array) receiver: dispatch on the runtime tag.
@@ -5589,6 +5590,8 @@ static inline const char *sp_poly_pack(sp_RbVal recv, const char *fmt) {
     return sp_IntArray_pack((sp_IntArray *)recv.v.p, fmt);
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_POLY_ARRAY)
     return sp_PolyArray_pack((sp_PolyArray *)recv.v.p, fmt);
+  if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_STR_ARRAY)
+    return sp_StrArray_pack((sp_StrArray *)recv.v.p, fmt);
   return "";
 }
 

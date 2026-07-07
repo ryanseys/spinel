@@ -132,8 +132,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     return 0;  /* unsupported obj-array op: pass should have prevented this. */
   }
   if (recv >= 0 && ty_is_array(rt)) {
-    if (sp_streq(name, "pack") && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY)) {
-      buf_printf(b, "sp_%sArray_pack(", rt == TY_POLY_ARRAY ? "Poly" : "Int");
+    if (sp_streq(name, "pack") && argc == 1 &&
+        (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_STR_ARRAY)) {
+      const char *kind = rt == TY_POLY_ARRAY ? "Poly" : (rt == TY_STR_ARRAY ? "Str" : "Int");
+      buf_printf(b, "sp_%sArray_pack(", kind);
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
