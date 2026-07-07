@@ -825,6 +825,17 @@ TyKind infer_call(Compiler *c, int id) {
     }
   }
 
+  /* Low-level Fiddle: `f.call(...)` where `f = Fiddle::Function.new(...)` was
+     bound to a local. Its result type is the synthetic ffi_func's return type.
+     Must precede the generic `<poly>.call` rule (the nil-valued local is poly). */
+  if (sp_feature_enabled("fiddle") && recv >= 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
+      name && (sp_streq(name, "call") || sp_streq(name, "()"))) {
+    int fl = find_fiddle_local(c, c->nscope[recv], nt_str(nt, recv, "name"));
+    if (fl >= 0 && c->fiddle_locals[fl].kind == FIDDLE_FUNC)
+      return ffi_spec_to_ty(c->ffi_funcs[c->fiddle_locals[fl].ffi_idx].ret);
+  }
+
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
 
@@ -994,6 +1005,20 @@ else {
         }
       }
       else if (comp_is_sg_reader(_cls, name)) return TY_POLY;
+    }
+  }
+
+  /* A bound `Fiddle.dlopen(...)` / `Fiddle::Function.new(...)` carries no runtime
+     value; the local it binds holds nil. */
+  if (fiddle_ctor_is_bound(c, id)) return TY_POLY;
+
+  /* Fiddle::Pointer.malloc(n) and `ptr + n` / `ptr - n` yield a Pointer object. */
+  if (sp_feature_enabled("fiddle") && recv >= 0 && name) {
+    int pcid = fiddle_pointer_cid(c);
+    if (pcid >= 0) {
+      if (sp_streq(name, "malloc") && is_fiddle_pointer_const(nt, recv)) return ty_object(pcid);
+      if ((sp_streq(name, "+") || sp_streq(name, "-")) &&
+          ty_is_object(rt) && ty_object_class(rt) == pcid) return ty_object(pcid);
     }
   }
 
@@ -3430,6 +3455,8 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_NumberedReferenceReadNode) return TY_STRING;  /* $1..$9: capture, or nil (NULL) */
   if (nk == NK_BackReferenceReadNode) return TY_STRING;  /* $&/$`/$'/$~/$+: nullable string */
   if (nk == NK_ConstantPathNode) {
+    /* Fiddle::NULL is a null Fiddle::Pointer. */
+    if (fiddle_pointer_cid(c) >= 0 && is_fiddle_null_const(nt, id)) return ty_object(fiddle_pointer_cid(c));
     /* M::CONST -> resolve by the final path component (constants register
        under their unqualified name) */
     const char *nm = nt_str(nt, id, "name");

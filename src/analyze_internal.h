@@ -156,6 +156,8 @@ const char *ffi_arg_str(const NodeTable *nt, int nid);
 int ffi_arg_int(const NodeTable *nt, int nid);
 TyKind ffi_spec_to_ty(const char *spec);
 void register_ffi_decls(Compiler *c);
+void register_fiddle_decls(Compiler *c);
+void register_fiddle_locals(Compiler *c);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
 int ffi_find_reader(Compiler *c, const char *mod, const char *name);

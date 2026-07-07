@@ -739,8 +739,12 @@ const char *default_value(TyKind t) {
 void emit_ctype(Compiler *c, TyKind t, Buf *b) {
   if (ty_is_object(t)) {
     int cid = ty_object_class(t);
+    ClassInfo *ci = &c->classes[cid];
+    /* A native class names its C struct explicitly (c_struct), which need not be
+       "sp_<Ruby name>" -- e.g. Fiddle::Pointer -> sp_FiddlePtr. */
+    if (ci->is_native_class && ci->c_struct) buf_printf(b, "%s *", ci->c_struct);
     /* value-type classes are stored inline (sp_X); others are heap pointers */
-    buf_printf(b, "sp_%s %s", c->classes[cid].name, c->classes[cid].is_value_type ? "" : "*");
+    else buf_printf(b, "sp_%s %s", ci->name, ci->is_value_type ? "" : "*");
   }
   else {
     const char *n = c_type_name(t);

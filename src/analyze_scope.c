@@ -1691,6 +1691,7 @@ void register_ffi_decls(Compiler *c) {
         c->ffi_funcs[fi].ret   = strdup(ret_spec);
         c->ffi_funcs[fi].args  = arg_specs;
         c->ffi_funcs[fi].nargs = en;
+        c->ffi_funcs[fi].is_fiddle = 0;
         continue;
       }
 
@@ -1745,6 +1746,486 @@ void register_ffi_decls(Compiler *c) {
         c->ffi_readers[ri].kind   = strdup(kind);
         continue;
       }
+    }
+  }
+}
+
+/* ---- compile-time Fiddle lowering (see register_fiddle_decls) ----
+   `require "fiddle"` programs that use only statically-resolvable idioms are
+   lowered onto the FFI machinery above: the Importer `extern "C sig"` DSL
+   becomes a synthetic FfiFunc so `Module.func(...)` dispatches like any
+   ffi_func. Anything not statically lowerable is simply left unregistered, so
+   the resulting call fails loudly at codegen (`unsupported`) -- never a silent
+   wrong result. */
+
+static int fiddle_ident_ch(char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+         (ch >= '0' && ch <= '9') || ch == '_';
+}
+static char *fiddle_dup_range(const char *a, const char *b) {
+  size_t n = (size_t)(b - a);
+  char *s = malloc(n + 1);
+  if (!s) { perror("malloc"); exit(1); }
+  memcpy(s, a, n); s[n] = '\0';
+  return s;
+}
+
+/* Map a C type spelling (from an `extern` signature or a `typealias`) to the
+   Spinel FFI spec vocabulary understood by ffi_spec_to_ty / ffi_c_type. LP64
+   target. `is_arg` distinguishes a `const char *` argument -- a Ruby String
+   passed as a C string, spec "str" -- from a pointer return, which stays a raw
+   pointer ("ptr", Fiddle returns a Pointer). `af`/`at` are the module's
+   typealias pairs (resolved one level). Returns NULL for a spelling we cannot
+   lower (caller skips the decl). */
+static const char *fiddle_ctype_to_spec(const char *ty, int is_arg,
+                                        char **af, char **at, int na) {
+  if (!ty) return NULL;
+  int is_ptr = 0, is_char = 0, is_const = 0, longs = 0;
+  const char *base = NULL;
+  char word[64];
+  for (const char *p = ty; *p; ) {
+    if (*p == '*' || *p == '[') { is_ptr = 1; p++; continue; }
+    if (*p == ']' || *p == ' ' || *p == '\t') { p++; continue; }
+    size_t w = 0;
+    while (*p && fiddle_ident_ch(*p)) { if (w < sizeof(word) - 1) word[w++] = *p; p++; }
+    if (w == 0) { p++; continue; }
+    word[w] = '\0';
+    if (sp_streq(word, "const")) { is_const = 1; continue; }
+    if (sp_streq(word, "signed") || sp_streq(word, "unsigned") ||
+        sp_streq(word, "struct") || sp_streq(word, "union") || sp_streq(word, "enum"))
+      continue;                                    /* spec vocab is sign-agnostic */
+    if (sp_streq(word, "long"))  { longs++; base = "long"; continue; }
+    if (sp_streq(word, "char"))  { is_char = 1; base = "char"; continue; }
+    base = word;   /* void/int/short/float/double/size_t/bool/int32_t/alias/... */
+  }
+  if (is_ptr) {
+    if (is_char && is_const && is_arg) return "str";   /* const char* arg = C string */
+    return "ptr";
+  }
+  if (!base) return NULL;
+  if (sp_streq(base, "void"))    return "void";
+  if (sp_streq(base, "float"))   return "float";
+  if (sp_streq(base, "double"))  return "double";
+  if (sp_streq(base, "bool") || sp_streq(base, "_Bool")) return "bool";
+  if (sp_streq(base, "size_t"))  return "size_t";
+  if (sp_streq(base, "ssize_t")) return "long";
+  if (sp_streq(base, "long"))    return longs >= 2 ? "int64" : "long";
+  if (sp_streq(base, "char") || sp_streq(base, "short") || sp_streq(base, "int"))
+    return "int";
+  if (sp_streq(base, "int8_t")  || sp_streq(base, "uint8_t"))  return "int8";
+  if (sp_streq(base, "int16_t") || sp_streq(base, "uint16_t")) return "int16";
+  if (sp_streq(base, "int32_t") || sp_streq(base, "uint32_t")) return "int";
+  if (sp_streq(base, "int64_t") || sp_streq(base, "uint64_t")) return "int64";
+  if (sp_streq(base, "intptr_t") || sp_streq(base, "uintptr_t") ||
+      sp_streq(base, "ptrdiff_t")) return "long";
+  /* one-level typealias resolution */
+  for (int i = 0; i < na; i++)
+    if (sp_streq(af[i], base)) return fiddle_ctype_to_spec(at[i], is_arg, NULL, NULL, 0);
+  return NULL;
+}
+
+/* Parse a Fiddle signature "ret name(arg, ...)" into FFI specs. Returns 1 and
+   sets the out params (caller owns the allocations) on success; 0 for a form we
+   cannot lower (function-pointer params, varargs, unknown types). */
+static int fiddle_parse_signature(const char *sig, char **af, char **at, int na,
+                                  char **fname_out, char **ret_out,
+                                  char ***args_out, int *nargs_out) {
+  if (!sig) return 0;
+  const char *lp = strchr(sig, '(');
+  const char *rp = lp ? strrchr(sig, ')') : NULL;
+  if (!lp || !rp || rp < lp) return 0;
+  for (const char *p = lp + 1; p < rp; p++)     /* nested () = fn-pointer param */
+    if (*p == '(' || *p == ')') return 0;
+  /* name = last identifier run before '('; return spelling = everything before */
+  const char *ne = lp;
+  while (ne > sig && ne[-1] == ' ') ne--;
+  const char *ns = ne;
+  while (ns > sig && fiddle_ident_ch(ns[-1])) ns--;
+  if (ns == ne) return 0;
+  char *retsp = fiddle_dup_range(sig, ns);
+  const char *ret = fiddle_ctype_to_spec(retsp, 0, af, at, na);
+  free(retsp);
+  if (!ret) return 0;
+  char *fname = fiddle_dup_range(ns, ne);
+  /* arg list */
+  char **args = NULL; int nargs = 0, cap = 0;
+  const char *p = lp + 1;
+  int ok = 1;
+  while (p < rp) {
+    while (p < rp && (*p == ' ' || *p == ',')) p++;
+    if (p >= rp) break;
+    const char *start = p;
+    while (p < rp && *p != ',') p++;
+    const char *end = p;
+    while (end > start && end[-1] == ' ') end--;
+    char *tok = fiddle_dup_range(start, end);
+    if (sp_streq(tok, "void") || tok[0] == '\0') { free(tok); continue; }
+    const char *spec = fiddle_ctype_to_spec(tok, 1, af, at, na);
+    free(tok);
+    if (!spec) { ok = 0; break; }
+    if (nargs >= cap) {
+      cap = cap ? cap * 2 : 4;
+      char **grown = realloc(args, sizeof(char *) * (size_t)cap);
+      if (!grown) { perror("realloc"); exit(1); }
+      args = grown;
+    }
+    args[nargs++] = strdup(spec);
+  }
+  if (!ok) {
+    for (int i = 0; i < nargs; i++) free(args[i]);
+    free(args); free(fname);
+    return 0;
+  }
+  *fname_out = fname;
+  *ret_out = strdup(ret);
+  *args_out = args;
+  *nargs_out = nargs;
+  return 1;
+}
+
+/* Register the Importer `extern` DSL as synthetic ffi_funcs. A module that
+   `extend Fiddle::Importer` and declares `extern "C sig"` gets one FfiFunc per
+   extern, so `Module.func(args)` resolves through the unchanged FFI inference +
+   codegen. `dlload "lib"` appends an FfiLib (a `-llib` link marker); `dlload
+   nil` resolves against the linked image and needs no marker. Gated on the
+   fiddle require. */
+void register_fiddle_decls(Compiler *c) {
+  if (!sp_feature_enabled("fiddle")) return;
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_ModuleNode, id) {
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *mname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!mname) continue;
+    int body = nt_ref(nt, id, "body");
+    int sn = 0;
+    const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &sn) : NULL;
+
+    /* Pre-scan: only lower modules that `extend Fiddle::Importer`. */
+    int is_importer = 0;
+    for (int k = 0; k < sn && !is_importer; k++) {
+      int s = stmts[k];
+      if (!nt_type(nt, s) || !sp_streq(nt_type(nt, s), "CallNode")) continue;
+      if (nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, s, "name");
+      if (!dn || !sp_streq(dn, "extend")) continue;
+      int a = nt_ref(nt, s, "arguments"); int an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (an < 1) continue;
+      int cpn = av[0];
+      if (!nt_type(nt, cpn) || !sp_streq(nt_type(nt, cpn), "ConstantPathNode")) continue;
+      const char *cn = nt_str(nt, cpn, "name");
+      int par = nt_ref(nt, cpn, "parent");
+      const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+      if (cn && pn && sp_streq(cn, "Importer") && sp_streq(pn, "Fiddle")) is_importer = 1;
+    }
+    if (!is_importer) continue;
+
+    /* Pre-scan: typealias pairs (both string literals). */
+    char *afrom[64]; char *ato[64]; int nalias = 0;
+    for (int k = 0; k < sn; k++) {
+      int s = stmts[k];
+      if (!nt_type(nt, s) || !sp_streq(nt_type(nt, s), "CallNode")) continue;
+      if (nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, s, "name");
+      if (!dn || !sp_streq(dn, "typealias")) continue;
+      int a = nt_ref(nt, s, "arguments"); int an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (an < 2 || nalias >= 64) continue;
+      const char *from = ffi_arg_str(nt, av[0]);
+      const char *to   = ffi_arg_str(nt, av[1]);
+      if (from && to) { afrom[nalias] = (char *)from; ato[nalias] = (char *)to; nalias++; }
+    }
+
+    /* Process dlload + extern. */
+    for (int k = 0; k < sn; k++) {
+      int s = stmts[k];
+      if (!nt_type(nt, s) || !sp_streq(nt_type(nt, s), "CallNode")) continue;
+      if (nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, s, "name");
+      if (!dn) continue;
+      int a = nt_ref(nt, s, "arguments"); int an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+
+      if (sp_streq(dn, "dlload")) {
+        if (an < 1) continue;
+        const char *ty0 = nt_type(nt, av[0]);
+        if (ty0 && sp_streq(ty0, "NilNode")) continue;   /* this image, no -l marker */
+        const char *libname = ffi_arg_str(nt, av[0]);
+        if (!libname) continue;                          /* computed lib: no marker */
+        int mi = -1;
+        for (int li = 0; li < c->n_ffi_libs; li++)
+          if (sp_streq(c->ffi_libs[li].mod, mname)) { mi = li; break; }
+        if (mi < 0) {
+          if (c->n_ffi_libs >= c->c_ffi_libs) {
+            c->c_ffi_libs = c->c_ffi_libs ? c->c_ffi_libs * 2 : 8;
+            FfiLib *grown = realloc(c->ffi_libs, sizeof(FfiLib) * (size_t)c->c_ffi_libs);
+            if (!grown) { perror("realloc"); exit(1); }
+            c->ffi_libs = grown;
+          }
+          c->ffi_libs[c->n_ffi_libs].mod   = strdup(mname);
+          c->ffi_libs[c->n_ffi_libs].names = strdup(libname);
+          c->n_ffi_libs++;
+        } else {
+          size_t nl = strlen(c->ffi_libs[mi].names) + 1 + strlen(libname) + 1;
+          char *merged = malloc(nl);
+          if (!merged) { perror("malloc"); exit(1); }
+          snprintf(merged, nl, "%s;%s", c->ffi_libs[mi].names, libname);
+          free(c->ffi_libs[mi].names);
+          c->ffi_libs[mi].names = merged;
+        }
+        continue;
+      }
+
+      if (sp_streq(dn, "extern")) {
+        if (an < 1) continue;
+        const char *sig = ffi_arg_str(nt, av[0]);
+        if (!sig) continue;                              /* non-literal: codegen rejects the call */
+        char *fn = NULL, *ret = NULL, **as = NULL; int nas = 0;
+        if (!fiddle_parse_signature(sig, afrom, ato, nalias, &fn, &ret, &as, &nas))
+          continue;                                      /* unlowerable: call rejects downstream */
+        if (c->n_ffi_funcs >= c->c_ffi_funcs) {
+          c->c_ffi_funcs = c->c_ffi_funcs ? c->c_ffi_funcs * 2 : 16;
+          FfiFunc *grown = realloc(c->ffi_funcs, sizeof(FfiFunc) * (size_t)c->c_ffi_funcs);
+          if (!grown) { perror("realloc"); exit(1); }
+          c->ffi_funcs = grown;
+        }
+        int fi = c->n_ffi_funcs++;
+        c->ffi_funcs[fi].mod   = strdup(mname);
+        c->ffi_funcs[fi].name  = fn;
+        c->ffi_funcs[fi].ret   = ret;
+        c->ffi_funcs[fi].args  = as;
+        c->ffi_funcs[fi].nargs = nas;
+        c->ffi_funcs[fi].is_fiddle = 1;
+        continue;
+      }
+    }
+  }
+}
+
+/* Synthetic module tag for ffi_funcs created by the low-level Fiddle API; never
+   a real receiver, so it is reached only through a FiddleLocal (find_fiddle_local),
+   not the module-name FFI dispatch. */
+#define FIDDLE_MOD "__fiddle__"
+
+/* Map a Fiddle TYPE_* constant name to a Spinel FFI spec (LP64). NULL = reject
+   (e.g. TYPE_VARIADIC). Unsigned variants share the signed spec (sign-agnostic). */
+static const char *fiddle_type_to_spec(const char *name) {
+  if (!name) return NULL;
+  if (sp_streq(name, "TYPE_VOID"))         return "void";
+  if (sp_streq(name, "TYPE_VOIDP"))        return "ptr";
+  if (sp_streq(name, "TYPE_CONST_STRING")) return "str";
+  if (sp_streq(name, "TYPE_BOOL"))         return "bool";
+  if (sp_streq(name, "TYPE_FLOAT"))        return "float";
+  if (sp_streq(name, "TYPE_DOUBLE"))       return "double";
+  if (sp_streq(name, "TYPE_SIZE_T"))       return "size_t";
+  if (sp_streq(name, "TYPE_CHAR")  || sp_streq(name, "TYPE_UCHAR") ||
+      sp_streq(name, "TYPE_INT8_T")|| sp_streq(name, "TYPE_UINT8_T"))  return "int8";
+  if (sp_streq(name, "TYPE_SHORT") || sp_streq(name, "TYPE_USHORT") ||
+      sp_streq(name, "TYPE_INT16_T")|| sp_streq(name, "TYPE_UINT16_T")) return "int16";
+  if (sp_streq(name, "TYPE_INT")   || sp_streq(name, "TYPE_UINT") ||
+      sp_streq(name, "TYPE_INT32_T")|| sp_streq(name, "TYPE_UINT32_T")) return "int";
+  if (sp_streq(name, "TYPE_LONG")  || sp_streq(name, "TYPE_ULONG") ||
+      sp_streq(name, "TYPE_SSIZE_T")|| sp_streq(name, "TYPE_PTRDIFF_T") ||
+      sp_streq(name, "TYPE_INTPTR_T")|| sp_streq(name, "TYPE_UINTPTR_T")) return "long";
+  if (sp_streq(name, "TYPE_LONG_LONG")|| sp_streq(name, "TYPE_ULONG_LONG") ||
+      sp_streq(name, "TYPE_INT64_T")|| sp_streq(name, "TYPE_UINT64_T")) return "int64";
+  return NULL;
+}
+
+/* Resolve a Fiddle type argument node -- a `Fiddle::TYPE_*` constant, possibly
+   negated (`-Fiddle::TYPE_INT`, the unsigned form) -- to a spec string or NULL. */
+static const char *fiddle_typearg_spec(const NodeTable *nt, int node) {
+  if (node < 0) return NULL;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return NULL;
+  if (sp_streq(ty, "CallNode")) {
+    const char *nm = nt_str(nt, node, "name");
+    if (nm && sp_streq(nm, "-@")) return fiddle_typearg_spec(nt, nt_ref(nt, node, "receiver"));
+    return NULL;
+  }
+  if (!sp_streq(ty, "ConstantPathNode")) return NULL;
+  const char *cn = nt_str(nt, node, "name");
+  int par = nt_ref(nt, node, "parent");
+  const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+  if (!cn || !pn || !sp_streq(pn, "Fiddle")) return NULL;
+  return fiddle_type_to_spec(cn);
+}
+
+/* Record that dlopen/Function.new call node `id` was bound (so it lowers to
+   nil). Deduped. */
+static void fiddle_ctor_mark(Compiler *c, int id) {
+  for (int i = 0; i < c->n_fiddle_ctors; i++) if (c->fiddle_ctors[i] == id) return;
+  if (c->n_fiddle_ctors >= c->c_fiddle_ctors) {
+    c->c_fiddle_ctors = c->c_fiddle_ctors ? c->c_fiddle_ctors * 2 : 8;
+    int *grown = realloc(c->fiddle_ctors, sizeof(int) * (size_t)c->c_fiddle_ctors);
+    if (!grown) { perror("realloc"); exit(1); }
+    c->fiddle_ctors = grown;
+  }
+  c->fiddle_ctors[c->n_fiddle_ctors++] = id;
+}
+
+/* Was call node `id` a dlopen/Function.new that register_fiddle_locals bound? */
+int fiddle_ctor_is_bound(Compiler *c, int id) {
+  for (int i = 0; i < c->n_fiddle_ctors; i++) if (c->fiddle_ctors[i] == id) return 1;
+  return 0;
+}
+
+/* Is `node` a `Fiddle::<leaf>` constant path (ConstantPathNode name==leaf,
+   parent ConstantReadNode "Fiddle")? Used for Fiddle::Pointer / Fiddle::NULL. */
+static int is_fiddle_const_path(const NodeTable *nt, int node, const char *leaf) {
+  if (node < 0 || !nt_type(nt, node) || !sp_streq(nt_type(nt, node), "ConstantPathNode")) return 0;
+  const char *cn = nt_str(nt, node, "name");
+  int par = nt_ref(nt, node, "parent");
+  const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+  return cn && pn && sp_streq(cn, leaf) && sp_streq(pn, "Fiddle");
+}
+int is_fiddle_pointer_const(const NodeTable *nt, int node) { return is_fiddle_const_path(nt, node, "Pointer"); }
+int is_fiddle_null_const(const NodeTable *nt, int node)    { return is_fiddle_const_path(nt, node, "NULL"); }
+
+/* The class index of the Fiddle::Pointer native class, or -1 (fiddle not required). */
+int fiddle_pointer_cid(Compiler *c) { return comp_class_index(c, "Fiddle::Pointer"); }
+
+/* Find a Fiddle local binding by (scope, name); returns its index or -1. */
+int find_fiddle_local(Compiler *c, int scope, const char *name) {
+  if (!name) return -1;
+  for (int i = 0; i < c->n_fiddle_locals; i++)
+    if (c->fiddle_locals[i].scope == scope && sp_streq(c->fiddle_locals[i].name, name))
+      return i;
+  return -1;
+}
+
+static void fiddle_local_append(Compiler *c, int scope, const char *name,
+                                int kind, const char *lib, int ffi_idx) {
+  if (c->n_fiddle_locals >= c->c_fiddle_locals) {
+    c->c_fiddle_locals = c->c_fiddle_locals ? c->c_fiddle_locals * 2 : 8;
+    FiddleLocal *grown = realloc(c->fiddle_locals, sizeof(FiddleLocal) * (size_t)c->c_fiddle_locals);
+    if (!grown) { perror("realloc"); exit(1); }
+    c->fiddle_locals = grown;
+  }
+  int i = c->n_fiddle_locals++;
+  c->fiddle_locals[i].scope   = scope;
+  c->fiddle_locals[i].name    = strdup(name);
+  c->fiddle_locals[i].kind    = kind;
+  c->fiddle_locals[i].lib     = lib ? strdup(lib) : NULL;
+  c->fiddle_locals[i].ffi_idx = ffi_idx;
+}
+
+/* Register the low-level Fiddle API bound to locals: `h = Fiddle.dlopen(...)`
+   and `f = Fiddle::Function.new(h["sym"], [TYPE...], TYPE)`. A Function local
+   gets a synthetic ffi_func (keyed by the C symbol), so `f.call(args)` lowers
+   through the same FFI codegen as an ffi_func. Only literal shapes are bound;
+   anything else is left unbound so the later `.call` fails loudly at codegen. */
+void register_fiddle_locals(Compiler *c) {
+  if (!sp_feature_enabled("fiddle")) return;
+  const NodeTable *nt = c->nt;
+  /* Pass 0: handles (dlopen).  Pass 1: functions (may reference a handle). */
+  for (int pass = 0; pass < 2; pass++) {
+    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+      const char *lname = nt_str(nt, w, "name");
+      int val = nt_ref(nt, w, "value");
+      if (!lname || val < 0) continue;
+      if (!nt_type(nt, val) || !sp_streq(nt_type(nt, val), "CallNode")) continue;
+      int scope = c->nscope[w];
+      const char *cname = nt_str(nt, val, "name");
+      int recv = nt_ref(nt, val, "receiver");
+      int anode = nt_ref(nt, val, "arguments");
+      int an = 0;
+      const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+
+      if (pass == 0) {
+        if (!cname || !sp_streq(cname, "dlopen")) continue;
+        if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "ConstantReadNode")) continue;
+        const char *rn = nt_str(nt, recv, "name");
+        if (!rn || !sp_streq(rn, "Fiddle") || an < 1) continue;
+        const char *lib = "";
+        const char *a0ty = nt_type(nt, av[0]);
+        if (!(a0ty && sp_streq(a0ty, "NilNode"))) {
+          lib = ffi_arg_str(nt, av[0]);
+          if (!lib) continue;                       /* computed lib: leave unbound */
+        }
+        fiddle_ctor_mark(c, val);
+        if (find_fiddle_local(c, scope, lname) >= 0) continue;
+        fiddle_local_append(c, scope, lname, FIDDLE_HANDLE, lib, -1);
+        continue;
+      }
+
+      /* pass 1: f = Fiddle::Function.new(h["sym"], [TYPE...], TYPE) */
+      if (!cname || !sp_streq(cname, "new")) continue;
+      if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "ConstantPathNode")) continue;
+      const char *rcn = nt_str(nt, recv, "name");
+      int rpar = nt_ref(nt, recv, "parent");
+      const char *rpn = rpar >= 0 ? nt_str(nt, rpar, "name") : NULL;
+      if (!rcn || !rpn || !sp_streq(rcn, "Function") || !sp_streq(rpn, "Fiddle") || an < 3) continue;
+      /* args[0] = h["sym"] */
+      int hn = av[0];
+      if (!nt_type(nt, hn) || !sp_streq(nt_type(nt, hn), "CallNode")) continue;
+      const char *hname = nt_str(nt, hn, "name");
+      if (!hname || !sp_streq(hname, "[]")) continue;
+      int hrecv = nt_ref(nt, hn, "receiver");
+      if (hrecv < 0 || !nt_type(nt, hrecv) || !sp_streq(nt_type(nt, hrecv), "LocalVariableReadNode")) continue;
+      const char *handle_name = nt_str(nt, hrecv, "name");
+      int hanode = nt_ref(nt, hn, "arguments"); int han = 0;
+      const int *hav = hanode >= 0 ? nt_arr(nt, hanode, "arguments", &han) : NULL;
+      if (han < 1) continue;
+      const char *sym = ffi_arg_str(nt, hav[0]);
+      if (!sym) continue;                            /* computed symbol: unbound */
+      /* args[1] = [TYPE...] */
+      if (!nt_type(nt, av[1]) || !sp_streq(nt_type(nt, av[1]), "ArrayNode")) continue;
+      int en = 0;
+      const int *elems = nt_arr(nt, av[1], "elements", &en);
+      char **argspecs = malloc(sizeof(char *) * (size_t)(en + 1));
+      if (!argspecs) { perror("malloc"); exit(1); }
+      int ok = 1;
+      for (int ei = 0; ei < en; ei++) {
+        const char *sp = fiddle_typearg_spec(nt, elems[ei]);
+        if (!sp) { ok = 0; for (int j = 0; j < ei; j++) free(argspecs[j]); break; }
+        argspecs[ei] = strdup(sp);
+      }
+      const char *ret = ok ? fiddle_typearg_spec(nt, av[2]) : NULL;
+      if (!ok || !ret) { free(argspecs); continue; }
+      /* link marker from the handle's library (dlopen(nil) -> none) */
+      int hidx = find_fiddle_local(c, scope, handle_name);
+      const char *lib = (hidx >= 0 && c->fiddle_locals[hidx].kind == FIDDLE_HANDLE)
+                        ? c->fiddle_locals[hidx].lib : NULL;
+      if (lib && lib[0]) {
+        int mi = -1;
+        for (int li = 0; li < c->n_ffi_libs; li++)
+          if (sp_streq(c->ffi_libs[li].mod, FIDDLE_MOD) && strstr(c->ffi_libs[li].names, lib)) { mi = li; break; }
+        if (mi < 0) {
+          if (c->n_ffi_libs >= c->c_ffi_libs) {
+            c->c_ffi_libs = c->c_ffi_libs ? c->c_ffi_libs * 2 : 8;
+            FfiLib *grown = realloc(c->ffi_libs, sizeof(FfiLib) * (size_t)c->c_ffi_libs);
+            if (!grown) { perror("realloc"); exit(1); }
+            c->ffi_libs = grown;
+          }
+          c->ffi_libs[c->n_ffi_libs].mod   = strdup(FIDDLE_MOD);
+          c->ffi_libs[c->n_ffi_libs].names = strdup(lib);
+          c->n_ffi_libs++;
+        }
+      }
+      /* dedupe the synthetic ffi_func by C symbol */
+      int fi = ffi_find_func(c, FIDDLE_MOD, sym);
+      if (fi < 0) {
+        if (c->n_ffi_funcs >= c->c_ffi_funcs) {
+          c->c_ffi_funcs = c->c_ffi_funcs ? c->c_ffi_funcs * 2 : 16;
+          FfiFunc *grown = realloc(c->ffi_funcs, sizeof(FfiFunc) * (size_t)c->c_ffi_funcs);
+          if (!grown) { perror("realloc"); exit(1); }
+          c->ffi_funcs = grown;
+        }
+        fi = c->n_ffi_funcs++;
+        c->ffi_funcs[fi].mod   = strdup(FIDDLE_MOD);
+        c->ffi_funcs[fi].name  = strdup(sym);
+        c->ffi_funcs[fi].ret   = strdup(ret);
+        c->ffi_funcs[fi].args  = argspecs;
+        c->ffi_funcs[fi].nargs = en;
+        c->ffi_funcs[fi].is_fiddle = 1;
+      } else {
+        for (int j = 0; j < en; j++) free(argspecs[j]);
+        free(argspecs);
+      }
+      fiddle_ctor_mark(c, val);
+      if (find_fiddle_local(c, scope, lname) >= 0) continue;
+      fiddle_local_append(c, scope, lname, FIDDLE_FUNC, NULL, fi);
     }
   }
 }

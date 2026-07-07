@@ -2578,6 +2578,8 @@ void analyze_program(Compiler *c) {
   register_globals_consts(c);
   rewrite_const_alias_receivers(c);
   register_ffi_decls(c);
+  register_fiddle_decls(c);
+  register_fiddle_locals(c);
   topup_forwarding_arity(c);
 
   /* rescue variables (`rescue => e`) are typed as exception objects. When the

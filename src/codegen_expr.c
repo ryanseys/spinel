@@ -1217,6 +1217,11 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (sp_streq(ty, "ConstantPathNode")) {
+    /* Fiddle::NULL -> a null Fiddle::Pointer. */
+    if (fiddle_pointer_cid(c) >= 0 && is_fiddle_null_const(nt, id)) {
+      buf_printf(b, "sp_FiddlePtr_new_raw(%d, NULL, 0)", fiddle_pointer_cid(c));
+      return;
+    }
     /* M::CONST -> the flat constant named by the final path component */
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;

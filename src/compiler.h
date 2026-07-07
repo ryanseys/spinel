@@ -178,6 +178,10 @@ typedef struct {
   char *ret;       /* return spec */
   char **args;     /* arg specs array (malloc'd) */
   int nargs;
+  int is_fiddle;   /* synthesized from Fiddle (extern/Function.new): the symbol
+                      is system-header-declared, so skip our own extern for a
+                      pointer/string signature (it would conflict with the
+                      header's const-qualified prototype). */
 } FfiFunc;
 
 typedef struct { char *mod; char *name; int val; } FfiConst;     /* ffi_const */
@@ -185,6 +189,12 @@ typedef struct { char *mod; char *name; int size; } FfiBuf;      /* ffi_buffer *
 typedef struct { char *mod; char *name; int offset; char *kind; } FfiReader; /* ffi_read_* ("u32"/"i32"/"ptr") */
 typedef struct { char *mod; char *names; } FfiLib;   /* names: ;-separated lib names, or "" */
 typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags, or "" */
+
+/* A local bound by the low-level Fiddle API (register_fiddle_locals):
+   `h = Fiddle.dlopen(...)` is a HANDLE; `f = Fiddle::Function.new(...)` is a
+   FUNC whose ffi_idx indexes a synthetic ffi_func. Keyed by (scope, name). */
+enum { FIDDLE_HANDLE = 1, FIDDLE_FUNC = 2 };
+typedef struct { int scope; char *name; int kind; char *lib; int ffi_idx; } FiddleLocal;
 
 /* One `native_func` declaration (typed static binding to carried C). Unlike
    FfiFunc, arg/ret specs are the spinel type language ("any"/"string"/"int"/
@@ -277,6 +287,17 @@ typedef struct {
   FfiCflag *ffi_cflags;
   int n_ffi_cflags, c_ffi_cflags;
 
+  /* Low-level Fiddle local bindings (Fiddle.dlopen / Fiddle::Function.new) */
+  FiddleLocal *fiddle_locals;
+  int n_fiddle_locals, c_fiddle_locals;
+
+  /* Node ids of the dlopen/Function.new calls that register_fiddle_locals
+     actually bound: these carry no runtime value and lower to nil. A ctor NOT
+     in this set (e.g. a computed symbol) was not bound, so it stays a loud
+     reject rather than a silent nil. */
+  int *fiddle_ctors;
+  int n_fiddle_ctors, c_fiddle_ctors;
+
   /* native-binding registry: native_func declarations (Path B) */
   NativeFunc *native_funcs;
   int n_native_funcs, c_native_funcs;
@@ -315,6 +336,20 @@ int comp_ternary_arms(const NodeTable *nt, int id, int *then_node, int *else_nod
    (`a = b = nil` seen from a's value)? Returns the terminal NilNode id or -1.
    Shared by analyze (write-type collection) and codegen (chain lowering). */
 int comp_nil_chain_bottom(const NodeTable *nt, int v);
+
+/* Find a low-level Fiddle local binding by (scope, name); returns its index in
+   c->fiddle_locals or -1. Shared by inference and codegen. */
+int find_fiddle_local(Compiler *c, int scope, const char *name);
+
+/* Was call node `id` a dlopen/Function.new that register_fiddle_locals bound?
+   Such a ctor lowers to nil (no runtime value). Shared by inference and codegen. */
+int fiddle_ctor_is_bound(Compiler *c, int id);
+
+/* Fiddle::Pointer / Fiddle::NULL constant-path detection + the Pointer class id.
+   Shared by inference and codegen for the Pointer runtime special-cases. */
+int is_fiddle_pointer_const(const NodeTable *nt, int node);
+int is_fiddle_null_const(const NodeTable *nt, int node);
+int fiddle_pointer_cid(Compiler *c);
 
 /* Scopes. */
 Scope *comp_scope_new(Compiler *c, const char *name, int def_node);
