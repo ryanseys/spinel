@@ -4165,17 +4165,26 @@ else {
           /* SymPoly: get returns sp_RbVal, unbox to param type.
              Other sym/str keyed hashes: get returns the value type directly. */
           TyKind hval = ty_hash_val(ds_hash_type);
-          if (hval == TY_POLY) {
-            char get_expr[128];
-            snprintf(get_expr, sizeof get_expr,
-                     "sp_%sHash_get(_t%d, sp_sym_intern(\"%s\"))",
-                     hn, ds_hash_tmp, m->pnames[i]);
-            emit_unbox_text(c, pt, get_expr, out);
+          Buf vb; memset(&vb, 0, sizeof vb);
+          char get_expr[256];
+          snprintf(get_expr, sizeof get_expr,
+                   "sp_%sHash_get(_t%d, sp_sym_intern(\"%s\"))",
+                   hn, ds_hash_tmp, m->pnames[i]);
+          if (hval == TY_POLY) emit_unbox_text(c, pt, get_expr, &vb);
+          else buf_puts(&vb, get_expr);
+          /* An optional keyword param (one with a default) whose key may be
+             absent from the forwarded hash falls back to its default: a bare
+             get returns nil and silently drops the callee's default value. */
+          if (m->pdefault && m->pdefault[i] >= 0) {
+            Buf db; memset(&db, 0, sizeof db);
+            emit_arg_or_default(c, m, i, -1, &db);
+            buf_printf(out, "(sp_%sHash_has_key(_t%d, sp_sym_intern(\"%s\")) ? (%s) : (%s))",
+                       hn, ds_hash_tmp, m->pnames[i],
+                       vb.p ? vb.p : "", db.p ? db.p : default_value(pt));
+            free(db.p);
           }
-          else {
-            buf_printf(out, "sp_%sHash_get(_t%d, sp_sym_intern(\"%s\"))",
-                       hn, ds_hash_tmp, m->pnames[i]);
-          }
+          else buf_puts(out, vb.p ? vb.p : "");
+          free(vb.p);
         }
         else {
           buf_printf(out, "%s", default_value(pt));
