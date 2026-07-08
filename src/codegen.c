@@ -2832,8 +2832,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
   const char *shadow = comp_prep_chain_target(c, s->class_id, s->name);
   if (shadow) {
     buf_printf(b, "sp_%s_%s((sp_%s *)%s",
-               c->classes[s->class_id].name, mc(shadow),
-               c->classes[s->class_id].name, g_self);
+               c->classes[s->class_id].c_name, mc(shadow),
+               c->classes[s->class_id].c_name, g_self);
     if (ty && sp_streq(ty, "ForwardingSuperNode")) {
       for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", rename_local(s->pnames[i]));
     }
@@ -3085,7 +3085,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
       /* class_is_hashkey guarantees this object class == k, and b_ is a k key */
       int pcls = ty_object_class(pt);
       snprintf(argbuf, sizeof argbuf, "%s(sp_%s *)b_",
-               c->classes[pcls].is_value_type ? "*" : "", c->classes[pcls].name);
+               c->classes[pcls].is_value_type ? "*" : "", c->classes[pcls].c_name);
     } else {
       snprintf(argbuf, sizeof argbuf, "sp_box_obj(b_, cls_id)");
     }

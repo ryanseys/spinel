@@ -4518,7 +4518,7 @@ else {
       /* override emitted as a void C function (method_is_void: VOID/NIL/UNKNOWN
          ret, or initialize) -- call it, assign nil/zero to the result temp */
       buf_printf(b, " case %d: sp_%s_%s((sp_%s *)%s", k,
-                 c->classes[kd].name, kfn, c->classes[kd].name, selfptr);
+                 c->classes[kd].c_name, kfn, c->classes[kd].c_name, selfptr);
       for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
       buf_printf(b, "); _t%d = %s; break;", rtmp, default_value(disp_ret));
     }
@@ -4527,7 +4527,7 @@ else {
       buf_printf(b, " case %d: { ", k);
       Buf _bx; memset(&_bx, 0, sizeof _bx);
       buf_printf(&_bx, "sp_%s_%s((sp_%s *)%s",
-                 c->classes[kd].name, kfn, c->classes[kd].name, selfptr);
+                 c->classes[kd].c_name, kfn, c->classes[kd].c_name, selfptr);
       for (int a = 0; a < np; a++) buf_printf(&_bx, ", _t%d", atmp[a]);
       buf_puts(&_bx, ")");
       buf_printf(b, "_t%d = ", rtmp);
@@ -4537,7 +4537,7 @@ else {
     }
     else {
       buf_printf(b, " case %d: _t%d = sp_%s_%s((sp_%s *)%s", k, rtmp,
-                 c->classes[kd].name, kfn, c->classes[kd].name, selfptr);
+                 c->classes[kd].c_name, kfn, c->classes[kd].c_name, selfptr);
       for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
       buf_puts(b, "); break;");
     }
@@ -4556,7 +4556,7 @@ else {
   TyKind def_ret = (TyKind)m->ret;
   if (method_is_void(m)) {
     buf_printf(b, " default: sp_%s_%s((sp_%s *)%s",
-               c->classes[defcls].name, mc(mname), c->classes[defcls].name, selfptr);
+               c->classes[defcls].c_name, mc(mname), c->classes[defcls].c_name, selfptr);
     for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
     buf_printf(b, "); _t%d = %s; break;", rtmp, default_value(disp_ret));
   }
@@ -4564,7 +4564,7 @@ else {
     buf_printf(b, " default: { ");
     Buf _bx; memset(&_bx, 0, sizeof _bx);
     buf_printf(&_bx, "sp_%s_%s((sp_%s *)%s",
-               c->classes[defcls].name, mc(mname), c->classes[defcls].name, selfptr);
+               c->classes[defcls].c_name, mc(mname), c->classes[defcls].c_name, selfptr);
     for (int a = 0; a < np; a++) buf_printf(&_bx, ", _t%d", atmp[a]);
     buf_puts(&_bx, ")");
     buf_printf(b, "_t%d = ", rtmp);
@@ -4574,7 +4574,7 @@ else {
   }
   else {
     buf_printf(b, " default: _t%d = sp_%s_%s((sp_%s *)%s", rtmp,
-               c->classes[defcls].name, mc(mname), c->classes[defcls].name, selfptr);
+               c->classes[defcls].c_name, mc(mname), c->classes[defcls].c_name, selfptr);
     for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
     buf_puts(b, "); break;");
   }

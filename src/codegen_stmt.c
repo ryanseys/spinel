@@ -854,8 +854,8 @@ else {
       else emit_expr(c, v, g_pre);
       buf_puts(g_pre, ";\n");
       buf_printf(b, "lv_%s = sp_%s_%s((sp_%s *)lv_%s, _t%d);\n",
-                 en, c->classes[defcls2].name, mc(ms2->name),
-                 c->classes[defcls2].name, en, atmp2);
+                 en, c->classes[defcls2].c_name, mc(ms2->name),
+                 c->classes[defcls2].c_name, en, atmp2);
       return;
     }
   }
@@ -4126,8 +4126,8 @@ else {
     emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
     if (ivt == TY_POLY) {
       buf_printf(b, "if (%ssp_poly_truthy(((sp_%s *)_t%d.v.p)->iv_%s)) ((sp_%s *)_t%d.v.p)->iv_%s = ",
-                 is_or ? "!" : "", c->classes[class_id].name, tr, attr,
-                 c->classes[class_id].name, tr, attr);
+                 is_or ? "!" : "", c->classes[class_id].c_name, tr, attr,
+                 c->classes[class_id].c_name, tr, attr);
       emit_boxed(c, v, b); buf_puts(b, "; }\n");
     }
     else if (ivt == TY_BOOL) {
@@ -4345,8 +4345,8 @@ else {
         else emit_expr(c, ival, g_pre);
         buf_puts(g_pre, ";\n");
         buf_printf(b, "%s = sp_%s_%s((sp_%s *)%s, _t%d);\n",
-                   ref, c->classes[idefcls].name, mc(ims->name),
-                   c->classes[idefcls].name, ref, iatmp);
+                   ref, c->classes[idefcls].c_name, mc(ims->name),
+                   c->classes[idefcls].c_name, ref, iatmp);
       }
       else {
         buf_printf(b, "%s %s= ", ref, op);
@@ -4382,8 +4382,8 @@ else {
                              ? "sp_box_obj(" : "sp_box_nullable_obj((void *)(";
         const char *pboxc = c->classes[poly_defcls].is_value_type ? ", %d)" : "), %d)";
         buf_printf(b, "%s = %ssp_%s_%s((sp_%s *)(%s).v.p, _t%d)", ref, pbox,
-                   c->classes[poly_defcls].name, mc(pms->name),
-                   c->classes[poly_defcls].name, ref, iatmp);
+                   c->classes[poly_defcls].c_name, mc(pms->name),
+                   c->classes[poly_defcls].c_name, ref, iatmp);
         buf_printf(b, pboxc, poly_defcls);
         buf_puts(b, ";\n");
       }

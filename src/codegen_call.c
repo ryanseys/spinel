@@ -1663,7 +1663,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         int mnp = c->scopes[mi].nparams;
         Buf cb; memset(&cb, 0, sizeof cb);
         buf_printf(&cb, "sp_%s_%s((sp_%s *)_t%d.v.p", c->classes[defcls].c_name,
-                   mc(c->scopes[mi].name), c->classes[defcls].name, tv);
+                   mc(c->scopes[mi].name), c->classes[defcls].c_name, tv);
         const char *saved_self = g_self;
         static char selfpbuf2[64];
         snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_%s *)_t%d.v.p", c->classes[defcls].c_name, tv);
@@ -3706,7 +3706,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent);
         if (sn_obj)
           buf_printf(g_pre, "sp_%s *_sn%d = %s; SP_GC_ROOT(_sn%d);\n",
-                     c->classes[ty_object_class(rrt)].name, tsn2,
+                     c->classes[ty_object_class(rrt)].c_name, tsn2,
                      rsn.p ? rsn.p : "NULL", tsn2);
         else
           buf_printf(g_pre, "const char *_sn%d = %s; SP_GC_ROOT_STR(_sn%d);\n",
@@ -5920,7 +5920,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name)) continue;
       buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(),%d);break;",
-                 ci, rt2, c->classes[ci].name, ci);
+                 ci, rt2, c->classes[ci].c_name, ci);
     }
     buf_printf(b, "} _t%d; })", rt2);
     return;

@@ -746,7 +746,9 @@ void emit_box_open(Compiler *c, TyKind t, Buf *b) {
   else if (ty_nullable_builtin_id(t)) buf_puts(b, "sp_box_nullable_obj((void *)(");
   else if (ty_is_object(t)) {
     int cid = ty_object_class(t);
-    buf_printf(b, "sp_box_obj((%s *)( ", c->classes[cid].name);
+    /* the struct typedef is sp_<c_name>; a bare `(<Name> *)` would never
+       have compiled, so this arm was effectively unreachable as written */
+    buf_printf(b, "sp_box_obj((sp_%s *)( ", c->classes[cid].c_name);
   }
   /* TY_POLY: already sp_RbVal, no prefix */
 }
