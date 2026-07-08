@@ -1245,6 +1245,17 @@ int infer_write_types(Compiler *c) {
         /* a[start, len] = rhs: a splice over the (start, len) span */
         is_idx_write = 1; is_splice = 1; vt = splice_incoming_elem(c, argv[2]);
       }
+      else if (name && sp_streq(name, "fill") && an >= 1 && an <= 3 &&
+               nt_ref(nt, id, "block") < 0) {
+        /* arr.fill(v[, start[, len]]) writes v into every element slot of the
+           span: the value is element evidence exactly like a splice, so a typed
+           array whose elements cannot hold the value widens to a poly array
+           (previously the raw bits were stored: [1,2,3].fill(:a) filled the int
+           array with the symbol id). The block form fill([start[, len]]) { |i| }
+           carries no value argument and is not handled here. */
+        is_idx_write = 1; is_splice = 1; vt = infer_type(c, argv[0]);
+        kt = TY_INT;  /* a positional span, never hash evidence */
+      }
       else if (name && (sp_streq(name, "fetch") ||
                         (sp_streq(name, "[]") && an == 1)) && an >= 1) {
         /* hash.fetch(key,..) / hash[key]: promote TY_UNKNOWN local to a typed hash.
