@@ -791,7 +791,9 @@ else {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "mrb_int _t%d = 0, _t%d = sp_%sArray_length(_t%d) - 1;\n", tlo, thi, k, trecv);
           emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
-          buf_printf(g_pre, " _t%d = %s;\n", tres, et == TY_INT ? "SP_INT_NIL" : "NULL");
+          buf_printf(g_pre, " _t%d = %s;\n", tres,
+                     et == TY_INT ? "SP_INT_NIL" :
+                     et == TY_FLOAT ? "sp_float_nil()" : "NULL");
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
           emit_indent(g_pre, g_indent + 1);
@@ -800,11 +802,27 @@ else {
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
           int sv = g_indent; g_indent++;
           Buf cb = expr_buf(c, bb[bn - 1]); g_indent = sv;
-          emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_get(_t%d, _t%d); _t%d = _t%d - 1; }\n",
-                     cb.p ? cb.p : "0", tres, k, trecv, tmid, thi, tmid);
+          /* An Integer-valued block selects find-ANY mode (CRuby dispatches on
+             the block value's kind): 0 means found, negative searches left,
+             positive right. A boolean block is find-minimum, as before. */
+          if (comp_ntype(c, bb[bn - 1]) == TY_INT) {
+            int tcmp = ++g_tmp;
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "mrb_int _t%d = %s;\n", tcmp, cb.p ? cb.p : "0");
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "if (_t%d == 0) { _t%d = sp_%sArray_get(_t%d, _t%d); break; }\n",
+                       tcmp, tres, k, trecv, tmid);
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+            emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+          }
+          else {
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_get(_t%d, _t%d); _t%d = _t%d - 1; }\n",
+                       cb.p ? cb.p : "0", tres, k, trecv, tmid, thi, tmid);
+            emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+          }
           free(cb.p);
-          emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
           buf_printf(b, "_t%d", tres); return 1;
         }
@@ -832,7 +850,26 @@ else {
           /* The block value is the search predicate: route through emit_cond so a
              poly / nullable-scalar result becomes a valid C truthiness test rather
              than `if (sp_RbVal)` or `if (SP_INT_NIL)`. */
-          Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
+          Buf cb; memset(&cb, 0, sizeof cb);
+          /* Integer-valued block: find-ANY mode (0 found, <0 left, >0 right),
+             yielding the index. Boolean block: find-minimum, as before. */
+          if (comp_ntype(c, bb[bn - 1]) == TY_INT) {
+            /* g_indent was already bumped for the block-body statements above;
+               evaluate the comparator at that depth, then restore. */
+            Buf ib = expr_buf(c, bb[bn - 1]); g_indent = sv;
+            int tcmp = ++g_tmp;
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "mrb_int _t%d = %s;\n", tcmp, ib.p ? ib.p : "0");
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "if (_t%d == 0) { _t%d = _t%d; break; }\n", tcmp, tres, tmid);
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+            emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+            free(ib.p);
+            emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+            buf_printf(b, "_t%d", tres); return 1;
+          }
+          emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
           free(cb.p);
