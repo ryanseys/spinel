@@ -1998,6 +1998,22 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           }
           return 1;
         }
+        /* Forwarding a runtime proc with `&expr` into an initialize that
+           consumes the block (yields it, or stores a named `&blk`) cannot be
+           lowered yet: a variable-held proc uses the typed-arg call ABI while a
+           block-consuming initialize expects the poly-arg/poly-return block ABI,
+           so the two disagree on how the call returns. Reject loudly rather than
+           silently dropping the proc (which returns a wrong value). A literal
+           `{ }` block and an anonymous `&` are handled by the paths below. */
+        {
+          int fblk = nt_ref(nt, id, "block");
+          int finit = comp_method_in_chain(c, ci, "initialize", NULL);
+          if (fblk >= 0 && nt_type(nt, fblk) && sp_streq(nt_type(nt, fblk), "BlockArgumentNode") &&
+              nt_ref(nt, fblk, "expression") >= 0 && finit >= 0 &&
+              (c->scopes[finit].yields ||
+               (c->scopes[finit].blk_param && c->scopes[finit].blk_param[0])))
+            unsupported(c, id, "forwarding a proc with & into a block-consuming initialize");
+        }
         /* yielding initialize: inline its body at the call site (the block
            feeds the yields; the emitted constructor only allocates) */
         if (emit_ctor_yield_inline(c, id, ci, b)) return 1;
