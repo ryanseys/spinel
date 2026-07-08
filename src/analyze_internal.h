@@ -171,6 +171,7 @@ int class_ivar_pinned(ClassInfo *ci, const char *name);
 void sp_ivwatch(const char *name, const char *where, TyKind old, TyKind nw);
 void sp_narrow_memo_bump(void);
 int infer_write_types(Compiler *c);
+int reconcile_locals_reading_ivars(Compiler *c);
 int infer_param_hash_value(Compiler *c);
 int bind_call_params(Compiler *c, int call_id, int mi);
 int propagate_prep_params(Compiler *c);

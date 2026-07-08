@@ -3640,6 +3640,15 @@ void analyze_program(Compiler *c) {
   for (int it = 0; it < 8; it++) {
     int ch = infer_ivar_types(c);
     ch |= infer_inherited_ivars(c);
+    /* An ivar that widens here (e.g. `@query_log`, whose heterogeneous `= []` /
+       `.push(str)` / `= prev` writes merge to poly) must carry its new type into
+       any local that merely READS it (`prev = @query_log`). Widen such a local
+       to the ivar's type -- monotonically, without the full local re-derivation
+       infer_write_types does (which would reset pattern/massign/block-bound
+       locals this late and mistype them). Otherwise the local is stranded at its
+       pre-widen scalar type: an unsound `sp_StrArray *` <- `sp_RbVal` at
+       `local = @ivar` (#1793). */
+    ch |= reconcile_locals_reading_ivars(c);
     if (!ch) break;
   }
 

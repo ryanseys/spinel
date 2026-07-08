@@ -615,6 +615,32 @@ static int infer_case_pattern_locals(Compiler *c) {
   return changed;
 }
 
+/* Widen each local `x` in a `x = @ivar` write to the ivar's (possibly
+   just-widened) type, monotonically. Unlike infer_write_types this never resets
+   a local, so it only lifts a local that reads a now-wider ivar and leaves every
+   other local's carefully-derived type (pattern/massign/block bindings) intact
+   -- the reconciliation the late ivar-widening fixpoint needs (#1793). */
+int reconcile_locals_reading_ivars(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
+    int val_id = nt_ref(nt, id, "value");
+    if (val_id < 0) continue;
+    const char *vty = nt_type(nt, val_id);
+    if (!vty || !sp_streq(vty, "InstanceVariableReadNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
+    if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+    TyKind ivt = infer_type(c, val_id);
+    if (ivt == TY_UNKNOWN) continue;
+    TyKind m = ty_unify(lv->type, ivt);
+    if (m != lv->type) { lv->type = m; changed = 1; }
+  }
+  return changed;
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
