@@ -1675,7 +1675,8 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return 0;
   const char *m = nt_str(nt, recv, "name");
-  if (!m || !sp_streq(m, "chunk_while")) return 0;
+  if (!m || (!sp_streq(m, "chunk_while") && !sp_streq(m, "slice_when"))) return 0;
+  int is_sw = sp_streq(m, "slice_when");  /* slice_when boundary = block TRUE */
   int block = nt_ref(nt, recv, "block");
   if (block < 0) return 0;
   int pr = nt_ref(nt, recv, "receiver");
@@ -1720,7 +1721,7 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   if (lva) lva->type = pta;
   if (lvb) lvb->type = ptb;
   emit_indent(g_pre, g_indent + 2);
-  buf_printf(g_pre, "if (!(%s)) {\n", cb.p ? cb.p : "0"); free(cb.p);
+  buf_printf(g_pre, is_sw ? "if (%s) {\n" : "if (!(%s)) {\n", cb.p ? cb.p : "0"); free(cb.p);
   emit_indent(g_pre, g_indent + 3);
   buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_int_array(_t%d));\n", tout, tcur);
   emit_indent(g_pre, g_indent + 3);
