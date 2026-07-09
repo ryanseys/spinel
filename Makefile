@@ -536,6 +536,7 @@ define RUN_ONE_TEST
 ast=$$tmpdir/test.ast; \
 ir=$$tmpdir/test.ir; \
 cfile=$$tmpdir/test.c; \
+ofile=$$tmpdir/test.o; \
 bin=$$tmpdir/test_bin; \
 exp=$$tmpdir/expected; \
 act=$$tmpdir/actual; \
@@ -545,7 +546,8 @@ args=""; \
 if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
 rm -f "$@.diff"; \
 $(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
-$(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib "$$cfile" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
+$(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib -c "$$cfile" -o "$$ofile" 2>/dev/null && \
+$(CC) $(CFLAGS) "$$ofile" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
 if [ $$? -eq 0 ]; then \
   if [ -f "$<.expected" ]; then \
     LC_ALL=C sed 's/\r$$//' "$<.expected" >"$$exp.n"; \
