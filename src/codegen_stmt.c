@@ -4876,6 +4876,20 @@ else {
     emit_indent(b, indent);
     buf_printf(b, "%s_%s = ", pfx, key);
     const char *vty = nt_type(nt, v);
+    /* `[].freeze` / `{}.freeze`: freeze is a no-op here -- unwrap to the
+       literal so the empty-literal typed-constructor coercion below sees it
+       (an `EMPTY = [].freeze` constant otherwise emits the IntArray default
+       into a PolyArray-declared slot, and every `@x || EMPTY` reader widens
+       to poly off the union). */
+    if (vty && sp_streq(vty, "CallNode")) {
+      const char *vname = nt_str(nt, v, "name");
+      int vrecv = nt_ref(nt, v, "receiver");
+      const char *rty = vrecv >= 0 ? nt_type(nt, vrecv) : NULL;
+      if (vname && sp_streq(vname, "freeze") && rty &&
+          (sp_streq(rty, "ArrayNode") || sp_streq(rty, "HashNode") || sp_streq(rty, "KeywordHashNode"))) {
+        v = vrecv; vty = rty;
+      }
+    }
     int v_empty_arr = 0, v_empty_hash = 0;
     if (vty && sp_streq(vty, "ArrayNode")) {
       int ac = 0; nt_arr(nt, v, "elements", &ac); v_empty_arr = (ac == 0);
