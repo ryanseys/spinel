@@ -3283,6 +3283,17 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       if (rt == TY_FLOAT || a0 == TY_FLOAT) eff_res = TY_FLOAT;
       else if (rt == TY_INT && (a0 == TY_INT || a0 == TY_UNKNOWN)) eff_res = TY_INT;
     }
+    /* Integer ** Integer with a statically-negative literal exponent: analyze
+       typed this Rational (2 ** -2 == (1/4)). Emit sp_rational_pow over the
+       base as a Rational; the literal exponent is known negative. */
+    if (sp_streq(name, "**") && res == TY_RATIONAL && rt == TY_INT) {
+      buf_puts(b, "sp_rational_pow(sp_rational_new(");
+      emit_int_expr(c, recv, b);
+      buf_puts(b, ", 1), ");
+      emit_int_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      return 1;
+    }
     if (eff_res == TY_INT) {
       int isdivmod = sp_streq(name, "/") || sp_streq(name, "%");
       buf_printf(b, "%s(", int_arith_fn(name));

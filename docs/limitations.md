@@ -116,24 +116,20 @@ as on CRuby. In a few cases CRuby's behavior depends on a feature Spinel does
 not implement, and silently returning a wrong value would be worse than a
 visible error. Those deliberate divergences are listed here.
 
-#### `Integer#**` with a negative exponent
+#### `Integer#**` / `Integer#pow` with a *runtime* negative exponent
 
-CRuby evaluates a negative integer exponent to a `Rational` (`2 ** -1 # => (1/2)`).
-Spinel now has a `Rational` type, but `Integer#**` keeps a static `Integer`
-result type: the exponent's sign is generally not known at compile time, so
-typing `x ** y` as a sometimes-`Rational` would force the result poly and
-cascade through inference. A negative integer exponent therefore raises rather
-than silently truncating to `0`:
+A statically-negative literal exponent is faithful: `2 ** -2` and `2.pow(-2)`
+evaluate to the `Rational` `(1/4)`, and `Float **` is unaffected. But when the
+exponent is a runtime value whose sign is unknown at compile time (`b ** e`),
+the result must stay a plain `Integer` — typing every `base ** k` (with `k` a
+non-negative index) as a sometimes-`Rational` would force the result `poly` and
+cascade through int arithmetic. A runtime *negative* exponent therefore raises
+`RangeError` (catchable as usual) rather than returning a `Rational`:
 
 ```ruby
-2 ** -1   # RangeError: negative exponent
+def ipow(b, e) = b ** e
+ipow(2, -1)   # CRuby: (1/2)   Spinel: RangeError: negative exponent
 ```
-
-This applies to `Integer#**` / `Integer#pow` across the int, bigint, and
-poly-dispatched paths, and is catchable as usual (`rescue RangeError`).
-`Float#**` is unaffected and stays CRuby-compatible, because a float result is
-representable (`2.0 ** -1 # => 0.5`). A `Rational` base is also fine
-(`Rational(1,2) ** -1 # => (2/1)`).
 
 #### Embedded NUL bytes: byte-exact core, C-string transforms
 

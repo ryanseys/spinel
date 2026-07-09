@@ -633,6 +633,18 @@ TyKind infer_call(Compiler *c, int id) {
         infer_int_pow_overflows(base, exp))
       return TY_BIGINT;
   }
+  /* Integer ** Integer / Integer#pow with a statically-NEGATIVE literal
+     exponent is a Rational in CRuby (2 ** -2 == (1/4)). Only the literal case
+     is retyped: a runtime exponent's sign is unknown, and typing every
+     `base ** k` (k a non-negative index) as a sometimes-Rational would force
+     the result poly and cascade through int arithmetic (an inject/reduce
+     accumulator does not converge to poly today) -- so a runtime exponent keeps
+     the integer result (a negative one raises RangeError, see limitations.md). */
+  if ((sp_streq(name, "**") || sp_streq(name, "pow")) && recv >= 0 && argc == 1 &&
+      rt == TY_INT && a0 == TY_INT) {
+    long long exp;
+    if (infer_const_int_node(nt, argv[0], &exp) && exp < 0) return TY_RATIONAL;
+  }
   /* A literal left shift whose result exceeds int64 (`1 << 64`, the 2**64 mask)
      is a Bignum -- type it bigint so codegen emits a bigint shift, not a UB C
      `1LL << 64LL`. */

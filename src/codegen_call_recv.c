@@ -3489,6 +3489,10 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "nobits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) == 0)"); }
       else if (sp_streq(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "pow") && argc == 1 && comp_ntype(c, id) == TY_RATIONAL) {
+        /* statically-negative literal exponent -> Rational (2.pow(-2) == (1/4)) */
+        buf_printf(b, "sp_rational_pow(sp_rational_new(%s, 1), ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "pred") && argc == 0) buf_printf(b, "((%s) - 1)", r);
       else if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) buf_printf(b, "((%s) + 1)", r);
