@@ -3023,7 +3023,31 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_int_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "abs"))    buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (sp_streq(name, "chr"))    buf_printf(b, "sp_int_chr(%s)", r);
+      else if (sp_streq(name, "chr") && argc == 0) buf_printf(b, "sp_int_chr(%s)", r);
+      else if (sp_streq(name, "chr") && argc == 1) {
+        /* Integer#chr(Encoding::X): the encoding argument is resolved at
+           compile time from the constant path (Encoding values barely exist
+           as runtime objects). UTF_8 encodes the codepoint (1-4 bytes);
+           the single-byte encodings keep byte semantics. A dynamic or
+           unknown encoding is a loud reject, not a silent byte-truncation
+           (which is what this arm previously did for EVERY chr(enc)). */
+        const char *enm = NULL, *parnm = NULL;
+        if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantPathNode")) {
+          enm = nt_str(nt, argv[0], "name");
+          int par = nt_ref(nt, argv[0], "parent");
+          parnm = (par >= 0 && nt_type(nt, par) &&
+                   sp_streq(nt_type(nt, par), "ConstantReadNode"))
+                  ? nt_str(nt, par, "name") : NULL;
+        }
+        if (parnm && sp_streq(parnm, "Encoding") && enm && sp_streq(enm, "UTF_8"))
+          buf_printf(b, "sp_int_chr_utf8(%s)", r);
+        else if (parnm && sp_streq(parnm, "Encoding") && enm &&
+                 (sp_streq(enm, "US_ASCII") || sp_streq(enm, "ASCII_8BIT") ||
+                  sp_streq(enm, "BINARY")))
+          buf_printf(b, "sp_int_chr(%s)", r);
+        else
+          unsupported(c, id, "Integer#chr with a non-constant or unsupported encoding");
+      }
       else if (sp_streq(name, "[]") && argc == 1) { buf_printf(b, "(((%s) >> (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) & 1)"); }
       else if (sp_streq(name, "bit_length") && argc == 0) buf_printf(b, "sp_int_bit_length(%s)", r);
       else if (sp_streq(name, "fdiv") && argc == 1) { buf_printf(b, "((mrb_float)(%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }

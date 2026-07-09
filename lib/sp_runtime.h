@@ -244,7 +244,25 @@ static inline mrb_bool sp_int_mul_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
 /* sp_gcd / sp_lcm / sp_powmod / sp_ceildiv / sp_int_clamp / sp_int_sqrt
    now live in libspinel_rt.a (lib/sp_core.c); declared via sp_core.h. */
 static inline char *sp_str_alloc_raw(size_t total_with_null);  /* fwd decl */
-static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;sp_str_set_len(s,1);return s;}
+const char *sp_sprintf(const char *fmt, ...);                  /* fwd decl */
+/* Integer#chr: a single byte; CRuby raises RangeError outside 0..255. */
+static const char*sp_int_chr(mrb_int n){
+  if(n<0||n>255)sp_raise_cls("RangeError",sp_sprintf("%lld out of char range",(long long)n));
+  char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;sp_str_set_len(s,1);return s;
+}
+/* Integer#chr(Encoding::UTF_8): encode the codepoint as UTF-8 (1-4 bytes).
+   CRuby raises RangeError for a negative/too-large codepoint and for the
+   surrogate range, which UTF-8 cannot carry. */
+static const char*sp_int_chr_utf8(mrb_int n){
+  if(n<0||n>0x10FFFF)sp_raise_cls("RangeError",sp_sprintf("%lld out of char range",(long long)n));
+  if(n>=0xD800&&n<=0xDFFF)sp_raise_cls("RangeError",sp_sprintf("invalid codepoint 0x%llX in UTF-8",(long long)n));
+  char*s=sp_str_alloc_raw(5);char*p=s;
+  if(n<0x80){*p++=(char)n;}
+  else if(n<0x800){*p++=(char)(0xC0|(n>>6));*p++=(char)(0x80|(n&0x3F));}
+  else if(n<0x10000){*p++=(char)(0xE0|(n>>12));*p++=(char)(0x80|((n>>6)&0x3F));*p++=(char)(0x80|(n&0x3F));}
+  else{*p++=(char)(0xF0|(n>>18));*p++=(char)(0x80|((n>>12)&0x3F));*p++=(char)(0x80|((n>>6)&0x3F));*p++=(char)(0x80|(n&0x3F));}
+  *p=0;sp_str_set_len(s,(size_t)(p-s));return s;
+}
 /* sp_ipow10 / sp_int_round / sp_int_ceil / sp_int_floor /
    sp_int_truncate / sp_str_oct now live in libspinel_rt.a
    (lib/sp_core.c); declared via sp_core.h. */
