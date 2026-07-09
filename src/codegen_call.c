@@ -2533,6 +2533,19 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     equality_skip_nil:;
+    /* Both operands statically nil-TYPED (e.g. two calls the analyzer proved
+       return nil, `graphics_ops(a) == graphics_ops(b)` where neither recorder
+       type exists in this program): nil == nil is constant truth, but both
+       expressions must still evaluate for their effects. Receiver-then-arg
+       order preserved by the C comma expression. */
+    if (rt == TY_NIL && a0 == TY_NIL) {
+      buf_puts(b, "((void)(");
+      emit_expr(c, recv, b);
+      buf_puts(b, "), (void)(");
+      emit_expr(c, argv[0], b);
+      buf_printf(b, "), %d)", eq ? 1 : 0);
+      return 1;
+    }
     /* arr == [] : an array equals the empty literal iff it has no elements */
     {
       int er = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
