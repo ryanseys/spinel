@@ -1402,6 +1402,10 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
   if (sp_streq(buf, "int_array"))    return TY_INT_ARRAY;
   if (sp_streq(buf, "float_array"))  return TY_FLOAT_ARRAY;
   if (sp_streq(buf, "str_array"))    return TY_STR_ARRAY;
+  /* the extractor emits poly_array for Array[T-outside-subset] (its header
+     documents it), but this parser never accepted it -- those seeds were
+     silently dropped */
+  if (sp_streq(buf, "poly_array"))   return TY_POLY_ARRAY;
   if (sp_streq(buf, "str_int_hash"))   return TY_STR_INT_HASH;
   if (sp_streq(buf, "str_str_hash"))   return TY_STR_STR_HASH;
   if (sp_streq(buf, "int_int_hash"))   return TY_INT_INT_HASH;
