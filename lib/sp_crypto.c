@@ -14,7 +14,8 @@
  * - HMAC-SHA256: RFC 2104 / RFC 4231 on top of the SHA-256 above.
  * - PBKDF2-HMAC-SHA256: RFC 8018, dkLen fixed at 32 (one block).
  * - Base64URL: RFC 4648 §5 (URL/filename-safe alphabet), no padding.
- * - CSPRNG: arc4random_buf on BSD/macOS, /dev/urandom on Linux.
+ * - CSPRNG: arc4random_buf on BSD/macOS; getrandom(2) then
+ *   /dev/urandom on Linux, failing closed (NULL) with no weak fallback.
  *
  * State buffers
  * -------------
@@ -34,6 +35,10 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#if defined(__linux__)
+#include <unistd.h>       /* syscall */
+#include <sys/syscall.h>  /* SYS_getrandom (the CSPRNG's first choice) */
+#endif
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #  include <stdlib.h>  /* arc4random_buf */
 #endif
@@ -529,11 +534,24 @@ const char *sp_crypto_random_b64url(int nbytes) {
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
     arc4random_buf(r, nbytes);
 #else
-    FILE *f = fopen("/dev/urandom", "rb");
-    if (!f) return NULL;
-    size_t got = fread(r, 1, nbytes, f);
-    fclose(f);
-    if (got != nbytes) return NULL;
+    /* getrandom(2) first: kernel-sourced, works where /dev/urandom is not
+       even visible (chroot, minimal containers) -- the very environments
+       whose old time-based fallback made "CSPRNG" a lie. Then the device;
+       then fail CLOSED (NULL), never weak randomness. */
+    int filled = 0;
+#if defined(__linux__) && defined(SYS_getrandom)
+    {
+        long n = syscall(SYS_getrandom, r, (size_t)nbytes, 0);
+        if (n == (long)nbytes) filled = 1;
+    }
+#endif
+    if (!filled) {
+        FILE *f = fopen("/dev/urandom", "rb");
+        if (!f) return NULL;
+        size_t got = fread(r, 1, (size_t)nbytes, f);
+        fclose(f);
+        if (got != (size_t)nbytes) return NULL;
+    }
 #endif
     int i, j = 0;
     for (i = 0; i + 3 <= nbytes; i += 3) {

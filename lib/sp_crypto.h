@@ -71,8 +71,9 @@ const char *sp_crypto_b64url_decode(const char *src);
 const char *sp_crypto_pbkdf2_sha256_b64url(const char *password, const char *salt, int iters);
 
 /* CSPRNG: nbytes random bytes (clamped to [1, 64]) as unpadded
- * base64url. Uses arc4random_buf on BSD/macOS, /dev/urandom on
- * Linux/POSIX. */
+ * base64url. Uses arc4random_buf on BSD/macOS; on Linux/POSIX
+ * getrandom(2), then /dev/urandom. Returns NULL when no secure source
+ * is available (fails closed -- never degrades to weak randomness). */
 const char *sp_crypto_random_b64url(int nbytes);
 
 #ifdef __cplusplus
