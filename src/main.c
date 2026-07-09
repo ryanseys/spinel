@@ -508,7 +508,30 @@ int main(int argc, char **argv) {
 #if !defined(__APPLE__)
   if (debug) s_add(&cmd, "-rdynamic ");  /* ELF: name user frames in backtraces */
 #endif
-  if (ffi_links.p) s_add(&cmd, ffi_links.p);
+  /* An ffi_lib name whose archive already arrived as an explicit --link
+     input (spin's [[build]] artifacts) is satisfied: also emitting the -l
+     flag would make ld search the system paths for a library that only
+     exists in the build cache. A --link basename lib<name>.(a|so) counts as
+     providing -l<name>, so one package source serves both worlds -- the
+     Makefile's -L via ffi_cflags and spin's absolute --link paths. */
+  if (ffi_links.p) {
+    char *ltoks = strdup(ffi_links.p);
+    for (char *t = strtok(ltoks, " "); t; t = strtok(NULL, " ")) {
+      int covered = 0;
+      if (strncmp(t, "-l", 2) == 0) {
+        char want_a[512], want_so[512];
+        snprintf(want_a, sizeof want_a, "lib%s.a", t + 2);
+        snprintf(want_so, sizeof want_so, "lib%s.so", t + 2);
+        for (int li = 0; li < n_link_extra && !covered; li++) {
+          const char *lb = strrchr(link_extra[li], '/');
+          lb = lb ? lb + 1 : link_extra[li];
+          if (strcmp(lb, want_a) == 0 || strcmp(lb, want_so) == 0) covered = 1;
+        }
+      }
+      if (!covered) { s_add(&cmd, t); s_add(&cmd, " "); }
+    }
+    free(ltoks);
+  }
 #if defined(__APPLE__)
   s_add(&cmd, "-Wl,-dead_strip ");
 #else

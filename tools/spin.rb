@@ -211,16 +211,43 @@ def spinel_hdr_dir
   ""
 end
 
+# Newline-packed absolute paths of a package's [[build]] workdirs: sources a
+# declared build step compiles its own way are NOT carried C, so the per-file
+# cc sweep must not touch them (they have no include path and would hard-fail
+# the build before [[build]] ever runs -- the toy tinynn bounce, #1845).
+def native_build_workdirs(dir)
+  mf = File.join(dir, "spin.toml")
+  return "" unless File.exist?(mf)
+  toml = TomlDoc.parse(File.read(mf))
+  out = ""
+  i = 0
+  while i < toml.array_len("build")
+    wd = toml.get("build." + i.to_s, "workdir")
+    if wd != ""
+      out += "\n" unless out == ""
+      out += File.expand_path(wd, dir)
+    end
+    i += 1
+  end
+  out
+end
+
+def path_excluded?(p2, excl)
+  excl.split("\n").each { |x| return true if x != "" && p2 == x }
+  false
+end
+
 # newline-packed .c paths (an [] accumulator arg would go poly-array and
 # box the paths -- same tuple trap as dep_srcs)
-def collect_c(dir)
+def collect_c(dir, excl)
   out = ""
   Dir.children(dir).each do |e|
     next if e.start_with?(".")
     next if e == "build" || e == "vendor" || e == "test"
     p2 = File.join(dir, e)
+    next if path_excluded?(p2, excl)
     if File.directory?(p2)
-      out += collect_c(p2)
+      out += collect_c(p2, excl)
     elsif e.end_with?(".c")
       out += p2 + "\n"
     end
@@ -228,13 +255,14 @@ def collect_c(dir)
   out
 end
 
-def newest_native_input(dir, newest)
+def newest_native_input(dir, newest, excl)
   Dir.children(dir).each do |e|
     next if e.start_with?(".")
     next if e == "build" || e == "vendor" || e == "test"
     p2 = File.join(dir, e)
+    next if path_excluded?(p2, excl)
     if File.directory?(p2)
-      newest = newest_native_input(p2, newest)
+      newest = newest_native_input(p2, newest, excl)
     elsif e.end_with?(".c") || e.end_with?(".h")
       m = File.mtime(p2).to_i
       newest = m if m > newest
@@ -258,11 +286,12 @@ end
 
 # Compile one package's carried C into the cache; returns the object list.
 def native_objs_for(name, dir, version)
-  cs = collect_c(dir)
+  excl = native_build_workdirs(dir)
+  cs = collect_c(dir, excl)
   return [] if cs == ""
   odir = native_cache_dir(name + "-" + version + "-" + File.basename(native_cc))
   hdr = spinel_hdr_dir
-  hnew = newest_native_input(dir, 0)
+  hnew = newest_native_input(dir, 0, excl)
   objs = []
   cs.split("\n").each do |c|
     rel = c[dir.length + 1..-1].to_s
@@ -369,7 +398,10 @@ end
 # Content hash of a directory tree: the sorted file list plus every file's
 # bytes. Rename-only changes and content changes both move the key.
 def native_tree_hash(dir)
-  lst = "cd #{dir} && find . -type f | LC_ALL=C sort"
+  # dot-entries (.git and friends) are excluded, consistent with collect_c /
+  # newest_mtime: a workdir that is a real git clone must not churn the key
+  # on fetch metadata, and stale VCS state is not a build input.
+  lst = "cd #{dir} && find . -name '.*' -prune -o -type f -print | LC_ALL=C sort"
   native_hash_pipe(lst + " ; (" + lst + ") | while read f; do cat \"$f\"; done")
 end
 
@@ -437,19 +469,31 @@ def native_build_libs_for(name, dir, version, consumer_feats)
     end
     arts = toml.get_array(t, "artifacts")
     spin_die("[[build]] entry #{i} of #{name}: artifacts is required") if arts == ""
+    # Artifacts keep their entry-relative path under ${build.out} (a bare
+    # `libggml.a` still lands at the top). Authors namespace colliding names
+    # (a CPU and a CUDA libggml.a) by building/declaring them under distinct
+    # subpaths -- no per-entry output dir needed (#1845 bounce 3).
     missing = false
-    arts.split("\n").each { |a| missing = true unless File.exist?(File.join(out, File.basename(a))) }
+    arts.split("\n").each { |a| missing = true unless File.exist?(File.join(out, a)) }
     unless missing
       i += 1
       next   # cached: every artifact already present for this key
     end
     cmdline = toml.get(t, "command")
     spin_die("[[build]] entry #{i} of #{name}: command is required") if cmdline == ""
+    # ${build.out} expands in the command too, so a later entry can compile
+    # against an earlier entry's artifacts (headers, archives) without
+    # snapshotting them into its own tree (#1845 bounce 2). Entries run in
+    # declaration order.
+    cmdline = cmdline.gsub("${build.out}", out)
     ensure_native_allowed(name, cmdline)
-    # scratch copy: the vendored tree stays a read-only input
+    # scratch copy: the vendored tree stays a read-only input. Dot-entries
+    # (.git and friends) are dropped from the copy, consistent with the tree
+    # hash -- VCS state is not a build input and a real clone's .git is heavy.
     scratch = out + ".scratch"
     system("rm -rf #{scratch}")
     spin_die("native build: cannot copy #{name}'s workdir") unless system("cp -R #{File.join(dir, toml.get(t, 'workdir'))} #{scratch}")
+    system("find #{scratch} -mindepth 1 -name '.*' -prune -exec rm -rf {} + 2>/dev/null")
     toml.get_array(t, "patches").split("\n").each do |pg|
       Dir.glob(File.join(dir, pg)).sort.each do |pf|
         spin_die("native build: patch failed: #{File.basename(pf)} (#{name})") unless system("patch -s -p1 -d #{scratch} < #{pf}")
@@ -463,7 +507,10 @@ def native_build_libs_for(name, dir, version, consumer_feats)
     arts.split("\n").each do |a|
       built = File.join(scratch, a)
       spin_die("native build of #{name} did not produce declared artifact: #{a}") unless File.exist?(built)
-      system("cp #{built} #{File.join(out, File.basename(a))}")
+      dest = File.join(out, a)
+      ddir = File.dirname(dest)
+      system("mkdir -p #{ddir}") unless Dir.exist?(ddir)
+      system("cp #{built} #{dest}")
     end
     system("rm -rf #{scratch}")
     i += 1

@@ -341,4 +341,49 @@ OUT=$("$SPIN" run 2>&1)
 expect "feature-enabled native run" "999" "$(echo "$OUT" | tail -1)"
 find "$XDG_CACHE_HOME/spin/native" -name 'libmx-cuda.a' | grep -q . || fail "enabled feature entry didn't build"
 
+# --- [[build]] mechanics from the guinea-pig report (#1845) ---------------------
+# One package exercising: a top-level (non-vendor/) workdir excluded from
+# carried-C discovery (its source hard-errors under a bare cc sweep);
+# relative-path artifacts (a header staged under inc/); ${build.out} in a
+# later entry's command (cross-entry inputs); dot-dir exclusion from the
+# content key (a .git in the workdir must not churn the cache); and an
+# ffi_lib name satisfied by the --link artifact (no -l against system paths).
+cd "$WORK"
+mkdir -p spinel-crossx/csrc spinel-crossx/csrc2
+cat > spinel-crossx/spin.toml <<'EOF'
+[package]
+name = "crossx"
+version = "0.1.0"
+
+[[build]]
+workdir   = "csrc"
+command   = "${CC:-cc} -DCXBUILD=1 -O2 -c cx.c -o cx.o && ar rcs libcx.a cx.o && mkdir -p inc && cp cx.h inc/cx.h"
+artifacts = ["libcx.a", "inc/cx.h"]
+
+[[build]]
+workdir   = "csrc2"
+command   = "${CC:-cc} -DCXBUILD=1 -O2 -I ${build.out}/inc -c cx2.c -o cx2.o && ar rcs libcx2.a cx2.o"
+artifacts = ["libcx2.a"]
+
+[native]
+libs = ["${build.out}/libcx.a", "${build.out}/libcx2.a"]
+EOF
+printf '#ifndef CXBUILD\n#error carried-C swept a [[build]] workdir\n#endif\nint cx_val(void) { return 7; }\n' > spinel-crossx/csrc/cx.c
+printf '#define CX_BONUS 30\n' > spinel-crossx/csrc/cx.h
+printf '#ifndef CXBUILD\n#error carried-C swept a [[build]] workdir\n#endif\n#include "cx.h"\nint cx2_val(void) { return CX_BONUS + 5; }\n' > spinel-crossx/csrc2/cx2.c
+printf 'module Crossx\n  ffi_lib "cx"\n  ffi_func :cx_val, [], :int\n  ffi_func :cx2_val, [], :int\nend\n' > spinel-crossx/crossx.rb
+mkdir -p crossapp/bin
+printf '[package]\nname = "crossapp"\n\n[dependencies]\ncrossx = { path = "../spinel-crossx" }\n' > crossapp/spin.toml
+printf 'require "crossx"\nputs Crossx.cx_val + Crossx.cx2_val\n' > crossapp/bin/app.rb
+cd crossapp
+OUT=$(SPIN_ALLOW_NATIVE_BUILD=1 "$SPIN" run 2>&1)
+expect "cross-entry native run" "42" "$(echo "$OUT" | tail -1)"
+# a .git dropped into the workdir must not move the content key
+mkdir -p ../spinel-crossx/csrc/.git
+echo junk > ../spinel-crossx/csrc/.git/HEAD
+"$SPIN" clean >/dev/null
+OUT=$(SPIN_ALLOW_NATIVE_BUILD=1 "$SPIN" run 2>&1)
+echo "$OUT" | grep -q '^native crossx:' && fail "VCS metadata churned the native cache key"
+expect "dot-dir key stability" "42" "$(echo "$OUT" | tail -1)"
+
 echo "spin-e2e: ALL GREEN"
