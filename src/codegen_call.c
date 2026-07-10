@@ -3622,6 +3622,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_flat_map_expr(c, id, b)) return;
   if (emit_filter_map_expr(c, id, b)) return;
   if (emit_poly_uniq_block(c, id, b)) return;
+  if (emit_iter_value_expr(c, id, b)) return;
   if (emit_sort_cmp_expr(c, id, b)) return;
   if (emit_minmax_cmp_expr(c, id, b)) return;
   if (emit_step_array_expr(c, id, b)) return;

@@ -814,6 +814,49 @@ void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt,
   buf_puts(b, ";\n");
 }
 
+/* A block iterator in VALUE position returns its receiver (each,
+   each_value/each_key/each_pair, each_with_index, reverse_each): evaluate the
+   receiver into a temp, run the statement emitter with the receiver's
+   emission overridden to the temp, and yield the temp. Statement position
+   never reaches this (emit_stmt claims iterators first). */
+int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  if (!(sp_streq(name, "each") || sp_streq(name, "each_value") ||
+        sp_streq(name, "each_key") || sp_streq(name, "each_pair") ||
+        sp_streq(name, "each_with_index") || sp_streq(name, "reverse_each")))
+    return 0;
+  int block = nt_ref(nt, id, "block");
+  int recv = nt_ref(nt, id, "receiver");
+  if (block < 0 || recv < 0) return 0;
+  if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt == TY_UNKNOWN || rt == TY_POLY) return 0;
+  if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  /* run the statement emitter against the temp into a scratch buffer first:
+     splice only when it handles the shape, else leave the node to the
+     later handlers untouched */
+  int ta = ++g_tmp;
+  g_argov_node[g_n_argov] = recv;
+  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+  g_n_argov++;
+  Buf body; memset(&body, 0, sizeof body);
+  int ok = emit_iteration_stmt(c, id, &body, 0);
+  g_n_argov--;
+  if (!ok) { free(body.p); return 0; }
+  buf_puts(b, "({ ");
+  emit_ctype(c, rt, b);
+  buf_printf(b, " _t%d = ", ta);
+  emit_expr(c, recv, b);
+  buf_puts(b, "; ");
+  if (!is_scalar_ret(rt) && rt != TY_RANGE) buf_printf(b, "SP_GC_ROOT(_t%d); ", ta);
+  buf_puts(b, body.p ? body.p : "");
+  free(body.p);
+  buf_printf(b, " _t%d; })", ta);
+  return 1;
+}
+
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
