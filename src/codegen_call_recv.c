@@ -2130,7 +2130,13 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
           if (vt == TY_POLY) buf_puts(b, getexpr);
           else emit_boxed_text(c, vt, getexpr, b);
           buf_puts(b, ");");
-          if (is_fetch) buf_puts(b, " else sp_raise_cls(\"KeyError\", \"key not found\");");
+          if (is_fetch) {
+            char kx[64]; snprintf(kx, sizeof kx, "_t%d", tk);
+            Buf kb; memset(&kb, 0, sizeof kb);
+            if (kt == TY_POLY) buf_puts(&kb, kx); else emit_boxed_text(c, kt, kx, &kb);
+            buf_printf(b, " else sp_raise_key_not_found(%s);", kb.p ? kb.p : "sp_box_nil()");
+            free(kb.p);
+          }
           else buf_printf(b, " else sp_PolyArray_push(_t%d, sp_box_nil());", tr);
         }
         buf_printf(b, " _t%d; })", tr);
@@ -2174,12 +2180,18 @@ else {
         }
         /* fetch(key) with no default raises KeyError on a miss */
         TyKind vt = ty_hash_val(rt);
+        TyKind kt = ty_hash_key(rt);
         int th = ++g_tmp, tk = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
-        buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
+        buf_printf(b, "; %s _t%d = ", c_type_name(kt), tk); emit_hash_key(c, argv[0], kt, b);
+        char keyexpr[64]; snprintf(keyexpr, sizeof keyexpr, "_t%d", tk);
+        Buf kb; memset(&kb, 0, sizeof kb);
+        if (kt == TY_POLY) buf_puts(&kb, keyexpr); else emit_boxed_text(c, kt, keyexpr, &kb);
         buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d)"
-                      " : (sp_raise_cls(\"KeyError\", \"key not found\"), %s); })",
-                   hn, th, tk, hn, th, tk, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+                      " : (sp_raise_key_not_found(%s), %s); })",
+                   hn, th, tk, hn, th, tk, kb.p ? kb.p : "sp_box_nil()",
+                   vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+        free(kb.p);
         return 1;
       }
       if (sp_streq(name, "fetch") && argc == 2) {

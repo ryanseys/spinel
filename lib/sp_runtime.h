@@ -3288,6 +3288,13 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
     default:          return sp_str_empty;
   }
 }
+/* Hash#fetch / fetch_values miss: CRuby's KeyError message carries the missing
+   key's inspect form ("key not found: :zzz"). __attribute__((noreturn)) so the
+   comma-expression fallthrough value at each call site is unreachable. */
+__attribute__((noreturn)) static void sp_raise_key_not_found(sp_RbVal key) {
+  sp_raise_cls("KeyError", sp_sprintf("key not found: %s", sp_poly_inspect(key)));
+  __builtin_unreachable();
+}
 /* Array#inspect for heterogeneous poly arrays. Each element dispatches
    through sp_poly_inspect, so a mixed `[1, "x", :y]` renders
    `[1, "x", :y]` byte-for-byte identical to CRuby. NULL renders
