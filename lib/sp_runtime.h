@@ -2768,6 +2768,7 @@ static int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
   return o;
 }
 
+static const char *sp_poly_inspect(sp_RbVal v);  /* fwd: %p directive uses it */
 static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
   size_t cap = strlen(fmt) + 64;
   char *buf = (char *)malloc(cap);
@@ -2793,9 +2794,20 @@ static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
       }
       if (!overflow && argnum > 0 && *q == '$') { idx = argnum - 1; p = q + 1; }
     }
-    while (*p && sl < sizeof(spec) - 4) {
+    while (*p && sl < sizeof(spec) - 16) {
       char c = *p;
-      if (c == '-' || c == '+' || c == ' ' || c == '#' || c == '0' || c == '.' || (c >= '0' && c <= '9')) { spec[sl++] = c; p++; }
+      if (c == '*') {
+        /* width (or, after a '.', precision) taken from an argument: consume the
+           next arg as an int and splice its decimal form into the spec. */
+        sp_RbVal wv = (idx < a->len) ? a->data[idx] : sp_box_nil();
+        idx++;
+        long long w = (wv.tag == SP_TAG_INT) ? (long long)wv.v.i
+                    : (wv.tag == SP_TAG_FLT) ? (long long)wv.v.f : 0;
+        int wl = snprintf(spec + sl, sizeof(spec) - sl - 4, "%lld", w);
+        if (wl > 0) sl += (size_t)wl;
+        p++;
+      }
+      else if (c == '-' || c == '+' || c == ' ' || c == '#' || c == '0' || c == '.' || (c >= '0' && c <= '9')) { spec[sl++] = c; p++; }
       else break;
     }
     if (!*p) break;
@@ -2831,12 +2843,16 @@ else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G'
       else if (v.tag == SP_TAG_INT) dv = (double)v.v.i;
       wn = snprintf(tmp, sizeof(tmp), fmt_use, dv);
     }
-else if (conv == 's') {
+else if (conv == 's' || conv == 'p') {
       const char *sv = "";
       char num_buf[32];
-      if (v.tag == SP_TAG_STR) sv = v.v.s ? v.v.s : "";
+      if (conv == 'p') sv = sp_poly_inspect(v);        /* %p -> inspect form */
+      else if (v.tag == SP_TAG_STR) sv = v.v.s ? v.v.s : "";
       else if (v.tag == SP_TAG_INT) { snprintf(num_buf, sizeof(num_buf), "%lld", (long long)v.v.i); sv = num_buf; }
       else if (v.tag == SP_TAG_FLT) { snprintf(num_buf, sizeof(num_buf), "%g", v.v.f); sv = num_buf; }
+      else if (v.tag == SP_TAG_SYM) sv = sp_sym_to_s((sp_sym)v.v.i);  /* %s of a Symbol -> its name */
+      /* %p's fmt_use ends in 'p'; rewrite the conversion to 's' for snprintf. */
+      if (conv == 'p' && sl >= 1) fmt_use[sl - 1] = 's';
       wn = snprintf(tmp, sizeof(tmp), fmt_use, sv);
     }
 else if (conv == 'c') {
