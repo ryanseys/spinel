@@ -2262,16 +2262,73 @@ static void narrow_object_arrays(Compiler *c) {
       }
       else sl[S].alive = 0;
     }
+    /* Resolve the call target the way emission will: a free function first,
+       then an implicit-self instance method of the enclosing class, then an
+       explicit receiver's class chain. -1 = unattributable here. */
+    int oa_tmi = -1;
+    if (name) {
+      if (recv < 0) {
+        oa_tmi = comp_method_index(c, name);
+        if (oa_tmi < 0) {
+          Scope *csc = comp_scope_of(c, id);
+          if (csc && csc->class_id >= 0)
+            oa_tmi = comp_method_in_chain(c, csc->class_id, name, NULL);
+        }
+      }
+      else {
+        TyKind ort = infer_type(c, recv);
+        if (ty_is_object(ort))
+          oa_tmi = comp_method_in_chain(c, ty_object_class(ort), name, NULL);
+        else if (ort == TY_POLY || ort == TY_UNKNOWN || ort == TY_NIL) {
+          /* A dynamic receiver may dispatch to ANY same-named instance
+             method at runtime (the poly dispatch arms), passing boxed
+             values; a param slot reachable that way must not narrow. */
+          for (int pi = 0; pi < n; pi++) {
+            if (!sl[pi].alive) continue;
+            Scope *PS = &c->scopes[sl[pi].sidx];
+            for (int pk = 0; pk < PS->nparams; pk++)
+              if (PS->pnames[pk] && PS->name && sp_streq(PS->name, name) &&
+                  scope_local(PS, PS->pnames[pk]) == sl[pi].lv)
+                sl[pi].alive = 0;
+          }
+        }
+      }
+    }
+    /* Interprocedural edges. A PARAM slot may only narrow when EVERY
+       argument reaching it is a same-component candidate slot: the callee's
+       C signature and the caller's C locals must agree on one container
+       type. A call that resolves to the method but passes a non-slot value
+       for that position, or a call to the method we cannot attribute at
+       all, kills the param slot (the caller would keep passing a boxed
+       poly array into an unboxed sp_PtrArray* -- the #1867 mis-box).
+       Instance methods resolve through the class chain now; previously only
+       free functions made edges, so an instance method's param narrowed
+       with its callers' locals left poly. */
+    if (oa_tmi >= 0) {
+      Scope *M = &c->scopes[oa_tmi];
+      for (int k = 0; k < M->nparams; k++) {
+        LocalVar *plv = M->pnames[k] ? scope_local(M, M->pnames[k]) : NULL;
+        int T = plv ? oa_find(sl, n, oa_tmi, plv) : -1;
+        if (T < 0) continue;
+        int a = (argv && k < argc) ? argv[k] : -1;
+        if (a >= 0 && read_slot[a] >= 0) {
+          claimed[a] = 1;
+          oa_uf_union(sl, read_slot[a], T);
+        }
+        else {
+          sl[T].alive = 0;   /* unmodeled incoming value for this position */
+        }
+      }
+    }
     for (int k = 0; argv && k < argc; k++) {
       int a = argv[k];
       if (read_slot[a] < 0) continue;
       int S = read_slot[a];
-      int mi = (recv < 0 && name) ? comp_method_index(c, name) : -1;
-      if (mi < 0) { sl[S].alive = 0; continue; }
-      Scope *M = &c->scopes[mi];
+      if (oa_tmi < 0) { sl[S].alive = 0; continue; }
+      Scope *M = &c->scopes[oa_tmi];
       if (k >= M->nparams || (M->rest_idx >= 0 && k >= M->rest_idx)) { sl[S].alive = 0; continue; }
       LocalVar *plv = M->pnames[k] ? scope_local(M, M->pnames[k]) : NULL;
-      int T = plv ? oa_find(sl, n, mi, plv) : -1;
+      int T = plv ? oa_find(sl, n, oa_tmi, plv) : -1;
       if (T < 0) { sl[S].alive = 0; continue; }
       claimed[a] = 1;
       oa_uf_union(sl, S, T);
