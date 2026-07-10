@@ -21,7 +21,7 @@ sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, siz
 /* Inline sp_RbVal constructors (state-free; avoid pulling sp_runtime.h). Heap
    value types (array/hash/complex/rational) go through the vtable instead. */
 static sp_RbVal mk_nil(void)        { sp_RbVal r; r.tag = SP_TAG_NIL;  r.cls_id = 0; r.v.i = 0; return r; }
-static sp_RbVal mk_bool(mrb_bool b) { sp_RbVal r; r.tag = SP_TAG_BOOL; r.cls_id = 0; r.v.b = b; return r; }
+static sp_RbVal mk_bool(mrb_bool b) { sp_RbVal r; r.tag = SP_TAG_BOOL; r.cls_id = 0; r.v.i = (b != 0); return r; }  /* full union word: bool equality reads v.i */
 static sp_RbVal mk_int(mrb_int n)   { sp_RbVal r; r.tag = SP_TAG_INT;  r.cls_id = 0; r.v.i = n; return r; }
 static sp_RbVal mk_float(mrb_float f){ sp_RbVal r; r.tag = SP_TAG_FLT;  r.cls_id = 0; r.v.f = f; return r; }
 static sp_RbVal mk_str(const char *s){ sp_RbVal r; r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = s; return r; }
