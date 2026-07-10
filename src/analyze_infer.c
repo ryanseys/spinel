@@ -570,15 +570,24 @@ TyKind infer_call(Compiler *c, int id) {
   if (rt == TY_RANGE && range_enum_redispatch(c, id)) rt = TY_INT_ARRAY;
   /* A block each-family call returns its receiver (each, each_value/each_key/
      each_pair, each_with_index, reverse_each), so the value form composes:
-     r = arr.each { }; arr.each { }.map { }. */
+     r = arr.each { }; arr.each { }.map { }. Gated to receivers that define
+     the method -- the respond_to? machinery probes a synthesized
+     `recv.m { }`, and an unconditional arm would make every type "respond"
+     to each. */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") >= 0 &&
       nt_type(nt, nt_ref(nt, id, "block")) &&
-      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode") &&
-      rt != TY_UNKNOWN && rt != TY_POLY &&
-      (sp_streq(name, "each") || sp_streq(name, "each_value") ||
-       sp_streq(name, "each_key") || sp_streq(name, "each_pair") ||
-       sp_streq(name, "each_with_index") || sp_streq(name, "reverse_each")))
-    return rt;
+      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode")) {
+    int enumerable_recv = ty_is_array(rt) || ty_is_hash(rt) ||
+                          rt == TY_RANGE || rt == TY_ENUMERATOR;
+    if (enumerable_recv &&
+        (sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
+         sp_streq(name, "reverse_each")))
+      return rt;
+    if (ty_is_hash(rt) &&
+        (sp_streq(name, "each_value") || sp_streq(name, "each_key") ||
+         sp_streq(name, "each_pair")))
+      return rt;
+  }
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
 
   /* A literal integer power whose result exceeds int64 (`10 ** 30`, `2 ** 70`)
