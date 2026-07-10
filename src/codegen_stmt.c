@@ -2053,6 +2053,16 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             }
           }
         }
+        /* `**nil`: the pattern matches only when the hash has no keys beyond the
+           ones named -- assert its size equals the matched-key count. */
+        int prest = nt_ref(nt, pat, "rest");
+        if (prest >= 0 && nt_type(nt, prest) && sp_streq(nt_type(nt, prest), "NoKeywordsParameterNode")) {
+          int nkeys = 0;
+          for (int i = 0; i < en; i++)
+            if (nt_type(nt, elms[i]) && sp_streq(nt_type(nt, elms[i]), "AssocNode")) nkeys++;
+          emit_indent(b, indent + 1);
+          buf_printf(b, "_t%d = _t%d && (_t%d->len == %d);\n", hcond, hcond, arm_t, nkeys);
+        }
       }
       buf_printf(&cond_buf, "_t%d", hcond);
       has_cond = 1;
@@ -2161,6 +2171,37 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             emit_indent(b, body_indent);
             buf_printf(b, "lv_%s = sp_%sHash_get(_t%d, ", lnm, hn, arm_t);
             emit_expr(c, key, b); buf_puts(b, ");\n");
+          }
+        }
+        /* `**rest`: bind the scrutinee minus the matched keys. Duplicate the
+           hash into a typed temp, delete each explicitly-matched key, then bind
+           the remaining pairs -- boxed when the target local is poly-typed
+           (`**nil` is a NoKeywordsParameterNode -- assertion only, no binding). */
+        int prest = nt_ref(nt, pat, "rest");
+        if (prest >= 0 && nt_type(nt, prest) && sp_streq(nt_type(nt, prest), "AssocSplatNode")) {
+          int rtgt = nt_ref(nt, prest, "value");
+          const char *rnm = (rtgt >= 0 && nt_type(nt, rtgt) &&
+                             sp_streq(nt_type(nt, rtgt), "LocalVariableTargetNode"))
+                            ? nt_str(nt, rtgt, "name") : NULL;
+          if (rnm) {
+            int rtmp = ++g_tmp;
+            emit_indent(b, body_indent);
+            buf_printf(b, "sp_%sHash *_t%d = sp_%sHash_dup(_t%d);\n", hn, rtmp, hn, arm_t);
+            for (int i = 0; i < en; i++) {
+              if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+              int key = nt_ref(nt, elms[i], "key");
+              if (key < 0) continue;
+              emit_indent(b, body_indent);
+              buf_printf(b, "sp_%sHash_delete(_t%d, ", hn, rtmp);
+              emit_expr(c, key, b); buf_puts(b, ");\n");
+            }
+            LocalVar *rlv = comp_scope_of(c, id) ? scope_local(comp_scope_of(c, id), rnm) : NULL;
+            char rtn[24]; snprintf(rtn, sizeof rtn, "_t%d", rtmp);
+            emit_indent(b, body_indent);
+            buf_printf(b, "lv_%s = ", rnm);
+            if (rlv && rlv->type == TY_POLY) emit_boxed_text(c, arm_pt, rtn, b);
+            else buf_puts(b, rtn);
+            buf_puts(b, ";\n");
           }
         }
       }
