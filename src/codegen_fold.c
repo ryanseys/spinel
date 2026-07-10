@@ -4488,6 +4488,18 @@ static int default_refs_earlier_param(Compiler *c, Scope *m) {
   return 0;
 }
 
+/* Inject a runtime ArgumentError ahead of the call statement: the raise
+   fires exactly when the bad call would run (dead code stays silent, like
+   CRuby), and the argument slots still fill with their compat pads below. */
+static void args_raise(const char *fmt, ...) {
+  char msg[256];
+  va_list ap; va_start(ap, fmt);
+  vsnprintf(msg, sizeof msg, fmt, ap);
+  va_end(ap);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"%s\");\n", msg);
+}
+
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
   Scope *m = &c->scopes[callee_idx];
   const NodeTable *nt = c->nt;
@@ -4530,6 +4542,70 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
     kwh = argv[argc - 1];
     pos_argc = argc - 1;
   }
+  /* Arity / keyword validation, in CRuby's words, raised at RUNTIME just
+     before the call would run (dead code stays silent, matching CRuby;
+     the argument slots keep their compat pads). Only fully static shapes
+     are checked: any splat, double-splat, rest/kwrest param, synthesized
+     scope, or synthesized (__-prefixed, e.g. forwarding) params skip. A
+     keyword hash none of whose keys names a parameter collapses into one
+     positional hash argument (the Ruby options-hash idiom) and is counted
+     as such rather than keyword-checked. */
+  {
+    int has_splat = 0, has_ds = 0;
+    for (int k = 0; k < pos_argc; k++)
+      if (argv && nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) { has_splat = 1; break; }
+    if (kwh >= 0) {
+      int en2 = 0; const int *el2 = nt_arr(nt, kwh, "elements", &en2);
+      for (int e = 0; e < en2; e++)
+        if (el2 && nt_type(nt, el2[e]) && sp_streq(nt_type(nt, el2[e]), "AssocSplatNode")) { has_ds = 1; break; }
+    }
+    int synth = 0, nfixed = 0, nreq = 0;
+    for (int i = 0; i < m->nparams; i++) {
+      if (m->pnames[i] && m->pnames[i][0] == '_' && m->pnames[i][1] == '_') { synth = 1; break; }
+      nfixed++;
+      if (!m->pdefault || m->pdefault[i] < 0) nreq++;
+    }
+    if (!has_splat && !has_ds && !synth &&
+        m->rest_idx < 0 && m->kwrest_idx < 0 && !m->cs_synth) {
+      int kw_matches = 0;
+      if (kwh >= 0)
+        for (int i = 0; i < m->nparams; i++)
+          if (m->pnames[i] && kwh_lookup(nt, kwh, m->pnames[i]) >= 0) { kw_matches = 1; break; }
+      int eff_pos = pos_argc + ((kwh >= 0 && !kw_matches) ? 1 : 0);
+      char expbuf2[32];
+      if (nreq == nfixed) snprintf(expbuf2, sizeof expbuf2, "%d", nfixed);
+      else snprintf(expbuf2, sizeof expbuf2, "%d..%d", nreq, nfixed);
+      int raised = 0;
+      if (eff_pos > nfixed) {
+        args_raise("wrong number of arguments (given %d, expected %s)", eff_pos, expbuf2);
+        raised = 1;
+      }
+      if (!raised && kwh >= 0 && kw_matches) {
+        int en2 = 0; const int *el2 = nt_arr(nt, kwh, "elements", &en2);
+        for (int e = 0; e < en2 && !raised; e++) {
+          int key = el2 ? nt_ref(nt, el2[e], "key") : -1;
+          const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
+          const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+          if (!kn) continue;
+          int found = 0;
+          for (int i = 0; i < m->nparams; i++)
+            if (m->pnames[i] && sp_streq(m->pnames[i], kn)) { found = 1; break; }
+          if (!found) { args_raise("unknown keyword: :%s", kn); raised = 1; }
+        }
+      }
+      for (int i = 0; i < m->nparams && !raised; i++) {
+        if (i < eff_pos) continue;
+        if (m->pdefault && m->pdefault[i] >= 0) continue;
+        if (kw_matches && kwh_lookup(nt, kwh, m->pnames[i]) >= 0) continue;
+        if (kwh >= 0 && kw_matches)
+          args_raise("missing keyword: :%s", m->pnames[i] ? m->pnames[i] : "?");
+        else
+          args_raise("wrong number of arguments (given %d, expected %s)", eff_pos, expbuf2);
+        raised = 1;
+      }
+    }
+  }
+
   /* Detect double-splat (**hash) inside kwh: AssocSplatNode wrapping a hash expr.
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
   TyKind ds_hash_type = TY_UNKNOWN;
