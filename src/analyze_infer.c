@@ -1432,6 +1432,12 @@ else {
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) return TY_POLY_ARRAY;
   }
 
+  /* Kernel#p returns its argument (one arg; several return the array), so it
+     composes as an expression: x = p(y), f(p(y)). Statement-position p keeps
+     its own emitter; this types the value form. */
+  if (recv < 0 && sp_streq(name, "p") && nt_ref(nt, id, "block") < 0 && argc == 1)
+    return infer_type(c, argv[0]);
+
   /* TY_RANDOM instance methods */
   if (recv >= 0 && rt == TY_RANDOM) {
     if (sp_streq(name, "rand")) return argc >= 1 ? TY_INT : TY_FLOAT;

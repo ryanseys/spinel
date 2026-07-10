@@ -5043,6 +5043,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
+  /* Kernel#p as an expression: print the argument's inspect, yield the
+     argument as the value (statement position has its own emitter). The
+     value is boxed once, printed through the poly inspect (which consults
+     the user-object hook), and unboxed back to the static type. */
+  if (recv < 0 && sp_streq(name, "p") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+    TyKind at = comp_ntype(c, argv[0]);
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); fputs(sp_poly_inspect(_t%d), stdout); putchar('\\n'); ", t, t);
+    char tv[16]; snprintf(tv, sizeof tv, "_t%d", t);
+    emit_unbox_text(c, at, tv, b);
+    buf_puts(b, "; })");
+    return;
+  }
+
   /* raise */
   /* `fail` is an exact alias of `Kernel#raise`. */
   if (recv < 0 && (sp_streq(name, "raise") || sp_streq(name, "fail"))) {
