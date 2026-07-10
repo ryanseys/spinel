@@ -74,9 +74,44 @@ static const char *b64_dec(const char *src, size_t n, const char *alpha) {
   return r;
 }
 
+/* Strict decode (CRuby's `unpack1("m0")`): the input length must be a multiple
+   of 4, every byte must be an alphabet char or valid trailing `=` padding, and
+   any stray byte (whitespace, newline, out-of-alphabet) raises ArgumentError --
+   unlike b64_dec, which silently skips them. */
+static const char *b64_dec_strict(const char *src, size_t n, const char *alpha) {
+  if (n % 4 != 0) sp_raise_cls("ArgumentError", "invalid base64");
+  char *r = sp_str_alloc_raw(n / 4 * 3 + 4);
+  size_t o = 0;
+  for (size_t i = 0; i < n; i += 4) {
+    int q[4]; int npad = 0;
+    for (int k = 0; k < 4; k++) {
+      char c = src[i + k];
+      if (c == '=') {
+        /* `=` is legal only as trailing padding of the final block (position
+           2 with a following `=`, or position 3). */
+        if (i + 4 != n || k < 2) sp_raise_cls("ArgumentError", "invalid base64");
+        npad++; q[k] = 0;
+      } else {
+        if (npad) sp_raise_cls("ArgumentError", "invalid base64");  /* data after pad */
+        int v = b64_val(c, alpha);
+        if (v < 0) sp_raise_cls("ArgumentError", "invalid base64");
+        q[k] = v;
+      }
+    }
+    unsigned acc = ((unsigned)q[0] << 18) | ((unsigned)q[1] << 12) |
+                   ((unsigned)q[2] << 6) | (unsigned)q[3];
+    r[o++] = (char)(acc >> 16);
+    if (npad < 2) r[o++] = (char)(acc >> 8);
+    if (npad < 1) r[o++] = (char)acc;
+  }
+  r[o] = '\0';
+  sp_str_set_len(r, o);
+  return r;
+}
+
 const char *sp_base64_encode64(const char *s)        { return b64_enc(s, sp_str_byte_len(s), B64_STD, 60); }
 const char *sp_base64_strict_encode64(const char *s) { return b64_enc(s, sp_str_byte_len(s), B64_STD, 0); }
 const char *sp_base64_urlsafe_encode64(const char *s){ return b64_enc(s, sp_str_byte_len(s), B64_URL, 0); }
 const char *sp_base64_decode64(const char *s)        { return b64_dec(s, sp_str_byte_len(s), B64_STD); }
-const char *sp_base64_strict_decode64(const char *s) { return b64_dec(s, sp_str_byte_len(s), B64_STD); }
+const char *sp_base64_strict_decode64(const char *s) { return b64_dec_strict(s, sp_str_byte_len(s), B64_STD); }
 const char *sp_base64_urlsafe_decode64(const char *s){ return b64_dec(s, sp_str_byte_len(s), B64_URL); }
