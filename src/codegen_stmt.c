@@ -1557,6 +1557,28 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       }
     }
     if (has_nested) { buf_puts(b, "0"); return 1; }
+    /* a `Class` / `Class => v` element check is fully static against a typed
+       array's element type: a mismatching class can never match. */
+    {
+      TyKind et2 = ty_array_elem(pt);
+      int class_mismatch = 0;
+      for (int gi = 0; gi < apn + npost && !class_mismatch; gi++) {
+        int pn2 = gi < apn ? reqs[gi] : posts[gi - apn];
+        const char *rty = nt_type(nt, pn2);
+        int classpat = -1;
+        if (rty && sp_streq(rty, "ConstantReadNode")) classpat = pn2;
+        else if (rty && sp_streq(rty, "CapturePatternNode")) {
+          int val = nt_ref(nt, pn2, "value");
+          if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ConstantReadNode"))
+            classpat = val;
+        }
+        if (classpat >= 0) {
+          const char *cn2 = nt_str(nt, classpat, "name");
+          if (cn2 && ty_matches_class(et2, cn2, 0) <= 0) class_mismatch = 1;
+        }
+      }
+      if (class_mismatch) { buf_puts(b, "0"); return 1; }
+    }
     buf_printf(b, "(_t%d && _t%d->len %s %dLL", t, t, has_rest ? ">=" : "==", (long long)(apn + npost));
     const char *ak = array_kind(pt);
     if (ak) {
@@ -2104,6 +2126,21 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           int key = nt_ref(nt, elms[i], "key");
           int vpat = nt_ref(nt, elms[i], "value");
           if (key < 0) continue;
+          /* a symbol pattern key can never be present in a string-keyed hash
+             (and vice versa): the arm statically fails, and emitting the
+             lookup would type-clash in C. */
+          {
+            const char *kty2 = nt_type(nt, key);
+            TyKind hkt2 = ty_hash_key(arm_pt);
+            int mism = (kty2 && sp_streq(kty2, "SymbolNode") && (hkt2 == TY_STRING)) ||
+                       (kty2 && sp_streq(kty2, "StringNode") && (hkt2 == TY_SYMBOL || hkt2 == TY_INT)) ||
+                       (kty2 && sp_streq(kty2, "IntegerNode") && (hkt2 == TY_STRING || hkt2 == TY_SYMBOL));
+            if (mism) {
+              emit_indent(b, indent + 1);
+              buf_printf(b, "_t%d = 0;\n", hcond);
+              continue;
+            }
+          }
           emit_indent(b, indent + 1);
           buf_printf(b, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, arm_t);
           emit_expr(c, key, b); buf_puts(b, ");\n");
@@ -2133,6 +2170,19 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
               }
             }
           }
+        }
+      }
+      /* `**nil`: no keys beyond the listed ones */
+      {
+        int hp_rest = nt_ref(nt, pat, "rest");
+        if (hn && hp_rest >= 0 && nt_type(nt, hp_rest) &&
+            sp_streq(nt_type(nt, hp_rest), "NoKeywordsParameterNode")) {
+          int en2 = 0, listed = 0;
+          const int *elms2 = nt_arr(nt, pat, "elements", &en2);
+          for (int i = 0; i < en2; i++)
+            if (nt_type(nt, elms2[i]) && sp_streq(nt_type(nt, elms2[i]), "AssocNode")) listed++;
+          emit_indent(b, indent + 1);
+          buf_printf(b, "_t%d = _t%d && (_t%d->len == %dLL);\n", hcond, hcond, arm_t, listed);
         }
       }
       buf_printf(&cond_buf, "_t%d", hcond);
@@ -2222,6 +2272,14 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
               lnm = nt_str(nt, tgt, "name");
           }
           if (!lnm) continue;
+          {
+            const char *kty2 = nt_type(nt, key);
+            TyKind hkt2 = ty_hash_key(arm_pt);
+            if ((kty2 && sp_streq(kty2, "SymbolNode") && (hkt2 == TY_STRING)) ||
+                (kty2 && sp_streq(kty2, "StringNode") && (hkt2 == TY_SYMBOL || hkt2 == TY_INT)) ||
+                (kty2 && sp_streq(kty2, "IntegerNode") && (hkt2 == TY_STRING || hkt2 == TY_SYMBOL)))
+              continue;  /* arm statically failed; nothing to bind */
+          }
           LocalVar *hlv = hsc ? scope_local(hsc, lnm) : NULL;
           TyKind ltype = hlv ? hlv->type : TY_UNKNOWN;
           if (hvt == TY_POLY && ltype != TY_UNKNOWN && ltype != TY_POLY) {
@@ -2242,6 +2300,69 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             emit_indent(b, body_indent);
             buf_printf(b, "lv_%s = sp_%sHash_get(_t%d, ", lnm, hn, arm_t);
             emit_expr(c, key, b); buf_puts(b, ");\n");
+          }
+        }
+        /* `**rest`: copy every pair whose key is not among the listed ones */
+        int hp_rest = nt_ref(nt, pat, "rest");
+        if (hp_rest >= 0 && nt_type(nt, hp_rest) &&
+            sp_streq(nt_type(nt, hp_rest), "AssocSplatNode")) {
+          int rin = nt_ref(nt, hp_rest, "value");
+          const char *rnm = (rin >= 0 && nt_type(nt, rin) &&
+                             sp_streq(nt_type(nt, rin), "LocalVariableTargetNode"))
+                            ? nt_str(nt, rin, "name") : NULL;
+          if (rnm) {
+            TyKind hkt = ty_hash_key(arm_pt);
+            int tr = ++g_tmp, ti2 = ++g_tmp, tk2 = ++g_tmp;
+            emit_indent(b, body_indent);
+            buf_printf(b, "{ sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);\n", hn, tr, hn, tr);
+            emit_indent(b, body_indent + 1);
+            buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti2, ti2, arm_t, ti2);
+            emit_indent(b, body_indent + 2);
+            emit_ctype(c, hkt, b);
+            if (arm_pt == TY_POLY_POLY_HASH)
+              buf_printf(b, " _t%d = _t%d->keys[_t%d->order[_t%d]];\n", tk2, arm_t, arm_t, ti2);
+            else
+              buf_printf(b, " _t%d = _t%d->order[_t%d];\n", tk2, arm_t, ti2);
+            for (int i = 0; i < en; i++) {
+              if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+              int key = nt_ref(nt, elms[i], "key");
+              if (key < 0) continue;
+              {
+                const char *kty2 = nt_type(nt, key);
+                if ((kty2 && sp_streq(kty2, "SymbolNode") && (hkt == TY_STRING)) ||
+                    (kty2 && sp_streq(kty2, "StringNode") && (hkt == TY_SYMBOL || hkt == TY_INT)) ||
+                    (kty2 && sp_streq(kty2, "IntegerNode") && (hkt == TY_STRING || hkt == TY_SYMBOL)))
+                  continue;  /* can't be present: no exclusion needed */
+              }
+              emit_indent(b, body_indent + 2);
+              if (hkt == TY_POLY) {
+                buf_printf(b, "if (sp_poly_eq(_t%d, ", tk2); emit_boxed(c, key, b);
+              }
+              else if (hkt == TY_STRING) {
+                buf_printf(b, "if (_t%d && strcmp(_t%d, ", tk2, tk2); emit_expr(c, key, b); buf_puts(b, ") == 0");
+              }
+              else {
+                buf_printf(b, "if (_t%d == (", tk2); emit_expr(c, key, b);
+              }
+              buf_puts(b, ")) continue;\n");
+            }
+            emit_indent(b, body_indent + 2);
+            buf_printf(b, "sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d));\n",
+                       hn, tr, tk2, hn, arm_t, tk2);
+            emit_indent(b, body_indent + 1); buf_puts(b, "}\n");
+            emit_indent(b, body_indent + 1);
+            {
+              LocalVar *rlv2 = hsc ? scope_local(hsc, rnm) : NULL;
+              if (rlv2 && rlv2->type == TY_POLY) {
+                char rv[24]; snprintf(rv, sizeof rv, "_t%d", tr);
+                Buf bx; memset(&bx, 0, sizeof bx);
+                emit_boxed_text(c, arm_pt, rv, &bx);
+                buf_printf(b, "lv_%s = %s;\n", rnm, bx.p ? bx.p : rv);
+                free(bx.p);
+              }
+              else buf_printf(b, "lv_%s = _t%d;\n", rnm, tr);
+            }
+            emit_indent(b, body_indent); buf_puts(b, "}\n");
           }
         }
       }
@@ -2271,8 +2392,14 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       const int *posts = nt_arr(nt, array_pat, "posts", &npost);
       for (int i = 0; i < apn; i++) {
         const char *lty2 = nt_type(nt, reqs[i]);
-        if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
-        const char *lnm = nt_str(nt, reqs[i], "name");
+        const char *lnm = NULL;
+        if (lty2 && sp_streq(lty2, "LocalVariableTargetNode")) lnm = nt_str(nt, reqs[i], "name");
+        else if (lty2 && sp_streq(lty2, "CapturePatternNode")) {
+          /* `Class => x`: the class check ran in the arm condition; bind x */
+          int tgt = nt_ref(nt, reqs[i], "target");
+          if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
+            lnm = nt_str(nt, tgt, "name");
+        }
         if (!lnm) continue;
         emit_indent(b, body_indent);
         buf_printf(b, "lv_%s = ", lnm);

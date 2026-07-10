@@ -2012,6 +2012,40 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       }
       continue;
     }
+    /* A STRING-bounded range receiver ("a".."e") supports only the
+       range-native methods; any other Enumerable method rides the
+       materialized string array (the int-range redispatch has no char
+       equivalent, #1934). */
+    int rngn = recv;
+    while (rngn >= 0 && nt_type(nt, rngn) && sp_streq(nt_type(nt, rngn), "ParenthesesNode")) {
+      int pb = nt_ref(nt, rngn, "body");
+      int pbn = 0;
+      const int *pbb = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
+      rngn = pbn == 1 ? pbb[0] : -1;
+    }
+    if (rngn >= 0 && nt_type(nt, rngn) && sp_streq(nt_type(nt, rngn), "RangeNode")) {
+      int rlo = nt_ref(nt, rngn, "left");
+      const char *rloty = rlo >= 0 ? nt_type(nt, rlo) : NULL;
+      if (rloty && sp_streq(rloty, "StringNode")) {
+        static const char *const range_native[] = {
+          "begin", "end", "first", "last", "min", "max", "to_a", "each",
+          "include?", "member?", "cover?", "size", "count", "step", "===",
+          "each_char", "succ", "==", "!=", "inspect", "to_s", NULL };
+        int native = 0;
+        for (int j = 0; range_native[j]; j++)
+          if (sp_streq(nm, range_native[j])) { native = 1; break; }
+        if (!native) {
+          int toa = nt_new_node(nt, "CallNode");
+          if (toa >= 0) {
+            nt_node_set_str(nt, toa, "name", "to_a");
+            nt_node_set_ref(nt, toa, "receiver", recv);
+            nt_node_set_ref(nt, id, "receiver", toa);
+            comp_grow_node_arrays(c);
+            continue;
+          }
+        }
+      }
+    }
     /* :sym.to_proc (explicit): rewrite to the equivalent lambda -- one
        parameter calling the method, or two for the binary operators
        (:+.to_proc adds its two arguments). The &:sym shorthand stays on its
@@ -2205,6 +2239,119 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_ref(nt, id, "receiver", inner);
     }
   }
+}
+
+/* `recv.method(:sym)` over a BUILTIN receiver (string/int/array/...) has no
+   compiled function to bind, so calling the Method crashed. Synthesize a
+   top-level wrapper `def __bam_<id>(__bam_r) = __bam_r.sym` -- the wrapper's
+   param is pinned to the receiver's type, the Method binds the wrapper (self
+   is passed as the first argument by the bound-call ABI), and the existing
+   resolved-target machinery types the .call. The symbol argument is rewritten
+   to the wrapper's name. */
+static int desugar_builtin_method_obj(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "method")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    const char *sym = method_sym_arg(c, id);
+    if (!sym || !sym[0] || sym[0] == '_') continue;   /* already rewritten / internal */
+    if (!(sym[0] >= 'a' && sym[0] <= 'z')) continue;  /* operators: not a 0-arg wrapper */
+    TyKind rt = infer_type(c, recv);
+    if (rt == TY_UNKNOWN || rt == TY_POLY || rt == TY_VOID || rt == TY_NIL ||
+        ty_is_object(rt) || rt == TY_CLASS || rt == TY_METHOD || rt == TY_PROC)
+      continue;                                       /* user objects: already handled */
+    /* the typed-array (kind, op) trampoline path owns these */
+    if (ty_is_array(rt) && sp_streq(sym, "push")) continue;
+    if (comp_method_index(c, sym) >= 0) continue;     /* a same-named top-level def wins */
+    char wname[48];
+    snprintf(wname, sizeof wname, "__bam_%d", id);
+    if (comp_method_index(c, wname) >= 0) continue;   /* synthesized on a prior pass */
+    /* def __bam_<id>(__bam_r) = __bam_r.<sym> */
+    int rp = nt_new_node(nt, "RequiredParameterNode");
+    nt_node_set_str(nt, rp, "name", "__bam_r");
+    int params = nt_new_node(nt, "ParametersNode");
+    nt_node_set_arr(nt, params, "requireds", &rp, 1);
+    int rread = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, rread, "name", "__bam_r");
+    int call = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, call, "name", sym);
+    nt_node_set_ref(nt, call, "receiver", rread);
+    int body = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", &call, 1);
+    int def = nt_new_node(nt, "DefNode");
+    nt_node_set_str(nt, def, "name", wname);
+    nt_node_set_ref(nt, def, "parameters", params);
+    nt_node_set_ref(nt, def, "body", body);
+    Scope *ws = comp_scope_new(c, wname, def);
+    ws->class_id = -1;
+    ws->body = body;
+    int ws_idx = c->nscopes - 1;
+    scope_add_param(ws, "__bam_r", -1);
+    LocalVar *plv = scope_local(ws, "__bam_r");
+    if (plv) { plv->type = rt; plv->rbs_seeded = 1; }  /* pin: no call sites exist */
+    comp_grow_node_arrays(c);
+    walk_scope(c, body, ws_idx, -1);
+    /* retarget the Method at the wrapper */
+    int argsn = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+    if (an == 1 && av) nt_node_set_str(nt, av[0], "value", wname);
+    changed = 1;
+  }
+  return changed;
+}
+
+/* An under-supplied call (`m(1)` against `def m(a, b)`) raises ArgumentError
+   at runtime (args_raise), so the missing params never carry a real value --
+   but with NO other call site they also never receive a type, the body can't
+   infer, and the method's return stays TY_UNKNOWN, which rejects any VALUE
+   use of the call (`puts m(1)`). Give such never-supplied required params a
+   concrete placeholder type: every call missing them raises before the body
+   runs, so the choice is unobservable; a later legitimate call site simply
+   unifies over it. */
+static int pad_unsupplied_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    const char *name = nt_str(nt, id, "name");
+    if (!name) continue;
+    int mi = comp_method_index(c, name);
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    if (m->rest_idx >= 0 || m->kwrest_idx >= 0 || m->npost_rest > 0) continue;
+    int argsn = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+    int fuzzy = 0, kwh = -1;
+    for (int j = 0; j < an; j++) {
+      const char *aty = av[j] >= 0 ? nt_type(nt, av[j]) : NULL;
+      if (aty && (sp_streq(aty, "SplatNode") || sp_streq(aty, "ForwardingArgumentsNode")))
+        fuzzy = 1;
+      else if (aty && sp_streq(aty, "KeywordHashNode") && j == an - 1)
+        kwh = av[j];
+    }
+    if (fuzzy) continue;
+    int pos_an = kwh >= 0 ? an - 1 : an;
+    for (int i = 0; i < m->nparams; i++) {
+      if (i < pos_an) continue;                       /* supplied positionally */
+      if (!m->pnames[i]) continue;
+      if (m->pdefault[i] >= 0) continue;              /* optional: has a default */
+      if (kwh >= 0 && kwh_lookup(nt, kwh, m->pnames[i]) >= 0) continue;  /* supplied by keyword */
+      if (m->pnames[i][0] == '_' && m->pnames[i][1] == '_') continue;    /* synthesized */
+      LocalVar *lv = scope_local(m, m->pnames[i]);
+      if (lv && lv->type == TY_UNKNOWN) { lv->type = TY_INT; changed = 1; }
+    }
+  }
+  return changed;
 }
 
 /* An inline `Hash.new` / `Hash.new(default)` in ARGUMENT position has no
@@ -3801,6 +3948,8 @@ void analyze_program(Compiler *c) {
     ch |= infer_string_params(c);
     ch |= infer_default_param_types(c);
     ch |= pin_arg_position_hash_new(c);        /* f(Hash.new(d)) -> PolyPoly variant */
+    ch |= pad_unsupplied_params(c);            /* under-supplied call: placeholder param type */
+    ch |= desugar_builtin_method_obj(c);       /* builtin recv.method(:sym) -> wrapper def */
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */

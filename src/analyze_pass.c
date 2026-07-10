@@ -1221,6 +1221,22 @@ int infer_write_types(Compiler *c) {
         TyKind mg = ty_unify(lv->type, et);
         if (mg != lv->type) { lv->type = mg; changed = 1; }
       }
+      /* `**rest` binds the leftover pairs as a hash of the scrutinee's variant */
+      int hp_rest = nt_ref(nt, pattern, "rest");
+      if (hp_rest >= 0 && nt_type(nt, hp_rest) &&
+          sp_streq(nt_type(nt, hp_rest), "AssocSplatNode")) {
+        int rin = nt_ref(nt, hp_rest, "value");
+        if (rin >= 0 && nt_type(nt, rin) &&
+            sp_streq(nt_type(nt, rin), "LocalVariableTargetNode")) {
+          const char *rnm = nt_str(nt, rin, "name");
+          LocalVar *rlv = rnm ? scope_local(ms, rnm) : NULL;
+          TyKind ht = infer_type(c, value);
+          if (rlv && !rlv->is_param && !rlv->is_block_param && ty_is_hash(ht)) {
+            TyKind mg = ty_unify(rlv->type, ht);
+            if (mg != rlv->type) { rlv->type = mg; changed = 1; }
+          }
+        }
+      }
     }
   }
 
@@ -1780,8 +1796,11 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       if (at == TY_NIL) at = TY_POLY;
       for (int i = 0; i < m->nparams; i++) {
         /* The keyword-rest param receives the whole forwarded hash, not the
-           splat's value type -- leave it as its hash type. */
+           splat's value type -- leave it as its hash type. The positional
+           rest stays TY_POLY_ARRAY: an unconsumed **h degrades to one
+           positional element inside it, never a type on the slot itself. */
         if (i == m->kwrest_idx) continue;
+        if (i == m->rest_idx) continue;
         if (!m->pnames[i]) continue;
         LocalVar *p = scope_local(m, m->pnames[i]);
         if (!p || p->rbs_seeded) continue;

@@ -4134,9 +4134,15 @@ static const char *anon_kwrest_name(Compiler *c, int node) {
 }
 
 void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b) {
+  emit_rest_pack_kwh(c, from, pos_argc, argv, -1, b);
+}
+
+/* Like emit_rest_pack, but appends `kwh` (an unconsumed keyword hash that
+   degrades to one positional hash argument) as the trailing element. */
+void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b) {
   const NodeTable *nt = c->nt;
   /* Optimize: single pure-splat → direct conversion */
-  if (pos_argc == from + 1) {
+  if (kwh < 0 && pos_argc == from + 1) {
     const char *aty = argv ? nt_type(nt, argv[from]) : NULL;
     if (aty && sp_streq(aty, "SplatNode")) {
       int inner = nt_ref(nt, argv[from], "expression");
@@ -4160,7 +4166,7 @@ void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b
     }
   }
   /* Empty rest */
-  if (!argv || pos_argc <= from) {
+  if (kwh < 0 && (!argv || pos_argc <= from)) {
     buf_puts(b, "sp_PolyArray_new()");
     return;
   }
@@ -4199,6 +4205,20 @@ else {
       buf_printf(b, " sp_PolyArray_push(_t%d, %s);", t, el.p ? el.p : "sp_box_nil()");
       free(el.p);
     }
+  }
+  if (kwh >= 0) {
+    /* the degraded keyword hash: `**h` passes h itself; a literal kw list
+       boxes as a hash */
+    int en = 0;
+    const int *elms = nt_arr(nt, kwh, "elements", &en);
+    Buf kel; memset(&kel, 0, sizeof kel);
+    if (en == 1 && nt_type(nt, elms[0]) && sp_streq(nt_type(nt, elms[0]), "AssocSplatNode")) {
+      int inner = nt_ref(nt, elms[0], "value");
+      emit_boxed(c, inner, &kel);
+    }
+    else emit_boxed(c, kwh, &kel);
+    buf_printf(b, " sp_PolyArray_push(_t%d, %s);", t, kel.p ? kel.p : "sp_box_nil()");
+    free(kel.p);
   }
   buf_printf(b, " _t%d; })", t);
 }
@@ -4837,7 +4857,17 @@ else {
                                       c, splat_idx + 1, rest_end, argv, out);
       }
 else {
-        emit_rest_pack(c, i, rest_end, argv, out);
+        /* an unconsumed keyword hash (no kwrest and no matching keyword
+           param) degrades to one positional argument at the rest's tail */
+        int kwh_extra = -1;
+        if (kwh >= 0 && m->kwrest_idx < 0) {
+          int consumed = 0;
+          for (int pj = 0; pj < m->nparams && !consumed; pj++)
+            if (m->pnames[pj] && callee_has_kwarg(c, m, m->pnames[pj]) &&
+                kwh_lookup(nt, kwh, m->pnames[pj]) >= 0) consumed = 1;
+          if (!consumed) kwh_extra = kwh;
+        }
+        emit_rest_pack_kwh(c, i, rest_end, argv, kwh_extra, out);
       }
     }
 else if (m->rest_idx >= 0 && m->npost_rest > 0 && i > m->rest_idx) {
@@ -5652,6 +5682,12 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     int save_indent = g_indent; g_indent++;
     emit_loop_body(c, body, g_pre, g_indent);
     g_indent = save_indent;
+    if (accT == TY_STRING && p1) {
+      /* value-semantics accumulator (`s << x` rebinds the param): carry the
+         mutation across iterations and out of the loop */
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "_t%d = lv_%s;\n", tacc, p1);
+    }
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     /* Restore types */
     if (p0_mismatch) { outer_p0->type = saved_p0_type; for (int j = 0; j < bn; j++) infer_type(c, bb[j]); }
@@ -5700,6 +5736,12 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     emit_loop_body(c, body, g_pre, g_indent);
     g_indent = save_indent;
 
+    if (accT == TY_STRING && p1) {
+      /* value-semantics accumulator (`s << x` rebinds the param): carry the
+         mutation across iterations and out of the loop */
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "_t%d = lv_%s;\n", tacc, p1);
+    }
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
 
     /* Restore outer vars */
