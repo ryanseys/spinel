@@ -1152,6 +1152,21 @@ else {
       }
       if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
         TyKind init_t = comp_ntype(c, argv[0]);
+        /* a String initial value on a string array is concatenation, not a
+           numeric sum: `init + e0 + e1 + ...` (the string-building idiom). The
+           numeric sp_StrArray_sum returns int, so it can't produce the string
+           result; fold to an accumulator loop like reduce("") { |a, e| a + e }. */
+        if (rt == TY_STR_ARRAY && init_t == TY_STRING) {
+          int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
+          buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_expr(c, recv, b);
+          buf_printf(b, "; mrb_int _t%d = sp_StrArray_length(_t%d);", tn, ta);
+          buf_printf(b, " const char *_t%d = ", tacc); emit_expr(c, argv[0], b);
+          buf_printf(b, "; for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                        " _t%d = sp_str_concat(_t%d, sp_StrArray_get(_t%d, _t%d));"
+                        " _t%d; })",
+                     ti, ti, tn, ti, tacc, tacc, ta, ti, tacc);
+          return 1;
+        }
         /* a float initial value promotes an integer-array sum to Float: add the
            float init to the integer total in floating point (sp_IntArray_sum
            returns mrb_int, so accumulating the init through it would truncate). */
