@@ -2723,6 +2723,76 @@ static sp_PolyArray *sp_PolyArray_slice_bang(sp_PolyArray *a, mrb_int from, mrb_
   a->len -= n;
   return r;
 }
+/* combination/permutation over boxed elements (any array kind, via
+   sp_poly_to_poly_array). Each emitted row is a boxed PolyArray. */
+static void sp_poly_combination_recur(sp_PolyArray *src, mrb_int start, mrb_int k, sp_PolyArray *acc, sp_PolyArray *out) {
+  if (k == 0) {
+    sp_PolyArray *cp = sp_PolyArray_new(); SP_GC_ROOT(cp);
+    for (mrb_int i = 0; i < acc->len; i++) sp_PolyArray_push(cp, acc->data[i]);
+    sp_PolyArray_push(out, sp_box_poly_array(cp));
+    return;
+  }
+  for (mrb_int i = start; i <= src->len - k; i++) {
+    sp_PolyArray_push(acc, src->data[i]);
+    sp_poly_combination_recur(src, i + 1, k - 1, acc, out);
+    acc->len--;
+  }
+}
+static sp_PolyArray *sp_PolyArray_combination(sp_PolyArray *a, mrb_int k) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  if (!a || k < 0 || k > a->len) return out;
+  sp_PolyArray *acc = sp_PolyArray_new(); SP_GC_ROOT(acc);
+  sp_poly_combination_recur(a, 0, k, acc, out);
+  return out;
+}
+static void sp_poly_repeated_combination_recur(sp_PolyArray *src, mrb_int start, mrb_int k, sp_PolyArray *acc, sp_PolyArray *out) {
+  if (k == 0) {
+    sp_PolyArray *cp = sp_PolyArray_new(); SP_GC_ROOT(cp);
+    for (mrb_int i = 0; i < acc->len; i++) sp_PolyArray_push(cp, acc->data[i]);
+    sp_PolyArray_push(out, sp_box_poly_array(cp));
+    return;
+  }
+  for (mrb_int i = start; i < src->len; i++) {
+    sp_PolyArray_push(acc, src->data[i]);
+    sp_poly_repeated_combination_recur(src, i, k - 1, acc, out);
+    acc->len--;
+  }
+}
+static sp_PolyArray *sp_PolyArray_repeated_combination(sp_PolyArray *a, mrb_int k) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  if (!a || k < 0) return out;
+  sp_PolyArray *acc = sp_PolyArray_new(); SP_GC_ROOT(acc);
+  sp_poly_repeated_combination_recur(a, 0, k, acc, out);
+  return out;
+}
+static void sp_poly_permutation_recur(sp_PolyArray *src, mrb_int k, sp_IntArray *used, sp_PolyArray *acc, sp_PolyArray *out) {
+  if (k == 0) {
+    sp_PolyArray *cp = sp_PolyArray_new(); SP_GC_ROOT(cp);
+    for (mrb_int i = 0; i < acc->len; i++) sp_PolyArray_push(cp, acc->data[i]);
+    sp_PolyArray_push(out, sp_box_poly_array(cp));
+    return;
+  }
+  for (mrb_int i = 0; i < src->len; i++) {
+    if (used->data[used->start + i]) continue;
+    used->data[used->start + i] = 1;
+    sp_PolyArray_push(acc, src->data[i]);
+    sp_poly_permutation_recur(src, k - 1, used, acc, out);
+    acc->len--;
+    used->data[used->start + i] = 0;
+  }
+}
+static sp_PolyArray *sp_PolyArray_permutation(sp_PolyArray *a, mrb_int k) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  if (!a || k < 0 || k > a->len) return out;
+  sp_IntArray *used = sp_IntArray_new(); SP_GC_ROOT(used);
+  for (mrb_int i = 0; i < a->len; i++) sp_IntArray_push(used, 0);
+  sp_PolyArray *acc = sp_PolyArray_new(); SP_GC_ROOT(acc);
+  sp_poly_permutation_recur(a, k, used, acc, out);
+  return out;
+}
 static sp_PolyArray *sp_PolyArray_dup(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(b, a->data[i]); return b; }
 static sp_PolyArray *sp_PolyArray_replace(sp_PolyArray *dst, sp_PolyArray *src) { if (!dst || !src) return dst; dst->len = 0; for (mrb_int i = 0; i < src->len; i++) sp_PolyArray_push(dst, src->data[i]); return dst; }
 /* Array#+ : a fresh (unfrozen) array of a's then b's elements. */
@@ -4276,6 +4346,13 @@ static mrb_bool sp_poly_cbi_p(sp_RbVal v) {
   }
   sp_raise_cls("NoMethodError", "undefined method 'compare_by_identity?' for poly");
   return FALSE;
+}
+/* boxed-array count(v): value-equality element count (0 for non-arrays) */
+static mrb_int sp_poly_count_val(sp_RbVal v, sp_RbVal x) {
+  if (v.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(v.cls_id)) return 0;
+  mrb_int n = sp_poly_length(v), cnt = 0;
+  for (mrb_int i = 0; i < n; i++) if (sp_poly_eq(sp_poly_arr_get(v, i), x)) cnt++;
+  return cnt;
 }
 static mrb_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_STR)return v.v.s?(mrb_int)strlen(v.v.s):0;if(v.tag==SP_TAG_SYM)return sp_sym_name_fn?(mrb_int)strlen(sp_sym_name_fn((sp_sym)v.v.i)):0;if(v.tag!=SP_TAG_OBJ)return 0;switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_FLT_ARRAY:return sp_FloatArray_length((sp_FloatArray*)v.v.p);case SP_BUILTIN_STR_ARRAY:return sp_StrArray_length((sp_StrArray*)v.v.p);case SP_BUILTIN_SYM_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_POLY_ARRAY:return sp_PolyArray_length((sp_PolyArray*)v.v.p);case SP_BUILTIN_STR_INT_HASH:return sp_StrIntHash_length((sp_StrIntHash*)v.v.p);case SP_BUILTIN_STR_STR_HASH:return sp_StrStrHash_length((sp_StrStrHash*)v.v.p);case SP_BUILTIN_INT_STR_HASH:return sp_IntStrHash_length((sp_IntStrHash*)v.v.p);case SP_BUILTIN_STR_POLY_HASH:return sp_StrPolyHash_length((sp_StrPolyHash*)v.v.p);case SP_BUILTIN_SYM_POLY_HASH:return sp_SymPolyHash_length((sp_SymPolyHash*)v.v.p);case SP_BUILTIN_POLY_POLY_HASH:return sp_PolyPolyHash_length((sp_PolyPolyHash*)v.v.p);default:return 0;}}
 

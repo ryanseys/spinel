@@ -551,6 +551,17 @@ compile_charclass(re_compiler *c)
   }
   next_char(c);  /* skip ']' */
 
+  /* /i: case-fold the ASCII letter bits so [a-z] under IGNORECASE matches
+     both cases (the fold runs on the positive set; RE_NCLASS negation at
+     exec time then excludes both cases, matching CRuby). */
+  if (c->flags & RE_FLAG_IGNORECASE) {
+    for (int lc = 'a'; lc <= 'z'; lc++) {
+      int uc = lc - 32;
+      if (cc->bitmap[lc >> 3] & (1 << (lc & 7))) class_set_bit(cc, (uint8_t)uc);
+      if (cc->bitmap[uc >> 3] & (1 << (uc & 7))) class_set_bit(cc, (uint8_t)lc);
+    }
+  }
+
   cc->negated = negated;
   emit(c, negated ? RE_NCLASS : RE_CLASS, (uint8_t)id, 0);
 }

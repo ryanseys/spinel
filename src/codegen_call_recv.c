@@ -886,6 +886,23 @@ else {
         buf_printf(b, " _t%d; })", tout);
         return 1;
       }
+      if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
+           sp_streq(name, "permutation")) &&
+          (argc == 1 || (sp_streq(name, "permutation") && argc == 0)) &&
+          nt_ref(nt, id, "block") < 0) {
+        /* any other element kind rides the boxed PolyArray implementation */
+        const char *combfn = sp_streq(name, "combination") ? "sp_PolyArray_combination"
+                           : sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
+                           : "sp_PolyArray_repeated_combination";
+        int ta = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_poly_array(", ta);
+        emit_boxed(c, recv, b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d); %s(_t%d, ", ta, combfn, ta);
+        if (argc == 1) emit_expr(c, argv[0], b);
+        else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+        buf_puts(b, "); })");
+        return 1;
+      }
       if (sp_streq(name, "rotate!") && argc <= 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
@@ -1857,6 +1874,21 @@ else {
       if (sp_streq(name, "slice!") && argc == 2) {
         buf_puts(b, "sp_PolyArray_slice_bang("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+        return 1;
+      }
+      if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
+           sp_streq(name, "permutation")) &&
+          (argc == 1 || (sp_streq(name, "permutation") && argc == 0)) &&
+          nt_ref(nt, id, "block") < 0) {
+        const char *combfn = sp_streq(name, "combination") ? "sp_PolyArray_combination"
+                           : sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
+                           : "sp_PolyArray_repeated_combination";
+        int ta = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); %s(_t%d, ", ta, combfn, ta);
+        if (argc == 1) emit_expr(c, argv[0], b);
+        else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+        buf_puts(b, "); })");
         return 1;
       }
       if (sp_streq(name, "slice!") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
@@ -2963,6 +2995,33 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
+               nt_ref(nt, id, "block") >= 0) {
+        /* value-form scan { }: iterate in the prelude; the value is the
+           receiver string (CRuby returns self from the block form). */
+        int blk = nt_ref(nt, id, "block");
+        const char *p0o = block_param_name(c, blk, 0);
+        const char *p0r = p0o ? rename_local(p0o) : NULL;
+        int body = nt_ref(nt, blk, "body");
+        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "const char *_t%d = %s;\n", tr, r);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
+                   tm, re_lit_index(c, argv[0]), tr, tm);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tm, ti);
+        if (p0r) {
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0r, tm, ti);
+        }
+        int svind = g_indent; g_indent++;
+        for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+        g_indent = svind;
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        buf_printf(b, "_t%d", tr);
+      }
+      else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
                !re_has_captures(re_lit_src(c, argv[0]))) {
         buf_printf(b, "sp_re_scan(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
@@ -3116,6 +3175,23 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* s[/re/] -> the matched substring, or nil (NULL) on no match */
         buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_match_str : NULL)", re_lit_index(c, argv[0]), r);
+      }
+      else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 && re_lit_index(c, argv[0]) >= 0 &&
+               nt_type(c->nt, argv[1]) && sp_streq(nt_type(c->nt, argv[1]), "SymbolNode")) {
+        /* s[/(?<g>...)/, :g] -> the named group, or nil */
+        int pi = re_lit_index(c, argv[0]);
+        const char *gname = nt_str(c->nt, argv[1], "value");
+        buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_named_capture(sp_re_pat_%d, \"%s\") : NULL)",
+                   pi, r, pi, gname ? gname : "");
+      }
+      else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+        /* s[/re/, n] -> capture group n (0 = whole match), or nil */
+        int pi = re_lit_index(c, argv[0]);
+        int tn = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, argv[1], b);
+        buf_printf(b, "; sp_re_match(sp_re_pat_%d, %s) >= 0 ? "
+                      "(_t%d == 0 ? sp_re_match_str : (_t%d >= 1 && _t%d <= 9 ? sp_re_captures[_t%d] : NULL)) : NULL; })",
+                   pi, r, tn, tn, tn, tn);
       }
       else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && nt_type(c->nt, argv[0]) &&
                sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
@@ -4577,6 +4653,19 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
 
+  /* poly receiver count(v): value-equality element count over a boxed array */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "count") &&
+      nt_ref(nt, id, "block") < 0) {
+    int has_user_cnt = 0;
+    for (int kk = 0; kk < c->nclasses && !has_user_cnt; kk++)
+      if (comp_method_in_chain(c, kk, "count", NULL) >= 0 ||
+          comp_reader_in_chain(c, kk, "count", NULL)) has_user_cnt = 1;
+    if (!has_user_cnt) {
+      buf_puts(b, "sp_poly_count_val("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+  }
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (sp_streq(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
@@ -4588,6 +4677,49 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         if (comp_method_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
       if (!has_user) {
         buf_printf(b, "sp_poly_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+      }
+    }
+    if (sp_streq(name, "count")) {
+      /* count / count(v) / count { |x| } on a boxed array (skip when any
+         user class defines count -- same rule as length below) */
+      int has_user_cnt = 0;
+      for (int kk = 0; kk < c->nclasses && !has_user_cnt; kk++)
+        if (comp_method_in_chain(c, kk, "count", NULL) >= 0 ||
+            comp_reader_in_chain(c, kk, "count", NULL)) has_user_cnt = 1;
+      int cblk = nt_ref(nt, id, "block");
+      if (!has_user_cnt && argc == 0 && cblk >= 0) {
+        int cbody = nt_ref(nt, cblk, "body");
+        int cbn = 0; const int *cbb = cbody >= 0 ? nt_arr(nt, cbody, "body", &cbn) : NULL;
+        const char *cp0 = block_param_name(c, cblk, 0);
+        const char *cp0r = cp0 ? rename_local(cp0) : NULL;
+        if (cbn >= 1) {
+          int tr = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tr, rb.p ? rb.p : "sp_box_nil()", tr);
+          free(rb.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "mrb_int _t%d = 0;\n", tc);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_poly_length(_t%d); _t%d++) {\n", ti, ti, tr, ti);
+          if (cp0r) {
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "lv_%s = sp_poly_arr_get(_t%d, _t%d);\n", cp0r, tr, ti);
+          }
+          int svind = g_indent; g_indent++;
+          for (int j = 0; j < cbn - 1; j++) emit_stmt(c, cbb[j], g_pre, g_indent);
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "if (sp_poly_truthy(");
+          emit_boxed(c, cbb[cbn - 1], g_pre);
+          buf_printf(g_pre, ")) _t%d++;\n", tc);
+          g_indent = svind;
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+          buf_printf(b, "_t%d", tc);
+          return 1;
+        }
+      }
+      if (!has_user_cnt && argc == 0 && cblk < 0) {
+        buf_puts(b, "sp_poly_length("); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
       }
     }
     if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "empty?")) {

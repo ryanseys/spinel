@@ -3165,6 +3165,8 @@ else {
       if (blk >= 0 && (sp_streq(name, "bytes") || sp_streq(name, "codepoints"))) return TY_STRING; }
     if (sp_streq(name, "split") || sp_streq(name, "lines")) return TY_STR_ARRAY;
     if (sp_streq(name, "scan") && argc == 1) {
+      /* the block form iterates and returns self (the receiver string) */
+      if (nt_ref(nt, id, "block") >= 0) return TY_STRING;
       /* scan with capture groups returns poly_array (array of arrays or strings) */
       const char *aty = nt_type(nt, argv[0]);
       if (aty && sp_streq(aty, "RegularExpressionNode")) {
@@ -3454,6 +3456,7 @@ else {
       sp_streq(name, "chr") || sp_streq(name, "to_str")) return TY_STRING;
   if (sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
       sp_streq(name, "length") || sp_streq(name, "size") ||
+      sp_streq(name, "count") ||
       sp_streq(name, "ord") || sp_streq(name, "abs")) return TY_INT;
   if (sp_streq(name, "to_f")) return TY_FLOAT;
   if (sp_streq(name, "to_sym")) return TY_SYMBOL;

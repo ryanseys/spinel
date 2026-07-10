@@ -2012,6 +2012,60 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       }
       continue;
     }
+    /* :sym.to_proc (explicit): rewrite to the equivalent lambda -- one
+       parameter calling the method, or two for the binary operators
+       (:+.to_proc adds its two arguments). The &:sym shorthand stays on its
+       own (textual) path. */
+    if (sp_streq(nm, "to_proc") && recv >= 0 && nt_type(nt, recv) &&
+        sp_streq(nt_type(nt, recv), "SymbolNode") && nt_ref(nt, id, "block") < 0) {
+      const char *sym = nt_str(nt, recv, "value");
+      if (sym && *sym) {
+        static const char *const binops[] = {
+          "+", "-", "*", "/", "%", "**", "==", "!=", "<", "<=", ">", ">=",
+          "<=>", "<<", ">>", "&", "|", "^", NULL };
+        int is_binop = 0;
+        for (int j = 0; binops[j]; j++) if (sp_streq(sym, binops[j])) { is_binop = 1; break; }
+        char pa[32], pb[32];
+        snprintf(pa, sizeof pa, "__stp_a_%d", id);
+        snprintf(pb, sizeof pb, "__stp_b_%d", id);
+        int kpa = nt_new_node(nt, "RequiredParameterNode");
+        nt_node_set_str(nt, kpa, "name", pa);
+        int preq[2] = { kpa, -1 };
+        int npar = 1;
+        if (is_binop) {
+          int kpb = nt_new_node(nt, "RequiredParameterNode");
+          nt_node_set_str(nt, kpb, "name", pb);
+          preq[1] = kpb; npar = 2;
+        }
+        int params = nt_new_node(nt, "ParametersNode");
+        nt_node_set_arr(nt, params, "requireds", preq, npar);
+        int bparams = nt_new_node(nt, "BlockParametersNode");
+        nt_node_set_ref(nt, bparams, "parameters", params);
+        int ra = nt_new_node(nt, "LocalVariableReadNode");
+        nt_node_set_str(nt, ra, "name", pa);
+        int call = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, call, "name", sym);
+        nt_node_set_ref(nt, call, "receiver", ra);
+        if (is_binop) {
+          int rb2 = nt_new_node(nt, "LocalVariableReadNode");
+          nt_node_set_str(nt, rb2, "name", pb);
+          int cargs = nt_new_node(nt, "ArgumentsNode");
+          nt_node_set_arr(nt, cargs, "arguments", &rb2, 1);
+          nt_node_set_ref(nt, call, "arguments", cargs);
+        }
+        int blkbody = nt_new_node(nt, "StatementsNode");
+        nt_node_set_arr(nt, blkbody, "body", &call, 1);
+        int blk = nt_new_node(nt, "BlockNode");
+        nt_node_set_ref(nt, blk, "parameters", bparams);
+        nt_node_set_ref(nt, blk, "body", blkbody);
+        nt_node_set_str(nt, id, "name", "lambda");
+        nt_node_set_ref(nt, id, "receiver", -1);
+        nt_node_set_ref(nt, id, "arguments", -1);
+        nt_node_set_ref(nt, id, "block", blk);
+        comp_grow_node_arrays(c);
+        continue;
+      }
+    }
     /* transform_keys(mapping) [no block]: key k maps to mapping[k] when
        present, else stays -- exactly `{ |k| mapping.fetch(k, k) }`. The
        mapping expression is re-evaluated per key, which is correct (and only
