@@ -2502,7 +2502,17 @@ static int desugar_builtin_method_obj(Compiler *c) {
     }
     const char *sym = method_sym_arg(c, id);
     if (!sym || !sym[0] || sym[0] == '_') continue;   /* already rewritten / internal */
-    if (!(sym[0] >= 'a' && sym[0] <= 'z')) continue;  /* operators: not a 0-arg wrapper */
+    /* a binary operator method (5.method(:+)) gets a 2-param wrapper below;
+       other non-letter syms have no wrapper shape */
+    static const char *const BAM_BINOPS[] = { "+", "-", "*", "/", "%", "**",
+                                              "&", "|", "^", "<<", ">>", "<=>",
+                                              "==", "!=", "<", "<=", ">", ">=",
+                                              "=~", "[]", NULL };
+    int binop = 0;
+    if (!(sym[0] >= 'a' && sym[0] <= 'z')) {
+      for (int k = 0; BAM_BINOPS[k]; k++) if (sp_streq(sym, BAM_BINOPS[k])) { binop = 1; break; }
+      if (!binop) continue;
+    }
     TyKind rt = infer_type(c, recv);
     if (rt == TY_UNKNOWN || rt == TY_POLY || rt == TY_VOID || rt == TY_NIL ||
         ty_is_object(rt) || rt == TY_CLASS || rt == TY_METHOD || rt == TY_PROC)
@@ -2513,16 +2523,32 @@ static int desugar_builtin_method_obj(Compiler *c) {
     char wname[48];
     snprintf(wname, sizeof wname, "__bam_%d", id);
     if (comp_method_index(c, wname) >= 0) continue;   /* synthesized on a prior pass */
-    /* def __bam_<id>(__bam_r) = __bam_r.<sym> */
+    /* def __bam_<id>(__bam_r) = __bam_r.<sym>, or for a binary operator
+       def __bam_<id>(__bam_r, __bam_a) = __bam_r <op> __bam_a */
+    int preqs[2];
     int rp = nt_new_node(nt, "RequiredParameterNode");
     nt_node_set_str(nt, rp, "name", "__bam_r");
+    preqs[0] = rp;
     int params = nt_new_node(nt, "ParametersNode");
-    nt_node_set_arr(nt, params, "requireds", &rp, 1);
+    if (binop) {
+      int ap = nt_new_node(nt, "RequiredParameterNode");
+      nt_node_set_str(nt, ap, "name", "__bam_a");
+      preqs[1] = ap;
+      nt_node_set_arr(nt, params, "requireds", preqs, 2);
+    }
+    else nt_node_set_arr(nt, params, "requireds", preqs, 1);
     int rread = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, rread, "name", "__bam_r");
     int call = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, call, "name", sym);
     nt_node_set_ref(nt, call, "receiver", rread);
+    if (binop) {
+      int aread = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, aread, "name", "__bam_a");
+      int cargs = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, cargs, "arguments", &aread, 1);
+      nt_node_set_ref(nt, call, "arguments", cargs);
+    }
     int body = nt_new_node(nt, "StatementsNode");
     nt_node_set_arr(nt, body, "body", &call, 1);
     int def = nt_new_node(nt, "DefNode");
@@ -2534,6 +2560,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
     ws->body = body;
     int ws_idx = c->nscopes - 1;
     scope_add_param(ws, "__bam_r", -1);
+    if (binop) scope_add_param(ws, "__bam_a", -1);
     LocalVar *plv = scope_local(ws, "__bam_r");
     if (plv) { plv->type = rt; plv->rbs_seeded = 1; }  /* pin: no call sites exist */
     comp_grow_node_arrays(c);
@@ -3118,6 +3145,15 @@ int desugar_enum_method_recv(Compiler *c) {
           dlv->type = TY_SYM_POLY_HASH;
           changed = 1;
         }
+      }
+      continue;
+    }
+    if (nm && sp_streq(nm, "yield")) {
+      /* Proc#yield is exactly #call */
+      int yrc = nt_ref(nt, id, "receiver");
+      if (yrc >= 0 && infer_type(c, yrc) == TY_PROC) {
+        nt_node_set_str(nt, id, "name", "call");
+        changed = 1;
       }
       continue;
     }
@@ -4667,16 +4703,55 @@ void analyze_program(Compiler *c) {
       }
     }
   }
-  /* Proc#parameters reports param kinds (:req/:opt) and names as symbols;
-     intern them now so they land in the table before the codegen prologue. */
+  /* Proc#parameters reports param kinds (:req/:opt/:rest/:keyreq/:key/
+     :keyrest/:block) and names as symbols; intern them now so they land in
+     the table before the codegen prologue. Anonymous rest/kwrest/block use
+     the CRuby placeholder names (:*, :**, :&); numbered params report
+     :_1.._9. */
   for (int id = 0; id < c->nt->count; id++) {
     if (!is_proc_create(c, id)) continue;
     comp_sym_intern(c, "req");
     comp_sym_intern(c, "opt");
     int pn = a_proc_params_node(c, id);
-    if (pn < 0) continue;
+    if (pn < 0) {
+      for (int k = 1; k <= 9; k++) {
+        char nbuf[4];
+        snprintf(nbuf, sizeof nbuf, "_%d", k);
+        comp_sym_intern(c, nbuf);
+      }
+      continue;
+    }
     int rn = 0; const int *reqs = nt_arr(c->nt, pn, "requireds", &rn);
     for (int k = 0; k < rn; k++) { const char *nm = nt_str(c->nt, reqs[k], "name"); if (nm) comp_sym_intern(c, nm); }
+    int on = 0; const int *opts = nt_arr(c->nt, pn, "optionals", &on);
+    for (int k = 0; k < on; k++) { const char *nm = nt_str(c->nt, opts[k], "name"); if (nm) comp_sym_intern(c, nm); }
+    int psn = 0; const int *posts = nt_arr(c->nt, pn, "posts", &psn);
+    for (int k = 0; k < psn; k++) { const char *nm = nt_str(c->nt, posts[k], "name"); if (nm) comp_sym_intern(c, nm); }
+    int rest = nt_ref(c->nt, pn, "rest");
+    if (rest >= 0) {
+      comp_sym_intern(c, "rest");
+      const char *nm = nt_str(c->nt, rest, "name");
+      comp_sym_intern(c, nm ? nm : "*");
+    }
+    int kn = 0; const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
+    for (int k = 0; k < kn; k++) {
+      const char *kt = nt_type(c->nt, kws[k]);
+      comp_sym_intern(c, (kt && sp_streq(kt, "OptionalKeywordParameterNode")) ? "key" : "keyreq");
+      const char *nm = nt_str(c->nt, kws[k], "name");
+      if (nm) comp_sym_intern(c, nm);
+    }
+    int kwrest = nt_ref(c->nt, pn, "keyword_rest");
+    if (kwrest >= 0) {
+      comp_sym_intern(c, "keyrest");
+      const char *nm = nt_str(c->nt, kwrest, "name");
+      comp_sym_intern(c, nm ? nm : "**");
+    }
+    int bpar = nt_ref(c->nt, pn, "block");
+    if (bpar >= 0) {
+      comp_sym_intern(c, "block");
+      const char *nm = nt_str(c->nt, bpar, "name");
+      comp_sym_intern(c, nm ? nm : "&");
+    }
   }
 
   /* Apply --rbs advisory seeds (pin param/return/ivar types) before the

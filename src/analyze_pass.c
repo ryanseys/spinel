@@ -1658,6 +1658,28 @@ int infer_write_types(Compiler *c) {
   return changed;
 }
 
+/* Positional-only variant of bind_call_params for a call through a bound
+   __bam wrapper: the Method's self slot carries param[0], so call arg k binds
+   param[k + shift]. The wrapper's params are plain requireds (no splat or
+   keyword shapes to handle). */
+static int bind_call_args_shifted(Compiler *c, int call_id, int mi, int shift) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int args = nt_ref(nt, call_id, "arguments");
+  int argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int changed = 0;
+  for (int k = 0; k < argc && k + shift < m->nparams; k++) {
+    LocalVar *p = scope_local(m, m->pnames[k + shift]);
+    if (!p || p->rbs_seeded) continue;
+    TyKind at = infer_type(c, argv[k]);
+    if (at == TY_VOID || at == TY_NIL) at = TY_POLY;
+    TyKind merged = ty_unify(p->type, at);
+    if (merged != p->type) { p->type = merged; changed = 1; }
+  }
+  return changed;
+}
+
 /* Unify a call's argument types into method scope `mi`'s parameters. */
 int bind_call_params(Compiler *c, int call_id, int mi) {
   if (mi < 0) return 0;
@@ -2246,8 +2268,27 @@ int infer_param_types(Compiler *c) {
         infer_type(c, recv) == TY_METHOD) {
       int mn = method_recv_node(c, recv);
       int tmi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
-      if (tmi >= 0) changed |= bind_call_params(c, id, tmi);
+      if (tmi >= 0) {
+        int shift = method_call_param_shift(c, mn, tmi);
+        if (shift) changed |= bind_call_args_shifted(c, id, tmi, shift);
+        else changed |= bind_call_params(c, id, tmi);
+      }
       continue;
+    }
+
+    /* <method>.to_proc stored as a Proc: its .call sites are likewise the
+       only way the target method is reached, so bind their arg types to the
+       target's params (the emitted trampoline calls the real C signature). */
+    if (recv >= 0 && name && (sp_streq(name, "call") || sp_streq(name, "[]") || sp_streq(name, "()")) &&
+        infer_type(c, recv) == TY_PROC) {
+      int mn = proc_to_proc_method_node(c, recv);
+      int tmi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+      if (tmi >= 0) {
+        int shift = method_call_param_shift(c, mn, tmi);
+        if (shift) changed |= bind_call_args_shifted(c, id, tmi, shift);
+        else changed |= bind_call_params(c, id, tmi);
+        continue;
+      }
     }
 
     if (recv < 0) {

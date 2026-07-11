@@ -1036,6 +1036,7 @@ TyKind infer_call(Compiler *c, int id) {
        invoked through the poly ABI (sp_RbVal), so the call yields poly. */
     return g_promote_mode ? TY_POLY : TY_INT;
   }
+  if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "to_proc")) return TY_PROC;
   /* <method>.name -> the method name as a Symbol; .arity -> int */
   if (recv >= 0 && rt == TY_METHOD && argc == 0) {
     if (sp_streq(name, "name")) return TY_SYMBOL;

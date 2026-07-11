@@ -96,6 +96,8 @@ const char *method_sym_arg(Compiler *c, int node);
 int is_method_obj_call(Compiler *c, int node);
 int method_obj_target_mi(Compiler *c, int node);
 int method_recv_node(Compiler *c, int recv);
+int proc_to_proc_method_node(Compiler *c, int recv);
+int method_call_param_shift(Compiler *c, int mn, int mi);
 
 extern int g_inc_did_clone;
 extern int *g_ie_node_class;

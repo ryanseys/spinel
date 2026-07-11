@@ -6480,6 +6480,24 @@ typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); mrb_int 
 static void sp_Proc_scan(void *p) { sp_Proc *pr = (sp_Proc *)p; if (pr->cap && pr->cap_scan) pr->cap_scan(pr->cap); }
 static sp_Proc *sp_proc_new_meta(void *fn, void *cap, void (*cap_scan)(void *), mrb_int arity, mrb_bool lambda_p, mrb_int param_count, const sp_sym *param_kinds, const sp_sym *param_names) { sp_Proc *p = (sp_Proc *)sp_gc_alloc(sizeof(sp_Proc), NULL, sp_Proc_scan); p->fn = fn; p->cap = cap; p->cap_scan = cap_scan; p->arity = arity; p->lambda_p = lambda_p; p->param_count = param_count; p->param_kinds = param_kinds; p->param_names = param_names; return p; }
 static sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *)) { return sp_proc_new_meta(fn, cap, cap_scan, 0, FALSE, 0, NULL, NULL); }
+/* Method#to_proc: wrap the bound method in a Proc whose trampoline forwards
+   through the (void *self, mrb_int...) ABI (the arity dispatches the cast). */
+static void sp_bm_cap_scan(void *p) { sp_gc_mark(p); }
+static mrb_int sp_method_proc_tramp(void *cap, mrb_int argc, mrb_int *args) {
+  sp_BoundMethod *m = (sp_BoundMethod *)cap;
+  if (!m || !m->fn) return 0;
+  switch (argc) {
+    case 0: return ((mrb_int (*)(void *))(uintptr_t)m->fn)(m->self);
+    case 1: return ((mrb_int (*)(void *, mrb_int))(uintptr_t)m->fn)(m->self, args[0]);
+    case 2: return ((mrb_int (*)(void *, mrb_int, mrb_int))(uintptr_t)m->fn)(m->self, args[0], args[1]);
+    case 3: return ((mrb_int (*)(void *, mrb_int, mrb_int, mrb_int))(uintptr_t)m->fn)(m->self, args[0], args[1], args[2]);
+    default: return ((mrb_int (*)(void *, mrb_int, mrb_int, mrb_int, mrb_int))(uintptr_t)m->fn)(m->self, args[0], args[1], args[2], args[3]);
+  }
+}
+static sp_Proc *sp_method_to_proc(sp_BoundMethod *m) __attribute__((unused));
+static sp_Proc *sp_method_to_proc(sp_BoundMethod *m) {
+  return sp_proc_new_meta((void *)sp_method_proc_tramp, m, sp_bm_cap_scan, 1, TRUE, 0, NULL, NULL);
+}
 
 /* Bound Method object: `obj.method(:foo)` / `method(:foo)`. `self` is the
    bound receiver (NULL for a top-level method), `fn` the function address

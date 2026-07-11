@@ -4884,6 +4884,104 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")");
     return;
   }
+  /* <method>.to_proc wraps the bound method in a trampoline Proc. When the
+     target method is statically known, emit a per-site trampoline that calls
+     it with its real C signature (a top-level method has no self parameter;
+     an object-bound one is invoked through a typed fn cast) and publishes the
+     result boxed in _sp_proc_poly_ret -- the universal first-class-proc
+     return ABI a later `.call` reads back. Falls back to the generic runtime
+     trampoline when the target is unresolved. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && sp_streq(name, "to_proc")) {
+    int mn = method_recv_node(c, recv);
+    int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
+    if (target >= 0) {
+      Scope *tm = &c->scopes[target];
+      int np = tm->nparams;
+      TyKind tret = (TyKind)tm->ret;
+      int tid = ++g_proc_counter;
+      /* a bound __bam wrapper carries param[0] in the Method's self slot:
+         proc arg k maps to param[k + shift] */
+      int shift = method_call_param_shift(c, mn, target);
+      /* a float/poly parameter reads back from the boxed side-channel the
+         force_poly call site publishes */
+      int needs_slot = 0;
+      for (int k = shift; k < np; k++) {
+        LocalVar *pp = scope_local(tm, tm->pnames[k]);
+        TyKind pt = pp ? pp->type : TY_INT;
+        if (pt == TY_POLY || pt == TY_FLOAT) needs_slot = 1;
+      }
+      if (needs_slot && !g_needs_proc_poly_argslot) {
+        g_needs_proc_poly_argslot = 1;
+        buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
+      }
+      Buf *pb = &g_procs;
+      buf_printf(pb, "static mrb_int _mtp_%d(void *cap, mrb_int argc, mrb_int *args) {\n", tid);
+      buf_puts(pb, "  sp_BoundMethod *_m = (sp_BoundMethod *)cap; (void)_m; (void)argc; (void)args;\n");
+      /* the call expression: sp_<name>(args...) for a top-level target, else
+         the typed fn cast through _m->fn with _m->self first */
+      Buf cb = {0};
+      if (target_recvless) {
+        emit_method_cname(c, tm, &cb);
+        buf_puts(&cb, "(");
+      }
+      else {
+        buf_puts(&cb, "((");
+        if (is_scalar_ret(tret)) emit_ctype(c, tret, &cb);
+        else buf_puts(&cb, "void");
+        buf_puts(&cb, " (*)(void *");
+        for (int k = shift; k < np; k++) {
+          buf_puts(&cb, ", ");
+          LocalVar *pp = scope_local(tm, tm->pnames[k]);
+          emit_ctype(c, pp ? pp->type : TY_INT, &cb);
+        }
+        buf_puts(&cb, "))(uintptr_t)_m->fn)((void *)_m->self");
+        if (np > shift) buf_puts(&cb, ", ");
+      }
+      for (int k = shift; k < np; k++) {
+        if (k > shift) buf_puts(&cb, ", ");
+        LocalVar *pp = scope_local(tm, tm->pnames[k]);
+        TyKind pt = pp ? pp->type : TY_INT;
+        if (pt == TY_POLY) buf_printf(&cb, "_sp_proc_poly_args[%d]", k - shift);
+        else if (pt == TY_FLOAT) buf_printf(&cb, "sp_poly_to_f(_sp_proc_poly_args[%d])", k - shift);
+        else if (pt == TY_SYMBOL) buf_printf(&cb, "(sp_sym)args[%d]", k - shift);
+        else if (proc_slot_is_ptr(pt)) {
+          buf_puts(&cb, "(");
+          emit_ctype(c, pt, &cb);
+          buf_printf(&cb, ")(uintptr_t)args[%d]", k - shift);
+        }
+        else buf_printf(&cb, "args[%d]", k - shift);
+      }
+      buf_puts(&cb, ")");
+      if (is_scalar_ret(tret)) {
+        buf_puts(pb, "  ");
+        emit_ctype(c, tret, pb);
+        buf_printf(pb, " _r = %s;\n", cb.p ? cb.p : "");
+        buf_puts(pb, "  _sp_proc_poly_ret = ");
+        emit_boxed_text(c, tret, "_r", pb);
+        buf_puts(pb, ";\n");
+      }
+      else {
+        buf_printf(pb, "  %s;\n", cb.p ? cb.p : "");
+        buf_puts(pb, "  _sp_proc_poly_ret = sp_box_nil();\n");
+      }
+      buf_puts(pb, "  return 0;\n}\n");
+      free(cb.p);
+      /* arity: required count (minus the self-carried wrapper param),
+         negative when the signature is variadic (the Scope folds
+         optionals/rest into nparams > nrequired). */
+      int m_arity = (np != tm->nrequired) ? -(tm->nrequired - shift + 1)
+                                          : tm->nrequired - shift;
+      buf_printf(b, "sp_proc_new_meta((void *)_mtp_%d, (void *)(", tid);
+      emit_expr(c, recv, b);
+      buf_printf(b, "), sp_bm_cap_scan, %d, TRUE, 0, NULL, NULL)", m_arity);
+      return;
+    }
+    buf_puts(b, "sp_method_to_proc(");
+    emit_expr(c, recv, b);
+    buf_puts(b, ")");
+    return;
+  }
   /* <method>.name -> the stored method name, interned to a Symbol (CRuby
      Method#name returns a Symbol, not a String). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && sp_streq(name, "name")) {
@@ -4970,6 +5068,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
        Falls back to the raw mrb_int ABI when the target is unresolved. */
     int tr = ++g_tmp;
     Scope *tm = target >= 0 ? &c->scopes[target] : NULL;
+    /* a bound __bam wrapper carries param[0] in the Method's self slot:
+       call arg k is coerced to param[k + shift] */
+    int shift = target >= 0 ? method_call_param_shift(c, mn, target) : 0;
     /* When the target is unresolved under promote, fall back to the poly ABI
        (sp_RbVal self/args/return) rather than the legacy mrb_int ABI: every
        method is poly-signatured in promote, so a `(void*, mrb_int)->mrb_int`
@@ -4981,8 +5082,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "(("); emit_ctype(c, tret, b); buf_puts(b, " (*)(void *");
     for (int k = 0; k < argc; k++) {
       buf_puts(b, ", ");
-      if (tm && k < tm->nparams) {
-        LocalVar *pp = scope_local(tm, tm->pnames[k]);
+      if (tm && k + shift < tm->nparams) {
+        LocalVar *pp = scope_local(tm, tm->pnames[k + shift]);
         emit_ctype(c, pp ? pp->type : TY_INT, b);
       }
       else if (poly_abi) buf_puts(b, "sp_RbVal");
@@ -4991,7 +5092,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "))(uintptr_t)_t%d->fn)((void *)_t%d->self", tr, tr);
     for (int k = 0; k < argc; k++) {
       buf_puts(b, ", ");
-      if (tm && k < tm->nparams) emit_arg_or_default(c, tm, k, argv[k], b);
+      if (tm && k + shift < tm->nparams) emit_arg_or_default(c, tm, k + shift, argv[k], b);
       else if (poly_abi) emit_boxed(c, argv[k], b);
       else if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
       else emit_expr(c, argv[k], b);

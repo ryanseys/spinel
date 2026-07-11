@@ -633,6 +633,49 @@ int method_recv_node(Compiler *c, int recv) {
   return -1;
 }
 
+/* The `method(:sym)` node behind a Proc-typed expression created by
+   `<method>.to_proc`: the to_proc call itself, or a local variable's
+   single assignment to one. Returns -1 when the proc has another origin. */
+int proc_to_proc_method_node(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return -1;
+  int cand = recv;
+  const char *rty = nt_type(nt, recv);
+  if (rty && sp_streq(rty, "LocalVariableReadNode")) {
+    const char *vn = nt_str(nt, recv, "name");
+    Scope *sc = comp_scope_of(c, recv);
+    cand = -1;
+    for (int w = 0; w < nt->count; w++) {
+      const char *wty = nt_type(nt, w);
+      if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
+      if (comp_scope_of(c, w) != sc) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !vn || !sp_streq(wn, vn)) continue;
+      int val = nt_ref(nt, w, "value");
+      const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
+      if (vty && sp_streq(vty, "CallNode")) { cand = val; break; }
+    }
+  }
+  if (cand < 0) return -1;
+  const char *cty = nt_type(nt, cand);
+  if (!cty || !sp_streq(cty, "CallNode")) return -1;
+  const char *nm = nt_str(nt, cand, "name");
+  if (!nm || !sp_streq(nm, "to_proc")) return -1;
+  return method_recv_node(c, nt_ref(nt, cand, "receiver"));
+}
+
+/* Param-index shift for a call through a Method object. A bound
+   `<recv>.method(:__bam_N)` resolves to a synthesized top-level wrapper whose
+   first param (__bam_r) is carried by the Method's self slot, so positional
+   call args map to params[1..]. A real instance/class method keeps self
+   implicit (params are the declared ones) and shifts by 0. */
+int method_call_param_shift(Compiler *c, int mn, int mi) {
+  if (mn < 0 || mi < 0) return 0;
+  if (nt_ref(c->nt, mn, "receiver") < 0) return 0;
+  Scope *m = &c->scopes[mi];
+  return (m->class_id < 0 && !m->is_cmethod) ? 1 : 0;
+}
+
 /* True when scope `scope_idx` contains an explicit `return` (such a method
    cannot be inlined at its call sites). Shared by the inliner and the
    valued-break detector. */

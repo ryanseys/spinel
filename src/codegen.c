@@ -1931,19 +1931,83 @@ else if (orecv >= 0 && onm) {
   int self_is_value = cap_self && c->classes[bs->class_id].is_value_type;
   const char *self_cls = cap_self ? c->classes[bs->class_id].c_name : NULL;
 
-  /* parameter metadata for Proc#parameters: kinds (:req for lambdas, :opt for
-     procs) + names, as interned symbol ids (pre-interned in analyze). */
+  /* parameter metadata for Proc#parameters: every parameter kind in signature
+     order. Positionals (leading + post) are :req for a lambda and :opt for a
+     proc; defaulted positionals are :opt in both; then :rest, :keyreq / :key,
+     :keyrest, :block. An anonymous rest/kwrest/block reports the CRuby
+     placeholder name (:*, :**, :&); numbered params report as (:opt, :_N).
+     Kinds and names are interned symbol ids. */
   char meta_args[64];
-  if (arity > 0) {
-    buf_printf(&g_procs, "static const sp_sym _proc_kinds_%d[] = {", pid);
-    for (int k = 0; k < arity; k++) buf_printf(&g_procs, "%s(sp_sym)%d", k ? ", " : "", comp_sym_intern(c, is_lambda ? "req" : "opt"));
-    buf_puts(&g_procs, "};\n");
-    buf_printf(&g_procs, "static const sp_sym _proc_names_%d[] = {", pid);
-    for (int k = 0; k < arity; k++) buf_printf(&g_procs, "%s(sp_sym)%d", k ? ", " : "", comp_sym_intern(c, proc_param_name(c, create, k)));
-    buf_puts(&g_procs, "};\n");
-    snprintf(meta_args, sizeof meta_args, "_proc_kinds_%d, _proc_names_%d", pid, pid);
+  int meta_count = 0;
+  {
+    enum { PMETA_MAX = 64 };
+    const char *pkind[PMETA_MAX]; int pname[PMETA_MAX];
+    int pn = proc_params_node(c, create);
+    if (pn >= 0) {
+      int n = 0; const int *ids;
+      const char *pos_kind = is_lambda ? "req" : "opt";
+      ids = nt_arr(nt, pn, "requireds", &n);
+      for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
+        pkind[meta_count] = pos_kind;
+        pname[meta_count++] = comp_sym_intern(c, nt_str(nt, ids[i], "name"));
+      }
+      ids = nt_arr(nt, pn, "optionals", &n);
+      for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
+        pkind[meta_count] = "opt";
+        pname[meta_count++] = comp_sym_intern(c, nt_str(nt, ids[i], "name"));
+      }
+      int rest = nt_ref(nt, pn, "rest");
+      const char *rty = rest >= 0 ? nt_type(nt, rest) : NULL;
+      if (rty && sp_streq(rty, "RestParameterNode") && meta_count < PMETA_MAX) {
+        const char *nm = nt_str(nt, rest, "name");
+        pkind[meta_count] = "rest";
+        pname[meta_count++] = comp_sym_intern(c, nm ? nm : "*");
+      }
+      ids = nt_arr(nt, pn, "posts", &n);
+      for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
+        pkind[meta_count] = pos_kind;
+        pname[meta_count++] = comp_sym_intern(c, nt_str(nt, ids[i], "name"));
+      }
+      ids = nt_arr(nt, pn, "keywords", &n);
+      for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
+        const char *kt = nt_type(nt, ids[i]);
+        pkind[meta_count] = (kt && sp_streq(kt, "OptionalKeywordParameterNode")) ? "key" : "keyreq";
+        pname[meta_count++] = comp_sym_intern(c, nt_str(nt, ids[i], "name"));
+      }
+      int kwrest = nt_ref(nt, pn, "keyword_rest");
+      const char *kwty = kwrest >= 0 ? nt_type(nt, kwrest) : NULL;
+      if (kwty && sp_streq(kwty, "KeywordRestParameterNode") && meta_count < PMETA_MAX) {
+        const char *nm = nt_str(nt, kwrest, "name");
+        pkind[meta_count] = "keyrest";
+        pname[meta_count++] = comp_sym_intern(c, nm ? nm : "**");
+      }
+      int bpar = nt_ref(nt, pn, "block");
+      const char *bty = bpar >= 0 ? nt_type(nt, bpar) : NULL;
+      if (bty && sp_streq(bty, "BlockParameterNode") && meta_count < PMETA_MAX) {
+        const char *nm = nt_str(nt, bpar, "name");
+        pkind[meta_count] = "block";
+        pname[meta_count++] = comp_sym_intern(c, nm ? nm : "&");
+      }
+    }
+    else if (nnumbered > 0) {
+      for (int i = 0; i < nnumbered && meta_count < PMETA_MAX; i++) {
+        char nbuf[4];
+        snprintf(nbuf, sizeof nbuf, "_%d", i + 1);
+        pkind[meta_count] = "opt";
+        pname[meta_count++] = comp_sym_intern(c, nbuf);
+      }
+    }
+    if (meta_count > 0) {
+      buf_printf(&g_procs, "static const sp_sym _proc_kinds_%d[] = {", pid);
+      for (int k = 0; k < meta_count; k++) buf_printf(&g_procs, "%s(sp_sym)%d", k ? ", " : "", comp_sym_intern(c, pkind[k]));
+      buf_puts(&g_procs, "};\n");
+      buf_printf(&g_procs, "static const sp_sym _proc_names_%d[] = {", pid);
+      for (int k = 0; k < meta_count; k++) buf_printf(&g_procs, "%s(sp_sym)%d", k ? ", " : "", pname[k]);
+      buf_puts(&g_procs, "};\n");
+      snprintf(meta_args, sizeof meta_args, "_proc_kinds_%d, _proc_names_%d", pid, pid);
+    }
+    else snprintf(meta_args, sizeof meta_args, "NULL, NULL");
   }
-  else snprintf(meta_args, sizeof meta_args, "NULL, NULL");
 
   /* capture struct + GC scan (only when the proc captures). cap_scan marks
      the cap struct itself first (sp_Proc_scan does not), then each cell --
@@ -2246,7 +2310,7 @@ else if (orecv >= 0 && onm) {
 
   if (ncap == 0 && !cap_self && !ret_proc) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, %s)",
-               pid, meta_arity, is_lambda ? "TRUE" : "FALSE", arity, meta_args);
+               pid, meta_arity, is_lambda ? "TRUE" : "FALSE", meta_count, meta_args);
   }
   else {
     /* Allocate + populate the cap struct in the enclosing statement's prelude
@@ -2274,7 +2338,7 @@ else if (orecv >= 0 && onm) {
       if (ret_proc) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_home = _h.id;\n", pid); }
     }
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, _capv_%d, _proc_cap_scan_%d, %d, %s, %d, %s)",
-               pid, pid, pid, meta_arity, is_lambda ? "TRUE" : "FALSE", arity, meta_args);
+               pid, pid, pid, meta_arity, is_lambda ? "TRUE" : "FALSE", meta_count, meta_args);
   }
 
   free(params.v); free(used.v); free(locals.v); free(caps.v);
