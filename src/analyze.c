@@ -2289,10 +2289,11 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        mapping expression is re-evaluated per key, which is correct (and only
        wasteful) for the literal-hash common case. */
     if ((sp_streq(nm, "transform_keys") || sp_streq(nm, "transform_keys!")) &&
-        recv >= 0 && nt_ref(nt, id, "block") < 0) {
+        recv >= 0) {
       int argsn = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+      int origblk = nt_ref(nt, id, "block");
       if (an == 1) {
         int mnode = av0[0];
         char pname[32];
@@ -2308,12 +2309,21 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         int kr2 = nt_new_node(nt, "LocalVariableReadNode");
         nt_node_set_str(nt, kr2, "name", pname);
         int fargs = nt_new_node(nt, "ArgumentsNode");
-        int fa[2] = { kr1, kr2 };
-        nt_node_set_arr(nt, fargs, "arguments", fa, 2);
+        if (origblk >= 0) {
+          /* a block alongside the mapping handles the unmapped keys:
+             mapping.fetch(k) { original_block } */
+          nt_node_set_arr(nt, fargs, "arguments", &kr1, 1);
+          (void)kr2;
+        }
+        else {
+          int fa[2] = { kr1, kr2 };
+          nt_node_set_arr(nt, fargs, "arguments", fa, 2);
+        }
         int fetch = nt_new_node(nt, "CallNode");
         nt_node_set_str(nt, fetch, "name", "fetch");
         nt_node_set_ref(nt, fetch, "receiver", mnode);
         nt_node_set_ref(nt, fetch, "arguments", fargs);
+        if (origblk >= 0) nt_node_set_ref(nt, fetch, "block", origblk);
         int blkbody = nt_new_node(nt, "StatementsNode");
         nt_node_set_arr(nt, blkbody, "body", &fetch, 1);
         int blk = nt_new_node(nt, "BlockNode");
