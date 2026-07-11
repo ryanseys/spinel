@@ -3203,9 +3203,16 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
                       (ty_is_object(rt) && ty_object_class(rt) >= 0 &&
                        ty_object_class(rt) < c->nclasses &&
                        c->classes[ty_object_class(rt)].is_struct))))) {
-    /* Array#eql? is structural, the same element-wise comparison as ==;
-       only != negates. Scalar eql? is handled by the per-type emitters. */
+    /* Array#eql? is structural like == but class-strict per element
+       (1 is not eql? to 1.0): box both sides through the strict poly
+       comparator. Scalar eql? is handled by the per-type emitters. */
     int eq = !sp_streq(name, "!=");
+    if (sp_streq(name, "eql?") && (ty_is_array(rt) || ty_is_array(a0))) {
+      buf_puts(b, "sp_poly_eql(");
+      emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+      buf_puts(b, ")");
+      return 1;
+    }
     /* `x == nil` / `x != nil` for any receiver */
     int a_nil = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode");
     int r_nil = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "NilNode");

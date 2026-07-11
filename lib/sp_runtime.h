@@ -3966,7 +3966,9 @@ static sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {
   sp_StrArray_uniq_bang(a);
   return a->len != n ? sp_box_str_array(a) : sp_box_nil();
 }
-static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array();return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eq(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
+/* uniq dedups with eql? (class-strict: 1 and 1.0 both survive), as CRuby. */
+static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
+static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array();return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eql(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
 static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[(mrb_int)(rand()%a->len)]; }
 
 /* Forward decl: sp_poly_inspect dispatches into sp_PolyArray_inspect
@@ -4639,6 +4641,16 @@ static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
   int a_int = (a.tag == SP_TAG_INT || a.tag == SP_TAG_BIGINT);
   int b_int = (b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT);
   if ((a_int && b.tag == SP_TAG_FLT) || (a.tag == SP_TAG_FLT && b_int)) return FALSE;
+  /* Array#eql? recurses per element with eql? (not ==), so [1, 2] is not
+     eql? to [1, 2.0] even though they are ==. */
+  if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ &&
+      sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) {
+    mrb_int n = sp_poly_length(a);
+    if (n != sp_poly_length(b)) return FALSE;
+    for (mrb_int i = 0; i < n; i++)
+      if (!sp_poly_eql(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i))) return FALSE;
+    return TRUE;
+  }
   return sp_poly_eq(a, b);
 }
 /* equal? for a poly value: object identity. Immediates (int, symbol, nil,
