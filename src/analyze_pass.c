@@ -4927,6 +4927,14 @@ int infer_block_params(Compiler *c) {
       continue;
     }
 
+    /* array.product(other) { |pair| } binds the boxed pair array */
+    if (sp_streq(name, "product") && ty_is_array(rt) && p0) {
+      Scope *aps = comp_scope_of(c, block);
+      LocalVar *pp = scope_local_intern(aps, p0); pp->is_block_param = 1;
+      TyKind pm = ty_unify(pp->type, TY_POLY);
+      if (pm != pp->type) { pp->type = pm; changed = 1; }
+      continue;
+    }
     /* array.fetch(i) { |i| } binds the (int) index */
     if (sp_streq(name, "fetch") && ty_is_array(rt) && p0) {
       Scope *afs = comp_scope_of(c, block);

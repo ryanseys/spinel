@@ -1543,9 +1543,14 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* int_array.combination(k)/permutation(k) { |c| ... } -- yield each k-element
      sub-array as a fresh int_array. permutation also accepts the argless
      (full-length) form. */
-  if ((sp_streq(name, "combination") || sp_streq(name, "permutation")) && rt == TY_INT_ARRAY) {
+  if ((sp_streq(name, "combination") || sp_streq(name, "permutation") ||
+       sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")) &&
+      rt == TY_INT_ARRAY) {
     int is_perm = sp_streq(name, "permutation");
-    const char *genfn = is_perm ? "sp_IntArray_permutation" : "sp_IntArray_combination";
+    const char *genfn = sp_streq(name, "permutation") ? "sp_IntArray_permutation"
+                      : sp_streq(name, "combination") ? "sp_IntArray_combination"
+                      : sp_streq(name, "repeated_permutation") ? "sp_IntArray_repeated_permutation"
+                      : "sp_IntArray_repeated_combination";
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
     if (ac != 1 && !(is_perm && ac == 0)) return 0;

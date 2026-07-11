@@ -3169,6 +3169,25 @@ static void sp_PolyArray_flatten_into(sp_PolyArray *dst, sp_RbVal v) {
 }
 static sp_PolyArray *sp_PolyArray_flatten_bang(sp_PolyArray *a);  /* below */
 static sp_PolyArray *sp_PolyArray_flatten(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b); if (!a) return b; for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into(b, a->data[i]); return b; }
+/* depth-limited flatten: depth counts how many nesting levels unwrap
+   (CRuby's flatten(1)); a negative depth flattens fully. */
+static void sp_PolyArray_flatten_into_d(sp_PolyArray *out, sp_RbVal v, mrb_int depth);
+static void sp_PolyArray_flatten_into_d(sp_PolyArray *out, sp_RbVal v, mrb_int depth) {
+  if (depth != 0 && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
+    sp_PolyArray *in = sp_poly_to_poly_array(v); SP_GC_ROOT(in);
+    for (mrb_int i = 0; i < in->len; i++)
+      sp_PolyArray_flatten_into_d(out, in->data[i], depth - 1);
+    return;
+  }
+  sp_PolyArray_push(out, v);
+}
+static sp_PolyArray *sp_PolyArray_flatten_depth(sp_PolyArray *a, mrb_int d) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b);
+  if (!a) return b;
+  for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into_d(b, a->data[i], d);
+  return b;
+}
 /* Array#flatten!: replace the receiver's contents with the flattened run
    (aliases observe the mutation). */
 static sp_PolyArray *sp_PolyArray_flatten_bang(sp_PolyArray *a) {
@@ -3865,6 +3884,19 @@ static sp_RbVal sp_PolyArray_flatten_bangq(sp_PolyArray *a) {
     if (a->data[i].tag == SP_TAG_OBJ && sp_poly_is_array_kind(a->data[i].cls_id)) ch = 1;
   if (!ch) return sp_box_nil();
   sp_PolyArray_flatten_bang(a);
+  return sp_box_poly_array(a);
+}
+static sp_RbVal sp_PolyArray_flatten_bangq_depth(sp_PolyArray *a, mrb_int d) {
+  if (!a) return sp_box_nil();
+  if (a->frozen) sp_raise_frozen_array();
+  SP_GC_ROOT(a);
+  int ch = 0;
+  for (mrb_int i = 0; i < a->len && !ch; i++)
+    if (a->data[i].tag == SP_TAG_OBJ && sp_poly_is_array_kind(a->data[i].cls_id)) ch = 1;
+  if (!ch || d == 0) return sp_box_nil();
+  sp_PolyArray *f = sp_PolyArray_flatten_depth(a, d); SP_GC_ROOT(f);
+  a->len = 0;
+  for (mrb_int i = 0; i < f->len; i++) sp_PolyArray_push(a, f->data[i]);
   return sp_box_poly_array(a);
 }
 static sp_RbVal sp_IntArray_uniq_bangq(sp_IntArray *a) {

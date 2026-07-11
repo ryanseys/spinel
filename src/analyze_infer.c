@@ -2672,6 +2672,9 @@ else {
     }
     if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!")) &&
         block >= 0) return TY_POLY;  /* self, or nil when nothing was removed */
+    if (sp_streq(name, "flatten!") && argc == 1) return TY_POLY;   /* self or nil */
+    if (sp_streq(name, "flatten") && argc == 1)
+      return rt == TY_POLY_ARRAY ? TY_POLY_ARRAY : rt;  /* typed arrays have no nesting */
     if ((sp_streq(name, "uniq!") || sp_streq(name, "compact!") || sp_streq(name, "flatten!")) &&
         argc == 0 && block < 0) return TY_POLY;  /* self, or nil when a no-op */
     if ((sp_streq(name, "keep_if") || sp_streq(name, "delete_if")) && block >= 0)
@@ -2706,11 +2709,20 @@ else {
         sp_streq(name, "replace") ||
         sp_streq(name, "values_at")) return rt;
     if (sp_streq(name, "zip") && block < 0) return TY_POLY_ARRAY;
-    if (sp_streq(name, "product") && argc >= 1) return TY_POLY_ARRAY;
-    if (sp_streq(name, "repeated_combination") && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "product") && argc >= 1)
+      return nt_ref(nt, id, "block") >= 0 ? rt : TY_POLY_ARRAY;  /* block form returns self */
+    if (sp_streq(name, "product") && argc == 0 && nt_ref(nt, id, "block") < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "combination") && argc == 1 && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "permutation") && (argc == 1 || argc == 0) && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "repeated_permutation") && argc == 1 && block < 0) return TY_POLY_ARRAY;
+    if (sp_streq(name, "repeated_combination") && argc == 1 && block < 0) return TY_POLY_ARRAY;
+    /* block forms: combination family returns self, each_slice/cons nil */
+    if (block >= 0 &&
+        (sp_streq(name, "combination") || sp_streq(name, "permutation") ||
+         sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")))
+      return rt;
+    if (block >= 0 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) && argc == 1)
+      return rt;  /* Ruby >= 3.1: block form returns self */
     if (sp_streq(name, "frozen?")) return TY_BOOL;
     /* delete(v) { fallback }: the not-found block's value mixes in -> poly */
     if (sp_streq(name, "delete") && argc == 1 && nt_ref(nt, id, "block") >= 0)

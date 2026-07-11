@@ -76,6 +76,32 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         if (h) return 1;
       }
     }
+    /* combination-family and slice/cons block forms in VALUE position: run
+       the statement emitter against a hoisted receiver, then evaluate to the
+       receiver (combination family returns self) or nil (each_slice/cons). */
+    if (nm0 && nt_ref(nt0, id, "block") >= 0 && g_n_argov < MAX_ARG_OVERRIDE &&
+        (sp_streq(nm0, "combination") || sp_streq(nm0, "permutation") ||
+         sp_streq(nm0, "repeated_combination") || sp_streq(nm0, "repeated_permutation") ||
+         sp_streq(nm0, "each_slice") || sp_streq(nm0, "each_cons"))) {
+      int recv0 = nt_ref(nt0, id, "receiver");
+      TyKind rt0 = recv0 >= 0 ? comp_ntype(c, recv0) : TY_UNKNOWN;
+      if (recv0 >= 0 && ty_is_array(rt0)) {
+        int ta0 = ++g_tmp;
+        Buf ra0 = expr_buf(c, recv0);
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, rt0, g_pre);
+        buf_printf(g_pre, " _t%d = %s; SP_GC_ROOT(_t%d);\n", ta0, ra0.p ? ra0.p : "NULL", ta0);
+        free(ra0.p);
+        g_argov_node[g_n_argov] = recv0;
+        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta0);
+        g_n_argov++;
+        buf_puts(b, "({ ");
+        emit_stmt(c, id, b, 0);
+        g_n_argov--;
+        buf_printf(b, " _t%d; })", ta0);  /* all six return self (Ruby >= 3.1) */
+        return 1;
+      }
+    }
     /* Array#equal? -- object identity is pointer identity; a non-pointer or
        differently-shaped argument can never be the same object. */
     if (nm0 && sp_streq(nm0, "equal?")) {
@@ -1316,6 +1342,69 @@ else {
         buf_printf(b, " } _t%d; })", tr);
         return 1;
       }
+      /* product(other) { |pair| }: yield each pair to the block, evaluate to
+         the receiver (CRuby returns self) */
+      if (sp_streq(name, "product") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
+        int blk = nt_ref(nt, id, "block");
+        TyKind at = comp_ntype(c, argv[0]);
+        const char *kb = (at == TY_POLY_ARRAY) ? "Poly" : (array_kind(at) ? array_kind(at) : "Poly");
+        int bbody = nt_ref(nt, blk, "body");
+        int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+        const char *fp0 = block_param_name(c, blk, 0);
+        int ta = ++g_tmp, tb = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, tpair = ++g_tmp;
+        Buf ra; memset(&ra, 0, sizeof ra); Buf rb2; memset(&rb2, 0, sizeof rb2);
+        emit_expr(c, recv, &ra); emit_expr(c, argv[0], &rb2);
+        buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d); sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);",
+                   k, ta, ra.p ? ra.p : "NULL", ta, kb, tb, rb2.p ? rb2.p : "NULL", tb);
+        free(ra.p); free(rb2.p);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", ti, ti, k, ta, ti);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", tj, tj, kb, tb, tj);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tpair, tpair);
+        char e1[96], e2[96];
+        snprintf(e1, sizeof e1, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+        snprintf(e2, sizeof e2, "sp_%sArray_get(_t%d, _t%d)", kb, tb, tj);
+        buf_printf(b, " sp_PolyArray_push(_t%d, ", tpair);
+        emit_boxed_text(c, ty_array_elem(rt), e1, b);
+        buf_printf(b, "); sp_PolyArray_push(_t%d, ", tpair);
+        emit_boxed_text(c, ty_array_elem(at), e2, b);
+        buf_puts(b, ");");
+        if (fp0) buf_printf(b, " lv_%s = sp_box_poly_array(_t%d);", rename_local(fp0), tpair);
+        buf_puts(b, " {");
+        for (int j2 = 0; j2 < bn; j2++) emit_stmt(c, bb[j2], b, 0);
+        buf_printf(b, " } } } _t%d; })", ta);
+        return 1;
+      }
+      if ((sp_streq(name, "flatten!") || sp_streq(name, "flatten")) && argc == 1) {
+        /* a typed (scalar-element) array has no nesting: flatten(n) copies,
+           flatten!(n) is a no-op returning nil */
+        if (name[7] == '!') {
+          buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+          emit_int_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
+        }
+        else {
+          buf_puts(b, "((void)(");
+          emit_int_expr(c, argv[0], b);
+          buf_printf(b, "), sp_%sArray_dup(", k);
+          emit_expr(c, recv, b);
+          buf_puts(b, "))");
+        }
+        return 1;
+      }
+      if (sp_streq(name, "product") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+        /* product with no arguments: each element wrapped in its own array */
+        int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
+        Buf ra = expr_buf(c, recv);
+        buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta);
+        free(ra.p);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", ti, ti, k, ta, ti);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, ", te, te, te);
+        char ee[96]; snprintf(ee, sizeof ee, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+        emit_boxed_text(c, ty_array_elem(rt), ee, b);
+        buf_printf(b, "); sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr, te);
+        buf_printf(b, " _t%d; })", tr);
+        return 1;
+      }
       if (sp_streq(name, "product") && argc == 1) {
         TyKind at = comp_ntype(c, argv[0]);
         const char *kb = (at == TY_POLY_ARRAY) ? "Poly" : (array_kind(at) ? array_kind(at) : "Poly");
@@ -2368,6 +2457,31 @@ else {
       if (sp_streq(name, "flatten!") && argc == 0) {
         /* value form: self when changed, nil when a no-op (CRuby) */
         buf_puts(b, "sp_PolyArray_flatten_bangq("); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "flatten!") && argc == 1) {
+        buf_puts(b, "sp_PolyArray_flatten_bangq_depth("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "flatten") && argc == 1) {
+        buf_puts(b, "sp_PolyArray_flatten_depth("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "product") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+        /* product with no arguments: each element wrapped in its own array */
+        int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
+        Buf ra = expr_buf(c, recv);
+        buf_printf(b, "({ sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);", ta, ra.p ? ra.p : "NULL", ta);
+        free(ra.p);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));"
+                      " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }",
+                   te, te, te, ta, ti, tr, te);
+        buf_printf(b, " _t%d; })", tr);
         return 1;
       }
       if (sp_streq(name, "transpose") && argc == 0) {
