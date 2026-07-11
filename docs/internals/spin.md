@@ -321,6 +321,9 @@ patches   = ["patches/*.patch"]  # applied to the scratch copy (patch -p1)
 command   = "cmake -B . ... && cmake --build ."
 artifacts = ["libggml.a"]        # verified after the run; missing = failure
 features  = ["cuda"]             # optional gate; off unless in [features] default
+exclude   = ["build*"]           # workdir globs pruned from the content key
+                                 # and the scratch copy (a dev tree's own
+                                 # build output must not ride the hash)
 
 [native]
 libs = ["${build.out}/libggml.a"]   # artifacts reach the R6 --link surface
@@ -346,7 +349,9 @@ libs = ["${build.out}/libggml.a"]   # artifacts reach the R6 --link surface
   existing surface — `[native] libs` entries, `${build.out}` expanded,
   flow into the compiler's repeatable `--link` (which accepts archives);
   R6 gains no third link shape. An entry whose artifact was
-  feature-skipped drops out of the link line.
+  feature-skipped drops out of the link line; a libs path that NO entry
+  declares dies loud at build time (a stale path otherwise surfaces as
+  undefined symbols at link).
 - **Features**: a `[[build]]` entry gated with `features = ["cuda"]` runs
   when the feature is in the package's own `[features] default` set or
   enabled by the consuming application's manifest: `dep = { path = "..",

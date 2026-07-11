@@ -397,11 +397,21 @@ end
 
 # Content hash of a directory tree: the sorted file list plus every file's
 # bytes. Rename-only changes and content changes both move the key.
-def native_tree_hash(dir)
+def native_tree_hash(dir, excludes = "")
   # dot-entries (.git and friends) are excluded, consistent with collect_c /
   # newest_mtime: a workdir that is a real git clone must not churn the key
-  # on fetch metadata, and stale VCS state is not a build input.
-  lst = "cd #{dir} && find . -name '.*' -prune -o -type f -print | LC_ALL=C sort"
+  # on fetch metadata, and stale VCS state is not a build input. An entry's
+  # own `exclude` globs (build output dirs riding inside a dev workdir) are
+  # pruned the same way. -mindepth 1: find's first entry is `.` itself, which
+  # matches -name '.*' and would prune the WHOLE tree (every workdir hashed
+  # as empty input, so source edits never moved the key).
+  pr = "-name '.*'"
+  excludes.split("\n").each do |g|
+    next if g == ""
+    spin_die("[[build]] exclude may not contain quotes: #{g}") if g.include?("'")
+    pr += " -o -path './#{g}'"
+  end
+  lst = "cd #{dir} && find . -mindepth 1 \\( #{pr} \\) -prune -o -type f -print | LC_ALL=C sort"
   native_hash_pipe(lst + " ; (" + lst + ") | while read f; do cat \"$f\"; done")
 end
 
@@ -440,7 +450,8 @@ def native_build_libs_for(name, dir, version, consumer_feats)
     spin_die("[[build]] entry #{i} of #{name}: workdir is required") if wd == ""
     wdir = File.join(dir, wd)
     spin_die("[[build]] entry #{i} of #{name}: no such workdir #{wd}") unless File.directory?(wdir)
-    keysrc += "\nworkdir=" + wd + "@" + native_tree_hash(wdir)
+    keysrc += "\nworkdir=" + wd + "@" + native_tree_hash(wdir, toml.get_array(t, "exclude"))
+    keysrc += "\nexclude=" + toml.get_array(t, "exclude")
     keysrc += "\ncommand=" + toml.get(t, "command")
     keysrc += "\nartifacts=" + toml.get_array(t, "artifacts")
     keysrc += "\nfeatures=" + toml.get_array(t, "features")
@@ -494,6 +505,10 @@ def native_build_libs_for(name, dir, version, consumer_feats)
     system("rm -rf #{scratch}")
     spin_die("native build: cannot copy #{name}'s workdir") unless system("cp -R #{File.join(dir, toml.get(t, 'workdir'))} #{scratch}")
     system("find #{scratch} -mindepth 1 -name '.*' -prune -exec rm -rf {} + 2>/dev/null")
+    toml.get_array(t, "exclude").split("\n").each do |g|
+      next if g == ""
+      system("cd #{scratch} && rm -rf #{g}") if File.directory?(scratch)
+    end
     toml.get_array(t, "patches").split("\n").each do |pg|
       Dir.glob(File.join(dir, pg)).sort.each do |pf|
         spin_die("native build: patch failed: #{File.basename(pf)} (#{name})") unless system("patch -s -p1 -d #{scratch} < #{pf}")
@@ -516,10 +531,34 @@ def native_build_libs_for(name, dir, version, consumer_feats)
     i += 1
   end
 
+  # Artifact names declared by feature-DISABLED entries: a [native] libs
+  # reference to one of these silently drops out (the feature is off); a
+  # missing path declared by NO entry at all is an authoring error and dies
+  # loud (a stale path otherwise surfaces as hundreds of undefined symbols
+  # at link time, #2010).
+  gated_off = ""
+  i = 0
+  while i < n
+    t = "build." + i.to_s
+    gates = toml.get_array(t, "features")
+    skip = false
+    gates.split("\n").each { |g| skip = true unless enabled.split("\n").include?(g) }
+    if skip
+      toml.get_array(t, "artifacts").split("\n").each do |a|
+        gated_off += "\n" unless gated_off == ""
+        gated_off += a
+      end
+    end
+    i += 1
+  end
   libs = ""
   toml.get_array("native", "libs").split("\n").each do |l|
     path = l.gsub("${build.out}", out)
-    next unless File.exist?(path)   # a feature-skipped artifact drops out
+    unless File.exist?(path)
+      rel = l.gsub("${build.out}/", "").gsub("${build.out}", "")
+      next if gated_off.split("\n").include?(rel)   # feature-skipped: drops out
+      spin_die("[native] libs of #{name}: #{l} was not produced by any [[build]] entry")
+    end
     libs += "\n" unless libs == ""
     libs += path
   end

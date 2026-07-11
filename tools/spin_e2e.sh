@@ -359,6 +359,7 @@ version = "0.1.0"
 workdir   = "csrc"
 command   = "${CC:-cc} -DCXBUILD=1 -O2 -c cx.c -o cx.o && ar rcs libcx.a cx.o && mkdir -p inc && cp cx.h inc/cx.h"
 artifacts = ["libcx.a", "inc/cx.h"]
+exclude   = ["devout*"]
 
 [[build]]
 workdir   = "csrc2"
@@ -388,5 +389,28 @@ echo junk > ../spinel-crossx/csrc/.git/HEAD
 OUT=$(SPIN_ALLOW_NATIVE_BUILD=1 "$SPIN" run 2>&1)
 echo "$OUT" | grep -q '^native crossx:' && fail "VCS metadata churned the native cache key"
 expect "dot-dir key stability" "42" "$(echo "$OUT" | tail -1)"
+# ...but a SOURCE edit must move the key (the root-prune bug hashed every
+# workdir as empty input, so this and the .git test above were
+# indistinguishable): a comment appended to cx.c has to trigger a rebuild.
+printf '/* key-moving edit */\n' >> ../spinel-crossx/csrc/cx.c
+"$SPIN" clean >/dev/null
+OUT=$(SPIN_ALLOW_NATIVE_BUILD=1 "$SPIN" run 2>&1)
+echo "$OUT" | grep -q '^native crossx:' || fail "source edit did not move the native cache key"
+expect "source-edit key movement" "42" "$(echo "$OUT" | tail -1)"
+# an `exclude`d glob (a dev tree's build-output dir) must ride neither the
+# key nor the scratch copy: dropping junk into it stays a cache hit
+mkdir -p ../spinel-crossx/csrc/devout-cuda
+echo junk > ../spinel-crossx/csrc/devout-cuda/stale.o
+"$SPIN" clean >/dev/null
+OUT=$(SPIN_ALLOW_NATIVE_BUILD=1 "$SPIN" run 2>&1)
+echo "$OUT" | grep -q '^native crossx:' && fail "excluded glob churned the native cache key"
+expect "exclude-glob key stability" "42" "$(echo "$OUT" | tail -1)"
+# a [native] libs path no [[build]] entry produces must die loud (a stale
+# path otherwise surfaces as undefined symbols at link time)
+cp ../spinel-crossx/spin.toml ../spinel-crossx/spin.toml.bak
+sed '/^libs/s|libcx2.a"\]|libcx2.a", "${build.out}/libnope.a"]|' ../spinel-crossx/spin.toml.bak > ../spinel-crossx/spin.toml
+OUT=$(SPIN_ALLOW_NATIVE_BUILD=1 "$SPIN" run 2>&1) && fail "unproduced [native] libs path did not die"
+echo "$OUT" | grep -q 'not produced by any' || fail "unproduced-libs diagnostic missing: $OUT"
+mv ../spinel-crossx/spin.toml.bak ../spinel-crossx/spin.toml
 
 echo "spin-e2e: ALL GREEN"
