@@ -6129,6 +6129,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "), ((sp_Class){(mrb_int)-1, \"%s\"}))", _ocn);
         return;
       }
+      /* a native-bound class's struct is opaque in the generated TU (no
+         cls_id deref possible); its class is statically known */
+      if (_cidx >= 0 && c->classes[_cidx].is_native_class) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b);
+        buf_printf(b, "), ((sp_Class){(mrb_int)%d, \"%s\"}))", _cidx, c->classes[_cidx].name);
+        return;
+      }
       /* an exception subclass shares sp_Exception's layout (no cls_id
          member); its runtime class is the carried cls_name */
       if (_cidx >= 0 && class_is_exc_subclass(c, _cidx)) {
