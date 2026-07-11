@@ -3879,6 +3879,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_int_bit_range((%s), ", r); emit_int_expr(c, argv[0], b);
         buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       }
+      else if (sp_streq(name, "ord") || sp_streq(name, "to_int")) buf_printf(b, "(%s)", r);
+      else if (sp_streq(name, "integer?")) { buf_printf(b, "((void)(%s), TRUE)", r); }
       else if (sp_streq(name, "even?"))  buf_printf(b, "((%s) %% 2 == 0)", r);
       else if (sp_streq(name, "odd?"))   buf_printf(b, "((%s) %% 2 != 0)", r);
       else if (sp_streq(name, "zero?"))  buf_printf(b, "((%s) == 0)", r);
@@ -4008,7 +4010,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         else
           buf_printf(b, "((mrb_int)%s(%s))", cfn, r);
       }
-      else if (sp_streq(name, "to_i"))  buf_printf(b, "((mrb_int)(%s))", r);
+      else if (sp_streq(name, "to_i"))  buf_printf(b, "sp_float_to_i_checked(%s)", r);
       else if (sp_streq(name, "to_f"))  buf_printf(b, "(%s)", r);
       else if (sp_streq(name, "divmod") && argc == 1) {
         /* Float#divmod(n) -> [floor(x/n) (Integer), x - q*n (Float)] */

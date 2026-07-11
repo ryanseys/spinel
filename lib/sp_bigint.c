@@ -5560,3 +5560,39 @@ mrb_int sp_bigint_bit_length(sp_Bigint *b) {
      that gap, so it and its test land together. */
   return (mrb_int)(n - 1) * (mrb_int)DIG_SIZE + topbits;
 }
+
+/* --- Bignum receiver conveniences (#2025) ------------------------------- */
+
+/* to_s(base): mpz_get_str renders any base in [2, 36]. Owner-frees contract
+   matches sp_bigint_to_s. */
+const char *sp_bigint_to_s_base(sp_Bigint *b, mrb_int base) {
+  if (base < 2 || base > 36) {
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid radix %lld", (long long)base));
+    return NULL;
+  }
+  if (!b) { char *z0 = (char*)malloc(2); z0[0] = '0'; z0[1] = 0; return z0; }
+  mpz_t *z = &b->mpz;
+  size_t est = mpz_sizeinbase(z, 2) + 3;  /* base-2 digit count bounds every base */
+  char *buf = (char*)malloc(est);
+  mpz_get_str(sp_mpz_ctx, buf, (mrb_int)est, base, z);
+  size_t len = strlen(buf);
+  char *result = (char*)malloc(len + 1);
+  memcpy(result, buf, len + 1);
+  free(buf);
+  return result;
+}
+
+int sp_bigint_even_p(sp_Bigint *b) {
+  if (!b) return 1;
+  const char *s10 = sp_bigint_to_s(b);
+  size_t n = strlen(s10);
+  int last = n ? s10[n - 1] - '0' : 0;
+  free((void *)s10);
+  return (last % 2) == 0;
+}
+
+sp_Bigint *sp_bigint_abs_v(sp_Bigint *b) {
+  if (!b) return sp_bigint_new_int(0);
+  if (sp_bigint_sign(b) >= 0) return b;
+  return sp_bigint_sub(sp_bigint_new_int(0), b);
+}

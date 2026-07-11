@@ -3248,7 +3248,9 @@ else {
     if (sp_streq(name, "divmod") && argc == 1) return TY_INT_ARRAY;  /* [quotient, remainder] */
     if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) && argc == 1) return TY_BOOL;
     if (sp_streq(name, "even?") || sp_streq(name, "odd?") || sp_streq(name, "zero?") ||
-        sp_streq(name, "positive?") || sp_streq(name, "negative?")) return TY_BOOL;
+        sp_streq(name, "positive?") || sp_streq(name, "negative?") ||
+        sp_streq(name, "integer?")) return TY_BOOL;
+    if ((sp_streq(name, "ord") || sp_streq(name, "to_int")) && argc == 0) return TY_INT;
     if ((sp_streq(name, "ceildiv") || sp_streq(name, "pow")) && argc >= 1) return TY_INT;
     if ((sp_streq(name, "pred") || sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) return TY_INT;
     if (sp_streq(name, "nonzero?") && argc == 0) return TY_INT;  /* self or nil (nullable int) */
@@ -3467,6 +3469,12 @@ else {
   /* Integer#bit_length on a Bignum answers an int (the bit count fits int64). */
   if (recv >= 0 && argc == 0 && rt == TY_BIGINT && sp_streq(name, "bit_length"))
     return TY_INT;
+  if (recv >= 0 && rt == TY_BIGINT) {
+    if ((sp_streq(name, "even?") || sp_streq(name, "odd?")) && argc == 0) return TY_BOOL;
+    if (sp_streq(name, "abs") && argc == 0) return TY_BIGINT;
+    if (sp_streq(name, "to_s") && argc == 1) return TY_STRING;
+    if (sp_streq(name, "digits") && argc <= 1) return TY_INT_ARRAY;
+  }
   /* poly recv bitwise op: result is int (sp_poly_to_i applied). */
   if (recv >= 0 && argc == 1 && rt == TY_POLY &&
       (sp_streq(name, ">>") || sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))

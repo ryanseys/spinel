@@ -1642,6 +1642,9 @@ static const char *sp_exc_message(volatile struct sp_Exception_s *ve);
    full prototypes live further down (near the bigint runtime block). */
 typedef struct sp_Bigint sp_Bigint;
 const char *sp_bigint_to_s(sp_Bigint *b);
+const char *sp_bigint_to_s_base(sp_Bigint *b, mrb_int base);
+int sp_bigint_even_p(sp_Bigint *b);
+sp_Bigint *sp_bigint_abs_v(sp_Bigint *b);
 mrb_int sp_bigint_bit_length(sp_Bigint *b);
 int64_t sp_bigint_to_int(sp_Bigint *b);
 double sp_bigint_to_double(sp_Bigint *b);
@@ -2039,6 +2042,15 @@ static mrb_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return v.v.
    unpack1 literal-float-directive fast path: sp_str_unpack pads short input
    with nil, which must stay nil through the unboxed TY_FLOAT result (CRuby
    returns nil there) instead of coercing to 0.0 like sp_poly_to_f. */
+/* Float#to_i whose integer value escapes int64: CRuby promotes to Bignum;
+   until the promotion plan covers statically-int results (#2024), raise
+   loudly instead of saturating silently. NaN/Inf raise FloatDomainError. */
+static mrb_int sp_float_to_i_checked(mrb_float f) {
+  if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", sp_sprintf("%g", f));
+  if (f >= 9223372036854775808.0 || f < -9223372036854775808.0)
+    sp_raise_cls("RangeError", "float out of Integer range (Bignum promotion pending)");
+  return (mrb_int)f;
+}
 static mrb_float sp_poly_to_f_opt(sp_RbVal v) { return v.tag == SP_TAG_NIL ? sp_float_nil() : sp_poly_to_f(v); }
 static mrb_bool sp_poly_numeric_p(sp_RbVal v) { return v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT || v.tag == SP_TAG_BIGINT; }
 /* Display form of a value in a `can't convert %s into ...` TypeError:

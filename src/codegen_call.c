@@ -9465,6 +9465,33 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "bit_length") && argc == 0) {
       buf_printf(b, "sp_bigint_bit_length(%s)", r); free(rs.p); return;
     }
+    if (sp_streq(name, "even?") && argc == 0) {
+      buf_printf(b, "sp_bigint_even_p(%s)", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "odd?") && argc == 0) {
+      buf_printf(b, "(!sp_bigint_even_p(%s))", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "abs") && argc == 0) {
+      buf_printf(b, "sp_bigint_abs_v(%s)", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "to_s") && argc == 1) {
+      buf_printf(b, "sp_str_dup_external(sp_bigint_to_s_base(%s, ", r);
+      emit_int_expr(c, argv[0], b); buf_puts(b, "))"); free(rs.p); return;
+    }
+    if (sp_streq(name, "digits") && argc <= 1) {
+      /* least-significant first: peel base-10 (or base-N) digits off the
+         rendered magnitude (to_s_base is exact for any base in [2,36]) */
+      int td = ++g_tmp, ts2 = ++g_tmp, ti2 = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = sp_bigint_to_s_base(%s, ", ts2, r);
+      if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "10");
+      buf_printf(b, "); sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);", td, td);
+      buf_printf(b, " mrb_int _t%d = (mrb_int)strlen(_t%d);", ti2, ts2);
+      buf_printf(b, " if (_t%d && _t%d[0] == '-') sp_raise_cls(\"Math::DomainError\", \"out of domain\");", ti2, ts2);
+      buf_printf(b, " while (_t%d > 0) { char _c = _t%d[--_t%d];", ti2, ts2, ti2);
+      buf_printf(b, " sp_IntArray_push(_t%d, _c <= '9' ? _c - '0' : (_c | 32) - 'a' + 10); }", td);
+      buf_printf(b, " free((void *)_t%d); _t%d; })", ts2, td);
+      return;
+    }
     if (sp_streq(name, "to_f") && argc == 0) {
       buf_printf(b, "sp_bigint_to_double(%s)", r); free(rs.p); return;
     }
