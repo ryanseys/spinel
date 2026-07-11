@@ -966,15 +966,27 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
     emit_expr(c, v, b); buf_puts(b, ");\n");
     return;
   }
-  /* `arr += other` on a typed array local of the same kind is `arr = arr +
-     other` — a fresh concatenation, the same helper the binary `+` path uses
-     (codegen_call_recv.c). Same-kind only; a mixed-kind concat would need the
-     boxing dance the binary path does and isn't in the corpus. */
-  if (ty_is_array(t) && sp_streq(op, "+") && comp_ntype(c, v) == t) {
-    const char *k = array_kind(t);
-    if (k) {
+  /* `arr += other` is `arr = arr + other` — a fresh concatenation, the same
+     helper the binary `+` path uses (codegen_call_recv.c). Covers Int/Float/
+     Str/Poly arrays; the RHS must be the same kind, or an empty `[]` literal
+     (passed as NULL, which sp_*Array_concat treats as empty — emitting the
+     literal would build a wrong-kind IntArray). A genuinely mixed-kind concat
+     (which the binary path promotes to a poly array via element boxing) is
+     left to fall through — it isn't in the corpus. */
+  if (ty_is_array(t) && sp_streq(op, "+")) {
+    const char *k = (t == TY_POLY_ARRAY) ? "Poly" : array_kind(t);
+    TyKind vt = comp_ntype(c, v);
+    const char *vty = nt_type(nt, v);
+    int rhs_empty_lit = 0;
+    if (vty && sp_streq(vty, "ArrayNode")) {
+      int nel = 0; nt_arr(nt, v, "elements", &nel);
+      rhs_empty_lit = (nel == 0);
+    }
+    if (k && (vt == t || rhs_empty_lit)) {
       buf_printf(b, "lv_%s = sp_%sArray_concat(lv_%s, ", en, k, en);
-      emit_expr(c, v, b); buf_puts(b, ");\n");
+      if (rhs_empty_lit) buf_puts(b, "NULL");
+      else emit_expr(c, v, b);
+      buf_puts(b, ");\n");
       return;
     }
   }

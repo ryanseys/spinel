@@ -15,12 +15,22 @@ f = [1.5]
 f += [2.5, 3.5]
 p f
 
-# poly array (heterogeneous / value from a method the compiler widens)
+# genuinely heterogeneous (poly) array
+h = [1, "a", :sym]
+h += [2, "b"]
+p h
+
+# empty-literal RHS (must not build a wrong-kind array)
+e = [1, 2]
+e += []
+p e
+
+# poly array from a method whose element type the compiler widens
 def ids
   r = []
   r << "x"
   r
 end
-p = ids
-p += ids
-puts p.length
+q = ids
+q += ids
+puts q.length
