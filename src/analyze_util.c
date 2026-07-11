@@ -702,7 +702,13 @@ int call_user_yield_mi(Compiler *c, int id) {
     mi = comp_method_index(c, name);
     if (mi < 0) {
       Scope *encl = comp_scope_of(c, id);
-      if (encl && encl->class_id >= 0) mi = comp_method_in_chain(c, encl->class_id, name, NULL);
+      if (encl && encl->class_id >= 0) {
+        mi = comp_method_in_chain(c, encl->class_id, name, NULL);
+        /* inside a class method, a bare call also reaches sibling class
+           methods (self is the class there) */
+        if (mi < 0 && encl->is_cmethod)
+          mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
+      }
     }
   }
   else {

@@ -44,7 +44,16 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     mi = comp_method_index(c, name);     /* free function */
     if (mi < 0) {                        /* implicit-self instance method */
       Scope *encl = comp_scope_of(c, id);
-      if (encl->class_id >= 0) { mi = comp_method_in_chain(c, encl->class_id, name, NULL); implicit_self = 1; }
+      if (encl->class_id >= 0) {
+        mi = comp_method_in_chain(c, encl->class_id, name, NULL);
+        implicit_self = 1;
+        /* inside a class method, a bare call also reaches sibling class
+           methods (self is the class there, no instance to bind) */
+        if (mi < 0 && encl->is_cmethod) {
+          mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
+          implicit_self = 0;
+        }
+      }
       else return 0;
     }
   }

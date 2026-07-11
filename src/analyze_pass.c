@@ -4306,7 +4306,13 @@ int infer_block_params(Compiler *c) {
         mi = comp_method_index(c, name);
         if (mi < 0) {
           Scope *self = comp_scope_of(c, id);
-          if (self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL);
+          if (self->class_id >= 0) {
+            mi = comp_method_in_chain(c, self->class_id, name, NULL);
+            /* inside a class method, a bare call also reaches sibling class
+               methods (self is the class there) */
+            if (mi < 0 && self->is_cmethod)
+              mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
+          }
         }
       }
       else {

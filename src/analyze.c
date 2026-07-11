@@ -3015,6 +3015,26 @@ int desugar_enum_method_recv(Compiler *c) {
         }
       }
     }
+    /* Explicit `self.` receiver inside a class-method body: self IS the
+       class there, so a call that resolves to a sibling/inherited class
+       method drops the receiver and rides the bare-call cmethod dispatch
+       (`def self.go; self.maker; end`). Writers (self.x = v) and names with
+       no matching class method (self.class, self.name, ...) keep their
+       receiver. */
+    {
+      int srecv = nt_ref(nt, id, "receiver");
+      if (nm && srecv >= 0 && nt_type(nt, srecv) &&
+          sp_streq(nt_type(nt, srecv), "SelfNode") &&
+          nm[0] && nm[strlen(nm) - 1] != '=') {
+        Scope *ssc = comp_scope_of(c, id);
+        if (ssc && ssc->is_cmethod && ssc->class_id >= 0 &&
+            comp_cmethod_in_chain(c, ssc->class_id, nm, NULL) >= 0) {
+          nt_node_set_ref(nt, id, "receiver", -1);
+          changed = 1;
+          continue;
+        }
+      }
+    }
     /* Array#entries is #to_a; the array emitters only know to_a. */
     if (nm && sp_streq(nm, "entries") && nt_ref(nt, id, "block") < 0) {
       int erecv2 = nt_ref(nt, id, "receiver");
