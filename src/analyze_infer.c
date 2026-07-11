@@ -1788,6 +1788,8 @@ else {
       char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
       if (comp_ivar_index(sc, szn) < 0) return TY_INT;
     }
+    if (sp_streq(name, "values_at") && argc >= 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "hash") && argc == 0) return TY_INT;
     if (sp_streq(name, "deconstruct_keys") && argc == 1) return TY_SYM_POLY_HASH;
     if (sp_streq(name, "dig") && argc >= 1) {
       int mi = struct_member_idx(c, sc, argv[0]);

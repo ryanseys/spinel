@@ -4842,6 +4842,66 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", rh);
       return 1;
     }
+    /* values_at(i, j, ... / range): member values by index, boxed */
+    if (sp_streq(name, "values_at") && argc >= 1) {
+      int tv4 = ++g_tmp, to4 = ++g_tmp;
+      Buf rb4 = expr_buf(c, recv);
+      buf_printf(b, "({ sp_%s *_t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);",
+                 sc->c_name, tv4, rb4.p ? rb4.p : "", to4, to4);
+      free(rb4.p);
+      int ok4 = 1;
+      for (int a4 = 0; a4 < argc && ok4; a4++) {
+        const char *aty4 = nt_type(nt, argv[a4]);
+        if (aty4 && sp_streq(aty4, "IntegerNode")) {
+          long long ix = nt_int(nt, argv[a4], "value", 0);
+          if (ix < 0) ix += sc->nivars;
+          if (ix < 0 || ix >= sc->nivars) { ok4 = 0; break; }
+          char fb4[300]; snprintf(fb4, sizeof fb4, "_t%d->iv_%s", tv4, sc->ivars[(int)ix] + 1);
+          buf_printf(b, " sp_PolyArray_push(_t%d, ", to4);
+          emit_boxed_text(c, sc->ivar_types[(int)ix], fb4, b);
+          buf_puts(b, ");");
+        }
+        else if (aty4 && sp_streq(aty4, "RangeNode")) {
+          int rl4 = nt_ref(nt, argv[a4], "left"), rr4 = nt_ref(nt, argv[a4], "right");
+          long long lo4 = rl4 >= 0 && nt_type(nt, rl4) && sp_streq(nt_type(nt, rl4), "IntegerNode")
+                            ? nt_int(nt, rl4, "value", 0) : 0;
+          long long hi4 = rr4 >= 0 && nt_type(nt, rr4) && sp_streq(nt_type(nt, rr4), "IntegerNode")
+                            ? nt_int(nt, rr4, "value", 0) : sc->nivars - 1;
+          if (nt_int(nt, argv[a4], "flags", 0) & 4) hi4--;
+          if (lo4 < 0) lo4 += sc->nivars;
+          if (hi4 < 0) hi4 += sc->nivars;
+          for (long long ix = lo4; ix <= hi4 && ix < sc->nivars; ix++) {
+            if (ix < 0) continue;
+            char fb4[300]; snprintf(fb4, sizeof fb4, "_t%d->iv_%s", tv4, sc->ivars[(int)ix] + 1);
+            buf_printf(b, " sp_PolyArray_push(_t%d, ", to4);
+            emit_boxed_text(c, sc->ivar_types[(int)ix], fb4, b);
+            buf_puts(b, ");");
+          }
+        }
+        else ok4 = 0;
+      }
+      if (ok4) {
+        buf_printf(b, " _t%d; })", to4);
+        return 1;
+      }
+      /* non-literal keys: rebuild b is awkward -- fall through loudly */
+    }
+    /* #hash: combine the boxed member hashes so equal-valued structs agree */
+    if (sp_streq(name, "hash") && argc == 0) {
+      int tv5 = ++g_tmp, th5 = ++g_tmp;
+      Buf rb5 = expr_buf(c, recv);
+      buf_printf(b, "({ sp_%s *_t%d = %s; uint64_t _t%d = 1469598103934665603ULL;",
+                 sc->c_name, tv5, rb5.p ? rb5.p : "", th5);
+      free(rb5.p);
+      for (int i5 = 0; i5 < sc->nivars; i5++) {
+        char fb5[300]; snprintf(fb5, sizeof fb5, "_t%d->iv_%s", tv5, sc->ivars[i5] + 1);
+        buf_printf(b, " _t%d = (_t%d ^ (uint64_t)sp_rbval_hash_key(", th5, th5);
+        emit_boxed_text(c, sc->ivar_types[i5], fb5, b);
+        buf_puts(b, ")) * 1099511628211ULL;");
+      }
+      buf_printf(b, " (mrb_int)(_t%d >> 1); })", th5);
+      return 1;
+    }
     if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
       char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
       if (comp_ivar_index(sc, szn) < 0) {
