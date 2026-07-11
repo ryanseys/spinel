@@ -294,7 +294,7 @@ const char *sp_sprintf(const char *fmt, ...);
 #include "sp_system.h"
 
 /* Math.* wrappers that raise Math::DomainError on out-of-domain input, per
-   CRuby. The runtime exception name is the flattened "Math_DomainError"
+   CRuby. The runtime exception name is the flattened "Math::DomainError"
    (the codegen maps a `rescue Math::DomainError` path to that form, matching
    the StringScanner::Error -> StringScanner_Error precedent). Only the
    domain-restricted methods get wrappers; cos/sin/tan/atan/sinh/cosh/tanh/
@@ -304,18 +304,18 @@ const char *sp_sprintf(const char *fmt, ...);
    do NOT raise in CRuby -- only |x| > 1 is out of domain. CRuby's Math.*
    message names the function WITHOUT quotes (e.g. `... out of domain - sqrt`),
    unlike Integer.sqrt which quotes "isqrt". */
-static inline mrb_float sp_math_sqrt(mrb_float x){if(x<0.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - sqrt");return sqrt(x);}
-static inline mrb_float sp_math_log(mrb_float x){if(x<0.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - log");return log(x);}
-static inline mrb_float sp_math_log2(mrb_float x){if(x<0.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - log2");return log2(x);}
-static inline mrb_float sp_math_log10(mrb_float x){if(x<0.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - log10");return log10(x);}
-static inline mrb_float sp_math_acos(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - acos");return acos(x);}
-static inline mrb_float sp_math_asin(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - asin");return asin(x);}
-static inline mrb_float sp_math_acosh(mrb_float x){if(x<1.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - acosh");return acosh(x);}
-static inline mrb_float sp_math_atanh(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - atanh");return atanh(x);}
+static inline mrb_float sp_math_sqrt(mrb_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - sqrt");return sqrt(x);}
+static inline mrb_float sp_math_log(mrb_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log");return log(x);}
+static inline mrb_float sp_math_log2(mrb_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log2");return log2(x);}
+static inline mrb_float sp_math_log10(mrb_float x){if(x<0.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - log10");return log10(x);}
+static inline mrb_float sp_math_acos(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - acos");return acos(x);}
+static inline mrb_float sp_math_asin(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - asin");return asin(x);}
+static inline mrb_float sp_math_acosh(mrb_float x){if(x<1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - acosh");return acosh(x);}
+static inline mrb_float sp_math_atanh(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - atanh");return atanh(x);}
 /* gamma has poles at the non-positive integers, but CRuby only raises at the
    NEGATIVE integers (gamma(0.0) is +Infinity, gamma(-0.0) -Infinity, which
    tgamma already yields); negative non-integers are in-domain. */
-static inline mrb_float sp_math_gamma(mrb_float x){if(x<0.0&&x==floor(x))sp_raise_cls("Math_DomainError","Numerical argument is out of domain - gamma");return tgamma(x);}
+static inline mrb_float sp_math_gamma(mrb_float x){if(x<0.0&&x==floor(x))sp_raise_cls("Math::DomainError","Numerical argument is out of domain - gamma");return tgamma(x);}
 
 static sp_Range sp_range_new(mrb_int f,mrb_int l,mrb_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=0;return r;}
 static sp_Range sp_range_new_step(mrb_int f,mrb_int l,mrb_int e,mrb_int s){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=s;return r;}
@@ -721,7 +721,7 @@ static sp_Object *sp_Object_new(void){return(sp_Object*)sp_gc_alloc(sizeof(sp_Ob
 /* sp_IntArray lives in sp_array.h (hot core inline) + lib/sp_array.c
    (cold ops). The Integer methods that happen to build an IntArray stay
    here; they call the inline sp_IntArray_new / _push from sp_array.h. */
-static sp_IntArray*sp_int_digits(mrb_int n,mrb_int base){if(base<0)sp_raise_cls("ArgumentError","negative radix");if(base<2)sp_raise_cls("ArgumentError",sp_sprintf("invalid radix %lld",(long long)base));if(n<0)sp_raise_cls("Math_DomainError","out of domain");sp_IntArray*a=sp_IntArray_new();if(n==0){sp_IntArray_push(a,0);return a;}while(n>0){sp_IntArray_push(a,n%base);n/=base;}return a;}
+static sp_IntArray*sp_int_digits(mrb_int n,mrb_int base){if(base<0)sp_raise_cls("ArgumentError","negative radix");if(base<2)sp_raise_cls("ArgumentError",sp_sprintf("invalid radix %lld",(long long)base));if(n<0)sp_raise_cls("Math::DomainError","out of domain");sp_IntArray*a=sp_IntArray_new();if(n==0){sp_IntArray_push(a,0);return a;}while(n>0){sp_IntArray_push(a,n%base);n/=base;}return a;}
 /* Integer#bit_length: bits in the two's-complement representation excluding
    the sign bit (a negative n counts the bits of ~n). */
 static mrb_int sp_int_bit_length(mrb_int n){unsigned long long x=(n<0)?(unsigned long long)(~n):(unsigned long long)n;mrb_int b=0;if(x>=1ULL<<32){b+=32;x>>=32;}if(x>=1ULL<<16){b+=16;x>>=16;}if(x>=1ULL<<8){b+=8;x>>=8;}if(x>=1ULL<<4){b+=4;x>>=4;}if(x>=1ULL<<2){b+=2;x>>=2;}if(x>=1ULL<<1){b+=1;x>>=1;}return b+(mrb_int)x;}
@@ -5204,6 +5204,9 @@ static SP_TLS void *sp_pending_exc_obj = NULL;
    captured for the next raised exception -- Exception#cause threads the former
    into a newly raised exception's `cause` field. */
 static SP_TLS void *sp_pending_cause = NULL;
+/* `raise ..., cause: exc`: the explicit cause overrides the implicit
+   currently-handled exception for exactly one raise. */
+static SP_TLS void *sp_explicit_cause = NULL;
 /* The exception handled at each active rescue-body depth (CRuby's per-rescue
    errinfo). The "currently handled" exception -- what Exception#cause threads --
    is the innermost: sp_rescue_sp>0 ? sp_exc_handling[sp_rescue_sp-1] : NULL. A
@@ -5401,7 +5404,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      inside an `ensure` running during a proc-return / throw): clear the unwind so
      an outer handler treats this as an exception, not a continued unwind. */
   sp_unwind_kind = SP_UNWIND_NONE;
-  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_cur_handled(); sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); }
+  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_explicit_cause ? sp_explicit_cause : sp_cur_handled(); sp_explicit_cause = NULL; sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); }
   /* Uncaught: CRuby's tail format "<message> (<ClassName>)". The source
      location CRuby prefixes is not carried through the raise machinery. */
   fprintf(stderr, "%s (%s)\n", (msg && *msg) ? msg : cls, cls); exit(1); }
@@ -5435,7 +5438,11 @@ static void sp_re_startup_error_handler(const char *msg) {
 }
 extern void sp_re_set_error_handler(void (*fn)(const char *msg));
 static void sp_mark_in_flight_exceptions(void) {
-  for (int i = 0; i < sp_exc_top; i++) {
+  /* <=: a rescue arm pops its frame (sp_exc_top--) BEFORE materializing the
+     exception from the popped slot, and that materialization allocates -- the
+     just-consumed message/object at [sp_exc_top] must survive it. Frame
+     pushes zero the slot, so a covered entry is never a dangling pointer. */
+  for (int i = 0; i <= sp_exc_top && i < SP_EXC_STACK_MAX; i++) {
     sp_mark_string(sp_exc_msg[i]);
     if (sp_exc_obj[i]) sp_gc_mark(sp_exc_obj[i]);  /* carried subclass object + its ivars */
   }
@@ -5455,6 +5462,7 @@ typedef struct sp_Exception_s {
   const char *msg;
   struct sp_Exception_s *cause; /* the exception being handled when this was raised, or NULL */
   sp_RbVal result;             /* StopIteration#result (the iteration's return value); nil otherwise */
+  sp_RbVal xname;              /* NameError/NoMethodError#name (the missing name); nil otherwise */
 } sp_Exception;
 /* Registered by the generated program to provide user exception hierarchy. */
 static const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
@@ -5463,6 +5471,7 @@ static void sp_exc_gc_scan(void *p) {
   if (e->msg) sp_mark_string(e->msg);
   if (e->cause) sp_gc_mark(e->cause);
   sp_mark_rbval(e->result);
+  sp_mark_rbval(e->xname);
   /* cls_name/parent_cls_name point into rodata -- not GC-managed strings */
 }
 static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
@@ -5472,12 +5481,21 @@ static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
   e->msg = NULL;    /* set below; scan-safe if the copy triggers a GC */
   e->cause = NULL;  /* set all fields explicitly; sp_exc_gc_scan reads cause */
   e->result = sp_box_nil();
+  e->xname = sp_box_nil();
   /* Launder the message into a GC-heap string: sp_exc_gc_scan marks it via
      the tag byte at msg[-1], which only heap strings carry -- keeping a
      raise site's rodata literal would under-read one byte before it. */
   SP_GC_ROOT(e);
   e->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : (cls_name ? cls_name : "RuntimeError"));
   return e;
+}
+/* Exception#==: same class and message (CRuby value equality); #equal?
+   stays pointer identity at the emit site. */
+static mrb_bool sp_exc_eq(sp_Exception *a, sp_Exception *b) {
+  if (a == b) return 1;
+  if (!a || !b) return 0;
+  if (strcmp(a->cls_name ? a->cls_name : "", b->cls_name ? b->cls_name : "") != 0) return 0;
+  return strcmp(a->msg ? a->msg : "", b->msg ? b->msg : "") == 0;
 }
 static sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {
   sp_Exception *e = sp_exc_new(cls_name, msg);   /* empty msg already fell back to cls_name */
@@ -5494,6 +5512,7 @@ static void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *m
   memset(e, 0, sz);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->result = sp_box_nil();   /* memset left tag 0 (int 0); StopIteration#result wants nil */
+  e->xname = sp_box_nil();
   if (sp_user_exc_parent_fn) e->parent_cls_name = sp_user_exc_parent_fn(e->cls_name);
   /* heap-launder the message (see sp_exc_new); memset left msg NULL, so a GC
      during the copy scans a consistent struct */
@@ -5585,7 +5604,7 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
     {"NotImplementedError",   "ScriptError"},
     {"StopIteration",         "IndexError"},
     {"FloatDomainError",      "RangeError"},
-    {"Math_DomainError",      "StandardError"},
+    {"Math::DomainError",      "StandardError"},
     {"FrozenError",           "RuntimeError"},
     {"EncodingError",         "StandardError"},
     {"LoadError",             "StandardError"},
@@ -5645,7 +5664,7 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
     {"NotImplementedError",  "ScriptError"},
     {"StopIteration",        "IndexError"},
     {"FloatDomainError",     "RangeError"},
-    {"Math_DomainError",     "StandardError"},
+    {"Math::DomainError",     "StandardError"},
     {"FrozenError",          "RuntimeError"},
     {"EncodingError",        "StandardError"},
     {"LoadError",            "StandardError"},
@@ -5676,6 +5695,15 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
   }
   if (!strcmp(target, "Object") || !strcmp(target, "BasicObject") || !strcmp(target, "Kernel")) return 1;
   return 0;
+}
+/* NameError#name (NoMethodError inherits it): the carried missing name.
+   Any other exception class raises CRuby's NoMethodError -- the receiver
+   type is class-erased at compile time, so the check is a runtime one. */
+static sp_RbVal sp_exc_name_acc(sp_Exception *e) {
+  if (!e) return sp_box_nil();
+  if (sp_exc_cls_matches(e->cls_name, "NameError")) return e->xname;
+  sp_raise_cls("NoMethodError",
+               sp_sprintf("undefined method 'name' for an instance of %s", e->cls_name));
 }
 
 /* Does `raised` descend from StandardError? Used by a bare `rescue` (no class),
@@ -5833,6 +5861,9 @@ static void sp_mark_brk_vals(void) {
   /* in-flight catch/throw values: same throw-to-landing lifetime story
      (slots are nil-initialized at catch entry, so every entry is valid) */
   for (int i = 0; i < sp_catch_top; i++) sp_mark_rbval(sp_catch_val[i]);
+  /* cause chain in flight between a raise and its handler */
+  if (sp_pending_cause) sp_gc_mark(sp_pending_cause);
+  if (sp_explicit_cause) sp_gc_mark(sp_explicit_cause);
 }
 
 /* ---- non-lambda proc `return` (non-local return to the home method) -------
@@ -6017,6 +6048,9 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
   for (int i = 0; i < x->en; i++) { memcpy(sp_exc_stack[i], x->es[i], sizeof(jmp_buf));
     sp_exc_msg[i] = x->em[i]; sp_exc_cls[i] = x->ec[i]; sp_exc_obj[i] = x->eo[i]; }
   sp_exc_top = x->en;
+  /* the marker covers one slot past top (handler consumption window); zero
+     it so a stale entry from another fiber's context is never chased */
+  if (x->en < SP_EXC_STACK_MAX) { sp_exc_msg[x->en] = 0; sp_exc_obj[x->en] = 0; }
   for (int i = 0; i < x->cn; i++) { memcpy(sp_catch_stack[i], x->cs[i], sizeof(jmp_buf));
     sp_catch_tag[i] = x->ct[i]; sp_catch_tag_kind[i] = x->ctk[i];
     sp_catch_val[i] = x->cv[i]; sp_catch_exc_top[i] = x->cet[i]; }
@@ -6043,7 +6077,7 @@ void sp_exc_ctx_mark(void *p) {            /* GC: mark a suspended fiber's carri
    setjmp buffer as the fiber's lowest handler, so an otherwise-unhandled raise
    in the fiber body unwinds back to the trampoline (on the fiber's own stack)
    instead of exiting or long-jumping across to the resumer. */
-void sp_exc_arm(jmp_buf b)     { memcpy(sp_exc_stack[sp_exc_top], b, sizeof(jmp_buf)); sp_exc_top++; }
+void sp_exc_arm(jmp_buf b)     { memcpy(sp_exc_stack[sp_exc_top], b, sizeof(jmp_buf)); sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++; }
 void sp_exc_disarm(void)       { if (sp_exc_top > 0) sp_exc_top--; }
 const char *sp_exc_cur_cls(void) { return sp_exc_top > 0 ? sp_exc_cls[sp_exc_top-1] : sp_str_empty; }
 const char *sp_exc_cur_msg(void) { return sp_exc_top > 0 ? sp_exc_msg[sp_exc_top-1] : sp_str_empty; }

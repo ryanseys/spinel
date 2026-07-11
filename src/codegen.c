@@ -2365,7 +2365,7 @@ int is_exc_name(const char *n) {
     "TypeError", "NameError", "NoMethodError", "IndexError",
     "KeyError", "RangeError", "IOError", "EOFError",
     "ZeroDivisionError", "NotImplementedError", "StopIteration",
-    "FloatDomainError", "Math_DomainError", "FrozenError", "EncodingError",
+    "FloatDomainError", "Math::DomainError", "FrozenError", "EncodingError",
     "LoadError", "RegexpError", "StringScanner_Error", "FiberError",
     "UncaughtThrowError", NULL
   };

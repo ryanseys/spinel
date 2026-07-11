@@ -4039,8 +4039,14 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
                            sp_streq(nt_type(nt, par), "ConstantReadNode"))
                           ? nt_str(nt, par, "name") : NULL;
         if (pnm && ename) {
-          snprintf(enbuf, sizeof enbuf, "%s_%s", pnm, ename);
+          /* qualified form first (Math::DomainError), then the legacy
+             flattened form some package raisers still use */
+          snprintf(enbuf, sizeof enbuf, "%s::%s", pnm, ename);
           if (is_exc_name(enbuf)) ename = enbuf;
+          else {
+            snprintf(enbuf, sizeof enbuf, "%s_%s", pnm, ename);
+            if (is_exc_name(enbuf)) ename = enbuf;
+          }
         }
       }
       /* A user exception class is raised under its QUALIFIED Ruby name
@@ -4272,7 +4278,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       g_retry_label = ens_retry_label;
     }
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
-    emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
+    emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     g_exc_frame_depth++;
     if (resultvar && else_stmts < 0) {
@@ -4402,7 +4408,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   if (has_retry) g_retry_label = retry_label;
 
   emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
-  emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
+  emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
   emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
   g_exc_frame_depth++;
   /* body value is the begin value only when there is no else clause */
@@ -4671,7 +4677,39 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                              sp_streq(nm, "private") || sp_streq(nm, "protected") ||
                              sp_streq(nm, "public") || sp_streq(nm, "attr_reader") ||
                              sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor"))) {
-        /* These are class-body declarations handled at analysis time; skip. */
+        /* These are class-body declarations handled at analysis time; skip.
+           Exception: a visibility call naming a method the class does not
+           define raises NameError when the body executes, per CRuby. */
+        if (sp_streq(nm, "private") || sp_streq(nm, "protected") || sp_streq(nm, "public")) {
+          int vcid = g_class_body_id >= 0 ? g_class_body_id
+                   : (comp_scope_of(c, id) ? comp_scope_of(c, id)->class_id : -1);
+          if (vcid >= 0) {
+            int vargs = nt_ref(nt, id, "arguments");
+            int van = 0;
+            const int *vav = vargs >= 0 ? nt_arr(nt, vargs, "arguments", &van) : NULL;
+            for (int vi = 0; vi < van; vi++) {
+              const char *vaty = nt_type(nt, vav[vi]);
+              const char *mn = NULL;
+              if (vaty && sp_streq(vaty, "SymbolNode")) mn = nt_str(nt, vav[vi], "value");
+              else if (vaty && sp_streq(vaty, "StringNode")) mn = nt_str(nt, vav[vi], "unescaped");
+              if (!mn) continue;
+              size_t ml = strlen(mn);
+              char wb[256]; wb[0] = '\0';
+              if (ml > 0 && mn[ml - 1] == '=' && ml - 1 < sizeof wb) {
+                memcpy(wb, mn, ml - 1); wb[ml - 1] = '\0';
+              }
+              int found = comp_method_in_chain(c, vcid, mn, NULL) >= 0 ||
+                          comp_reader_in_chain(c, vcid, mn, NULL) ||
+                          (wb[0] && comp_writer_in_chain(c, vcid, wb, NULL));
+              if (!found) {
+                emit_indent(b, indent);
+                buf_printf(b, "sp_raise_cls(\"NameError\", \"undefined method '%s' for class '%s'\");\n",
+                           mn, class_ruby_name(c, vcid) ? class_ruby_name(c, vcid) : c->classes[vcid].name);
+                return;
+              }
+            }
+          }
+        }
         return;
       }
     }
@@ -6986,7 +7024,7 @@ else {
     int e = nt_ref(nt, id, "expression");
     int r = nt_ref(nt, id, "rescue_expression");
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
-    emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
+    emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     if (e >= 0) emit_stmt(c, e, b, indent + 1);
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");

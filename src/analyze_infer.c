@@ -2908,6 +2908,7 @@ else {
     if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
     if (sp_streq(name, "cause")) return TY_EXCEPTION;      /* the threaded cause, nil if none */
     if (sp_streq(name, "result")) return TY_POLY;          /* StopIteration#result, nil otherwise */
+    if (sp_streq(name, "name")) return TY_POLY;            /* NameError#name, nil otherwise */
   }
 
   /* poly receiver / poly operand: result type of operations on sp_RbVal */

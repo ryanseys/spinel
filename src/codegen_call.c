@@ -2386,6 +2386,20 @@ else {
         else if (is_fetch) { buf_puts(b, "("); emit_key_not_found(c, argv[0], b); buf_puts(b, ", "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
         else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
         buf_puts(b, "; break;");
+        /* a symbol key against generic poly-keyed storage: an empty `{}`
+           literal boxes as PolyPolyHash, so a symbol-keyed [] / fetch must
+           reach it too (the arm above only matches SymPolyHash) */
+        {
+          char getx2[220], hx2[220];
+          snprintf(getx2, sizeof getx2, "sp_PolyPolyHash_get((sp_PolyPolyHash *)_t%d.v.p, sp_box_sym(_t%d))", tv, atmp[0]);
+          snprintf(hx2, sizeof hx2, "sp_PolyPolyHash_has_key((sp_PolyPolyHash *)_t%d.v.p, sp_box_sym(_t%d))", tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_POLY_POLY_HASH: _t%d = ", tr);
+          if (is_fetch) buf_printf(b, "%s ? ", hx2);
+          if (ret == TY_POLY) buf_puts(b, getx2);
+          else emit_unbox_text(c, trt, getx2, b);
+          if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, trt, b); }
+          buf_puts(b, "; break;");
+        }
       }
       /* a poly-keyed `[]` on a poly value that is actually a Hash: dispatch to
          the hash storage by the (boxed) poly key. The string/symbol-key arms
@@ -2789,6 +2803,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
       const char *cn = nt_str(nt, recv, "name");
       if (cn && is_exc_name(cn)) {
+        /* NameError.new(msg, name) / NoMethodError.new(msg, name): carry the
+           missing name for the #name accessor (rooted across the alloc). */
+        if (argc >= 2 && (sp_streq(cn, "NameError") || sp_streq(cn, "NoMethodError"))) {
+          int tn2 = ++g_tmp, te2 = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tn2);
+          emit_boxed(c, argv[1], b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Exception *_t%d = sp_exc_new(\"%s\", ", tn2, te2, cn);
+          emit_expr(c, argv[0], b);
+          buf_printf(b, "); _t%d->xname = _t%d; _t%d; })", te2, tn2, te2);
+          return 1;
+        }
         /* builtin exception class .new(msg) */
         buf_printf(b, "sp_exc_new(\"%s\", ", cn);
         if (argc >= 1) emit_expr(c, argv[0], b);
@@ -4538,7 +4563,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
                    bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
         /* Kernel#loop rescues StopIteration to terminate; wrap in a setjmp. */
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
-        emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_top++;\n");
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
         emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "for (;;) {\n");
         const char *sv_lb = g_loop_break_var;
@@ -6147,6 +6172,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv < 0 && (sp_streq(name, "raise") || sp_streq(name, "fail"))) {
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    /* trailing `cause: exc` kwarg: strip it from the arg list and stage the
+       explicit cause the raise machinery consumes for this one raise */
+    int cause_node = -1;
+    if (ac >= 2 && nt_type(nt, av[ac - 1]) &&
+        sp_streq(nt_type(nt, av[ac - 1]), "KeywordHashNode")) {
+      int kn = 0;
+      const int *kel = nt_arr(nt, av[ac - 1], "elements", &kn);
+      if (kn == 1 && nt_type(nt, kel[0]) && sp_streq(nt_type(nt, kel[0]), "AssocNode")) {
+        int kk = nt_ref(nt, kel[0], "key");
+        if (kk >= 0 && nt_type(nt, kk) && sp_streq(nt_type(nt, kk), "SymbolNode") &&
+            nt_str(nt, kk, "value") && sp_streq(nt_str(nt, kk, "value"), "cause")) {
+          cause_node = nt_ref(nt, kel[0], "value");
+          ac--;
+        }
+      }
+    }
+    if (cause_node >= 0) {
+      buf_puts(b, "(sp_explicit_cause = (void *)(");
+      emit_expr(c, cause_node, b);
+      buf_puts(b, "), ");
+    }
     if (ac == 0) {
       if (g_rescue_cls) buf_printf(b, "sp_raise_cls(%s, %s)", g_rescue_cls, g_rescue_msg);
       else buf_puts(b, "sp_raise((&(\"\\xff\")[1]))");
@@ -6240,6 +6286,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_puts(b, "), sp_raise_cls(\"TypeError\", \"exception class/object expected\"))");
       }
     }
+    if (cause_node >= 0) buf_puts(b, ")");
     return;
   }
 
@@ -6261,16 +6308,30 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* exception object methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION) {
-    /* equal? is pointer identity; == on exceptions is identity for our
-       carried objects too (same object flows from raise to rescue to $!). */
-    if ((sp_streq(name, "equal?") || sp_streq(name, "==")) && argc == 1 &&
+    /* equal? is pointer identity; == is CRuby value equality (same class
+       and message). */
+    if (sp_streq(name, "equal?") && argc == 1 &&
         comp_ntype(c, argv[0]) == TY_EXCEPTION) {
       buf_puts(b, "(((sp_Exception *)("); emit_expr(c, recv, b);
       buf_puts(b, ")) == ((sp_Exception *)("); emit_expr(c, argv[0], b); buf_puts(b, ")))");
       return;
     }
+    if (sp_streq(name, "==") && argc == 1 &&
+        comp_ntype(c, argv[0]) == TY_EXCEPTION) {
+      buf_puts(b, "sp_exc_eq((sp_Exception *)("); emit_expr(c, recv, b);
+      buf_puts(b, "), (sp_Exception *)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      return;
+    }
     if (sp_streq(name, "nil?") && argc == 0) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
+      return;
+    }
+    /* NameError/NoMethodError#name: the carried missing name; any other
+       exception class raises NoMethodError at runtime, per CRuby */
+    if (sp_streq(name, "name") && argc == 0) {
+      buf_puts(b, "sp_exc_name_acc((sp_Exception *)(");
+      emit_expr(c, recv, b);
+      buf_puts(b, "))");
       return;
     }
     if (sp_streq(name, "inspect") && argc == 0) {
@@ -10820,7 +10881,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (has_retval) { emit_ctype(c, g_ret_type, b); buf_printf(b, " _retv%d = %s; ", eid, default_value(g_ret_type)); }
       g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth };
       buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; ");
-      buf_puts(b, "sp_exc_top++; if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) { ");
+      buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++; if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) { ");
       g_exc_frame_depth++;
     }
     for (int k = 0; k < bbn - 1; k++) emit_stmt(c, bbb[k], b, 0);
