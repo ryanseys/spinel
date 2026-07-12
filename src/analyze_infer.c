@@ -4282,7 +4282,10 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_ConstantReadNode) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *lv = nm ? comp_const(c, nm) : NULL;
-    if (lv) return lv->type;
+    /* a registered constant whose type never settled (e.g. an anonymous
+       Struct class assignment) must not shadow the class-table fallbacks
+       below -- Pt = Struct.new(:x) reads as the class value, not unknown */
+    if (lv && lv->type != TY_UNKNOWN) return lv->type;
     if (nm && (sp_streq(nm, "RUBY_DESCRIPTION") || sp_streq(nm, "RUBY_VERSION") ||
                sp_streq(nm, "RUBY_PLATFORM") || sp_streq(nm, "RUBY_ENGINE") ||
                sp_streq(nm, "RUBY_ENGINE_VERSION") || sp_streq(nm, "RUBY_RELEASE_DATE") ||

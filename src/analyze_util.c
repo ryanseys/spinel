@@ -10,7 +10,7 @@ int is_builtin_class_name(const char *n) {
     "ArgumentError","NameError","NoMethodError","StopIteration","Math",
     "Complex","Rational","Encoding","Method","UnboundMethod","Fiber",
     "Thread","Mutex","GC","ObjectSpace","Signal","Process","Regexp",
-    "MatchData",
+    "MatchData","Enumerator",
     /* exception classes as first-class values (raise_error matchers,
        e.class comparisons); raise/rescue position resolves by name. */
     "IndexError","KeyError","RangeError","FloatDomainError",

@@ -7213,7 +7213,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (par >= 0) { buf_printf(b, "((sp_Class){%d})", par); return; }
       /* Check if the class has a builtin superclass via AST. */
       int sc_nd = nt_ref(nt, c->classes[ci].def_node, "superclass");
-      int bpar = -116;  /* Object */
+      /* a Struct/Data-generated class sits under the Struct/Data builtin */
+      int bpar = c->classes[ci].is_struct ? (c->classes[ci].is_data ? -146 : -145)
+                                          : -116;  /* Object */
       if (sc_nd >= 0) {
         const char *sc_ty2 = nt_type(nt, sc_nd);
         const char *sc_nm2 = (sc_ty2 && (sp_streq(sc_ty2, "ConstantReadNode") || sp_streq(sc_ty2, "ConstantPathNode"))) ? nt_str(nt, sc_nd, "name") : NULL;

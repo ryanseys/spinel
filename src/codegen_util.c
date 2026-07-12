@@ -661,6 +661,11 @@ int builtin_class_id(const char *name) {
   if (sp_streq(name, "LocalJumpError")) return -139;
   if (sp_streq(name, "NotImplementedError")) return -140;
   if (sp_streq(name, "ScriptError")) return -141;
+  if (sp_streq(name, "Rational"))    return -142;
+  if (sp_streq(name, "Regexp"))      return -143;
+  if (sp_streq(name, "Enumerator"))  return -144;
+  if (sp_streq(name, "Struct"))      return -145;
+  if (sp_streq(name, "Data"))        return -146;
   return 0;
 }
 const char *c_type_name(TyKind t) {

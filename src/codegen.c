@@ -4476,6 +4476,9 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "case -136:return SPL(\"ZeroDivisionError\");case -137:return SPL(\"FrozenError\");");
     buf_puts(&b, "case -138:return SPL(\"IOError\");case -139:return SPL(\"LocalJumpError\");");
     buf_puts(&b, "case -140:return SPL(\"NotImplementedError\");case -141:return SPL(\"ScriptError\");");
+    buf_puts(&b, "case -142:return SPL(\"Rational\");case -143:return SPL(\"Regexp\");");
+    buf_puts(&b, "case -144:return SPL(\"Enumerator\");case -145:return SPL(\"Struct\");");
+    buf_puts(&b, "case -146:return SPL(\"Data\");");
     buf_puts(&b, "default:return \"\";} }\n\n");
   }
   g_needs_class_machinery = program_needs_class_machinery(c);
@@ -4517,7 +4520,10 @@ char *codegen_program(const NodeTable *nt) {
       else {
         /* Check if the ClassNode has a builtin superclass. */
         int sc_node = nt_ref(c->nt, c->classes[i].def_node, "superclass");
-        int builtin_par = -116;  /* Object */
+        /* a Struct/Data-generated class sits under the Struct/Data builtin
+           (Pt = Struct.new(:x) -> Pt.superclass == Struct, CRuby) */
+        int builtin_par = c->classes[i].is_struct ? (c->classes[i].is_data ? -146 : -145)
+                                                  : -116;  /* Object */
         if (sc_node >= 0) {
           const char *sc_ty = nt_type(c->nt, sc_node);
           const char *sc_nm = (sc_ty && (sp_streq(sc_ty, "ConstantReadNode") || sp_streq(sc_ty, "ConstantPathNode"))) ? nt_str(c->nt, sc_node, "name") : NULL;
@@ -4551,8 +4557,8 @@ char *codegen_program(const NodeTable *nt) {
   /* Builtin superclass chain (simplified Ruby class hierarchy) */
   buf_puts(&b, "static sp_Class sp_builtin_superclass(sp_Class c){\n");
   buf_puts(&b, "  switch(c.cls_id){\n");
-  /* Integer, Float -> Numeric -> Object */
-  buf_puts(&b, "  case -100:case -101: return ((sp_Class){-113});\n"); /* -> Numeric */
+  /* Integer, Float, Complex, Rational -> Numeric -> Object */
+  buf_puts(&b, "  case -100:case -101:case -131:case -142: return ((sp_Class){-113});\n"); /* -> Numeric */
   /* Numeric, String, Array, Hash, Range, Symbol, Time -> Object */
   buf_puts(&b, "  case -102:case -103:case -104:case -105:case -106:case -107:case -113: return ((sp_Class){-116});\n");
   /* Exception -> Object */
@@ -4573,8 +4579,8 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(&b, "  case -140: return ((sp_Class){-141});\n");
   /* NoMethodError -> NameError */
   buf_puts(&b, "  case -128: return ((sp_Class){-127});\n");
-  /* NilClass, TrueClass, FalseClass, Proc -> Object */
-  buf_puts(&b, "  case -110:case -111:case -112:case -118: return ((sp_Class){-116});\n");
+  /* NilClass, TrueClass, FalseClass, Proc, Struct, Data -> Object */
+  buf_puts(&b, "  case -110:case -111:case -112:case -118:case -145:case -146: return ((sp_Class){-116});\n");
   /* Module -> Object, Class -> Module */
   buf_puts(&b, "  case -108: return ((sp_Class){-116});\n");
   buf_puts(&b, "  case -109: return ((sp_Class){-108});\n");
@@ -4647,8 +4653,8 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "        sp_PolyArray_push(a,sp_box_class(cur));\n");
     /* Numeric includes Comparable; Array/Hash include Enumerable; String includes Comparable */
     buf_puts(&b, "        if(cur.cls_id==-113) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* Numeric->Comparable */
-    buf_puts(&b, "        if(cur.cls_id==-104||cur.cls_id==-105) sp_PolyArray_push(a,sp_box_class(((sp_Class){-115})));\n");  /* Array/Hash->Enumerable */
-    buf_puts(&b, "        if(cur.cls_id==-102) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* String->Comparable */
+    buf_puts(&b, "        if(cur.cls_id==-104||cur.cls_id==-105||cur.cls_id==-106||cur.cls_id==-144||cur.cls_id==-145) sp_PolyArray_push(a,sp_box_class(((sp_Class){-115})));\n");  /* Array/Hash/Range/Enumerator/Struct->Enumerable */
+    buf_puts(&b, "        if(cur.cls_id==-102||cur.cls_id==-103) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* String/Symbol->Comparable */
     buf_puts(&b, "        if(cur.cls_id==-116) sp_PolyArray_push(a,sp_box_class(((sp_Class){-119})));\n");  /* Object->Kernel */
     buf_puts(&b, "        sp_Class bn=sp_builtin_superclass(cur);\n");
     buf_puts(&b, "        if(bn.cls_id==cur.cls_id)break;\n");
