@@ -3723,7 +3723,19 @@ else {
         }
         return 1;
       }
-      if (sp_streq(name, "flatten") && argc <= 1) {
+      if (sp_streq(name, "flatten") && argc == 1) {
+        /* Hash#flatten(d) == to_a.flatten(d): d == 1 is the plain interleave
+           (argc == 0 below), d >= 2 also expands array values, d == 0 keeps
+           the pairs, negative flattens completely -- all served by the
+           depth-limited array flatten over the pair list */
+        buf_puts(b, "sp_PolyArray_flatten_depth(");
+        emit_hash_pairs_expr(c, recv, rt, hn, b);
+        buf_puts(b, ", ");
+        emit_int_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "flatten") && argc == 0) {
         /* interleave keys and values into a flat PolyArray */
         int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
         TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
