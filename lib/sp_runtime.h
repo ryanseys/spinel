@@ -3537,10 +3537,12 @@ else if (conv == 'b' || conv == 'B') {
       else if (v.tag == SP_TAG_STR && v.v.s) lv = strtoll(v.v.s, NULL, 10);
       wn = sp_fmt_binary(spec, sl, conv, lv, tmp, sizeof(tmp));
     }
-else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G') {
+else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G' ||
+         conv == 'a' || conv == 'A') {
       double dv = 0;
       if (v.tag == SP_TAG_FLT) dv = v.v.f;
       else if (v.tag == SP_TAG_INT) dv = (double)v.v.i;
+      else if (sp_poly_is_rational(v)) dv = sp_poly_to_f_with_rational(v);
       /* Ruby prints non-finite floats as Inf/-Inf/NaN (C printf lowercases) */
       if (!isfinite(dv)) wn = snprintf(tmp, sizeof(tmp), "%s", isnan(dv) ? "NaN" : dv > 0 ? "Inf" : "-Inf");
       else wn = snprintf(tmp, sizeof(tmp), fmt_use, dv);

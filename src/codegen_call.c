@@ -9333,8 +9333,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, ", sp_format_args("); emit_boxed(c, argv[0], b); buf_puts(b, "))");
       return;
     }
-    /* a single non-array scalar argument formats as a one-element array */
-    if (at == TY_INT || at == TY_FLOAT || at == TY_STRING || at == TY_SYMBOL) {
+    /* a single non-array scalar argument formats as a one-element array
+       (nil renders empty for %s; Rational/Complex coerce inside the
+       formatter's numeric directives) */
+    if (at == TY_INT || at == TY_FLOAT || at == TY_STRING || at == TY_SYMBOL ||
+        at == TY_NIL || at == TY_BOOL || at == TY_RATIONAL || at == TY_COMPLEX) {
       buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b);
       buf_puts(b, ", ({ sp_PolyArray *_fa = sp_PolyArray_new(); sp_PolyArray_push(_fa, ");
       emit_boxed(c, argv[0], b); buf_puts(b, "); _fa; }))");
