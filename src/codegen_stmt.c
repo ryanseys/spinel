@@ -290,6 +290,26 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
       return;
     }
   }
+  /* a string-endpoint range literal inspects as "lo".."hi" even though its
+     VALUE lowers to a string array; key on the node shape ahead of the type
+     dispatch so the retyped literal keeps CRuby's Range inspect */
+  {
+    int rn0 = unwrap_parens(c, arg);
+    if (rn0 >= 0 && nt_type(c->nt, rn0) && sp_streq(nt_type(c->nt, rn0), "RangeNode")) {
+      int lo0 = nt_ref(c->nt, rn0, "left"), hi0 = nt_ref(c->nt, rn0, "right");
+      if (lo0 >= 0 && hi0 >= 0 &&
+          comp_ntype(c, lo0) == TY_STRING && comp_ntype(c, hi0) == TY_STRING) {
+        int excl0 = (int)(nt_int(c->nt, rn0, "flags", 0) & 4) ? 1 : 0;
+        emit_indent(b, indent);
+        buf_puts(b, "fputs(sp_sprintf(\"%s");
+        buf_puts(b, excl0 ? "..." : "..");
+        buf_puts(b, "%s\", sp_str_inspect("); emit_expr(c, lo0, b);
+        buf_puts(b, "), sp_str_inspect("); emit_expr(c, hi0, b);
+        buf_puts(b, ")), stdout); putchar('\\n');\n");
+        return;
+      }
+    }
+  }
   TyKind t = comp_ntype(c, arg);
   /* an element-less hash construct ({} / Hash.new / Hash.new(default)) that no
      key usage narrowed stays TY_UNKNOWN; box it (emit_boxed carries the

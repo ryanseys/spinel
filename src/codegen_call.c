@@ -4796,6 +4796,65 @@ void emit_call(Compiler *c, int id, Buf *b) {
       }
     }
   }
+
+  /* Methods on a string-endpoint range LITERAL keep Range semantics even
+     though the value lowers to a string array: to_s/inspect format the
+     endpoints, and === / cover? are the lexicographic cover check (a
+     non-String argument answers false, like CRuby). include?/each/to_a and
+     friends run correctly over the succession array and stay untouched. */
+  {
+    int srecv = nt_ref(nt, id, "receiver");
+    int srn = srecv >= 0 ? unwrap_parens(c, srecv) : -1;
+    if (srn >= 0 && nt_type(nt, srn) && sp_streq(nt_type(nt, srn), "RangeNode")) {
+      int slo = nt_ref(nt, srn, "left"), shi = nt_ref(nt, srn, "right");
+      if (slo >= 0 && shi >= 0 &&
+          comp_ntype(c, slo) == TY_STRING && comp_ntype(c, shi) == TY_STRING) {
+        int sexcl = (int)(nt_int(nt, srn, "flags", 0) & 4) ? 1 : 0;
+        const char *snm = nt_str(nt, id, "name");
+        int sargs = nt_ref(nt, id, "arguments");
+        int sac = 0; const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &sac) : NULL;
+        if (snm && sac == 0 && (sp_streq(snm, "to_s") || sp_streq(snm, "inspect"))) {
+          int insp = sp_streq(snm, "inspect");
+          buf_puts(b, "sp_sprintf(\"%s");
+          buf_puts(b, sexcl ? "..." : "..");
+          buf_puts(b, "%s\", ");
+          if (insp) { buf_puts(b, "sp_str_inspect("); emit_expr(c, slo, b); buf_puts(b, ")"); }
+          else emit_expr(c, slo, b);
+          buf_puts(b, ", ");
+          if (insp) { buf_puts(b, "sp_str_inspect("); emit_expr(c, shi, b); buf_puts(b, ")"); }
+          else emit_expr(c, shi, b);
+          buf_puts(b, ")");
+          return;
+        }
+        if (snm && sac == 1 && sav && (sp_streq(snm, "===") || sp_streq(snm, "cover?"))) {
+          TyKind sat = comp_ntype(c, sav[0]);
+          if (sat == TY_STRING) {
+            int ta = ++g_tmp, tl = ++g_tmp, th = ++g_tmp;
+            buf_printf(b, "({ const char *_t%d = ", ta); emit_expr(c, sav[0], b);
+            buf_printf(b, "; const char *_t%d = ", tl); emit_expr(c, slo, b);
+            buf_printf(b, "; const char *_t%d = ", th); emit_expr(c, shi, b);
+            buf_printf(b, "; _t%d && strcmp(_t%d, _t%d) <= 0 && strcmp(_t%d, _t%d) %s 0; })",
+                       ta, tl, ta, ta, th, sexcl ? "<" : "<=");
+          }
+          else if (sat == TY_POLY || sat == TY_UNKNOWN) {
+            int ta = ++g_tmp, tl = ++g_tmp, th = ++g_tmp;
+            buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, sav[0], b);
+            buf_printf(b, "; const char *_t%d = ", tl); emit_expr(c, slo, b);
+            buf_printf(b, "; const char *_t%d = ", th); emit_expr(c, shi, b);
+            buf_printf(b, "; _t%d.tag == SP_TAG_STR && _t%d.v.s && strcmp(_t%d, _t%d.v.s) <= 0 && strcmp(_t%d.v.s, _t%d) %s 0; })",
+                       ta, ta, tl, ta, ta, th, sexcl ? "<" : "<=");
+          }
+          else {
+            /* a non-String argument never covers (String <=> other is nil) */
+            buf_puts(b, "((void)(");
+            emit_expr(c, sav[0], b);
+            buf_puts(b, "), 0)");
+          }
+          return;
+        }
+      }
+    }
+  }
   /* k = Struct.new(:a, :b): the registered anonymous struct class, as a
      first-class class value */
   {
