@@ -264,6 +264,10 @@ typedef struct {
   int *node_cbody;  /* [node_cap] node id -> enclosing class/module-body class id, or -1 */
   char *empty_arr_recv; /* [node_cap] empty `[]` used as a safe-iterator receiver -> TY_POLY_ARRAY */
   char *empty_hash_recv; /* [node_cap] empty `{}` used as a hash block-method receiver -> TY_STR_POLY_HASH */
+  int *obj_ext_target; /* [node_cap] `o.extend(M)` support (register_object_extends):
+                          for an extend call node -> -2 (emit the receiver as self);
+                          for a post-extend `o.method` call node -> the synthesized
+                          ObjectExt_<M> class id to dispatch to; -1 otherwise */
   int node_cap;     /* allocated length of ntype/nscope (>= nt->count) */
 
   Scope *scopes;    /* scope[0] = top level */

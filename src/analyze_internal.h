@@ -173,6 +173,7 @@ void resolve_parents(Compiler *c);
 void process_include_body(Compiler *c, int ci, int body_node);
 void register_includes(Compiler *c);
 void register_extends(Compiler *c);
+void register_object_extends(Compiler *c);
 int cmethod_has_bare_new(Compiler *c, int mi);
 int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *has_new);
 void specialize_inherited_cls_new(Compiler *c);

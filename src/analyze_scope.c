@@ -2637,6 +2637,141 @@ void register_extends(Compiler *c) {
   }
 }
 
+/* Transplant module `mod_id`'s instance methods into the synthesized class
+   `dst_ci` as instance methods (is_cmethod=0), cloning each body so bareword
+   self-calls resolve within the synthesized class (a module method calling a
+   sibling module method reaches the sibling's copy). Returns 1 if any
+   transplanted method touches an instance variable -- the caller loud-rejects,
+   since an extended bare Object has no ivar storage. */
+static int transplant_instance_methods(Compiler *c, int dst_ci, int mod_id) {
+  const NodeTable *nt = c->nt;
+  int touched_ivar = 0;
+  int snap = c->nscopes;
+  for (int ms = 0; ms < snap; ms++) {
+    Scope *src = &c->scopes[ms];
+    if (src->class_id != mod_id || src->is_cmethod || !src->name) continue;
+    if (comp_method_in_class(c, dst_ci, src->name) >= 0) continue;
+    Scope *dst = comp_scope_new(c, src->name, src->def_node);
+    int dst_idx = c->nscopes - 1;
+    src = &c->scopes[ms];  /* comp_scope_new may realloc c->scopes */
+    if (src->body >= 0) {
+      int nb = nt_clone_subtree((NodeTable *)nt, src->body);
+      if (nb >= 0) {
+        comp_grow_node_arrays(c);
+        src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
+        dst->body = nb;
+        walk_scope(c, nb, dst_idx, dst_ci);
+      } else dst->body = src->body;
+    } else dst->body = src->body;
+    dst->class_id = dst_ci;
+    dst->is_cmethod = 0;
+    dst->reachable = 1;  /* reached by the o.<method> dispatch rewrite */
+    dst->yields = src->yields;
+    dst->nrequired = src->nrequired;
+    dst->rest_idx = src->rest_idx;
+    dst->kwrest_idx = src->kwrest_idx;
+    if (src->blk_param) dst->blk_param = strdup(src->blk_param);
+    dst->nparams = src->nparams;
+    if (src->nparams > 0) {
+      char **pn = malloc(sizeof(char *) * (size_t)src->nparams);
+      int *pd = malloc(sizeof(int) * (size_t)src->nparams);
+      if (!pn || !pd) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      dst->pnames = pn; dst->pdefault = pd;
+      for (int p = 0; p < src->nparams; p++) {
+        dst->pnames[p] = src->pnames[p] ? strdup(src->pnames[p]) : NULL;
+        dst->pdefault[p] = src->pdefault ? src->pdefault[p] : -1;
+      }
+      for (int p = 0; p < src->nparams; p++)
+        if (dst->pnames[p]) { LocalVar *lv = scope_local_intern(dst, dst->pnames[p]); lv->is_param = 1; }
+    }
+    for (int id2 = 0; id2 < nt->count; id2++) {
+      if (c->nscope[id2] != dst_idx) continue;
+      const char *bty = nt_type(nt, id2);
+      if (bty && (sp_streq(bty, "InstanceVariableReadNode") ||
+                  sp_streq(bty, "InstanceVariableWriteNode") ||
+                  sp_streq(bty, "InstanceVariableOperatorWriteNode") ||
+                  sp_streq(bty, "InstanceVariableOrWriteNode") ||
+                  sp_streq(bty, "InstanceVariableAndWriteNode")))
+        touched_ivar = 1;
+    }
+  }
+  return touched_ivar;
+}
+
+/* `o.extend(M)` on a local receiver: synthesize an `ObjectExt_<M>` class holding
+   M's instance methods, mark the extend call to return self, and mark each
+   later `o.<Mmethod>` call in the same scope to dispatch to the synthesized
+   class. Codegen (emit_call) reads obj_ext_target. A method call on the local
+   BEFORE the extend keeps ordinary dispatch (a runtime NoMethodError, as in
+   CRuby); a non-local receiver or a multi-argument extend is left unhandled. */
+void register_object_extends(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int ncount = nt->count;  /* snapshot: transplanting clones bodies and grows the table */
+  for (int id = 0; id < ncount; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "extend")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;  /* bare `extend M` is handled by register_extends */
+    const char *rty = nt_type(nt, recv);
+    if (!rty || !sp_streq(rty, "LocalVariableReadNode")) continue;
+    const char *lname = nt_str(nt, recv, "name");
+    if (!lname) continue;
+    int anode = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+    if (an != 1) continue;
+    const char *aty = nt_type(nt, args[0]);
+    const char *mname = NULL;
+    if (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode")))
+      mname = nt_str(nt, args[0], "name");
+    if (!mname) continue;
+    int mod_id = comp_class_index(c, mname);
+    if (mod_id < 0) continue;
+    char en[160];
+    snprintf(en, sizeof en, "ObjectExt_%s", mname);
+    int ext_ci = comp_class_index(c, en);
+    if (ext_ci < 0) {
+      comp_class_new(c, en, c->classes[mod_id].def_node);
+      ext_ci = c->nclasses - 1;
+      c->classes[ext_ci].parent = -1;
+      if (transplant_instance_methods(c, ext_ci, mod_id)) {
+        fprintf(stderr, "spinel: o.extend(%s): a module method that touches an "
+                        "instance variable is unsupported (an extended Object "
+                        "has no ivar storage)\n", mname);
+        exit(1);
+      }
+    }
+    c->obj_ext_target[id] = -2;  /* the extend call returns the receiver (self) */
+    int sc = c->nscope[id];
+    for (int j = 0; j < ncount; j++) {
+      if (c->nscope[j] != sc || j == id) continue;
+      const char *jty = nt_type(nt, j);
+      if (!jty || !sp_streq(jty, "CallNode")) continue;
+      int jr = nt_ref(nt, j, "receiver");
+      if (jr < 0) continue;
+      const char *jrty = nt_type(nt, jr);
+      if (!jrty || !sp_streq(jrty, "LocalVariableReadNode")) continue;
+      const char *jrn = nt_str(nt, jr, "name");
+      if (!jrn || !sp_streq(jrn, lname)) continue;
+      const char *jm = nt_str(nt, j, "name");
+      if (!jm || sp_streq(jm, "extend")) continue;
+      if (comp_method_in_chain(c, ext_ci, jm, NULL) < 0) continue;
+      if (j < id) {
+        /* the method is called on the receiver before it is extended; CRuby
+           raises NoMethodError there, but the static rewrite has no textual
+           point to distinguish -- reject rather than answer either way. */
+        fprintf(stderr, "spinel: o.extend(%s): '%s' is called on the receiver "
+                        "before the extend; the static extend rewrite cannot "
+                        "model per-point dispatch\n", mname, jm);
+        exit(1);
+      }
+      c->obj_ext_target[j] = ext_ci;  /* textually after: dispatch to ObjectExt_<M> */
+    }
+  }
+}
+
 /* True if class method scope `mi`'s body contains a bare `new` call (which
    must rebind to the calling subclass, not the defining class). */
 int cmethod_has_bare_new(Compiler *c, int mi) {

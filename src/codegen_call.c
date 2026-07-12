@@ -4765,6 +4765,27 @@ static int class_includes_module_named(Compiler *c, int cid, const char *mod_nam
 
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* o.extend(M) support (register_object_extends): the extend call returns its
+     receiver (self); a marked post-extend `o.<method>` call dispatches to the
+     synthesized ObjectExt_<M> class, unboxing the poly receiver to its pointer.
+     Only stateless module methods reach here (ivar-touching ones are rejected
+     in analyze), so the pointer cast is never dereferenced for storage. Checked
+     before emit_dynamic_send, which would otherwise claim `extend` as a
+     reflection no-op. */
+  {
+    int oet = id < c->node_cap ? c->obj_ext_target[id] : -1;
+    if (oet == -2) { emit_expr(c, nt_ref(nt, id, "receiver"), b); return; }
+    if (oet >= 0) {
+      Buf rb = expr_buf(c, nt_ref(nt, id, "receiver"));
+      char selfptr[128];
+      snprintf(selfptr, sizeof selfptr, "((sp_%s *)(%s).v.p)",
+               c->classes[oet].c_name, rb.p ? rb.p : "");
+      free(rb.p);
+      emit_dispatch(c, oet, nt_str(nt, id, "name"), selfptr,
+                    nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+      return;
+    }
+  }
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
   /* a public_send-lowered call (stamped by the desugars): a private or
      protected target raises NoMethodError like CRuby, which enforces
