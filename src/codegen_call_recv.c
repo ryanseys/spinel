@@ -4400,11 +4400,16 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[0], b);
         buf_puts(b, (u1t == TY_INT || u1t == TY_FLOAT) ? "), 0))" : "), 0)");
       }
-      else if (sp_streq(name, "sum") && argc == 0) {
-        /* default 16-bit byte checksum: sum of byte values modulo 2**16 */
-        int ts = ++g_tmp, tp = ++g_tmp, tacc = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; mrb_int _t%d = 0; for (const char *_t%d = _t%d; *_t%d; _t%d++)"
-                      " _t%d += (unsigned char)*_t%d; _t%d & 0xffff; })", ts, r, tacc, tp, ts, tp, tp, tacc, tp, tacc);
+      else if (sp_streq(name, "sum") && argc <= 1) {
+        /* byte checksum: sum of byte values modulo 2**bits (default 16;
+           bits <= 0 or >= 64 leaves the sum untruncated like CRuby) */
+        int ts = ++g_tmp, tp = ++g_tmp, tacc = ++g_tmp, tbits = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = %s; mrb_int _t%d = ", ts, r, tbits);
+        if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "16");
+        buf_printf(b, "; mrb_int _t%d = 0; for (const char *_t%d = _t%d; *_t%d; _t%d++)"
+                      " _t%d += (unsigned char)*_t%d;"
+                      " (_t%d <= 0 || _t%d >= 64) ? _t%d : (_t%d & ((((mrb_int)1) << _t%d) - 1)); })",
+                   tacc, tp, ts, tp, tp, tacc, tp, tbits, tbits, tacc, tacc, tbits);
       }
       else if (sp_streq(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
       else if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) buf_printf(b, "sp_str_succ(%s)", r);

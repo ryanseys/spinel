@@ -3623,7 +3623,7 @@ else {
         sp_streq(name, "oct") || sp_streq(name, "hex") || sp_streq(name, "ord") ||
         sp_streq(name, "bytesize") || sp_streq(name, "setbyte") || sp_streq(name, "getbyte")) return TY_INT;
     if (sp_streq(name, "scrub") || sp_streq(name, "crypt")) return TY_STRING;
-    if (sp_streq(name, "sum") && argc == 0) return TY_INT;
+    if (sp_streq(name, "sum") && argc <= 1) return TY_INT;
     if (sp_streq(name, "unpack1") && (argc == 1 || argc == 2)) return an_unpack1_lit_type(nt, argv[0]);
     if (sp_streq(name, "rindex")) return TY_INT;
     /* byteindex/byterindex over a String needle -> byte offset or nil. The
