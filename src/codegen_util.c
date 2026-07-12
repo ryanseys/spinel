@@ -683,6 +683,7 @@ const char *c_type_name(TyKind t) {
     case TY_STRING:      return "const char *";
     case TY_SYMBOL:      return "sp_sym";
     case TY_RANGE:       return "sp_Range";
+    case TY_FLOAT_RANGE: return "sp_FRange";
     case TY_TIME:        return "sp_Time";
     case TY_COMPLEX:     return "sp_Complex";
     case TY_RATIONAL:    return "sp_Rational";
@@ -720,7 +721,7 @@ const char *c_type_name(TyKind t) {
 }
 int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
-         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
+         t == TY_SYMBOL || t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_STRBUF ||
          t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_CLASS ||
@@ -766,6 +767,7 @@ const char *default_value(TyKind t) {
     case TY_STRING: return "(&(\"\\xff\")[1])";
     case TY_SYMBOL: return "((sp_sym)-1)";
     case TY_RANGE:  return "(sp_Range){0}";
+    case TY_FLOAT_RANGE: return "(sp_FRange){0}";
     case TY_TIME:   return "(sp_Time){0}";
     case TY_COMPLEX: return "(sp_Complex){0}";
     case TY_RATIONAL: return "(sp_Rational){0}";

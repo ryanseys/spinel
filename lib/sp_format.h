@@ -16,6 +16,7 @@ const char *sp_complex_to_s(sp_Complex c);
 const char *sp_rational_inspect(sp_Rational r);
 const char *sp_rational_to_s(sp_Rational r);
 const char *sp_Range_inspect(sp_Range *r);
+const char *sp_FRange_inspect(sp_FRange r);
 const char *sp_Time_inspect(sp_Time *t);
 const char *sp_Time_to_s(sp_Time *t);
 

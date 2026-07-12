@@ -660,6 +660,24 @@ TyKind infer_call(Compiler *c, int id) {
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   /* endless literal range: size is the Float infinity; take/first with a
      count materialize just the counted prefix (nothing else can) */
+  if (rt == TY_FLOAT_RANGE && recv >= 0) {
+    if (sp_streq(name, "begin") || sp_streq(name, "first") ||
+        sp_streq(name, "end") || sp_streq(name, "last") ||
+        sp_streq(name, "min") || sp_streq(name, "max"))
+      return TY_FLOAT;
+    if (sp_streq(name, "include?") || sp_streq(name, "cover?") ||
+        sp_streq(name, "member?") || sp_streq(name, "===") ||
+        sp_streq(name, "exclude_end?"))
+      return TY_BOOL;
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
+    if (sp_streq(name, "step") && argc == 1) return TY_FLOAT_ARRAY;
+    if (sp_streq(name, "to_a") || sp_streq(name, "entries") ||
+        sp_streq(name, "map") || sp_streq(name, "collect") ||
+        sp_streq(name, "select") || sp_streq(name, "reject"))
+      return TY_POLY;   /* raises TypeError before producing a value */
+    if (sp_streq(name, "sum") || sp_streq(name, "count") ||
+        sp_streq(name, "size")) return TY_POLY;
+  }
   if (rt == TY_RANGE && recv >= 0) {
     int rnA = recv;
     while (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "ParenthesesNode")) {
@@ -819,6 +837,12 @@ TyKind infer_call(Compiler *c, int id) {
     return TY_CURRY;
   }
 
+  /* float-endpoint range argument: an int receiver may return either the
+     Float bound or itself (poly); a float receiver stays float */
+  if (sp_streq(name, "clamp") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT_RANGE) {
+    if (rt == TY_INT) return TY_POLY;
+    if (rt == TY_FLOAT) return TY_FLOAT;
+  }
   if (rt == TY_INT && sp_streq(name, "clamp") && argc == 1 &&
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
       ((nt_ref(nt, argv[0], "left") >= 0 && infer_type(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
@@ -1805,7 +1829,7 @@ else {
       /* Random class methods: Random.rand(float)->float / Random.rand(int)->int
          / Random.rand->float */
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand"))
-        return argc >= 1 ? (infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_INT) : TY_FLOAT;
+        return argc >= 1 ? ((infer_type(c, argv[0]) == TY_FLOAT || infer_type(c, argv[0]) == TY_FLOAT_RANGE) ? TY_FLOAT : TY_INT) : TY_FLOAT;
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "bytes")) return TY_STRING;
     }
   }
@@ -1907,7 +1931,7 @@ else {
   /* TY_RANDOM instance methods */
   if (recv >= 0 && rt == TY_RANDOM) {
     if (sp_streq(name, "rand"))
-      return argc >= 1 ? (infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_INT) : TY_FLOAT;
+      return argc >= 1 ? ((infer_type(c, argv[0]) == TY_FLOAT || infer_type(c, argv[0]) == TY_FLOAT_RANGE) ? TY_FLOAT : TY_INT) : TY_FLOAT;
     if (sp_streq(name, "bytes")) return TY_STRING;
     if (sp_streq(name, "seed")) return TY_INT;
   }
@@ -2505,6 +2529,7 @@ else {
       if (argc == 0) return TY_FLOAT;
       /* rand(float_range) → Float */
       const char *atype = nt_type(nt, argv[0]);
+      if (infer_type(c, argv[0]) == TY_FLOAT_RANGE) return TY_FLOAT;
       if (atype && sp_streq(atype, "RangeNode")) {
         int lo = nt_ref(nt, argv[0], "left");
         if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) return TY_FLOAT;
@@ -4376,8 +4401,16 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     /* infer the bounds so codegen can tell an int range from a string range */
     int lo = nt_ref(nt, id, "left"), hi = nt_ref(nt, id, "right");
-    if (lo >= 0) infer_type(c, lo);
-    if (hi >= 0) infer_type(c, hi);
+    TyKind lot = lo >= 0 ? infer_type(c, lo) : TY_UNKNOWN;
+    TyKind hit = hi >= 0 ? infer_type(c, hi) : TY_UNKNOWN;
+    /* a FLOAT BEGIN over numeric bounds: the int-backed sp_Range would
+       truncate it, so carry the exact endpoints in an sp_FRange. An
+       int-begin range keeps the int representation regardless of its end
+       (iteration from an int begin is legal -- (1..Float::INFINITY) rides
+       the existing infinite-end handling). */
+    if (lo >= 0 && hi >= 0 && lot == TY_FLOAT &&
+        (hit == TY_FLOAT || hit == TY_INT))
+      return TY_FLOAT_RANGE;
     return TY_RANGE;
   }
   /* A splat inside an array literal (`[*0..10]`, `[*arr]`) contributes the
