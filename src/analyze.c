@@ -1455,6 +1455,10 @@ void rename_shadowing_block_params(Compiler *c) {
         if (opts[q] >= 0 && nt_type(nt, opts[q]) &&
             sp_streq(nt_type(nt, opts[q]), "OptionalParameterNode") &&
             nt_str(nt, opts[q], "name")) extras[ne++] = opts[q];
+      int kwr = nt_ref(nt, pn, "keyword_rest");
+      if (kwr >= 0 && ne < 128 && nt_type(nt, kwr) &&
+          sp_streq(nt_type(nt, kwr), "KeywordRestParameterNode") &&
+          nt_str(nt, kwr, "name")) extras[ne++] = kwr;
     }
     /* block-locals (`; a, b`) live only in the BlockNode's comma-joined `locals`
        string; a block may carry them with no required params (`{ |; x| ... }`). */

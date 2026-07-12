@@ -603,6 +603,50 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value(kt));
     buf_puts(b, as_expr ? "; " : ";\n");
   }
+  /* `**kw` keyword-rest: the remaining pairs of the trailing yielded kwargs
+     hash (those no named keyword param consumed), or a fresh empty hash --
+     CRuby binds {}, never nil. Built into a temp and assigned last, like the
+     positional rest below. */
+  {
+    const char *kwr = block_kwrest_name(c, blk);
+    if (kwr) {
+      const char *kwrr = rename_local(kwr);
+      int tkw = ++g_tmp;
+      if (!as_expr) emit_indent(b, indent);
+      buf_printf(b, "sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new();%s", tkw, as_expr ? " " : "\n");
+      if (!as_expr) emit_indent(b, indent);
+      buf_printf(b, "SP_GC_ROOT(_t%d);%s", tkw, as_expr ? " " : "\n");
+      if (ykw >= 0) {
+        int en2 = 0; const int *els2 = nt_arr(nt, ykw, "elements", &en2);
+        for (int e2 = 0; e2 < en2; e2++) {
+          if (!nt_type(nt, els2[e2]) || !sp_streq(nt_type(nt, els2[e2]), "AssocNode")) continue;
+          int kn2 = nt_ref(nt, els2[e2], "key");
+          int vn2 = nt_ref(nt, els2[e2], "value");
+          if (kn2 < 0 || vn2 < 0) continue;
+          /* a pair consumed by a named keyword param stays out of the rest */
+          const char *ksym = nt_type(nt, kn2) && sp_streq(nt_type(nt, kn2), "SymbolNode")
+                               ? nt_str(nt, kn2, "value") : NULL;
+          int consumed = 0;
+          for (int ki2 = 0; ksym; ki2++) {
+            const char *kp2 = block_keyword_name(c, blk, ki2);
+            if (!kp2) break;
+            if (sp_streq(kp2, ksym) ||
+                (strstr(kp2, "__bp") && !strncmp(kp2, ksym, strlen(ksym)) &&
+                 !strncmp(kp2 + strlen(ksym), "__bp", 4))) { consumed = 1; break; }
+          }
+          if (consumed) continue;
+          if (!as_expr) emit_indent(b, indent);
+          buf_printf(b, "sp_PolyPolyHash_set(_t%d, ", tkw);
+          emit_boxed(c, kn2, b);
+          buf_puts(b, ", ");
+          emit_boxed(c, vn2, b);
+          buf_puts(b, as_expr ? "); " : ");\n");
+        }
+      }
+      if (!as_expr) emit_indent(b, indent);
+      buf_printf(b, "lv_%s = _t%d;%s", kwrr, tkw, as_expr ? " " : "\n");
+    }
+  }
   /* A trailing rest parameter (`|*a|`) collects the yielded arguments past the
      requireds into a fresh array. */
   const char *brest = block_rest_name(c, blk);
@@ -760,11 +804,13 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   int nx_own = subtree_has_own_next(nt, bbody);
   const char *sv_nx2 = g_ie_next_var; int sv_poly2 = g_ie_res_poly;
   int sv_lexc2 = g_loop_exc_base;
+  int sv_lens2 = g_loop_ensure_base;
   char nxbuf[32]; int nx_tmp = 0;
   int bn3 = 0; const int *bd3 = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn3) : NULL;
   TyKind nx_bt = TY_NIL; int nx_tail_stmt = 0;
   if (nx_own) {
     g_loop_exc_base = g_exc_frame_depth;
+    g_loop_ensure_base = g_ensure_depth;
     g_c_loop_depth++;
     if (as_expr) {
       nx_bt = bn3 > 0 ? comp_ntype(c, bd3[bn3 - 1]) : TY_NIL;
@@ -810,6 +856,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   if (nx_own) {
     g_c_loop_depth--;
     g_loop_exc_base = sv_lexc2;
+    g_loop_ensure_base = sv_lens2;
     if (as_expr) buf_printf(b, "} while(0); %s; ", g_ie_next_var ? nxbuf : "(void)0");
     else { emit_indent(b, indent); buf_puts(b, "} while(0);\n"); }
     g_ie_next_var = sv_nx2; g_ie_res_poly = sv_poly2;
@@ -922,6 +969,8 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      frames opened inside the body (mirrors emit_return's accounting). */
   int sv_lexc = g_loop_exc_base;
   g_loop_exc_base = g_exc_frame_depth;
+  int sv_lens = g_loop_ensure_base;
+  g_loop_ensure_base = g_ensure_depth;
   g_c_loop_depth++;
   int has_redo = subtree_has_own_redo(c->nt, body);
   int lbl = 0;
@@ -944,6 +993,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   if (has_redo) g_redo_depth--;
   g_c_loop_depth--;
   g_loop_exc_base = sv_lexc;
+  g_loop_ensure_base = sv_lens;
 }
 
 /* `recv.tap { |x| body }` / `recv.then { |x| body }` (alias yield_self) in

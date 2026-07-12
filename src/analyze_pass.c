@@ -2786,6 +2786,22 @@ int block_rest_marker(Compiler *c, int block) {
   return nt_ref(c->nt, pn, "rest") >= 0;
 }
 
+/* Name of a block's `**kw` keyword-rest parameter, or NULL (also NULL for
+   the anonymous `**`). */
+const char *block_kwrest_name(Compiler *c, int block) {
+  int bp = nt_ref(c->nt, block, "parameters");
+  if (bp < 0) return NULL;
+  const char *bpty = nt_type(c->nt, bp);
+  if (bpty && sp_streq(bpty, "NumberedParametersNode")) return NULL;
+  int pn = nt_ref(c->nt, bp, "parameters");
+  if (pn < 0) return NULL;
+  int kw = nt_ref(c->nt, pn, "keyword_rest");
+  if (kw < 0) return NULL;
+  const char *kty = nt_type(c->nt, kw);
+  if (!kty || !sp_streq(kty, "KeywordRestParameterNode")) return NULL;
+  return nt_str(c->nt, kw, "name");
+}
+
 /* Name of a block's idx-th keyword parameter (`|a:, b: 5|`), or NULL. */
 const char *block_keyword_name(Compiler *c, int block, int idx) {
   int bp = nt_ref(c->nt, block, "parameters");
@@ -4789,6 +4805,16 @@ int infer_block_params(Compiler *c) {
           else { int dv = block_keyword_default(c, block, ki); if (dv >= 0) kt = infer_type(c, dv); }
           LocalVar *lv = scope_local_intern(bs, kp); lv->is_block_param = 1;
           if (kt != TY_UNKNOWN) { TyKind m = ty_unify(lv->type, kt); if (m != lv->type) { lv->type = m; changed = 1; } }
+        }
+        /* `**kw` keyword-rest: always a hash (an empty one when the yield
+           carries no keyword arguments, matching CRuby) */
+        {
+          const char *kwr = block_kwrest_name(c, block);
+          if (kwr) {
+            LocalVar *lv = scope_local_intern(bs, kwr); lv->is_block_param = 1;
+            TyKind m = ty_unify(lv->type, TY_POLY_POLY_HASH);
+            if (m != lv->type) { lv->type = m; changed = 1; }
+          }
         }
         continue;
       }
