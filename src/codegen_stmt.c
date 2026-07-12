@@ -490,6 +490,40 @@ else {
     return 1;
   }
   if (sp_streq(name, "printf") && argc >= 1) {
+    /* A conversion C's printf does not have (%b/%B binary: glibc 2.35+ only,
+       a literal 'b' elsewhere) routes through the Ruby formatter (the same
+       engine String#% / format use), which renders it portably. */
+    if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "StringNode")) {
+      const char *blit = nt_str(nt, argv[0], "unescaped");
+      if (!blit) blit = nt_str(nt, argv[0], "content");
+      int has_bin = 0;
+      for (const char *p = blit ? blit : ""; *p; p++) {
+        if (*p != '%') continue;
+        p++;
+        if (*p == '%') continue;
+        while (*p == '-' || *p == '+' || *p == ' ' || *p == '#' || *p == '0' ||
+               (*p >= '1' && *p <= '9') || *p == '.' || *p == '*') p++;
+        if (*p == 'b' || *p == 'B') { has_bin = 1; break; }
+        if (!*p) break;
+      }
+      if (has_bin) {
+        int tpa = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tpa, tpa);
+        for (int k = 1; k < argc; k++) {
+          Buf ab; memset(&ab, 0, sizeof ab);
+          emit_boxed(c, argv[k], &ab);
+          emit_indent(b, indent);
+          buf_printf(b, "  sp_PolyArray_push(_t%d, %s);\n", tpa, ab.p ? ab.p : "sp_box_nil()");
+          free(ab.p);
+        }
+        emit_indent(b, indent);
+        buf_puts(b, "  fputs(sp_str_format_polyarr(");
+        emit_expr(c, argv[0], b);
+        buf_printf(b, ", _t%d), stdout); }\n", tpa);
+        return 1;
+      }
+    }
     /* Kernel#printf: printf(fmt, args...) with %d/%i/%x/%o/%u rewritten to ll forms */
     emit_indent(b, indent);
     buf_puts(b, "printf(");
