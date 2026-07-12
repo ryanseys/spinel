@@ -4585,10 +4585,14 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
         /* bit-slice: n[lo..hi] extracts hi-lo+1 bits starting at lo; an
-           endless range keeps everything above lo */
+           endless range keeps everything above lo; a beginless range raises
+           like CRuby (the field below bit 0 is infinite) */
         int trb = ++g_tmp;
         buf_printf(b, "({ sp_Range _t%d = ", trb); emit_expr(c, argv[0], b);
-        buf_printf(b, "; mrb_int _lo%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first;"
+        buf_printf(b, "; mrb_int _lo%d = _t%d.first == INTPTR_MIN"
+                      " ? (sp_raise_cls(\"ArgumentError\","
+                      " \"The beginless range for Integer#[] results in infinity\"), 0)"
+                      " : _t%d.first;"
                       " mrb_int _sh%d = ((%s) >> _lo%d);"
                       " _t%d.last == INTPTR_MAX ? _sh%d"
                       " : (_sh%d & ((((mrb_int)1) << (_t%d.last - _lo%d + (_t%d.excl ? 0 : 1))) - 1)); })",
