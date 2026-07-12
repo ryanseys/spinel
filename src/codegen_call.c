@@ -4250,6 +4250,22 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     if (re || ae) return 0;
   }
 
+  /* Integer ** with a runtime exponent: the result class depends on the value
+     (Bignum on overflow, Rational when negative), so inference typed it POLY;
+     dispatch through sp_poly_pow. Must precede the int-arith block, whose
+     eff_res re-derivation would reroute an int/int operand pair to the
+     raising sp_int_pow. */
+  if (recv >= 0 && argc == 1 && sp_streq(name, "**") &&
+      rt == TY_INT && a0 == TY_INT && res == TY_POLY) {
+    buf_puts(b, "sp_poly_pow(sp_box_int(");
+    emit_expr(c, recv, b);
+    buf_puts(b, "), sp_box_int(");
+    emit_expr(c, argv[0], b);
+    buf_puts(b, "))");
+    return 1;
+  }
+
+
   if (recv >= 0 && argc == 1 && !ty_is_object(rt) && !ty_is_array(rt) &&
       (int_arith_fn(name) ||
        /* bigint shifts aren't "int arith" ops but lower through the same
