@@ -6253,7 +6253,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_IntArray_sum(sp_range_to_ia(_t%d), 0)", t);
       else if (sp_streq(name, "exclude_end?"))
         buf_printf(b, "(_t%d.excl != 0)", t);
-      else if (sp_streq(name, "eql?")) {
+      else if (sp_streq(name, "eql?") || sp_streq(name, "equal?")) {
+        /* the unboxed sp_Range has no object identity: equal? compares
+           components, like the Complex/Rational value arms */
         buf_printf(b, "sp_range_eq(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "overlap?")) {

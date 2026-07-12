@@ -130,6 +130,15 @@ through every int-arithmetic consumer, so a negative value there still
 raises `RangeError` rather than silently truncating. `Integer#pow(negative,
 mod)` raises `RangeError` with CRuby's message.
 
+#### Unboxed value types have no object identity
+
+`Complex`, `Rational`, and `Range` values are unboxed C structs, so there is
+no per-object identity to observe: `equal?` (and `object_id` comparisons)
+degrade to component equality. `x.equal?(x)` is `true` as in CRuby, but two
+separately-constructed equal values also compare `equal?` (CRuby: `false`).
+The same applies to `freeze` on these values: they are value-frozen already
+(`frozen?` is `true`), and `freeze` is an identity no-op.
+
 #### `Range#step` / `Range#%` return a materialized Array, not an ArithmeticSequence
 
 CRuby's blockless `(1..10).step(2)` and `(1..10) % 2` return an

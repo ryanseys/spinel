@@ -1550,6 +1550,21 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "(%ssp_complex_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_complex_coerce(c, argv[0], b); buf_puts(b, "))");
         return 1;
       }
+      /* eql? / equal? on the unboxed Complex value: component equality when
+         the argument is a Complex (the struct has no object identity; a
+         self-reference compares equal, matching the common x.equal?(x)
+         probe), constant false for any other argument type. */
+      if (crt == TY_COMPLEX && argc == 1 &&
+          (sp_streq(name, "eql?") || sp_streq(name, "equal?"))) {
+        if (comp_ntype(c, argv[0]) == TY_COMPLEX) {
+          buf_puts(b, "sp_complex_eq("); emit_expr(c, recv, b); buf_puts(b, ", ");
+          emit_expr(c, argv[0], b); buf_puts(b, ")");
+        }
+        else {
+          buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+        }
+        return 1;
+      }
     }
     /* Integer/Float <op> Complex: lift the scalar to re+0i. */
     if ((crt == TY_INT || crt == TY_FLOAT) && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
@@ -1846,6 +1861,20 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
         buf_printf(b, "(%ssp_rational_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, "))");
+        return 1;
+      }
+      /* eql? / equal? on the unboxed Rational value: component equality for
+         a Rational argument (no object identity; see the Complex arm),
+         constant false otherwise. */
+      if (crt == TY_RATIONAL && argc == 1 &&
+          (sp_streq(name, "eql?") || sp_streq(name, "equal?"))) {
+        if (comp_ntype(c, argv[0]) == TY_RATIONAL) {
+          buf_puts(b, "sp_rational_eq("); emit_expr(c, recv, b); buf_puts(b, ", ");
+          emit_expr(c, argv[0], b); buf_puts(b, ")");
+        }
+        else {
+          buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+        }
         return 1;
       }
     }
