@@ -316,21 +316,24 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       const char *rvt2 = nt_type(nt, recv);
       int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
                          sp_streq(rvt2, "InstanceVariableReadNode"));
-      int tn2 = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = ", tn2);
+      int tr2 = ++g_tmp, tn2 = ++g_tmp;
+      /* bind the receiver once so a frozen chained receiver (`s.freeze << x`)
+         still raises; the check runs after the args evaluate, like CRuby */
+      buf_printf(b, "({ const char *_t%d = ", tr2); emit_expr(c, recv, b);
+      buf_printf(b, "; const char *_t%d = ", tn2);
       if (sp_streq(name, "prepend")) {
         /* args first (in order), then the receiver */
         for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
         emit_str_expr(c, argv[0], b);
         for (int j = 1; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
-        buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ")");
+        buf_printf(b, ", _t%d)", tr2);
       }
       else {
         for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
-        emit_expr(c, recv, b);
+        buf_printf(b, "_t%d", tr2);
         for (int j = 0; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
       }
-      buf_puts(b, "; ");
+      buf_printf(b, "; sp_str_check_mutable(_t%d); ", tr2);
       if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
       buf_printf(b, "_t%d; })", tn2);
       return 1;
@@ -345,6 +348,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; if (_t%d < 0) _t%d += (mrb_int)sp_str_length(_t%d) + 1;", ti2, ti2, to);
       buf_printf(b, " const char *_t%d = sp_str_splice_at(_t%d, _t%d, 0, ", tn2, to, ti2);
       emit_str_expr(c, argv[1], b); buf_puts(b, ", 0); ");
+      buf_printf(b, "sp_str_check_mutable(_t%d); ", to);
       if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
       buf_printf(b, "_t%d; })", tn2);
       return 1;
@@ -1302,10 +1306,11 @@ else {
         }
       }
       if (sp_streq(name, "clear") && argc == 0) {
-        /* empty the array in place, evaluate to it (Ruby returns self) */
+        /* empty the array in place, evaluate to it (Ruby returns self);
+           the helper raises FrozenError on a frozen receiver */
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (_t%d) _t%d->len = 0; _t%d; })", t, t, t);
+        buf_printf(b, "; sp_%sArray_clear(_t%d); _t%d; })", k, t, t);
         return 1;
       }
       if (sp_streq(name, "cycle") && argc == 1 && nt_ref(nt, id, "block") < 0) {
@@ -2310,7 +2315,7 @@ else {
       if (sp_streq(name, "clear") && argc == 0) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (_t%d) _t%d->len = 0; _t%d; })", t, t, t);
+        buf_printf(b, "; sp_PolyArray_clear(_t%d); _t%d; })", t, t, t);
         return 1;
       }
       if (sp_streq(name, "+") && argc == 1 && a0 == TY_POLY_ARRAY) {
@@ -3162,7 +3167,9 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : "NULL"); free(rb.p);
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash();\n", tr);
+          buf_printf(g_pre, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash(", tr);
+          { char htmp[32]; snprintf(htmp, sizeof htmp, "_t%d", tr); emit_boxed_text(c, rt, htmp, g_pre); }
+          buf_puts(g_pre, ");\n");
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "mrb_int _t%d = _t%d ? _t%d->len : 0;\n", torig, tr, tr);
           emit_indent(g_pre, g_indent);

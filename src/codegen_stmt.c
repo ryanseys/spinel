@@ -7865,7 +7865,8 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     /* Hash#store is the method form of []= */
     if (hn && (sp_streq(name, "[]=") || sp_streq(name, "store")) && argc == 2) {
       emit_indent(b, indent);
-      buf_puts(b, "if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash();\n");
+      buf_puts(b, "if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash(");
+      emit_boxed(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent);
       buf_printf(b, "sp_%sHash_set(", hn);
       emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -7920,7 +7921,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     }
     if (sp_streq(name, "clear") && argc == 0) {
       emit_indent(b, indent);
-      buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ")->len = 0;\n");
+      buf_puts(b, "sp_PolyArray_clear("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       return 1;
     }
     return 0;

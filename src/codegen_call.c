@@ -3879,15 +3879,21 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
 
 /* Emit `mrb_int _s<ta> = ...; mrb_int _l<ta> = ...;` for a splice, from either
    the (start,len) pair or a range computed against the receiver's length. The
-   receiver temp `_t<ta>` must already be bound; `tg` names the range temp. */
-static void emit_splice_bounds(Compiler *c, int ta, int tg,
+   receiver temp `_t<ta>` must already be bound; `tg` names the range temp.
+   `k` is the typed-array kind ("Int"/"Str"/"Float") or NULL for a PolyArray;
+   it selects how the receiver boxes into the FrozenError raise. */
+static void emit_splice_bounds(Compiler *c, int ta, int tg, const char *k,
                                int start_node, int len_node, int range_node, Buf *b) {
   if (range_node >= 0) {
     buf_printf(b, "sp_Range _t%d = ", tg); emit_expr(c, range_node, b);
     buf_printf(b, "; mrb_int _al%d = _t%d->len;", tg, ta);
     /* frozen precedes any range validation (CRuby's modify-check order),
        and a range beginning before -len is a RangeError, not IndexError */
-    buf_printf(b, " if(_t%d->frozen)sp_raise_frozen_array();", ta);
+    if (!k)
+      buf_printf(b, " if(_t%d->frozen)sp_raise_frozen_array(sp_box_poly_array(_t%d));", ta, ta);
+    else
+      buf_printf(b, " if(_t%d->frozen)sp_raise_frozen_array(sp_box_obj(_t%d, SP_BUILTIN_%s_ARRAY));",
+                 ta, ta, sp_streq(k, "Int") ? "INT" : sp_streq(k, "Str") ? "STR" : "FLT");
     buf_printf(b, " if(_t%d.first!=INTPTR_MIN&&_t%d.first<-_al%d)"
                   "sp_raise_cls(\"RangeError\",sp_sprintf(\"%%s out of range\",sp_range_str(_t%d)));",
                tg, tg, tg, tg);
@@ -3970,7 +3976,7 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
       emit_boxed_text(c, cty, call.p ? call.p : "", b);
       buf_puts(b, "; ");
       free(call.p);
-      emit_splice_bounds(c, ta, tg, start_node, len_node, range_node, b);
+      emit_splice_bounds(c, ta, tg, NULL, start_node, len_node, range_node, b);
       buf_printf(b, "sp_PolyArray_splice(_t%d, _s%d, _l%d, _t%d); sp_box_obj(_tq%d, %d); })",
                  ta, ta, ta, ts, ta, ty_object_class(rhs_ty));
       return;
@@ -3979,7 +3985,7 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
     if (rhs_empty) buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())");
     else emit_boxed(c, rhs_node, b);
     buf_puts(b, "; ");
-    emit_splice_bounds(c, ta, tg, start_node, len_node, range_node, b);
+    emit_splice_bounds(c, ta, tg, NULL, start_node, len_node, range_node, b);
     buf_printf(b, "sp_PolyArray_splice(_t%d, _s%d, _l%d, _t%d); _t%d; })", ta, ta, ta, ts, ts);
     return;
   }
@@ -4067,7 +4073,7 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
     buf_printf(b, "_src%d = &_t%d; _srcn%d = 1; ", ta, ts, ta);
   }
 
-  emit_splice_bounds(c, ta, tg, start_node, len_node, range_node, b);
+  emit_splice_bounds(c, ta, tg, k, start_node, len_node, range_node, b);
   buf_printf(b, "sp_%sArray_splice(_t%d, _s%d, _l%d, _src%d, _srcn%d); %s; })",
              k, ta, ta, ta, ta, ta, valtmp);
 }
@@ -7522,8 +7528,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
-  /* freeze / frozen? on hashes: use the GC-header frozen bit */
-  if (recv >= 0 && argc == 0 && ty_is_hash(comp_ntype(c, recv))) {
+  /* freeze / frozen? on hashes: use the GC-header frozen bit. An empty hash
+     literal infers no type, so also key on the node shape (sp_gc_freeze is
+     pointer-generic, so the concrete hash kind doesn't matter). */
+  if (recv >= 0 && argc == 0 &&
+      (ty_is_hash(comp_ntype(c, recv)) ||
+       (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "HashNode")))) {
     if (sp_streq(name, "to_h") && nt_ref(nt, id, "block") < 0) {  /* identity */
       emit_expr(c, recv, b);
       return;
@@ -11225,7 +11235,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
         else if (decl_type == TY_POLY) emit_boxed(c, argv[1], b);
         else emit_expr(c, argv[1], b);
-        buf_printf(b, "; if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash(); ");
+        buf_printf(b, "; if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash(");
+        emit_boxed(c, recv, b); buf_puts(b, "); ");
         buf_printf(b, "sp_%sHash_set(", hn); emit_expr(c, recv, b); buf_puts(b, ", ");
         if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[0], b);
         else emit_hash_key(c, argv[0], ty_hash_key(rt), b);  /* unbox a poly key to the hash's key type */

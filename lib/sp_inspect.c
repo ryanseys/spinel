@@ -47,3 +47,16 @@ const char *sp_inspect_container(sp_RbVal v) {
   sp_String_append(s, "}");
   return s->data;
 }
+
+/* FrozenError with the CRuby message shape "can't modify frozen <Class>: <inspect>".
+   `what` carries the class name ("can't modify frozen Array"), marker-prefixed at
+   the call site; the receiver renders through the full poly inspect hook (same
+   output as `p`), mirroring sp_raise_frozen_str's rooting discipline. */
+__attribute__((noreturn)) void sp_raise_frozen_container(sp_RbVal v, const char *what) {
+  if (!sp_poly_inspect_fn) sp_raise_cls("FrozenError", what);
+  const char *ins = sp_poly_inspect_fn(v);
+  SP_GC_ROOT_STR(ins);
+  const char *msg = sp_str_concat3(what, (&("\xff" ": ")[1]), ins);
+  SP_GC_ROOT_STR(msg);
+  sp_raise_cls("FrozenError", msg);
+}
