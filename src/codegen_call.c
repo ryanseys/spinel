@@ -1944,7 +1944,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       const char *ebclose = (ret == TY_POLY) ? ")" : "";
       /* string/symbol-tagged poly values answer length/size directly */
       if (is_lengthlike) {
-        buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = %s(mrb_int)strlen(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ", tv, tr, bopen, tv, bclose);
+        buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = %ssp_str_length(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ", tv, tr, bopen, tv, bclose);
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %s(mrb_int)sp_str_length(_t%d.v.s)%s; else ", tv, tr, bopen, tv, bclose);
       }
       /* a string/symbol-tagged poly value answers empty? directly (#1438) */
@@ -10703,7 +10703,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (sp_streq(name, "length") || sp_streq(name, "size")) {
-      buf_puts(b, "((mrb_int)strlen(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))");
+      /* character count, not bytes (multibyte symbol names) */
+      buf_puts(b, "sp_str_length(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
     if (sp_streq(name, "empty?")) {
