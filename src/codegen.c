@@ -2650,8 +2650,13 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       const char *rn = class_ruby_name(c, cid); if (!rn) rn = ci->name;
       buf_printf(b, "static const char *sp_%s_inspect(sp_%s *self) {\n", ci->c_name, ci->c_name);
       buf_puts(b, "  if (!self) return \"nil\";\n");
-      buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s %s\"); SP_GC_ROOT(s);\n",
-                 ci->is_data ? "data" : "struct", rn);
+      /* an anonymous struct class has no name to show: #<struct a=1, b=2> */
+      if (ci->is_anon_struct)
+        buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s\"); SP_GC_ROOT(s);\n",
+                   ci->is_data ? "data" : "struct");
+      else
+        buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s %s\"); SP_GC_ROOT(s);\n",
+                   ci->is_data ? "data" : "struct", rn);
       for (int i = 0; i < ci->nivars; i++) {
         buf_printf(b, "  sp_String_append(s, \"%s%s=\");\n", i ? ", " : " ", ci->ivars[i] + 1);
         TyKind mt = ci->ivar_types[i];

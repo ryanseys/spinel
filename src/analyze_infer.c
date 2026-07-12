@@ -1176,6 +1176,10 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && ty_is_hash(rt) && argc == 0 && sp_streq(name, "default_proc"))
     return TY_PROC;
 
+  /* k = Struct.new(:a, :b): the value IS the synthesized anonymous struct
+     class, as a first-class class object */
+  if (anon_struct_ci_for_value(c, id) >= 0) return TY_CLASS;
+
   /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
      Exception: self.class.new(...) resolves to the enclosing class statically. */
   if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
@@ -1186,7 +1190,14 @@ TyKind infer_call(Compiler *c, int id) {
       nt_ref(nt, recv, "receiver") >= 0 &&
       nt_type(nt, nt_ref(nt, recv, "receiver")) &&
       sp_streq(nt_type(nt, nt_ref(nt, recv, "receiver")), "SelfNode"));
-    if (!_is_self_class) return TY_POLY;
+    /* a local statically holding one STRUCT class (k = Struct.new(..) /
+       k = StructKlass) falls through to the static-class .new arms below --
+       its typed member accessors then dispatch statically. A plain class
+       stays on the Tier-5 dynamic boxed path (test/dynamic_class_new.rb). */
+    int _cvi = _is_self_class ? -1 : class_var_static_ci(c, recv);
+    if (!_is_self_class &&
+        (_cvi < 0 || !(c->classes[_cvi].is_struct || c->classes[_cvi].is_data)))
+      return TY_POLY;
   }
 
   if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {

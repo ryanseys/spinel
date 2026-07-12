@@ -144,6 +144,8 @@ typedef struct {
                           order and there is no user `initialize`. */
   int is_data;         /* defined via Data.define(...): a Struct-like value class
                           that additionally supports the `#with` copy-update. */
+  int is_anon_struct;  /* k = Struct.new(:a, :b): synthesized for a local-held
+                          anonymous struct class; #inspect omits the name. */
   /* Native-bound class (Path B typed object): C-backed, declared by a package
      via native_struct/native_new/native_method. It is a first-class object
      (ty_object(i), a runtime cls_id, GC-managed) whose methods dispatch to
@@ -403,6 +405,7 @@ int comp_defined_guard_false(Compiler *c, int pred);
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
 int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
 int        class_var_static_ci(Compiler *c, int node);  /* local holding one class const */
+int        anon_struct_ci_for_value(Compiler *c, int val);  /* k = Struct.new(...) value node */
 int        hash_new_default_arg(Compiler *c, int recv); /* Hash.new(d) literal: d node or -1 */
 /* Class index of a `class_eval`/`module_eval { defs }` reopen, else -1.
    enclosing_class resolves bare/`self.` receivers (the class whose body we are

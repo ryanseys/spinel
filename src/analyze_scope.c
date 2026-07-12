@@ -1070,6 +1070,20 @@ void register_structs(Compiler *c) {
         register_struct_members(c, comp_class_new(c, cname, id), val);
       }
     }
+    /* k = Struct.new(:a, :b): an anonymous struct class held in a local.
+       Synthesize a uniquely named class keyed to the WRITE node (def_node);
+       class_var_static_ci resolves the local's reads to it, so .new/.members
+       and the member accessors dispatch like the constant form. #inspect
+       omits the synthetic name (CRuby shows `#<struct a=1, b=2>`). */
+    else if (sp_streq(ty, "LocalVariableWriteNode")) {
+      int val = nt_ref(nt, id, "value");
+      if (!is_struct_call(c, val)) continue;
+      char an[48];
+      snprintf(an, sizeof an, "StructAnon_%d", id);
+      ClassInfo *cls = comp_class_new(c, an, id);
+      cls->is_anon_struct = 1;
+      register_struct_members(c, cls, val);
+    }
     /* class X < Struct.new(:a, :b); ... end */
     else if (sp_streq(ty, "ClassNode")) {
       int sup = nt_ref(nt, id, "superclass");

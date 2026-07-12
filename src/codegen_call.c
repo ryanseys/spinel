@@ -4390,6 +4390,12 @@ static void emit_math_arg(Compiler *c, int node, Buf *out) {
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
+  /* k = Struct.new(:a, :b): the registered anonymous struct class, as a
+     first-class class value */
+  {
+    int aci = anon_struct_ci_for_value(c, id);
+    if (aci >= 0) { buf_printf(b, "((sp_Class){%d})", aci); return; }
+  }
   /* `require` / `require_relative` is a compile-time directive: top-level ones
      are textually spliced away before codegen, and native libs are provided by
      the runtime. One that still reaches codegen -- indented inside an `if`,

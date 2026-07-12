@@ -117,11 +117,31 @@ int class_var_static_ci(Compiler *c, int node) {
     const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
     int ci = (vty && sp_streq(vty, "ConstantReadNode"))
              ? comp_class_index(c, nt_str(nt, val, "name")) : -1;
+    /* k = Struct.new(:a, :b): resolve to the anonymous struct class that
+       register_structs synthesized for this write (keyed by def_node) */
+    if (ci < 0 && is_struct_call(c, val)) {
+      for (int k = 0; k < c->nclasses; k++)
+        if (c->classes[k].is_anon_struct && c->classes[k].def_node == w) { ci = k; break; }
+    }
     if (ci < 0) return -1;                   /* a non-class write: dynamic */
     if (found >= 0 && found != ci) return -1; /* two classes: dynamic */
     found = ci;
   }
   return found;
+}
+
+/* The anonymous struct class synthesized for a `k = Struct.new(:a, :b)`
+   VALUE node (the write is the class's def_node), or -1. Lets the value
+   type as TY_CLASS and emit as the class object. */
+int anon_struct_ci_for_value(Compiler *c, int val) {
+  const NodeTable *nt = c->nt;
+  if (val < 0) return -1;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].is_anon_struct) continue;
+    int w = c->classes[k].def_node;
+    if (w >= 0 && nt_ref(nt, w, "value") == val) return k;
+  }
+  return -1;
 }
 
 /* `Hash.new(d)` (or the desugared __hash_new_default) as a bare expression:
