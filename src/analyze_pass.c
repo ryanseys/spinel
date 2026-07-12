@@ -2356,6 +2356,8 @@ int infer_param_types(Compiler *c) {
       continue;
     }
     if (!sp_streq(ty, "CallNode")) continue;
+    if (nt_int(nt, id, "rt_probe", 0)) continue;  /* analysis-only respond_to? probe:
+       its dummy-argument shape must not type real method params */
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
 
@@ -3265,7 +3267,9 @@ int desugar_respond_to_probe(Compiler *c) {
     int probes[3]; int np = 0;
     /* shape 0: recv.m  -- no argument, no block. Resolves the blockless
        enumerator forms (`each`, `reverse_each` infer TY_ENUMERATOR) and plain
-       no-arg methods, using only codegen-safe inference. */
+       no-arg methods, using only codegen-safe inference. Every probe carries
+       the rt_probe flag: it is analysis-only, and the param-binding passes
+       must not let its dummy shapes type real lambda/method parameters. */
     {
       int na = nt_new_node(nt, "ArgumentsNode");
       int probe = nt_new_node(nt, "CallNode");
@@ -3273,6 +3277,7 @@ int desugar_respond_to_probe(Compiler *c) {
         nt_node_set_ref(nt, probe, "receiver", recv);
         nt_node_set_str(nt, probe, "name", qm);
         nt_node_set_ref(nt, probe, "arguments", na);
+        nt_node_set_int(nt, probe, "rt_probe", 1);
         probes[np++] = probe;
       }
     }
@@ -3288,6 +3293,7 @@ int desugar_respond_to_probe(Compiler *c) {
         nt_node_set_str(nt, probe, "name", qm);
         nt_node_set_ref(nt, probe, "arguments", na);
         nt_node_set_ref(nt, probe, "block", blk);
+        nt_node_set_int(nt, probe, "rt_probe", 1);
         probes[np++] = probe;
       }
     }
@@ -3301,6 +3307,7 @@ int desugar_respond_to_probe(Compiler *c) {
         nt_node_set_ref(nt, probe, "receiver", recv);
         nt_node_set_str(nt, probe, "name", qm);
         nt_node_set_ref(nt, probe, "arguments", na);
+        nt_node_set_int(nt, probe, "rt_probe", 1);
         probes[np++] = probe;
       }
     }
@@ -4491,6 +4498,7 @@ int infer_block_params(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cname = nt_str(nt, id, "name");
     if (!cname || (!sp_streq(cname, "call") && !sp_streq(cname, "()") && !sp_streq(cname, "[]"))) continue;
+    if (nt_int(nt, id, "rt_probe", 0)) continue;  /* analysis-only respond_to? probe */
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || infer_type(c, recv) != TY_PROC) continue;
     const char *rty = nt_type(nt, recv);

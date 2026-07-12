@@ -432,6 +432,24 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, Buf *b) {
 }
 
 
+/* Enumerable's public instance methods, for respond_to? on a user class
+   that includes the module (served through the __enum_to_a redirect). */
+static int name_is_enumerable_module_method(const char *m) {
+  static const char *const em[] = {
+    "each", "map", "collect", "select", "filter", "reject", "find",
+    "detect", "find_all", "find_index", "reduce", "inject", "to_a",
+    "entries", "sort", "sort_by", "min", "max", "min_by", "max_by",
+    "minmax", "minmax_by", "sum", "count", "include?", "member?",
+    "first", "take", "drop", "take_while", "drop_while", "tally",
+    "each_with_index", "each_with_object", "each_slice", "each_cons",
+    "each_entry", "flat_map", "collect_concat", "group_by", "partition",
+    "zip", "any?", "all?", "none?", "one?", "chunk", "chunk_while",
+    "slice_when", "slice_before", "slice_after", "filter_map", "uniq",
+    "to_h", "lazy", "cycle", "reverse_each", "to_set", NULL };
+  for (int i = 0; em[i]; i++) if (sp_streq(m, em[i])) return 1;
+  return 0;
+}
+
 /* eval(string) / Kernel.eval(string) compiling an arbitrary runtime string is a
    hard AOT boundary, not a missing feature. If node `id` is such a call, emit
    the intentional diagnostic and return 1; otherwise return 0. Shared by
@@ -9603,9 +9621,30 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze",
         "frozen?", "hash", "==", "!=", "equal?", "eql?", "object_id",
         "respond_to?", "is_a?", "kind_of?", "instance_of?", "itself",
-        "tap", "then", "send", "===", NULL };
+        "tap", "then", "send", "===",
+        /* Kernel/Object methods every CRuby object answers true for */
+        "display", "yield_self", "public_send", "__send__", "method",
+        "methods", "to_enum", "enum_for", "instance_variables",
+        "instance_variable_get", "instance_variable_set",
+        "instance_variable_defined?", "singleton_class", "extend", NULL };
       int yes = 0, resolved = 0;
       for (int u = 0; uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
+      /* value-type receivers: their builtin surface is not in any class
+         table; answer the well-known names directly (the probe below only
+         reports methods spinel can dispatch, a subset of CRuby's answer) */
+      if (!resolved && recv >= 0 && rt == TY_SYMBOL) {
+        static const char *const symm[] = {
+          "to_proc", "to_sym", "id2name", "name", "length", "size",
+          "succ", "next", "upcase", "downcase", "capitalize", "swapcase",
+          "empty?", "start_with?", "end_with?", "<=>", "[]", NULL };
+        for (int u = 0; symm[u]; u++) if (sp_streq(qm, symm[u])) { yes = resolved = 1; break; }
+      }
+      if (!resolved && recv >= 0 && rt == TY_PROC) {
+        static const char *const procm[] = {
+          "call", "()", "[]", "yield", "arity", "lambda?", "curry",
+          "to_proc", "parameters", "<<", ">>", NULL };
+        for (int u = 0; procm[u]; u++) if (sp_streq(qm, procm[u])) { yes = resolved = 1; break; }
+      }
       if (!resolved) {
         const char *rty = nt_type(nt, recv);
         if (rty && sp_streq(rty, "ConstantReadNode")) {
@@ -9622,7 +9661,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           int found = comp_method_in_chain(c, cid, qm, NULL) >= 0 ||
                       comp_reader_in_chain(c, cid, qm, NULL) ||
                       (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
-          if (!found) { resolved = 1; yes = 0; }
+          /* an Enumerable includer (marked by its synthesized __enum_to_a)
+             answers true for the module's methods even though they have no
+             entry in the class's own method table (the redirect serves them) */
+          if (!found && comp_method_in_chain(c, cid, "__enum_to_a", NULL) >= 0 &&
+              name_is_enumerable_module_method(qm)) { resolved = 1; yes = 1; }
+          else if (!found) { resolved = 1; yes = 0; }
           else {
             int v = comp_method_vis_in_chain(c, cid, qm);
             if (v == SP_VIS_PUBLIC) { resolved = 1; yes = 1; }       /* public: always */
