@@ -1707,6 +1707,9 @@ int sp_bigint_sign(sp_Bigint *b);
 size_t sp_bigint_byte_len(sp_Bigint *b);
 size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap);
 sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, size_t n);
+sp_Bigint *sp_bigint_div(sp_Bigint *a, sp_Bigint *b);
+sp_Bigint *sp_bigint_gcd(sp_Bigint *a, sp_Bigint *b);
+
 /* Boxing a nullable-int value (int?): SP_INT_NIL is the reserved nil sentinel
    and never a legitimate integer, so a sentinel must surface as Ruby nil rather
    than a boxed INT_MIN. Used when an int? value (hash miss, rindex, nonzero?,
@@ -1752,6 +1755,52 @@ static sp_RbVal sp_box_class(sp_Class c) { if (c.name) return sp_box_class_name(
 /* box a sp_Bigint* into a poly slot (heterogeneous container element, or a
    promote-mode overflow result). */
 static sp_RbVal sp_box_bigint(sp_Bigint *b) { sp_RbVal r; r.tag = SP_TAG_BIGINT; r.cls_id = 0; r.v.p = b; return r; }
+
+/* an exact Rational whose components exceed int64: bigint-backed, boxed with
+   SP_BUILTIN_BIGRAT. Constructed reduced with a positive denominator. v1
+   surface: to_f / to_s / inspect / == / numerator / denominator; arithmetic
+   is a loud NoMethodError via the ordinary poly dispatch. */
+typedef struct { sp_Bigint *num; sp_Bigint *den; } sp_BigRat;
+static void sp_BigRat_scan(void *p) {
+  sp_BigRat *r = (sp_BigRat *)p;
+  if (r->num) sp_mark_rbval(sp_box_bigint(r->num));
+  if (r->den) sp_mark_rbval(sp_box_bigint(r->den));
+}
+static sp_RbVal sp_bigrat_new(sp_Bigint *num, sp_Bigint *den) {
+  /* address-based roots: the slots stay rooted across the reassignments */
+  SP_GC_ROOT(num); SP_GC_ROOT(den);
+  if (sp_bigint_sign(den) == 0)
+    sp_raise_cls("ZeroDivisionError", (&("\xff" "divided by 0")[1]));
+  if (sp_bigint_sign(den) < 0) {
+    sp_Bigint *z = sp_bigint_new_int(0);
+    SP_GC_ROOT(z);
+    num = sp_bigint_sub(z, num);
+    den = sp_bigint_sub(z, den);
+  }
+  sp_Bigint *g = sp_bigint_gcd(num, den);
+  SP_GC_ROOT(g);
+  if (!(sp_bigint_sign(g) == 0)) {
+    num = sp_bigint_div(num, g);
+    den = sp_bigint_div(den, g);
+  }
+  sp_BigRat *r = (sp_BigRat *)sp_gc_alloc(sizeof(sp_BigRat), NULL, sp_BigRat_scan);
+  r->num = num; r->den = den;
+  return sp_box_obj(r, SP_BUILTIN_BIGRAT);
+}
+static mrb_float sp_bigrat_to_f(sp_BigRat *r) {
+  return sp_bigint_to_double(r->num) / sp_bigint_to_double(r->den);
+}
+static const char *sp_bigrat_fmt(sp_BigRat *r, int insp) {
+  const char *ns = sp_bigint_to_s(r->num);   /* malloc'd (see the puts arm) */
+  const char *ds = sp_bigint_to_s(r->den);
+  const char *out = sp_sprintf(insp ? "(%s/%s)" : "%s/%s", ns, ds);
+  free((void *)ns); free((void *)ds);
+  return out;
+}
+static mrb_bool sp_bigrat_eq(sp_BigRat *a, sp_BigRat *b) {
+  if (!a || !b) return a == b;
+  return sp_bigint_cmp(a->num, b->num) == 0 && sp_bigint_cmp(a->den, b->den) == 0;
+}
 /* A poly value as a sp_Bigint*, so the bigint comparison/arith helpers can take
    a mixed operand uniformly. Total (never NULL, since sp_bigint_cmp derefs):
    a float truncates (harmless -- a bignum is always outside float-fraction
@@ -1976,6 +2025,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
         case SP_BUILTIN_TIME: puts(sp_Time_to_s((sp_Time *)v.v.p)); break;
         case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
         case SP_BUILTIN_RATIONAL: puts(sp_rational_to_s(*(sp_Rational *)v.v.p)); break;
+        case SP_BUILTIN_BIGRAT: puts(sp_bigrat_fmt((sp_BigRat *)v.v.p, 0)); break;
         case SP_BUILTIN_REGEX: puts(sp_re_to_s_str(v.v.p)); break;
         case SP_BUILTIN_POLY_ARRAY: {
           /* puts flattens arrays recursively, one element per line */
@@ -2037,6 +2087,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);
         case SP_BUILTIN_COMPLEX: return sp_complex_to_s(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
+        case SP_BUILTIN_BIGRAT: return sp_bigrat_fmt((sp_BigRat *)v.v.p, 0);
         case SP_BUILTIN_REGEX: return sp_re_to_s_str(v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
         default:
@@ -2086,6 +2137,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_TIME: return SPL("Time");
         case SP_BUILTIN_COMPLEX: return SPL("Complex");
         case SP_BUILTIN_RATIONAL: return SPL("Rational");
+        case SP_BUILTIN_BIGRAT:   return SPL("Rational");
         case SP_BUILTIN_REGEX: return SPL("Regexp");
         case SP_BUILTIN_OBJECT: return SPL("Object");   /* a bare Object.new instance */
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
@@ -2157,7 +2209,7 @@ static sp_RbVal sp_poly_add(sp_RbVal a, sp_RbVal b) { if ((sp_poly_is_rational(a
 static sp_RbVal sp_poly_sub(sp_RbVal a, sp_RbVal b) { if ((sp_poly_is_rational(a) || sp_poly_is_rational(b)) && a.tag != SP_TAG_FLT && b.tag != SP_TAG_FLT) return sp_box_rational(sp_rational_sub(sp_poly_as_rational(a), sp_poly_as_rational(b))); if ((sp_poly_is_rational(a) || sp_poly_is_rational(b)) && (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT)) return sp_box_float(sp_poly_to_f_with_rational(a) - sp_poly_to_f_with_rational(b)); if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_poly_to_f(a) - sp_poly_to_f(b)); return sp_box_bigint(sp_bigint_sub(sp_poly_as_bigint(a), sp_poly_as_bigint(b))); } if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return SP_POLY_INT_OP(sub, a.v.i, b.v.i); if (a.tag == SP_TAG_FLT && b.tag == SP_TAG_FLT) return sp_box_float(a.v.f - b.v.f); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_FLT) return sp_box_float((mrb_float)a.v.i - b.v.f); if (a.tag == SP_TAG_FLT && b.tag == SP_TAG_INT) return sp_box_float(a.v.f - (mrb_float)b.v.i); return sp_box_int(0); }
 static sp_RbVal sp_poly_mul(sp_RbVal a, sp_RbVal b) { if ((sp_poly_is_rational(a) || sp_poly_is_rational(b)) && a.tag != SP_TAG_FLT && b.tag != SP_TAG_FLT) return sp_box_rational(sp_rational_mul(sp_poly_as_rational(a), sp_poly_as_rational(b))); if ((sp_poly_is_rational(a) || sp_poly_is_rational(b)) && (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT)) return sp_box_float(sp_poly_to_f_with_rational(a) * sp_poly_to_f_with_rational(b)); if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_poly_to_f(a) * sp_poly_to_f(b)); return sp_box_bigint(sp_bigint_mul(sp_poly_as_bigint(a), sp_poly_as_bigint(b))); } if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return SP_POLY_INT_OP(mul, a.v.i, b.v.i); if (a.tag == SP_TAG_FLT && b.tag == SP_TAG_FLT) return sp_box_float(a.v.f * b.v.f); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_FLT) return sp_box_float((mrb_float)a.v.i * b.v.f); if (a.tag == SP_TAG_FLT && b.tag == SP_TAG_INT) return sp_box_float(a.v.f * (mrb_float)b.v.i); if (a.tag == SP_TAG_STR && b.tag == SP_TAG_INT) return a.v.s ? sp_box_str(sp_str_repeat(a.v.s, b.v.i)) : a; /* String#*; NULL is the empty string */ return sp_box_int(0); }
 static mrb_int sp_poly_to_i(sp_RbVal v) { if (v.tag == SP_TAG_INT || v.tag == SP_TAG_SYM) return v.v.i; if (v.tag == SP_TAG_BIGINT) return (mrb_int)sp_bigint_to_int((sp_Bigint *)v.v.p); if (v.tag == SP_TAG_STR) return (mrb_int)strtoll(v.v.s ? v.v.s : sp_str_empty, NULL, 10); if (v.tag == SP_TAG_FLT) return (mrb_int)v.v.f; if (v.tag == SP_TAG_BOOL) return v.v.b ? 1 : 0; return 0; }
-static mrb_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return v.v.f; if (v.tag == SP_TAG_INT || v.tag == SP_TAG_SYM) return (mrb_float)v.v.i; if (v.tag == SP_TAG_BIGINT) return sp_bigint_to_double((sp_Bigint *)v.v.p); if (v.tag == SP_TAG_STR) return (mrb_float)atof(v.v.s ? v.v.s : sp_str_empty); if (v.tag == SP_TAG_BOOL) return v.v.b ? 1.0 : 0.0; return 0.0; }  /* STR arm mirrors sp_poly_to_i's strtoll and the typed String#to_f (atof) */
+static mrb_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_BIGRAT && v.v.p) return sp_bigrat_to_f((sp_BigRat *)v.v.p); if (v.tag == SP_TAG_FLT) return v.v.f; if (v.tag == SP_TAG_INT || v.tag == SP_TAG_SYM) return (mrb_float)v.v.i; if (v.tag == SP_TAG_BIGINT) return sp_bigint_to_double((sp_Bigint *)v.v.p); if (v.tag == SP_TAG_STR) return (mrb_float)atof(v.v.s ? v.v.s : sp_str_empty); if (v.tag == SP_TAG_BOOL) return v.v.b ? 1.0 : 0.0; return 0.0; }  /* STR arm mirrors sp_poly_to_i's strtoll and the typed String#to_f (atof) */
 /* Unbox to float? preserving nil as the float-nil sentinel. Used by the
    unpack1 literal-float-directive fast path: sp_str_unpack pads short input
    with nil, which must stay nil through the unboxed TY_FLOAT result (CRuby
@@ -2391,7 +2443,7 @@ static inline int sp_poly_is_hash_kind(int cls_id) {
    (a JSON.parse StrPolyHash equals the same pairs written as a literal
    StrIntHash). */
 static mrb_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b);
-static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) return sp_bigint_cmp(ba, bb) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); return FALSE; } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: /* Arrays compare by VALUE across storage kinds: [1,2] boxed as an IntArray equals the same numbers rebuilt as a PolyArray (a splat-rest, a mapped run). Ruby has one Array; the kinds are a storage optimization and must not leak into ==. */ if (sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) { if (a.cls_id == b.cls_id && a.v.p == b.v.p) return TRUE; { mrb_int __n = sp_poly_length(a); if (__n != sp_poly_length(b)) return FALSE; for (mrb_int __i = 0; __i < __n; __i++) if (!sp_poly_eq(sp_poly_arr_get(a, __i), sp_poly_arr_get(b, __i))) return FALSE; return TRUE; } } if (sp_poly_is_hash_kind(a.cls_id) && sp_poly_is_hash_kind(b.cls_id) && a.cls_id != b.cls_id) return sp_poly_hash_eq_cross(a, b); if (a.cls_id != b.cls_id) return FALSE; if (a.v.p == b.v.p) return TRUE; switch (a.cls_id) { case SP_BUILTIN_INT_ARRAY: return sp_IntArray_eq((sp_IntArray*)a.v.p,(sp_IntArray*)b.v.p); case SP_BUILTIN_STR_ARRAY: return sp_StrArray_eq((sp_StrArray*)a.v.p,(sp_StrArray*)b.v.p); case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_eq((sp_FloatArray*)a.v.p,(sp_FloatArray*)b.v.p); case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_eq((sp_PolyArray*)a.v.p,(sp_PolyArray*)b.v.p); case SP_BUILTIN_RATIONAL: { sp_Rational *ra = (sp_Rational*)a.v.p, *rb = (sp_Rational*)b.v.p; return (ra && rb) ? sp_rational_eq(*ra, *rb) : (ra == rb); } /* boxed hashes of the same variant compare by value like every other
+static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) return sp_bigint_cmp(ba, bb) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); return FALSE; } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: /* Arrays compare by VALUE across storage kinds: [1,2] boxed as an IntArray equals the same numbers rebuilt as a PolyArray (a splat-rest, a mapped run). Ruby has one Array; the kinds are a storage optimization and must not leak into ==. */ if (sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) { if (a.cls_id == b.cls_id && a.v.p == b.v.p) return TRUE; { mrb_int __n = sp_poly_length(a); if (__n != sp_poly_length(b)) return FALSE; for (mrb_int __i = 0; __i < __n; __i++) if (!sp_poly_eq(sp_poly_arr_get(a, __i), sp_poly_arr_get(b, __i))) return FALSE; return TRUE; } } if (sp_poly_is_hash_kind(a.cls_id) && sp_poly_is_hash_kind(b.cls_id) && a.cls_id != b.cls_id) return sp_poly_hash_eq_cross(a, b); if (a.cls_id != b.cls_id) return FALSE; if (a.v.p == b.v.p) return TRUE; switch (a.cls_id) { case SP_BUILTIN_INT_ARRAY: return sp_IntArray_eq((sp_IntArray*)a.v.p,(sp_IntArray*)b.v.p); case SP_BUILTIN_STR_ARRAY: return sp_StrArray_eq((sp_StrArray*)a.v.p,(sp_StrArray*)b.v.p); case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_eq((sp_FloatArray*)a.v.p,(sp_FloatArray*)b.v.p); case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_eq((sp_PolyArray*)a.v.p,(sp_PolyArray*)b.v.p); case SP_BUILTIN_RATIONAL: { sp_Rational *ra = (sp_Rational*)a.v.p, *rb = (sp_Rational*)b.v.p; return (ra && rb) ? sp_rational_eq(*ra, *rb) : (ra == rb); } case SP_BUILTIN_BIGRAT: return sp_bigrat_eq((sp_BigRat*)a.v.p, (sp_BigRat*)b.v.p); /* boxed hashes of the same variant compare by value like every other
      container -- the arm was simply missing, so [h] == [h-literal] was
      pointer identity and always false. */ case SP_BUILTIN_STR_INT_HASH: return sp_StrIntHash_eq((sp_StrIntHash*)a.v.p,(sp_StrIntHash*)b.v.p); case SP_BUILTIN_STR_STR_HASH: return sp_StrStrHash_eq((sp_StrStrHash*)a.v.p,(sp_StrStrHash*)b.v.p); case SP_BUILTIN_INT_STR_HASH: return sp_IntStrHash_eq((sp_IntStrHash*)a.v.p,(sp_IntStrHash*)b.v.p); case SP_BUILTIN_INT_INT_HASH: return sp_IntIntHash_eq((sp_IntIntHash*)a.v.p,(sp_IntIntHash*)b.v.p); case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_eq((sp_StrPolyHash*)a.v.p,(sp_StrPolyHash*)b.v.p); case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_eq((sp_SymPolyHash*)a.v.p,(sp_SymPolyHash*)b.v.p); case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_eq((sp_PolyPolyHash*)a.v.p,(sp_PolyPolyHash*)b.v.p); default: return FALSE; } case SP_TAG_CLASS: { const char *an = sp_class_val_name(a), *bn = sp_class_val_name(b); return (an && bn) ? strcmp(an, bn) == 0 : an == bn; } default: return FALSE; } }
 /* sp_sym_name_fn is now an extern hook (sp_gc.h / sp_gc.c) so cold lib readers
@@ -4154,6 +4206,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
         case SP_BUILTIN_COMPLEX:   return sp_complex_inspect(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL:  return sp_rational_inspect(*(sp_Rational *)v.v.p);
+        case SP_BUILTIN_BIGRAT:    return sp_bigrat_fmt((sp_BigRat *)v.v.p, 1);
         case SP_BUILTIN_REGEX:     return sp_re_inspect_str(v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_sprintf("#<%s: %s>", sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p), sp_exc_message((volatile struct sp_Exception_s *)v.v.p));
         case SP_BUILTIN_STR_INT_HASH:  return sp_StrIntHash_inspect((sp_StrIntHash *)v.v.p);

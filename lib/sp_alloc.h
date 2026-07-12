@@ -287,6 +287,7 @@ static inline const char*sp_float_to_s(mrb_float f){
 #define SP_BUILTIN_QUEUE         (-30)
 #define SP_BUILTIN_MUTEX         (-31)
 #define SP_BUILTIN_CONDVAR       (-32)
+#define SP_BUILTIN_BIGRAT        (-35)
 /* Integer-keyed Integer-valued hash. It sits BELOW the contiguous hash block
    [-20,-13] (which was full), so the "is this a hash" range checks that test
    that block must also test for this id explicitly. */
