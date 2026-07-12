@@ -185,6 +185,7 @@ mrb_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str) {
   return last;
 }
 sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
+  SP_GC_ROOT_STR(str);
   int64_t slen = (int64_t)strlen(str);
   int caps[2];
   int64_t pos = 0;
@@ -198,6 +199,7 @@ sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
     pos = caps[0] + 1;
   }
   sp_StrArray *r = sp_StrArray_new();
+  SP_GC_ROOT(r);
   if (ms < 0) {
     sp_StrArray_push(r, SPL(""));
     sp_StrArray_push(r, SPL(""));
@@ -383,7 +385,9 @@ const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep)
   return res;
 }
 sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str) {
+  SP_GC_ROOT_STR(str);
   sp_StrArray *arr = sp_StrArray_new();
+  SP_GC_ROOT(arr);
   int64_t slen = (int64_t)strlen(str); int64_t pos = 0; int caps[64];
   while (pos <= slen) {
     int n = re_exec(pat, str, slen, pos, caps, 64, 0);
@@ -570,6 +574,7 @@ else {
   return buf;
 }
 sp_PolyArray *sp_re_scan_poly(mrb_regexp_pattern *pat, const char *str) {
+  SP_GC_ROOT_STR(str);
   sp_PolyArray *arr = sp_PolyArray_new();
   SP_GC_ROOT(arr);
   int64_t slen = (int64_t)strlen(str);
@@ -589,6 +594,7 @@ sp_PolyArray *sp_re_scan_poly(mrb_regexp_pattern *pat, const char *str) {
     }
 else {
       sp_PolyArray *row = sp_PolyArray_new();
+      SP_GC_ROOT(row);
       for (int gi = 1; gi < pairs; gi++) {
         if (caps[gi * 2] >= 0 && caps[(gi * 2) + 1] >= 0) {
           int glen = caps[(gi * 2) + 1] - caps[gi * 2];
@@ -609,6 +615,7 @@ else {
   return arr;
 }
 sp_PolyArray *sp_re_match_data(mrb_regexp_pattern *pat, const char *str) {
+  SP_GC_ROOT_STR(str);
   int64_t slen = (int64_t)strlen(str);
   int ncaps = 64;
   int n = re_exec(pat, str, slen, 0, sp_re_caps, ncaps, 0);
@@ -623,6 +630,7 @@ sp_PolyArray *sp_re_match_data(mrb_regexp_pattern *pat, const char *str) {
   int pairs = (n > ncaps ? ncaps : n) / 2;
   sp_re_set_captures(str, sp_re_caps, pairs);
   sp_PolyArray *arr = sp_PolyArray_new();
+  SP_GC_ROOT(arr);
   for (int i = 0; i < pairs; i++) {
     int start = sp_re_caps[i * 2];
     int end = sp_re_caps[(i * 2) + 1];
@@ -707,6 +715,7 @@ const char *sp_MatchData_aref_name(sp_MatchData *m, const char *name) {
 /* `md.names`: the capture names in declaration order. */
 sp_StrArray *sp_MatchData_names(sp_MatchData *m) {
   sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
   if (!m) return a;
   int n = re_num_named(m->pat);
   for (int i = 0; i < n; i++) {

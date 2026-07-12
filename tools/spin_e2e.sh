@@ -68,6 +68,13 @@ expect "test (CRuby parity)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
 [ -s test/color_test.rb.expected ] || fail "test --regen wrote no snapshot"
 expect "test (snapshot)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
 
+# a large test/ directory: enumerating ~60 entries allocates enough to GC
+# mid-glob, which swept the unrooted result array (heap corruption before
+# any child spawned, #2178)
+for i in $(seq 1 60); do printf 'puts 1\n' > "test/gc$i.rb"; done
+expect "test (many files)" "1/1 passed" "$("$SPIN" test color_test.rb 2>&1 | tail -1)"
+rm -f test/gc*.rb
+
 # --- carried native C (M2): package .c compiled to the shared cache, --link'ed ------
 cd "$WORK"
 mkdir -p spinel-fast

@@ -944,7 +944,7 @@ static inline mrb_int sp_int_clamp_range_ck(mrb_int v, sp_Range r) {
    name-string predicates in lib/sp_str.c with the hash-key short form. */
 static const char *sp_sym_inspect(sp_sym id) { if (id == (sp_sym)-1) return "nil"; /* nilable-symbol sentinel */ return sp_sym_inspect_name(sp_sym_to_s(id)); }
 static const char*sp_gets(void){char buf[4096];if(!fgets(buf,sizeof(buf),stdin))return NULL;size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);return r;}
-static sp_StrArray*sp_readlines(void){sp_StrArray*a=sp_StrArray_new();char buf[4096];while(fgets(buf,sizeof(buf),stdin)){size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);sp_StrArray_push(a,r);}return a;}
+static sp_StrArray*sp_readlines(void){sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);char buf[4096];while(fgets(buf,sizeof(buf),stdin)){size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);sp_StrArray_push(a,r);}return a;}
 const char*sp_sprintf(const char*fmt,...){char _sp_tmp[4096];va_list ap;va_start(ap,fmt);int _sp_n=vsnprintf(_sp_tmp,sizeof(_sp_tmp),fmt,ap);va_end(ap);if(_sp_n<0)_sp_n=0;char*b=sp_str_alloc((size_t)_sp_n);if(_sp_n<(int)sizeof(_sp_tmp)){memcpy(b,_sp_tmp,(size_t)_sp_n);}else{/* result didn't fit the stack temp; re-render at full width (sp_str_alloc gives _sp_n bytes + NUL) so long string interpolations aren't truncated. re-arm the va_list rather than va_copy so the common fast path pays nothing */va_start(ap,fmt);vsnprintf(b,(size_t)_sp_n+1,fmt,ap);va_end(ap);}return b;}
 /* Use a temp pointer for realloc so the original buffer is not leaked
    on allocation failure. Match the perror+exit pattern used elsewhere
@@ -1222,6 +1222,7 @@ static inline sp_StrArray *sp_File_readlines(sp_File *f) {
 }
 static sp_StrArray *sp_file_readlines(const char *path) {
   sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
   FILE *_fp = fopen(path ? path : "", "r");
   if (!_fp) return a;
   char _buf[4096];
@@ -1236,6 +1237,7 @@ static sp_StrArray *sp_file_readlines(const char *path) {
 }
 static sp_StrArray *sp_file_readlines_chomp(const char *path) {
   sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
   FILE *_fp = fopen(path ? path : "", "r");
   if (!_fp) return a;
   char _buf[4096];
@@ -1288,11 +1290,11 @@ static const char*sp_IntArrayPtrArray_inspect(sp_PtrArray*a){SP_GC_ROOT(a);sp_St
 /* Issue #742: Array#combination(k) on int_array -- emit all
    k-element ordered combinations as a PtrArray of IntArrays. */
 static void sp_int_combination_recur(sp_IntArray*src,mrb_int start,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=start;i<=src->len-k;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_combination_recur(src,i+1,k-1,acc,out);acc->len--;}}
-static sp_PtrArray*sp_IntArray_combination(sp_IntArray*a,mrb_int k){sp_PtrArray*out=sp_PtrArray_new();if(!a||k<0||k>a->len)return out;sp_IntArray*acc=sp_IntArray_new();sp_int_combination_recur(a,0,k,acc,out);return out;}
+static sp_PtrArray*sp_IntArray_combination(sp_IntArray*a,mrb_int k){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a||k<0||k>a->len)return out;sp_IntArray*acc=sp_IntArray_new();SP_GC_ROOT(acc);sp_int_combination_recur(a,0,k,acc,out);return out;}
 /* repeated_combination: like combination but an index may repeat, so the
    recursion restarts at `i` rather than `i+1`. */
 static void sp_int_repeated_combination_recur(sp_IntArray*src,mrb_int start,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=start;i<src->len;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_repeated_combination_recur(src,i,k-1,acc,out);acc->len--;}}
-static sp_PtrArray*sp_IntArray_repeated_combination(sp_IntArray*a,mrb_int k){sp_PtrArray*out=sp_PtrArray_new();if(!a||k<0)return out;sp_IntArray*acc=sp_IntArray_new();sp_int_repeated_combination_recur(a,0,k,acc,out);return out;}
+static sp_PtrArray*sp_IntArray_repeated_combination(sp_IntArray*a,mrb_int k){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a||k<0)return out;sp_IntArray*acc=sp_IntArray_new();SP_GC_ROOT(acc);sp_int_repeated_combination_recur(a,0,k,acc,out);return out;}
 /* Cartesian product of two int arrays. Returns a PtrArray of
    2-element IntArrays. */
 /* Array#permutation(k) -- ordered k-permutations. */
@@ -5354,6 +5356,7 @@ else {                                        /* macOS: "<idx> <image> <addr> <s
 
 static sp_StrArray *sp_bt_format(void **buf, int n) {
   sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
   if (!sp_bt_enabled || n <= 0) return a;
   char **syms = backtrace_symbols(buf, n);
   if (!syms) return a;
@@ -6357,7 +6360,14 @@ static void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
    directory). Hidden entries match only when the pattern itself begins with
    `.`. Results are sorted, matching Ruby 3.0+ default glob ordering. */
 static sp_StrArray *sp_dir_glob(const char *pattern) {
+  /* the pattern is often a fresh interpolation temp, unrooted at the call
+     site; the per-match sp_str_allocs below can collect it mid-walk */
+  SP_GC_ROOT_STR(pattern);
   sp_StrArray *a = sp_StrArray_new();
+  /* every matched entry sp_str_allocs inside the walk below, and enough of
+     them trigger a collection mid-build -- root the result like
+     sp_dir_entries_impl or it (and its pushed names) get swept under us */
+  SP_GC_ROOT(a);
   if (!pattern) return a;
   /* Recursive double-star form: split at the double-star component. Everything
      before it is the output prefix (and, minus the trailing slash, the directory
@@ -6426,6 +6436,7 @@ else {
    leaves readdir order unspecified). A missing directory raises like
    CRuby, not the glob-style empty result. */
 static sp_StrArray *sp_dir_entries_impl(const char *path, int children) {
+  SP_GC_ROOT_STR(path);
   if (!path) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
   DIR *d = opendir(path);
   if (!d) sp_raise_cls("Errno::ENOENT", sp_sprintf("No such file or directory @ dir_initialize - %s", path));
