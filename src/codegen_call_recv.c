@@ -6085,10 +6085,61 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       free(rb.p);
       return 1;
     }
+    /* to_s / inspect render the range itself ("1..3"); a string-endpoint
+       literal renders statically (int-backed sp_Range cannot). */
+    if ((sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+        argc == 0 && nt_ref(nt, id, "block") < 0) {
+      int rq = unwrap_parens(c, recv);
+      if (rq >= 0 && nt_type(nt, rq) && !sp_streq(nt_type(nt, rq), "RangeNode")) {
+        int sl = local_sole_range_node(c, rq);
+        if (sl >= 0) rq = sl;
+      }
+      int lo_q = rq >= 0 && nt_type(nt, rq) && sp_streq(nt_type(nt, rq), "RangeNode")
+                   ? nt_ref(nt, rq, "left") : -1;
+      int hi_q = lo_q >= 0 ? nt_ref(nt, rq, "right") : -1;
+      int str_ends = lo_q >= 0 && hi_q >= 0 &&
+                     comp_ntype(c, lo_q) == TY_STRING && comp_ntype(c, hi_q) == TY_STRING;
+      if (str_ends && nt_kind(nt, lo_q) == NK_StringNode && nt_kind(nt, hi_q) == NK_StringNode) {
+        const char *lv2 = nt_str(nt, lo_q, "unescaped");
+        if (!lv2) lv2 = nt_str(nt, lo_q, "content");
+        const char *hv2 = nt_str(nt, hi_q, "unescaped");
+        if (!hv2) hv2 = nt_str(nt, hi_q, "content");
+        int plain = lv2 && hv2;
+        for (const char *q2 = lv2; plain && q2 && *q2; q2++)
+          if (!((*q2 >= 'a' && *q2 <= 'z') || (*q2 >= 'A' && *q2 <= 'Z') ||
+                (*q2 >= '0' && *q2 <= '9') || *q2 == '_')) plain = 0;
+        for (const char *q2 = hv2; plain && q2 && *q2; q2++)
+          if (!((*q2 >= 'a' && *q2 <= 'z') || (*q2 >= 'A' && *q2 <= 'Z') ||
+                (*q2 >= '0' && *q2 <= '9') || *q2 == '_')) plain = 0;
+        if (plain) {
+          int exq = (int)(nt_int(nt, rq, "flags", 0) & 4) ? 1 : 0;
+          int quoted = sp_streq(name, "inspect");
+          buf_puts(b, "SPL(\"");
+          if (quoted) buf_puts(b, "\\\"");
+          buf_puts(b, lv2);
+          if (quoted) buf_puts(b, "\\\"");
+          buf_puts(b, exq ? "..." : "..");
+          if (quoted) buf_puts(b, "\\\"");
+          buf_puts(b, hv2);
+          if (quoted) buf_puts(b, "\\\"");
+          buf_puts(b, "\")");
+          return 1;
+        }
+      }
+      /* string endpoints without a static rendering: leave to other arms
+         (the int-backed sp_Range cannot render them) */
+      if (!str_ends) {
+        int tq = ++g_tmp;
+        buf_printf(b, "({ sp_Range _t%d = ", tq);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; sp_range_str(_t%d); })", tq);
+        return 1;
+      }
+    }
     static const char *const rmeths[] = {
       "to_a", "include?", "member?", "cover?", "===", "sum", "min", "max",
       "first", "last", "size", "count", "begin", "end",
-      "exclude_end?", "eql?", "minmax", "overlap?", NULL };
+      "exclude_end?", "eql?", "equal?", "minmax", "overlap?", NULL };
     int known = 0;
     for (int i = 0; rmeths[i]; i++) if (sp_streq(name, rmeths[i])) known = 1;
     /* `count` with a block or argument is Enumerable#count, not Range#size:
