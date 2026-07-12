@@ -2858,6 +2858,8 @@ else {
       return rt;  /* pop(n)/shift(n): the removed subarray */
     if (sp_streq(name, "cycle") && argc == 1 && nt_ref(nt, id, "block") < 0)
       return rt;  /* blockless cycle(n): the receiver repeated n times */
+    if (sp_streq(name, "cycle") && nt_ref(nt, id, "block") >= 0)
+      return TY_NIL;  /* the block form returns nil (a valued break widens) */
     if (sp_streq(name, "first") || sp_streq(name, "last") ||
         sp_streq(name, "min") || sp_streq(name, "max") ||
         sp_streq(name, "sample") ||
