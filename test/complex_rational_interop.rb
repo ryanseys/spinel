@@ -1,8 +1,6 @@
-# Mixed Complex/Rational arithmetic computes in floats: the Rational operand
-# coerces via #to_f (docs/limitations.md "Rational precision and Complex
-# components"). The component CLASS deliberately differs from CRuby (float
-# instead of rational), so this pin compares float-normalized components,
-# which agree in both -- keeping the .expected oracle-regenerable.
+# Mixed Complex/Rational arithmetic keeps exact Rational components (see
+# complex_exact_components.rb). This pin normalizes each component through
+# #to_f, so it checks the numeric value independently of the component class.
 def comps(c)
   [c.real.to_f, c.imaginary.to_f]
 end

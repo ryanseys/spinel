@@ -141,10 +141,18 @@ typedef struct{mrb_int cls_id;const char *name;}sp_Class;
 /* fl marks a component as Float-classed (renders "2.0"); clear bits keep the
    Integer-style rendering for whole values. Zero-init (every positional
    compound literal) is the Integer-classed default. */
-typedef struct{mrb_float re;mrb_float im;unsigned char fl;}sp_Complex;
+typedef struct{mrb_int num;mrb_int den;}sp_Rational;
+/* Complex value. re/im are the float MIRROR (always populated -- abs/arg/
+   polar and the float paths read only these); fl carries the Float-class
+   bits. When a part is EXACT Rational (a Rational operand entered the
+   arithmetic), the matching `exact` bit is set and re_r/im_r hold the exact
+   component. Trailing fields zero-init, so legacy (sp_Complex){re, im, fl}
+   compound literals stay float-classed. */
+typedef struct{mrb_float re;mrb_float im;unsigned char fl;unsigned char exact;sp_Rational re_r;sp_Rational im_r;}sp_Complex;
+#define SP_CPLX_RE_X 1
+#define SP_CPLX_IM_X 2
 #define SP_CPLX_RE_F 1
 #define SP_CPLX_IM_F 2
-typedef struct{mrb_int num;mrb_int den;}sp_Rational;
 typedef struct{const char *name;}sp_Encoding;
 
 /* ---- GC headers ---- */

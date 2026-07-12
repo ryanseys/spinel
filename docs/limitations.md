@@ -65,7 +65,7 @@ Limited today, but additively fixable; listed roughly easiest-first.
 |---|---|---|
 | `Exception#backtrace` / `Kernel#caller` | return `[]` (class + message work) | populate frames from a compile-time call-site→source side-table (the `--line-map` map already exists) |
 | `Thread` real parallelism | implemented as a true M:N runtime (no GVL): N OS workers (`min(online cores, SPINEL_WORKERS)`) run green threads in parallel over a stop-the-world GC, with real `Mutex`/`Queue`/`SizedQueue`/`ConditionVariable`. A monitor thread timeslices CPU-bound threads (~10ms quantum) so a thread looping without yielding cannot starve its siblings (it signals the worker with `SIGURG`, overridable via `SPINEL_PREEMPT_SIGNAL`). The single-threaded archive is unchanged (a non-`Thread` program is byte-identical) | the N workers run per-worker run queues with work stealing, and `Kernel#sleep` and blocking I/O are scheduler-aware (a sleeping / I/O-blocked thread frees its OS worker). preemption is taken at safepoint polls (loop back-edges), so a thread spending a long time inside a single runtime call with no poll yields only when that call returns; concurrent allocation is thread-safe (heap-lock-protected allocators, atomic heap byte counters, per-worker object pools) but every allocation still crosses one global heap lock; remaining work: fully async (signal-interrupted) preemption of such regions, and per-worker allocation buffers (TLAB) to make allocation-heavy parallel code scale. See [docs/thread.md](thread.md) |
-| `Marshal` of user objects with container-typed ivars | primitives + Array + Hash + Bignum + Complex + Rational + plain user objects work, including cyclic and shared references (`Marshal.dump`/`load`, CRuby 4.8 wire format, byte-compatible for the supported subset); an object whose ivar is a *statically typed* Array/Hash (not a poly ivar) is not yet dumpable | a user object dumps/loads through a compile-time-generated per-class dispatcher. Supported ivar types: scalars (Integer/Float/String/true/false/Symbol/Bignum), `poly` (mixed) ivars, and nested user objects. A typed-container ivar would mismatch the loader's always-poly containers, so such a class raises `TypeError` on dump; value-type and Exception-subclass objects are also out of scope. Complex's components are float-only, so they round-trip as Floats |
+| `Marshal` of user objects with container-typed ivars | primitives + Array + Hash + Bignum + Complex + Rational + plain user objects work, including cyclic and shared references (`Marshal.dump`/`load`, CRuby 4.8 wire format, byte-compatible for the supported subset); an object whose ivar is a *statically typed* Array/Hash (not a poly ivar) is not yet dumpable | a user object dumps/loads through a compile-time-generated per-class dispatcher. Supported ivar types: scalars (Integer/Float/String/true/false/Symbol/Bignum), `poly` (mixed) ivars, and nested user objects. A typed-container ivar would mismatch the loader's always-poly containers, so such a class raises `TypeError` on dump; value-type and Exception-subclass objects are also out of scope. Complex marshals via its float-mirror components, so an exact Rational component round-trips as a Float |
 | Mixin/inheritance lifecycle hooks (`included` / `inherited` / `extended`) | defined but not fired | emit a startup call with the literal class arg (the include/inherit graph is known at compile time) |
 | External `Enumerator` — `.each` with no block is only an Enumerator on `Array` / `Range`, not on an arbitrary user method | mostly supported | `Array#each` / `Range#each` with no block return a working external Enumerator (`#next` / `#peek` / `#rewind` / `#size`, `loop` stops on `StopIteration`). `Enumerator.new { \|y\| ... }` is a fiber-backed generator (`y << v`, `y.yield(v)`, and the bare `y.yield v` without parentheses, plus `#next` / `#peek` / `#rewind` / `#take` / `#first`, infinite generators work). `Enumerator::Lazy` over an int range (incl. endless) or int array fuses map/select/reject/filter/take_while chains terminated by `first(n)` / `to_a` / `force`. Chained block→`.to_a` forms (`each_slice(n).to_a`, `filter_map`, `map{}.to_a`) also work. |
 | `Array#hash` (and arrays as hash keys) | unsupported | a builtin is additive, but array *keys* need the fundamental key-dispatch above |
@@ -200,22 +200,28 @@ CRuby does:
 Rational(10**18, 1) * Rational(10**18, 1)   # RangeError (CRuby: a Bigint Rational)
 ```
 
-`Complex` stores its components as `mrb_float` plus a per-component class tag,
-so `#real` / `#imaginary` / `#abs2` and display report `Integer` components like
-CRuby for integer-valued inputs. What the representation cannot express is a
-`Rational` component: operations that would produce one compute in floats
-instead. This applies to exact division and to mixed `Complex`/`Rational`
-arithmetic and construction, which coerce the `Rational` via `#to_f` (the
-operations work; only the component class -- and therefore the printed form --
-differs from CRuby):
+`Complex` stores its components as an `mrb_float` mirror plus, per component, a
+class tag and an optional exact `Rational`. Mixed `Complex`/`Rational`
+arithmetic and construction keep exact `Rational` components like CRuby, and
+`#real` / `#imaginary` report the component's real class (`Integer`, `Float`, or
+`Rational`); division by an `Integer`/`Rational` divides each component exactly:
 
 ```ruby
-Complex(1, 2).real                      # => 1     (matches CRuby)
-Complex(1, 2) / Complex(3, -1)          # => (0.1+0.7i)       (CRuby: ((1/10)+(7/10)*i))
-Complex(1, 2) + Rational(1, 2)          # => (1.5+2i)         (CRuby: ((3/2)+2i))
-Rational(1, 2) + Complex(1, 2)          # => (1.5+2i)         (CRuby: ((3/2)+2i))
-Complex(Rational(1, 2), Rational(1, 3)) # => (0.5+0.3333333333333333i)
-                                        #                     (CRuby: ((1/2)+(1/3)*i))
+Complex(1, 2) + Rational(1, 2)          # => ((3/2)+2i)       (matches CRuby)
+Rational(1, 2) + Complex(1, 2)          # => ((3/2)+2i)       (matches CRuby)
+Complex(1, 2) * Rational(1, 2)          # => ((1/2)+(1/1)*i)  (matches CRuby)
+Complex(1, 2) / 2                        # => ((1/2)+1i)       (matches CRuby)
+Complex(Rational(1, 2), Rational(1, 3)) # => ((-1/2)+(1/3)*i) forms (match CRuby)
+Complex(1, 2) * Rational(1, 2)).real.class  # => Rational      (matches CRuby)
+```
+
+Two component-exactness residuals remain: a genuine `Complex` / `Complex`
+division uses the float conjugate formula, and `#abs2` reports its result as a
+`Float`, where CRuby would keep exact `Rational` components:
+
+```ruby
+Complex(1, 2) / Complex(3, -1)          # => (0.1+0.7i)   (CRuby: ((1/10)+(7/10)*i))
+(Complex(1, 2) * Rational(1, 2)).abs2   # => 1.25         (CRuby: (5/4))
 ```
 
 `Rational` and `Complex` values box into heterogeneous (poly) arrays and hashes
