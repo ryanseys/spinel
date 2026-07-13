@@ -6068,7 +6068,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
      enumerator (e.g. `.map { }`) is a separate, later feature. */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       ty_is_hash(comp_ntype(c, recv)) &&
-      (sp_streq(name, "each") || sp_streq(name, "each_pair"))) {
+      (sp_streq(name, "each") || sp_streq(name, "each_pair") ||
+       /* blockless Enumerable methods yield an external Enumerator over the
+          [key, value] pairs (the block-consuming chain is a later feature) */
+       sp_streq(name, "map") || sp_streq(name, "collect") ||
+       sp_streq(name, "select") || sp_streq(name, "filter") ||
+       sp_streq(name, "reject") || sp_streq(name, "find") ||
+       sp_streq(name, "detect") || sp_streq(name, "find_all") ||
+       sp_streq(name, "flat_map") || sp_streq(name, "filter_map") ||
+       sp_streq(name, "sort_by") || sp_streq(name, "min_by") ||
+       sp_streq(name, "max_by") || sp_streq(name, "group_by") ||
+       sp_streq(name, "partition"))) {
     buf_puts(b, "sp_Enumerator_new_from(");
     emit_boxed(c, recv, b); buf_puts(b, ")");
     return;

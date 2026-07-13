@@ -3514,7 +3514,16 @@ else {
     if (nt_ref(nt, id, "block") < 0 && argc == 0 &&
         (sp_streq(name, "each") || sp_streq(name, "each_pair") ||
          sp_streq(name, "each_key") || sp_streq(name, "each_value") ||
-         sp_streq(name, "each_with_index")))
+         sp_streq(name, "each_with_index") ||
+         /* blockless Enumerable methods are external Enumerators over the pairs */
+         sp_streq(name, "map") || sp_streq(name, "collect") ||
+         sp_streq(name, "select") || sp_streq(name, "filter") ||
+         sp_streq(name, "reject") || sp_streq(name, "find") ||
+         sp_streq(name, "detect") || sp_streq(name, "find_all") ||
+         sp_streq(name, "flat_map") || sp_streq(name, "filter_map") ||
+         sp_streq(name, "sort_by") || sp_streq(name, "min_by") ||
+         sp_streq(name, "max_by") || sp_streq(name, "group_by") ||
+         sp_streq(name, "partition")))
       return TY_ENUMERATOR;
     if (argc == 0 && nt_ref(nt, id, "block") < 0 &&
         (sp_streq(name, "any?") || sp_streq(name, "none?") || sp_streq(name, "all?")))
