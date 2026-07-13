@@ -2884,6 +2884,16 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
     }
   }
   /* Class.new(args) -> sp_<Class>_new(args) */
+  /* Array.try_convert(x): x if it is array-like (statically an array type),
+     else nil. Result is array-or-nil -> poly (#2325). */
+  if (recv >= 0 && sp_streq(name, "try_convert") && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
+    TyKind at = comp_ntype(c, argv[0]);
+    if (ty_is_array(at)) { emit_boxed(c, argv[0], b); return; }
+    buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
+    return;
+  }
   if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "__hash_new_default"))) {
     const char *rty = nt_type(nt, recv);
     /* a local statically holding one class constant dispatches like the
@@ -9661,13 +9671,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) { buf_puts(b, "sp_box_nil()"); return; }
         if ((sp_streq(name, "min") || sp_streq(name, "max") ||
              sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return; }
-        if (sp_streq(name, "sample") && argc == 0) { buf_puts(b, "0"); return; }
+        if (sp_streq(name, "sample") && argc == 0) { buf_puts(b, "sp_box_nil()"); return; }  /* #2322 */
         if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) { buf_puts(b, "\"[]\""); return; }
         if ((sp_streq(name, "join") || sp_streq(name, "pack")) && argc <= 1) { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
         if ((sp_streq(name, "union")) && argc == 0) { buf_puts(b, "sp_IntArray_new()"); return; }
         if ((sp_streq(name, "flatten") || sp_streq(name, "compact") || sp_streq(name, "uniq") ||
              sp_streq(name, "sort") || sp_streq(name, "reverse") || sp_streq(name, "dup") ||
-             sp_streq(name, "clone") || sp_streq(name, "to_a")) && argc <= 1) {
+             sp_streq(name, "clone") || sp_streq(name, "to_a") || sp_streq(name, "to_ary") ||
+             sp_streq(name, "deconstruct") || sp_streq(name, "entries")) && argc <= 1) {
           buf_puts(b, "sp_PolyArray_new()"); return;
         }
       }

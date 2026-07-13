@@ -3458,6 +3458,24 @@ int desugar_enum_method_recv(Compiler *c) {
         continue;
       }
     }
+    if (nm && sp_streq(nm, "rfind")) {
+      /* Array#rfind { block } == reverse.find { block }: interpose a reverse
+         call so the existing find machinery serves it (#2320) */
+      int rrc = nt_ref(nt, id, "receiver");
+      if (rrc >= 0 && ty_is_array(infer_type(c, rrc))) {
+        int rev = nt_new_node(nt, "CallNode");
+        if (rev >= 0) {
+          nt_node_set_str(nt, rev, "name", "reverse");
+          nt_node_set_ref(nt, rev, "receiver", rrc);
+          nt_node_set_ref(nt, id, "receiver", rev);
+          nt_node_set_str(nt, id, "name", "find");
+          comp_grow_node_arrays(c);
+          c->nscope[rev] = c->nscope[id];
+          changed = 1;
+          continue;
+        }
+      }
+    }
     if (nm && sp_streq(nm, "step")) {
       /* Numeric#step keyword forms lower to the positional (limit, step):
          step(to: T, by: B) / step(by: B, to: T) / step(T, by: B). An

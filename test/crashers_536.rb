@@ -20,7 +20,7 @@
 #    detect mixed-shape keys and use `poly_poly_hash` so both key
 #    and value carry their own tag.
 
-# Empty Array#sample (typed slot returns the zero value).
+# Empty Array#sample returns nil, matching CRuby (was the zero value; #2322).
 puts [].sample.inspect
 
 # No-args Array#union reduces to dedup.

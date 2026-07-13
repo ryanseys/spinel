@@ -1001,9 +1001,9 @@ TyKind infer_call(Compiler *c, int id) {
         /* first/last of an empty array is nil, boxed to poly (codegen emits
            sp_box_nil). min/max/pop/shift/sample keep the historical int-0
            shortcut pending their own nil arms. */
-        if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) return TY_POLY;
+        if ((sp_streq(name, "first") || sp_streq(name, "last") ||
+             sp_streq(name, "sample")) && argc == 0) return TY_POLY;  /* nil, boxed (#2322) */
         if ((sp_streq(name, "min") || sp_streq(name, "max") ||
-             sp_streq(name, "sample") ||
              sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) return TY_INT;
         rt = TY_POLY_ARRAY;
       }
@@ -1149,6 +1149,11 @@ TyKind infer_call(Compiler *c, int id) {
   }
   /* Hash[k: v] desugared to a bare hash literal: transparent passthrough */
   if (recv >= 0 && sp_streq(name, "__hash_brackets_kw")) return infer_type(c, recv);
+  /* Array.try_convert(x) -> the array or nil (poly) (#2325) */
+  if (recv >= 0 && name && sp_streq(name, "try_convert") && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array"))
+    return TY_POLY;
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
 
@@ -2975,7 +2980,8 @@ else {
     }
     if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append") ||
         sp_streq(name, "reverse") || sp_streq(name, "sort") || sp_streq(name, "uniq") ||
-        sp_streq(name, "to_a") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
+        sp_streq(name, "to_a") || sp_streq(name, "to_ary") || sp_streq(name, "deconstruct") ||
+        sp_streq(name, "entries") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
         sp_streq(name, "compact") || sp_streq(name, "flatten") || sp_streq(name, "clear") ||
         sp_streq(name, "transpose") ||
         sp_streq(name, "shuffle") ||
@@ -2992,7 +2998,7 @@ else {
                                         (ty_is_numeric(_fv) && ty_is_numeric(_fe)); })) ||
                                     (block >= 0 && argc <= 2))) ||
         sp_streq(name, "replace") ||
-        sp_streq(name, "values_at")) return rt;
+        sp_streq(name, "values_at") || sp_streq(name, "fetch_values")) return rt;
     if (sp_streq(name, "fill") && block < 0 && argc >= 1 && argc <= 3)
       return TY_POLY_ARRAY;   /* the incompatible-value fill fell through above */
     if (sp_streq(name, "zip") && block < 0) return TY_POLY_ARRAY;

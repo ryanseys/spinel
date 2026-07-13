@@ -566,6 +566,29 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* fetch_values(i, ...): like values_at but raises IndexError on an
+       out-of-range index (#2321) */
+    if (sp_streq(name, "fetch_values") && argc >= 1) {
+      const char *an = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+      if (an) {
+        int tr = ++g_tmp, to = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", an, tr); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d); ", an, to, an, to);
+        for (int a = 0; a < argc; a++) {
+          int ti = ++g_tmp;
+          buf_printf(b, "{ mrb_int _t%d = ", ti); emit_int_expr(c, argv[a], b);
+          buf_printf(b, "; mrb_int _len = sp_%sArray_length(_t%d);"
+                        " mrb_int _ix = _t%d < 0 ? _t%d + _len : _t%d;"
+                        " if (_ix < 0 || _ix >= _len) sp_raise_cls(\"IndexError\","
+                        " sp_sprintf(\"index %%lld outside of array bounds: %%lld...%%lld\","
+                        " (long long)_t%d, (long long)-_len, (long long)_len));"
+                        " sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _ix)); } ",
+                     an, tr, ti, ti, ti, ti, an, to, an, tr);
+        }
+        buf_printf(b, "_t%d; })", to);
+        return 1;
+      }
+    }
     const char *k = array_kind(rt);
     /* drop(n) / take(n): subarrays via slice (all kinds incl. poly). */
     if ((sp_streq(name, "drop") || sp_streq(name, "take")) && argc == 1) {
@@ -1105,6 +1128,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     if (k) {
       if ((sp_streq(name, "to_a") || sp_streq(name, "to_ary") || sp_streq(name, "entries") ||
+           sp_streq(name, "deconstruct") ||
            sp_streq(name, "flatten") || sp_streq(name, "compact")) && argc == 0) {
         /* a scalar-element array can't nest or hold nil: these are identity */
         emit_expr(c, recv, b); return 1;
@@ -1368,7 +1392,7 @@ else {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (sp_streq(name, "unshift") && argc >= 1) {
+      if ((sp_streq(name, "unshift") || sp_streq(name, "prepend")) && argc >= 1) {
         int t = ++g_tmp;
         if (rt == TY_INT_ARRAY) {
           buf_printf(b, "({ sp_IntArray *_t%d = ", t); emit_expr(c, recv, b); buf_puts(b, ";");
