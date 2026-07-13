@@ -3924,7 +3924,8 @@ else {
          literal-key use). Same variants as #except below. */
       if (sp_streq(name, "slice") && hn && argc >= 1 &&
           (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_STR_STR_HASH ||
-           rt == TY_STR_INT_HASH || rt == TY_POLY_POLY_HASH)) {
+           rt == TY_STR_INT_HASH || rt == TY_POLY_POLY_HASH ||
+           rt == TY_INT_INT_HASH || rt == TY_INT_STR_HASH)) {
         int th = ++g_tmp, tr = ++g_tmp;
         buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th);
         emit_expr(c, recv, b);
@@ -3952,7 +3953,8 @@ else {
       }
       if (sp_streq(name, "except") && hn &&
           (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_STR_STR_HASH ||
-           rt == TY_STR_INT_HASH || rt == TY_POLY_POLY_HASH)) {
+           rt == TY_STR_INT_HASH || rt == TY_POLY_POLY_HASH ||
+           rt == TY_INT_INT_HASH || rt == TY_INT_STR_HASH)) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sHash *_t%d = sp_%sHash_dup(", hn, t, hn);
         emit_expr(c, recv, b);
@@ -4051,6 +4053,37 @@ else {
         buf_puts(b, "sp_PolyArray_sort_pairs(");
         emit_hash_pairs_expr(c, recv, rt, hn, b);
         buf_puts(b, ")");
+        return 1;
+      }
+      /* Hash#shift: remove and return the first-inserted [key, value] pair, or
+         nil when empty. */
+      if (sp_streq(name, "shift") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+        TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
+        int th = ++g_tmp, tp = ++g_tmp, tr = ++g_tmp, tk = ++g_tmp;
+        buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = sp_box_nil();", th, tr);
+        buf_printf(b, " if (_t%d && _t%d->len > 0) {", th, th);
+        /* bind the first key (raw), used for both the pair and the delete */
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(b, " sp_RbVal _t%d = _t%d->keys[_t%d->order[0]];", tk, th, th);
+        else if (kt == TY_SYMBOL)
+          buf_printf(b, " sp_sym _t%d = _t%d->order[0];", tk, th);
+        else if (kt == TY_STRING)
+          buf_printf(b, " const char *_t%d = _t%d->order[0];", tk, th);
+        else
+          buf_printf(b, " mrb_int _t%d = _t%d->order[0];", tk, th);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tp, tp);
+        if (rt == TY_POLY_POLY_HASH) buf_printf(b, " sp_PolyArray_push(_t%d, _t%d);", tp, tk);
+        else if (kt == TY_SYMBOL) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d));", tp, tk);
+        else if (kt == TY_STRING) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d));", tp, tk);
+        else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d));", tp, tk);
+        if (rt == TY_POLY_POLY_HASH) buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[0]]);", tp, th, th);
+        else if (vt == TY_POLY) buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d));", tp, hn, th, tk);
+        else if (vt == TY_INT) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
+        else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
+        buf_printf(b, " _t%d = sp_box_poly_array(_t%d);", tr, tp);
+        buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); }", hn, th, tk);
+        buf_printf(b, " _t%d; })", tr);
         return 1;
       }
       /* Enumerable first/take/drop over the [key, value] pair list. `first`
@@ -4161,7 +4194,8 @@ else {
       }
       if (sp_streq(name, "delete") && argc == 1 &&
           (rt == TY_STR_INT_HASH || rt == TY_STR_STR_HASH || rt == TY_SYM_POLY_HASH ||
-           rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)) {
+           rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH ||
+           rt == TY_INT_INT_HASH || rt == TY_INT_STR_HASH)) {
         /* returns the deleted value (or nil on a miss), then removes the key */
         TyKind vt = ty_hash_val(rt);
         int th = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;

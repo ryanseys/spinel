@@ -3649,8 +3649,8 @@ else {
     if ((sp_streq(name, "merge") || sp_streq(name, "slice")) && argc == 0) return rt;
     if ((sp_streq(name, "clear") || sp_streq(name, "to_hash") || sp_streq(name, "rehash")) && argc == 0)
       return rt;
-    /* Hash#shift -> [key, value] pair, or nil (poly array) (#2349) */
-    if (sp_streq(name, "shift") && argc == 0) return TY_POLY_ARRAY;
+    /* Hash#shift -> [key, value] pair, or nil (boxed poly) (#2349) */
+    if (sp_streq(name, "shift") && argc == 0) return TY_POLY;
     /* Hash#key(value) -> a key, or nil: poly (the key type, nullable) (#2352) */
     if (sp_streq(name, "key") && argc == 1) return TY_POLY;
     /* blockless one? -> bool (exactly one pair) (#2354) */
