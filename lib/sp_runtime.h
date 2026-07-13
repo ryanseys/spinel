@@ -2145,7 +2145,10 @@ static const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
      place so aliases observe the write (CRuby identity semantics); only a
      plain literal -- static storage, marker 0xff -- copies (#2029). */
   sp_str_check_mutable(s);
-  mrb_int n = (mrb_int)strlen(s);
+  /* NUL-safe stored length: strlen would stop at the first NUL byte, making
+     every setbyte on a NUL-prefixed buffer (e.g. Array.new(n, 0).pack("C*"))
+     raise IndexError. */
+  mrb_int n = (mrb_int)sp_str_byte_len(s);
   if (i < 0) i += n;
   if (i < 0 || i >= n) {
     sp_raise_cls("IndexError", sp_sprintf("index %lld out of string", (long long)i));
