@@ -5009,6 +5009,21 @@ static mrb_int sp_poly_count_val(sp_RbVal v, sp_RbVal x) {
 }
 static mrb_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_STR)return v.v.s?(mrb_int)strlen(v.v.s):0;if(v.tag==SP_TAG_SYM)return sp_sym_name_fn?(mrb_int)strlen(sp_sym_name_fn((sp_sym)v.v.i)):0;if(v.tag!=SP_TAG_OBJ)return 0;switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_FLT_ARRAY:return sp_FloatArray_length((sp_FloatArray*)v.v.p);case SP_BUILTIN_STR_ARRAY:return sp_StrArray_length((sp_StrArray*)v.v.p);case SP_BUILTIN_SYM_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_POLY_ARRAY:return sp_PolyArray_length((sp_PolyArray*)v.v.p);case SP_BUILTIN_STR_INT_HASH:return sp_StrIntHash_length((sp_StrIntHash*)v.v.p);case SP_BUILTIN_STR_STR_HASH:return sp_StrStrHash_length((sp_StrStrHash*)v.v.p);case SP_BUILTIN_INT_STR_HASH:return sp_IntStrHash_length((sp_IntStrHash*)v.v.p);case SP_BUILTIN_STR_POLY_HASH:return sp_StrPolyHash_length((sp_StrPolyHash*)v.v.p);case SP_BUILTIN_SYM_POLY_HASH:return sp_SymPolyHash_length((sp_SymPolyHash*)v.v.p);case SP_BUILTIN_POLY_POLY_HASH:return sp_PolyPolyHash_length((sp_PolyPolyHash*)v.v.p);default:return 0;}}
 
+/* Object#reverse dispatched on a poly receiver: Array#reverse builds a new
+   reversed array; anything else takes the String#reverse path. Without the
+   array arm a poly Array reversed through its inspect string (garbage). */
+static sp_RbVal sp_poly_reverse(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
+    SP_GC_ROOT_RBVAL(v);
+    mrb_int n = sp_poly_length(v);
+    sp_PolyArray *out = sp_PolyArray_new();
+    SP_GC_ROOT(out);
+    for (mrb_int i = n - 1; i >= 0; i--) sp_PolyArray_push(out, sp_poly_arr_get(v, i));
+    return sp_box_poly_array(out);
+  }
+  return sp_box_str(sp_str_reverse(sp_poly_to_s(v)));
+}
+
 /* Marshal implementation moved to lib/sp_marshal.c. These small wrappers give
    the standalone serializer construction primitives that need sp_runtime.h
    types; sp_re_init (codegen) installs them into sp_marshal_v along with the

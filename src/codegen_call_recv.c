@@ -6654,7 +6654,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "capitalize"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_capitalize)"); return 1; }
     if (sp_streq(name, "swapcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_swapcase)"); return 1; }
     if (sp_streq(name, "strip"))      { buf_puts(b, "sp_box_str(sp_str_strip(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (sp_streq(name, "reverse"))    { buf_puts(b, "sp_box_str(sp_str_reverse(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "reverse"))    { buf_puts(b, "sp_poly_reverse("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
     if (sp_streq(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "chop"))       { buf_puts(b, "sp_box_str(sp_str_chop(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "chr"))        { buf_puts(b, "sp_box_str(sp_str_chr(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
