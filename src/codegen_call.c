@@ -3496,7 +3496,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!=") ||
                     (sp_streq(name, "===") && rt == TY_STRING) ||  /* String#=== is == (#2347) */
                     (sp_streq(name, "eql?") &&
-                     (ty_is_array(rt) ||
+                     (ty_is_array(rt) || ty_is_hash(rt) ||
                       (ty_is_object(rt) && ty_object_class(rt) >= 0 &&
                        ty_object_class(rt) < c->nclasses &&
                        c->classes[ty_object_class(rt)].is_struct))))) {
@@ -3504,7 +3504,8 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
        (1 is not eql? to 1.0): box both sides through the strict poly
        comparator. Scalar eql? is handled by the per-type emitters. */
     int eq = !sp_streq(name, "!=");
-    if (sp_streq(name, "eql?") && (ty_is_array(rt) || ty_is_array(a0))) {
+    if (sp_streq(name, "eql?") && (ty_is_array(rt) || ty_is_array(a0) ||
+                                   ty_is_hash(rt) || ty_is_hash(a0))) {
       buf_puts(b, "sp_poly_eql(");
       emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
       buf_puts(b, ")");
@@ -6188,6 +6189,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; _t%d->frozen = TRUE; _t%d; })", t, t); return;
     }
     if (argc == 0 && sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
+    if (argc == 0 && (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
+      buf_puts(b, "sp_Enumerator_dup("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
   }
 
   /* Random class methods: Random.rand(n) / Random.rand / Random.bytes(n)
@@ -9513,6 +9517,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   /* Regexp VALUE receiver (a variable, or a literal in value position):
      rendering reads the pattern's retained source text at runtime. */
+  /* Regexp#== / #eql? compare by pattern source (dup == original) (#2361) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 1 &&
+      (sp_streq(name, "==") || sp_streq(name, "!=")) &&
+      comp_ntype(c, argv[0]) == TY_REGEX) {
+    buf_puts(b, sp_streq(name, "!=") ? "(!(" : "((");
+    buf_puts(b, "strcmp(sp_re_source((void *)(");
+    emit_expr(c, recv, b);
+    buf_puts(b, ")), sp_re_source((void *)(");
+    emit_expr(c, argv[0], b);
+    buf_puts(b, sp_streq(name, "!=") ? "))) == 0))" : "))) == 0))");
+    return;
+  }
   if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 1 &&
       (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
       comp_ntype(c, argv[0]) == TY_REGEX) {

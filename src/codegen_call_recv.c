@@ -3737,7 +3737,8 @@ else {
         return 1;
       }
       if ((sp_streq(name, "value?") || sp_streq(name, "has_value?")) && argc == 1) {
-        int poly = (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH);
+        int poly = (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH ||
+                    rt == TY_POLY_POLY_HASH);  /* boxed-value variants (#2373) */
         buf_printf(b, "sp_%sHash_has_value(", hn);
         emit_expr(c, recv, b); buf_puts(b, ", ");
         if (poly) emit_boxed(c, argv[0], b); else emit_expr(c, argv[0], b);
@@ -3769,6 +3770,23 @@ else {
       if (sp_streq(name, "replace") && argc == 1 && comp_ntype(c, argv[0]) == rt) {
         buf_printf(b, "sp_%sHash_replace(", hn);
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
+      /* replace with a DIFFERENT hash variant: the receiver slot has widened to
+         the universal PolyPoly hash (see infer), so clear it and re-fill from
+         the boxed other's [k, v] pairs -- never the raw-pointer mispatch that
+         used to hang inspect (#2374). */
+      if (sp_streq(name, "replace") && argc == 1 && rt == TY_POLY_POLY_HASH &&
+          ty_is_hash(comp_ntype(c, argv[0]))) {
+        int th = ++g_tmp, to = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+        buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyPolyHash_clear(_t%d);", to, th);
+        buf_printf(b, " mrb_int _t%d = sp_poly_length(_t%d);", tn, to);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {"
+                      " sp_RbVal _k, _v; sp_poly_hash_pair(_t%d, _t%d, &_k, &_v);"
+                      " sp_PolyPolyHash_set(_t%d, _k, _v); } _t%d; })",
+                   ti, ti, tn, ti, to, ti, th, th);
         return 1;
       }
       if (sp_streq(name, "default") && argc == 0) {
@@ -5426,8 +5444,12 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
      pointer; an argument of any other concrete type is never identical. A
      value-type instance is copied inline and has no stable identity, so only
      the reflexive same-lvalue read is knowably true (the string arm's rule). */
-  if (recv >= 0 && ty_is_object(rt) && argc == 1 && sp_streq(name, "equal?") &&
-      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
+  /* Object#eql? default (no user override) is identity, exactly equal? --
+     route it through the same arm (#2361) */
+  if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
+      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
+      comp_method_in_chain(c, ty_object_class(rt), "eql?", NULL) < 0) {
     TyKind a0 = comp_ntype(c, argv[0]);
     if (!c->classes[ty_object_class(rt)].is_value_type) {
       if (a0 == rt) {

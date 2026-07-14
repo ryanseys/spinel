@@ -607,6 +607,12 @@ int hash_enum_redispatch(Compiler *c, int id) {
     return 1;
   /* blockless each_with_index: an external Enumerator of [[k, v], i] */
   if (block < 0 && sp_streq(name, "each_with_index")) return 1;
+  /* pair-array Enumerables with no dedicated hash emitter: find_index, uniq,
+     zip, tally, reverse_each ride the materialized redispatch, block or not
+     (#2372) */
+  if (sp_streq(name, "find_index") || sp_streq(name, "uniq") ||
+      sp_streq(name, "zip") || sp_streq(name, "tally") ||
+      sp_streq(name, "reverse_each")) return 1;
   if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
   /* comparator-block min/max/minmax compare the [k, v] pairs like the
      blockless forms (min_by/max_by keep their dedicated hash emitters) */
@@ -1610,7 +1616,8 @@ else {
     if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
         sp_streq(name, "itself")) return TY_REGEX;
     if (sp_streq(name, "frozen?")) return TY_BOOL;
-    if ((sp_streq(name, "equal?") || sp_streq(name, "eql?")) && argc == 1) return TY_BOOL;
+    if ((sp_streq(name, "==") || sp_streq(name, "!=") ||
+         sp_streq(name, "equal?") || sp_streq(name, "eql?")) && argc == 1) return TY_BOOL;
     if (sp_streq(name, "encoding")) return TY_POLY;  /* a boxed Encoding value */
     if (sp_streq(name, "fixed_encoding?")) return TY_BOOL;
     if (sp_streq(name, "options")) return TY_INT;
@@ -3655,7 +3662,18 @@ else {
         return TY_SYM_POLY_HASH;
       return rt;
     }
-    if (sp_streq(name, "dup") || sp_streq(name, "clone") || sp_streq(name, "replace") ||
+    /* replace(other) returns self, but self's SLOT widens to the universal
+       PolyPoly hash when other is a different variant (the receiver-mutation
+       evidence in infer_write_types does the same to the local) -- mirror it
+       here so a `r = h.replace(o)` capture agrees from the first fixpoint
+       iteration instead of lagging one phase behind (#2374 hang: a SymPoly-
+       declared r holding a PolyPoly pointer made inspect walk garbage). */
+    if (sp_streq(name, "replace") && argc == 1) {
+      TyKind ot = infer_type(c, argv[0]);
+      if (ty_is_hash(ot) && ot != rt) return TY_POLY_POLY_HASH;
+      return rt;
+    }
+    if (sp_streq(name, "dup") || sp_streq(name, "clone") ||
         sp_streq(name, "merge")) return rt;
     /* #2340/#2349/#2351: no-arg merge / slice / clear / to_hash / rehash keep
        the receiver's variant (an emptied or copied hash of the same shape) */

@@ -4531,6 +4531,7 @@ static void sp_PolyPolyHash_grow(sp_PolyPolyHash*h){sp_RbVal*ok=h->keys;sp_RbVal
 /* miss path cold+noinline, same reason as sp_SymPolyHash_miss above. */
 static SP_NOINLINE sp_RbVal sp_PolyPolyHash_miss(sp_PolyPolyHash*h,sp_RbVal k){if(h->dproc)return h->dproc(h,k,h->dproc_self);return h->default_v;}
 static sp_RbVal sp_PolyPolyHash_get(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return sp_box_nil();mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k))return h->vals[idx];idx=(idx+1)&h->mask;}return sp_PolyPolyHash_miss(h,k);}
+static mrb_bool sp_PolyPolyHash_has_value(sp_PolyPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(mrb_int i=0;i<h->len;i++)if(sp_poly_eq(h->vals[h->order[i]],v))return TRUE;return FALSE;}
 static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
   if (v.tag != SP_TAG_OBJ) return sp_box_nil();
   switch (v.cls_id) {
@@ -6819,6 +6820,15 @@ typedef struct {
                                              #<Enumerator: #<Enumerator::Generator:0x..>:each> */
   mrb_bool frozen;                        /* Object#freeze observed (sp_gc_alloc zero-fills) */
 } sp_Enumerator;
+/* Enumerator#dup / #clone: a shallow struct copy is a distinct object (its
+   cursor rewinds independently; == compares by pointer, so dup != original). */
+static void sp_Enumerator_scan(void *p);
+static sp_Enumerator *sp_Enumerator_dup(sp_Enumerator *e) {
+  if (!e) return e;
+  sp_Enumerator *d = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
+  *d = *e;
+  return d;
+}
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ) {
     void *p = v.v.p;
