@@ -3058,7 +3058,10 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
       int fmi = comp_method_in_chain(c, i, mnames[m], &fdef);
       if (fmi < 0 || !c->scopes[fmi].reachable || c->scopes[fmi].ret != TY_STRING ||
           c->scopes[fmi].nparams != 0 || fdef != i) continue;
-      buf_printf(b, "static const char *sp_%s_%s(sp_%s *self);\n",
+      /* a debug (-g) build gives user methods external linkage (see
+         emit_method_signature); this forward decl must match it */
+      buf_printf(b, "%sconst char *sp_%s_%s(sp_%s *self);\n",
+                 g_debug ? "" : "static ",
                  c->classes[fdef].c_name, mc(c->scopes[fmi].name), c->classes[fdef].c_name);
     }
   }
