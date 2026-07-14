@@ -1353,6 +1353,30 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
       return 1;
     }
+    /* a Bignum operand: bigint-backed exact Rational (boxed poly value).
+       The generic arm below would cast the sp_Bigint POINTER to mrb_int. */
+    if ((argc >= 1 && comp_ntype(c, argv[0]) == TY_BIGINT) ||
+        (argc == 2 && comp_ntype(c, argv[1]) == TY_BIGINT)) {
+      /* hoist the whole construction to the enclosing function's scope: a
+         statement-expression root pops when its block exits, so components
+         and the result must be rooted at function level to survive sibling
+         argument allocations (a second Rational in the same expression) */
+      int tnum = ++g_tmp, tden = ++g_tmp, tres = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Bigint *_t%d = ", tnum);
+      emit_bigint_operand(c, argv[0], g_pre);
+      buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", tnum);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Bigint *_t%d = ", tden);
+      if (argc == 2) emit_bigint_operand(c, argv[1], g_pre);
+      else buf_puts(g_pre, "sp_bigint_new_int(1)");
+      buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", tden);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = sp_bigrat_new(_t%d, _t%d); SP_GC_ROOT_RBVAL(_t%d);\n",
+                 tres, tnum, tden, tres);
+      buf_printf(b, "_t%d", tres);
+      return 1;
+    }
     if (argc == 2) {
       /* a zero denominator raises ZeroDivisionError (CRuby), not (n/0). Both
          arguments are evaluated first, in order. Render each into a local Buf so

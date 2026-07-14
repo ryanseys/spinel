@@ -5381,6 +5381,13 @@ sp_Bigint *sp_bigint_mul(sp_Bigint *a, sp_Bigint *b) {
   return r;
 }
 
+sp_Bigint *sp_bigint_gcd(sp_Bigint *a, sp_Bigint *b) {
+  sp_Bigint *r = sp_bigint_alloc();
+  mpz_init(sp_mpz_ctx, &r->mpz);
+  mpz_gcd(sp_mpz_ctx, &r->mpz, &a->mpz, &b->mpz);
+  return r;
+}
+
 sp_Bigint *sp_bigint_div(sp_Bigint *a, sp_Bigint *b) {
   /* Defensive zero check before mini-gmp: udiv()'s assertion at
      line 2856 fires for zero divisors that aren't single-limb,

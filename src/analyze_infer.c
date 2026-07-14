@@ -759,7 +759,13 @@ TyKind infer_call(Compiler *c, int id) {
 
   /* Complex / Rational value types. */
   if (recv < 0 && sp_streq(name, "Complex")) return TY_COMPLEX;
-  if (recv < 0 && sp_streq(name, "Rational") && (argc == 1 || argc == 2)) return TY_RATIONAL;
+  if (recv < 0 && sp_streq(name, "Rational") && (argc == 1 || argc == 2)) {
+    /* a Bignum operand: the exact value is bigint-backed and rides poly */
+    if (infer_type(c, argv[0]) == TY_BIGINT ||
+        (argc == 2 && infer_type(c, argv[1]) == TY_BIGINT))
+      return TY_POLY;
+    return TY_RATIONAL;
+  }
   if (recv >= 0) {
     const char *rrty = nt_type(nt, recv);
     if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
