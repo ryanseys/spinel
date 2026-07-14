@@ -2619,12 +2619,14 @@ static mrb_int sp_int_pow(mrb_int base, mrb_int exp) {
 }
 static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
   if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) {
-    /* CRuby: a negative integer exponent yields a Rational. The non-negative
-       path squares-and-multiplies exactly (the old pow(double) round-trip was
-       lossy past 2^53); an overflowing result promotes to Bignum under
-       --int-overflow=promote, else sp_int_pow raises/wraps per mode. */
+    /* CRuby: a negative integer exponent yields a Rational, and an
+       overflowing result is always a Bignum -- `**` promotes in every
+       overflow mode except wrap (CRuby has no wrapping **; that mode keeps
+       sp_int_pow's wrap for consistency with the other operators). The
+       non-negative path squares-and-multiplies exactly (the old pow(double)
+       round-trip was lossy past 2^53). */
     if (b.v.i < 0) return sp_box_rational(sp_rational_pow(sp_rational_new(a.v.i, 1), b.v.i));
-#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+#ifndef SP_INT_OVERFLOW_MODE_WRAP
     mrb_int r = 1, base = a.v.i, exp = b.v.i;
     int ovf = 0;
     while (exp > 0 && !ovf) {

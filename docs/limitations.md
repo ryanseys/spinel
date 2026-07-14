@@ -118,17 +118,19 @@ visible error. Those deliberate divergences are listed here.
 
 #### `Integer#**` with a negative exponent
 
-CRuby evaluates a negative integer exponent to a `Rational`. Spinel matches
-it whenever the sign is knowable: a literal negative exponent types the
-result `Rational` statically (`2 ** -1 # => (1/2)`, `0 ** -1` raises
-`ZeroDivisionError` as in CRuby), and the poly-dispatched path (a
-poly-typed base or exponent, e.g. promote-mode parameters) picks `Integer`
-or `Rational` from the sign at run time. The residual divergence is a
-statically int-typed runtime exponent (`x ** y` with plain int locals):
-typing it a sometimes-`Rational` would force the result poly and cascade
-through every int-arithmetic consumer, so a negative value there still
-raises `RangeError` rather than silently truncating. `Integer#pow(negative,
-mod)` raises `RangeError` with CRuby's message.
+CRuby evaluates a negative integer exponent to a `Rational` and grows an
+overflowing power into a Bignum. Spinel matches both wherever the exponent's
+value can matter: a literal negative exponent types the result `Rational`
+statically (`2 ** -1 # => (1/2)`, `0 ** -1` raises `ZeroDivisionError` as in
+CRuby); a **runtime exponent** over int operands types the result poly and
+resolves the class at run time (`Integer`, `Bignum` on overflow, `Rational`
+when negative) — in the default and promote overflow modes alike (`wrap`
+keeps wrapping, consistently with the other operators). The residual
+divergence is a runtime **base** under a constant exponent (`x ** 3`):
+its result stays a machine integer, so an overflow there follows the
+compile-time overflow mode (`RangeError` by default) rather than promoting;
+same for the op-assign form `x **= n`. `Integer#pow(negative, mod)` raises
+`RangeError` with CRuby's message.
 
 #### Unboxed value types: identity IS the value
 

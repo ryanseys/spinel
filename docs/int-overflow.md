@@ -20,8 +20,10 @@ spinel app.rb --int-overflow=promote
 | **`wrap`** | two's-complement wraparound, like C (`a + b` with no check) | no | modular arithmetic, hashes, checksums, PRNGs — anywhere defined wraparound *is* the intent |
 | **`promote`** | promotes the result to an arbitrary-precision integer (bigint) | yes | CRuby-faithful integer math (experimental, see below) |
 
-The mode applies to integer `+`, `-`, `*`, unary `-`, and (under `promote`) `**`
-and shifts. It does not change division: `1 / 0` is always a
+The mode applies to integer `+`, `-`, `*`, unary `-`, and (under `promote`)
+constant-exponent `**` and shifts. `**` with a *runtime* exponent promotes to a
+Bignum on overflow in the `raise` and `promote` modes alike (CRuby has no
+raising `**`); `wrap` keeps it wrapping. It does not change division: `1 / 0` is always a
 `ZeroDivisionError` regardless of mode.
 
 ### `raise` (default)

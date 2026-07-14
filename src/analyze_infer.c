@@ -722,15 +722,21 @@ TyKind infer_call(Compiler *c, int id) {
         infer_int_pow_overflows(base, exp))
       return TY_BIGINT;
   }
-  /* Integer ** <negative literal>: a Rational in CRuby, typed statically. A
-     runtime exponent keeps the static Integer result (typing it poly would
-     cascade through every int-arithmetic consumer -- see limitations.md); the
-     negative case raises loudly, and the poly-dispatched path (promote-mode
-     params) resolves the class at runtime in sp_poly_pow. */
+  /* Integer ** <negative literal>: a Rational in CRuby, typed statically.
+     Integer ** <runtime exponent>: the result class depends on the value
+     (Bignum on overflow, Rational for a negative exponent), so type it POLY
+     and let sp_poly_pow resolve at runtime -- matching CRuby instead of
+     raising RangeError on overflow. A runtime BASE with a constant exponent
+     keeps the static Integer result (typing it poly would cascade through
+     every int-arithmetic consumer -- see limitations.md); its overflow
+     raises loudly. */
   if (sp_streq(name, "**") && recv >= 0 && argc == 1 &&
       infer_type(c, recv) == TY_INT && a0 == TY_INT) {
     long long exp;
-    if (infer_const_int_node(nt, argv[0], &exp) && exp < 0) return TY_RATIONAL;
+    if (infer_const_int_node(nt, argv[0], &exp)) {
+      if (exp < 0) return TY_RATIONAL;
+    }
+    else return TY_POLY;
   }
   /* A literal left shift whose result exceeds int64 (`1 << 64`, the 2**64 mask)
      is a Bignum -- type it bigint so codegen emits a bigint shift, not a UB C
