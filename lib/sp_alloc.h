@@ -276,7 +276,6 @@ static inline const char*sp_float_to_s(mrb_float f){
 #define SP_BUILTIN_FIBER         (-22)
 #define SP_BUILTIN_IO            (-23)
 #define SP_BUILTIN_METHOD        (-24)
-#define SP_BUILTIN_ENUMERATOR    (-25)
 /* Exception lived at -13, aliasing SP_BUILTIN_STR_INT_HASH, which both put
    exceptions inside the hash cls_id block [-20,-13] (breaking is_a?(Hash) /
    poly .class for exceptions) and made a str_int_hash arriving as a poly value
@@ -291,6 +290,12 @@ static inline const char*sp_float_to_s(mrb_float f){
    [-20,-13] (which was full), so the "is this a hash" range checks that test
    that block must also test for this id explicitly. */
 #define SP_BUILTIN_INT_INT_HASH  (-34)
+/* Was -25, aliasing SP_BUILTIN_FOREIGN_PTR (sp_gc.h): sp_mark_rbval's
+   FOREIGN_PTR exclusion (opaque external memory, not GC-owned) then also
+   silently skipped marking a poly-boxed Enumerator, which IS GC-owned --
+   a live use-after-free for any Enumerator reachable only via a poly slot.
+   Given a distinct id below the hash block, like INT_INT_HASH above. */
+#define SP_BUILTIN_ENUMERATOR    (-35)
 
 static inline sp_RbVal sp_box_int(mrb_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;  r.cls_id = 0; r.v.i = v; return r; }
 /* A NULL char* IS Ruby nil throughout the string paths (the nullable-string
