@@ -1252,7 +1252,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* (range).step(k) { |x| ... } -- materialise the stepped values (shared with
      the no-block path so they match exactly) and walk them; the element type
      follows the array, int or float. */
-  if (sp_streq(name, "step") && rt == TY_RANGE) {
+  if (sp_streq(name, "step") && (rt == TY_RANGE || rt == TY_FLOAT_RANGE)) {
     int args = nt_ref(nt, id, "arguments"); int sargc = 0;
     if (args >= 0) nt_arr(nt, args, "arguments", &sargc);
     if (sargc < 1) return 0;

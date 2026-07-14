@@ -85,6 +85,18 @@ const char *sp_Range_inspect(sp_Range *r) {
   return buf;
 }
 
+const char *sp_FRange_inspect(sp_FRange r) {
+  /* "first..last" over the float renderings (1.0..3.0, matching p); each
+     rendering is a fresh GC string, rooted across the next allocation */
+  const char *a = sp_float_to_s(r.first);
+  SP_GC_ROOT_STR(a);
+  const char *z = sp_float_to_s(r.last);
+  SP_GC_ROOT_STR(z);
+  char *buf = sp_str_alloc_raw(80);
+  snprintf(buf, 80, r.excl ? "%s...%s" : "%s..%s", a, z);
+  return buf;
+}
+
 /* "YYYY-MM-DD HH:MM:SS UTC" via gmtime: the spinel runtime keeps Time
    timezone-naive, so UTC is the unambiguous choice that needs no tzdata. */
 static const char *sp_Time_fmt(sp_Time *t, int frac) {

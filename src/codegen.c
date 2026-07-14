@@ -373,6 +373,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_BOOL:   fn = "sp_box_bool";  break;
     case TY_SYMBOL: fn = "sp_box_sym";   break;
     case TY_RANGE:  fn = "sp_box_range"; break;
+    case TY_FLOAT_RANGE: unsupported(c, node, "boxing a float range into poly"); return;
     case TY_TIME:   fn = "sp_box_time";  break;
     case TY_COMPLEX:  fn = "sp_box_complex";  break;
     case TY_RATIONAL: fn = "sp_box_rational"; break;
@@ -423,6 +424,7 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
     case TY_TIME:   buf_puts(&cty, "sp_Time"); init = "{0}"; break;
     case TY_COMPLEX:  buf_puts(&cty, "sp_Complex"); init = "{0}"; break;
     case TY_RATIONAL: buf_puts(&cty, "sp_Rational"); init = "{0}"; break;
+    case TY_FLOAT_RANGE: buf_puts(&cty, "sp_FRange"); init = "{0}"; break;
     case TY_STRING: buf_puts(&cty, "const char *"); init = "(&(\"\\xff\")[1])"; ptr = 1; break;
     case TY_POLY:   buf_puts(&cty, "sp_RbVal"); init = "sp_box_nil()"; break;
     case TY_CLASS:  buf_puts(&cty, "sp_Class"); init = "((sp_Class){-1})"; break;

@@ -5262,6 +5262,20 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
+        /* float bounds over an int receiver: the clamped-to bound is the
+           Float endpoint itself, an in-range receiver stays Integer (poly
+           result); an exclusive range raises like CRuby */
+        int tv3 = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = (%s); sp_FRange _r%d = ", tv3, r, tv3);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (_r%d.excl) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"cannot clamp with an exclusive range\")[1]));", tv3);
+        buf_printf(b, " if (_r%d.first > _r%d.last) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"min argument must be less than or equal to max argument\")[1]));", tv3, tv3);
+        buf_printf(b, " ((double)_t%d < _r%d.first) ? sp_box_float(_r%d.first)"
+                      " : ((double)_t%d > _r%d.last) ? sp_box_float(_r%d.last)"
+                      " : sp_box_int(_t%d); })",
+                   tv3, tv3, tv3, tv3, tv3, tv3, tv3);
+      }
       else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE &&
                nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
                ((nt_ref(nt, argv[0], "left") >= 0 && comp_ntype(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
@@ -5410,6 +5424,15 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                         " (mrb_int)%s(_t%d); })",
                      tg, r, tg, tg, tg, cfn, tg);
         }
+      }
+      else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
+        int tv4 = ++g_tmp;
+        buf_printf(b, "({ double _t%d = (%s); sp_FRange _r%d = ", tv4, r, tv4);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (_r%d.excl) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"cannot clamp with an exclusive range\")[1]));", tv4);
+        buf_printf(b, " if (_r%d.first > _r%d.last) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"min argument must be less than or equal to max argument\")[1]));", tv4, tv4);
+        buf_printf(b, " _t%d < _r%d.first ? _r%d.first : _t%d > _r%d.last ? _r%d.last : _t%d; })",
+                   tv4, tv4, tv4, tv4, tv4, tv4, tv4);
       }
       else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
         /* the clamped-to bound is the range's endpoint itself (keeping its
@@ -6624,6 +6647,14 @@ TyKind emit_range_step_array(Compiler *c, int id, Buf *b) {
   }
   int t = ++g_tmp;
   Buf rb = expr_buf(c, recv);
+  if (comp_ntype(c, recv) == TY_FLOAT_RANGE) {
+    buf_printf(b, "({ sp_FRange _t%d = %s; sp_FloatArray_from_step(_t%d.first, _t%d.last, ",
+               t, rb.p ? rb.p : "", t, t);
+    emit_float_expr(c, argv[0], b);
+    buf_printf(b, ", _t%d.excl != 0); })", t);
+    free(rb.p);
+    return TY_FLOAT_ARRAY;
+  }
   if (is_float)
     buf_printf(b, "({ sp_Range _t%d = %s; sp_FloatArray_from_step((mrb_float)_t%d.first, (mrb_float)_t%d.last, ",
                t, rb.p ? rb.p : "", t, t);
@@ -6644,6 +6675,82 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   TyKind rt = comp_recv_type(c, recv);
   /* range value methods (evaluate the range once into a temp) */
+  if (recv >= 0 && rt == TY_FLOAT_RANGE) {
+    /* float-endpoint range: exact endpoint reads and the cover predicate;
+       iteration raises TypeError like CRuby (can't iterate from Float). */
+    if (argc == 0 && (sp_streq(name, "begin") || sp_streq(name, "first"))) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_FRange _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d.first; })", t);
+      return 1;
+    }
+    if (argc == 0 && (sp_streq(name, "end") || sp_streq(name, "last"))) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_FRange _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d.last; })", t);
+      return 1;
+    }
+    if (argc == 0 && sp_streq(name, "min")) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_FRange _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; (_t%d.excl ? _t%d.first < _t%d.last : _t%d.first <= _t%d.last) ? _t%d.first : sp_float_nil(); })",
+                 t, t, t, t, t, t);
+      return 1;
+    }
+    if (argc == 0 && sp_streq(name, "max")) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_FRange _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; if (_t%d.excl) sp_raise_cls(\"TypeError\", \"cannot exclude non Integer end value\");"
+                    " _t%d.first <= _t%d.last ? _t%d.last : sp_float_nil(); })",
+                 t, t, t, t);
+      return 1;
+    }
+    if (argc == 0 && sp_streq(name, "exclude_end?")) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_FRange _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d.excl != 0; })", t);
+      return 1;
+    }
+    if (argc == 0 && (sp_streq(name, "to_s") || sp_streq(name, "inspect"))) {
+      buf_puts(b, "sp_FRange_inspect(");
+      emit_expr(c, recv, b);
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (sp_streq(name, "step") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+      emit_range_step_array(c, id, b);
+      return 1;
+    }
+    if (argc == 1 && (sp_streq(name, "include?") || sp_streq(name, "cover?") ||
+                      sp_streq(name, "member?") || sp_streq(name, "==="))) {
+      TyKind at = comp_ntype(c, argv[0]);
+      if (at != TY_INT && at != TY_FLOAT && at != TY_POLY) {
+        /* an incomparable argument type never matches (CRuby: <=> returns
+           nil, cover?/include?/=== answer false) -- evaluate both operands
+           for any side effects, never cast a non-numeric value to mrb_float. */
+        buf_puts(b, "({ "); emit_expr(c, recv, b); buf_puts(b, "; ");
+        emit_expr(c, argv[0], b); buf_puts(b, "; 0; })");
+        return 1;
+      }
+      int t = ++g_tmp, tv = ++g_tmp;
+      buf_printf(b, "({ sp_FRange _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_float _t%d = (mrb_float)(", tv);
+      if (at == TY_POLY) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_printf(b, "); _t%d.first <= _t%d && (_t%d.excl ? _t%d < _t%d.last : _t%d <= _t%d.last); })",
+                 t, tv, t, tv, t, tv, t);
+      return 1;
+    }
+    if (sp_streq(name, "each") || sp_streq(name, "to_a") || sp_streq(name, "entries") ||
+        sp_streq(name, "map") || sp_streq(name, "collect") || sp_streq(name, "sum") ||
+        sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "size") ||
+        sp_streq(name, "reduce") || sp_streq(name, "inject") || sp_streq(name, "count")) {
+      buf_puts(b, "(sp_raise_cls(\"TypeError\", (&(\"\\xff\" \"can't iterate from Float\")[1])), sp_box_nil())");
+      return 1;
+    }
+    return 0;  /* anything else: loud fall-through */
+  }
+
   if (recv >= 0 && rt == TY_RANGE) {
     int block = nt_ref(nt, id, "block");
     /* endless literal: size is infinite; take/first(n) count from the start

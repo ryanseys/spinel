@@ -6258,6 +6258,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_Random_rand_float_bound(sp_random_default_get(), ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
+      else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
+        /* Random.rand(range), unlike bare Kernel#rand(range), raises on an
+           inverted/empty range instead of returning nil (verified against
+           CRuby: `Random.rand(3.0..1.0)` -> ArgumentError). */
+        int tfr = ++g_tmp;
+        buf_printf(b, "({ sp_FRange _t%d = ", tfr);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d.first > _t%d.last || (_t%d.first == _t%d.last && _t%d.excl))"
+                      " sp_raise_cls(\"ArgumentError\", sp_sprintf(\"invalid argument - %%s\", sp_FRange_inspect(_t%d)));"
+                      " _t%d.first + sp_Random_rand_float(sp_random_default_get()) * (_t%d.last - _t%d.first); })",
+                   tfr, tfr, tfr, tfr, tfr, tfr, tfr, tfr, tfr);
+      }
       else if (argc >= 1) {
         buf_puts(b, "sp_Random_rand_int(sp_random_default_get(), ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -6278,6 +6290,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
       if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
         buf_puts(b, "sp_Random_rand_float_bound("); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
+        /* r.rand(range) raises on an inverted/empty range, like Random.rand
+           (verified against CRuby: `Random.new(1).rand(3.0..1.0)` ->
+           ArgumentError), unlike bare Kernel#rand which returns nil. */
+        int tfr2 = ++g_tmp, trn2 = ++g_tmp;
+        buf_printf(b, "({ sp_Random *_t%d = ", trn2); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_FRange _t%d = ", tfr2); emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d.first > _t%d.last || (_t%d.first == _t%d.last && _t%d.excl))"
+                      " sp_raise_cls(\"ArgumentError\", sp_sprintf(\"invalid argument - %%s\", sp_FRange_inspect(_t%d)));"
+                      " _t%d.first + sp_Random_rand_float(_t%d) * (_t%d.last - _t%d.first); })",
+                   tfr2, tfr2, tfr2, tfr2, tfr2, tfr2, tfr2, trn2, tfr2, tfr2);
       }
       else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
         buf_puts(b, "sp_Random_rand_range("); emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -6792,6 +6816,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "rand")) {
       if (ac == 0) { buf_puts(b, "(mrb_float)((double)rand() / (RAND_MAX + 1.0))"); return; }
       TyKind a0t = comp_ntype(c, av[0]);
+      if (a0t == TY_FLOAT_RANGE) {
+        /* bare Kernel#rand(range), unlike Random.rand/instance rand, returns
+           nil on an inverted/empty range instead of raising (verified:
+           `rand(3.0..1.0)` -> nil in CRuby). */
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_FRange _t%d = ", tr); emit_expr(c, av[0], b);
+        buf_printf(b, "; (_t%d.first > _t%d.last || (_t%d.first == _t%d.last && _t%d.excl)) ? sp_float_nil()"
+                      " : (_t%d.first + sp_Random_rand_float(sp_random_default_get()) * (_t%d.last - _t%d.first)); })",
+                   tr, tr, tr, tr, tr, tr, tr, tr, tr);
+        return;
+      }
       if (a0t == TY_RANGE) {
         int tr = ++g_tmp;
         /* is the range a float range? */

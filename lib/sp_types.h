@@ -133,6 +133,9 @@ typedef mrb_int sp_sym;
    A zero step (every range built by the literal `a..b` / sp_range_new path) is
    treated as +1, so existing constructions need no change. */
 typedef struct{mrb_int first;mrb_int last;mrb_int excl;mrb_int step;}sp_Range;
+/* a float-endpoint Range: min/max/cover?/clamp carry the exact endpoints
+   (iteration raises TypeError like CRuby). Value struct, never boxed. */
+typedef struct{mrb_float first;mrb_float last;mrb_int excl;}sp_FRange;
 /* A class value. `name`, when non-NULL, is a rodata class name carried by a
    class whose cls_id table entry may not exist (an exception's class -- the
    Errno:: family and many builtin error classes have no assigned cls_id). It

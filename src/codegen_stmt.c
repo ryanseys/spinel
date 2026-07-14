@@ -405,6 +405,11 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_Time _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_time_inspect_v(_t%d), stdout); putchar('\\n'); }\n", tv);
   }
+  else if (t == TY_FLOAT_RANGE) {
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_FRange _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_FRange_inspect(_t%d), stdout); putchar('\\n'); }\n", tv);
+  }
   else if (t == TY_RANGE) {   /* a Range inspects as "first..last" / "first...last" */
     /* A string-endpoint range has no int sp_Range value; inspect its literal
        endpoints directly (each String quoted), e.g. `"a".."c"`. */
@@ -3210,6 +3215,27 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             if (pt == TY_POLY) buf_printf(b, "; sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", tr, t);
             else buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
           }
+          else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE && (pt == TY_INT || pt == TY_FLOAT || pt == TY_POLY)) {
+            /* `when lo..hi` (float-begin range) is range membership too --
+               mirror the sp_Range arm above with sp_FRange's cover?/===
+               semantics (exclusive end compares strictly). Only a numeric
+               scrutinee can be cast to mrb_float here -- see the sibling
+               arm below for anything else. */
+            int tr = ++g_tmp, tv2 = ++g_tmp;
+            buf_printf(b, "({ sp_FRange _t%d = ", tr); emit_expr(c, conds[j], b);
+            buf_printf(b, "; mrb_float _t%d = (mrb_float)(", tv2);
+            if (pt == TY_POLY) buf_printf(b, "sp_poly_to_f(_t%d)", t);
+            else buf_printf(b, "_t%d", t);
+            buf_printf(b, "); _t%d.first <= _t%d && (_t%d.excl ? _t%d < _t%d.last : _t%d <= _t%d.last); })",
+                       tr, tv2, tr, tv2, tr, tv2, tr);
+          }
+          else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE) {
+            /* a non-numeric scrutinee can never be a float-range member
+               (CRuby: <=> returns nil, cover?/=== answer false) -- evaluate
+               the range expression for any side effects, never cast a
+               non-numeric scrutinee to mrb_float. */
+            buf_puts(b, "({ "); emit_expr(c, conds[j], b); buf_puts(b, "; 0; })");
+          }
           else if (eq_family(pt) && eq_family(comp_ntype(c, conds[j])) && eq_family(pt) != eq_family(comp_ntype(c, conds[j]))) {
             /* a when value of a different comparable family never matches */
             buf_puts(b, "0");
@@ -3428,6 +3454,25 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
           if (pt == TY_POLY) buf_printf(b, "; sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", tr, t);
           else buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
+        }
+        else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE && (pt == TY_INT || pt == TY_FLOAT || pt == TY_POLY)) {
+          /* mirror the sp_Range arm above with sp_FRange's cover?/=== semantics;
+             only a numeric scrutinee can be cast to mrb_float here -- see the
+             sibling arm below for anything else. */
+          int tr = ++g_tmp, tv2 = ++g_tmp;
+          buf_printf(b, "({ sp_FRange _t%d = ", tr); emit_expr(c, conds[j], b);
+          buf_printf(b, "; mrb_float _t%d = (mrb_float)(", tv2);
+          if (pt == TY_POLY) buf_printf(b, "sp_poly_to_f(_t%d)", t);
+          else buf_printf(b, "_t%d", t);
+          buf_printf(b, "); _t%d.first <= _t%d && (_t%d.excl ? _t%d < _t%d.last : _t%d <= _t%d.last); })",
+                     tr, tv2, tr, tv2, tr, tv2, tr);
+        }
+        else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE) {
+          /* a non-numeric scrutinee can never be a float-range member
+             (CRuby: <=> returns nil, cover?/=== answer false) -- evaluate
+             the range expression for any side effects, never cast a
+             non-numeric scrutinee to mrb_float. */
+          buf_puts(b, "({ "); emit_expr(c, conds[j], b); buf_puts(b, "; 0; })");
         }
         else if (eq_family(pt) && eq_family(comp_ntype(c, conds[j])) && eq_family(pt) != eq_family(comp_ntype(c, conds[j]))) {
           buf_puts(b, "0");

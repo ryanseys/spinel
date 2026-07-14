@@ -718,6 +718,15 @@ void emit_expr(Compiler *c, int id, Buf *b) {
                  ta);
       return;
     }
+    /* a float endpoint over numeric bounds: exact sp_FRange value */
+    if (left >= 0 && right >= 0 && comp_ntype(c, id) == TY_FLOAT_RANGE) {
+      buf_puts(b, "((sp_FRange){(mrb_float)(");
+      emit_expr(c, left, b);
+      buf_puts(b, "), (mrb_float)(");
+      emit_expr(c, right, b);
+      buf_printf(b, "), %d})", excl);
+      return;
+    }
     buf_puts(b, "sp_range_new(");
     if (left >= 0) emit_int_expr(c, left, b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
     buf_puts(b, ", ");
