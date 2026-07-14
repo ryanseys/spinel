@@ -10178,6 +10178,50 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       if (resolved) { buf_printf(b, "%d", yes); return; }
     }
+    else {
+      /* runtime name: select among the synthesized literal arms by symbol
+         compare; each arm re-enters this fold with its literal name (probes
+         included). An arm the fold leaves unresolved is dropped under the
+         silent probe, and a name outside the candidate set answers false --
+         in the closed world a runtime symbol can only be built from the
+         program's literals or name a defined method, both of which seeded
+         the candidates. */
+      int narm = 0; const int *arms = nt_arr(nt, id, "dyn_rt_arms", &narm);
+      if (narm > 0) {
+        TyKind st0 = comp_ntype(c, argv[0]);
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_sym _t%d = ", t);
+        if (st0 == TY_SYMBOL) emit_expr(c, argv[0], b);
+        else if (st0 == TY_STRING) { buf_puts(b, "sp_sym_intern("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else { buf_puts(b, "sp_sym_intern(sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, "))"); }
+        buf_printf(b, "; mrb_bool _r%d = 0; ", t);
+        Buf *sv_pre = g_pre;
+        for (int k = 0; k < narm; k++) {
+          int arm = arms[k];
+          int aargs = nt_ref(nt, arm, "arguments");
+          int aac = 0; const int *aav = aargs >= 0 ? nt_arr(nt, aargs, "arguments", &aac) : NULL;
+          const char *cnm = (aac >= 1 && aav) ? nt_str(nt, aav[0], "value") : NULL;
+          if (!cnm) continue;
+          Buf pre = {0, 0, 0}, body = {0, 0, 0};
+          g_pre = &pre;
+          int sv_probe = g_unsup_probe; g_unsup_probe = 1;
+          volatile int ok;
+          if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
+          else ok = 0;
+          g_unsup_probe = sv_probe;
+          g_pre = sv_pre;
+          /* a constant-false arm is the chain's default; skip it */
+          if (ok && body.p && !sp_streq(body.p, "0")) {
+            buf_printf(b, "if (_t%d == sp_sym_intern(\"%s\")) { ", t, cnm);
+            if (pre.p && pre.len) buf_puts(b, pre.p);
+            buf_printf(b, "_r%d = (%s); } else ", t, body.p);
+          }
+          free(pre.p); free(body.p);
+        }
+        buf_printf(b, "{ _r%d = 0; } _r%d; })", t, t);
+        return;
+      }
+    }
   }
 
   /* Class.{,public_,private_,protected_}method_defined?(:m[, inherit]):

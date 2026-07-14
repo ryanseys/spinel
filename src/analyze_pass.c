@@ -3450,6 +3450,110 @@ int desugar_dynamic_send(Compiler *c) {
   return changed;
 }
 
+/* `recv.respond_to?(m)` with a NON-literal name: the runtime symbol can only
+   name something from the program's closed set of literals (or a method name
+   some class defines), so synthesize a LITERAL `recv.respond_to?(:cand)` arm
+   per candidate and stash them under "dyn_rt_arms". Each arm resolves through
+   the ordinary literal fold (probes included, on the next fixpoint pass);
+   codegen selects by comparing the runtime symbol, and a name outside the
+   candidate set answers false. Mirrors desugar_dynamic_send's model. */
+int desugar_dynamic_respond_to(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
+    if (sn && sp_streq(sn, "respond_to?")) return 0; }
+  int n0 = nt->count;
+  int changed = 0;
+  /* quick out: any not-yet-lowered dynamic respond_to? at all? */
+  { int any = 0;
+    for (int id = 0; id < n0 && !any; id++) {
+      if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm || !sp_streq(nm, "respond_to?")) continue;
+      if (nt_ref(nt, id, "receiver") < 0) continue;
+      { int dn = 0; nt_arr(nt, id, "dyn_rt_arms", &dn); if (dn > 0) continue; }
+      int a = nt_ref(nt, id, "arguments"); if (a < 0) continue;
+      int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
+      if (ac < 1 || !av) continue;
+      const char *a0 = nt_type(nt, av[0]);
+      if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
+      any = 1;
+    }
+    if (!any) return 0;
+  }
+  /* candidates: symbol/string literals plus every class's method/attr names */
+  char **cand = NULL; int ncand = 0, candcap = 0;
+  #define DRT_ADD(v) do { \
+    const char *_v = (v); \
+    if (_v && *_v && strlen(_v) < 64) { \
+      int _skip = sp_streq(_v, "respond_to?"); \
+      for (int _k = 0; !_skip && _k < ncand; _k++) if (sp_streq(cand[_k], _v)) _skip = 1; \
+      for (const char *_p = _v; !_skip && *_p; _p++) { \
+        char _ch = *_p; \
+        int _word = (_ch >= 'a' && _ch <= 'z') || (_ch >= 'A' && _ch <= 'Z') || \
+                    (_ch >= '0' && _ch <= '9') || _ch == '_'; \
+        if (!_word && !(_p[1] == 0 && (_ch == '?' || _ch == '!' || _ch == '='))) _skip = 1; \
+      } \
+      if (!_skip && ncand < 96) { \
+        if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); } \
+        cand[ncand++] = strdup(_v); \
+      } \
+    } \
+  } while (0)
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (ty && sp_streq(ty, "SymbolNode")) DRT_ADD(nt_str(nt, id, "value"));
+    else if (ty && sp_streq(ty, "StringNode")) DRT_ADD(nt_str(nt, id, "content"));
+  }
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    for (int r = 0; r < ci->nreaders; r++) DRT_ADD(ci->readers[r]);
+    for (int w = 0; w < ci->nwriters; w++) DRT_ADD(ci->writers[w]);
+  }
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].class_id >= 0 && c->scopes[s].name) DRT_ADD(c->scopes[s].name);
+  #undef DRT_ADD
+  if (ncand == 0) { free(cand); return 0; }
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "respond_to?")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    { int dn = 0; nt_arr(nt, id, "dyn_rt_arms", &dn); if (dn > 0) continue; }
+    int args = nt_ref(nt, id, "arguments");
+    if (args < 0) continue;
+    int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
+    if (argc < 1 || !argv) continue;
+    const char *a0 = nt_type(nt, argv[0]);
+    if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
+    int arg1 = argc >= 2 ? argv[1] : -1;
+    int base = nt->count;
+    int arms[96]; int narm = 0;
+    for (int k = 0; k < ncand && narm < 96; k++) {
+      int symn = nt_new_node(nt, "SymbolNode"); if (symn < 0) break;
+      nt_node_set_str(nt, symn, "value", cand[k]);
+      int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
+      int aa[2]; int an = 0;
+      aa[an++] = symn;
+      if (arg1 >= 0) aa[an++] = arg1;
+      nt_node_set_arr(nt, na, "arguments", aa, an);
+      int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
+      nt_node_set_ref(nt, call, "receiver", recv);
+      nt_node_set_str(nt, call, "name", "respond_to?");
+      nt_node_set_ref(nt, call, "arguments", na);
+      arms[narm++] = call;
+    }
+    nt_node_set_arr(nt, id, "dyn_rt_arms", arms, narm);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  for (int k = 0; k < ncand; k++) free(cand[k]);
+  free(cand);
+  return changed;
+}
+
 /* `recv.respond_to?(:m)` with an explicit receiver and a literal method name:
    synthesize a probe `recv.m` call. The analyze fixpoint types the probe with
    the ordinary resolver, so its inferred type tells codegen whether spinel can

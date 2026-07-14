@@ -5364,6 +5364,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
     ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */
     ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
+    ch |= desugar_dynamic_respond_to(c);       /* recv.respond_to?(var) -> literal-arm chain */
     ch |= desugar_toplevel_instance_exec(c);   /* top-level instance_exec(&b) -> b.call */
     ch |= desugar_binding_lvget(c);            /* binding.local_variable_get(:x) -> x.itself */
     ch |= desugar_step_kwargs(c);              /* n.step(to: X, by: Y) -> n.step(X, Y) */
