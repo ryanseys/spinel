@@ -3492,6 +3492,19 @@ int desugar_enum_method_recv(Compiler *c) {
         continue;
       }
     }
+    /* String-endpoint ranges materialize to a StrArray, which has no
+       begin/end of its own: alias them to first/last (#2411). */
+    if (nm && (sp_streq(nm, "begin") || sp_streq(nm, "end")) &&
+        nt_ref(nt, id, "block") < 0) {
+      int brc = nt_ref(nt, id, "receiver");
+      int ban = 0; { int _a = nt_ref(nt, id, "arguments");
+                     if (_a >= 0) nt_arr(nt, _a, "arguments", &ban); }
+      if (brc >= 0 && ban == 0 && infer_type(c, brc) == TY_STR_ARRAY) {
+        nt_node_set_str(nt, id, "name", sp_streq(nm, "begin") ? "first" : "last");
+        changed = 1;
+        continue;
+      }
+    }
     if (nm && sp_streq(nm, "rfind")) {
       /* Array#rfind { block } == reverse.find { block }: interpose a reverse
          call so the existing find machinery serves it (#2320) */

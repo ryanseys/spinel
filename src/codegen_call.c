@@ -5447,6 +5447,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* range.step(n) { } in expression position: run the loop, evaluate to the
+     receiver range (Ruby returns self) (#2415) */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && comp_ntype(c, recv) == TY_RANGE &&
+      sp_streq(name, "step")) {
+    buf_puts(b, "({ ");
+    emit_iteration_stmt(c, id, b, 0);
+    emit_expr(c, recv, b); buf_puts(b, "; })");
+    return;
+  }
   /* n.times/upto/downto/step { ... } in expression position: run the loop
      (lowered to a statement) and evaluate to the receiver (Ruby returns self) */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && comp_ntype(c, recv) == TY_INT &&

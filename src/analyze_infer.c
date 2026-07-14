@@ -3393,7 +3393,19 @@ else {
           return TY_STR_ARRAY;
       }
     }
-    if (sp_streq(name, "to_a") || sp_streq(name, "minmax")) return TY_INT_ARRAY;
+    if (sp_streq(name, "to_a") || sp_streq(name, "entries")) return TY_INT_ARRAY;  /* (#2414) */
+    if (sp_streq(name, "minmax")) return TY_POLY_ARRAY;   /* [nil, nil] when empty (#2412) */
+    /* an ENDLESS literal range: #end is nil (#2413) */
+    if (sp_streq(name, "end") && ({ int _rn = recv;
+        while (_rn >= 0 && nt_type(nt, _rn) && sp_streq(nt_type(nt, _rn), "ParenthesesNode")) {
+          int _bd = nt_ref(nt, _rn, "body"); int _bn = 0;
+          const int *_bb = _bd >= 0 ? nt_arr(nt, _bd, "body", &_bn) : NULL;
+          _rn = _bn == 1 ? _bb[0] : -1;
+        }
+        _rn >= 0 && nt_type(nt, _rn) && sp_streq(nt_type(nt, _rn), "RangeNode") &&
+        nt_ref(nt, _rn, "right") < 0; })) return TY_POLY;
+    /* step { } in value position returns the receiver range (#2415) */
+    if (sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0) return TY_RANGE;
     if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
         sp_streq(name, "cover?") || sp_streq(name, "exclude_end?") ||
         sp_streq(name, "eql?") || sp_streq(name, "==") || sp_streq(name, "!=") ||

@@ -343,8 +343,12 @@ static inline mrb_int sp_range_last_elem(sp_Range r){
   mrb_int n=sp_range_count(r);
   return n<=0?r.first:r.first+(n-1)*sp_range_step(r);
 }
-static inline mrb_int sp_range_min_v(sp_Range r){ mrb_int a=r.first,b=sp_range_last_elem(r); return a<b?a:b; }
-static inline mrb_int sp_range_max_v(sp_Range r){ mrb_int a=r.first,b=sp_range_last_elem(r); return a>b?a:b; }
+/* min/max of an EMPTY (backwards, or exclusive single-point) range is nil
+   (SP_INT_NIL, the nullable-int sentinel) -- CRuby returns nil there. A
+   descending step range (5.downto(1)) still enumerates, so only a
+   positive-step empty span is nil (#2412). */
+static inline mrb_int sp_range_min_v(sp_Range r){ if(sp_range_count(r)<=0)return SP_INT_NIL; mrb_int a=r.first,b=sp_range_last_elem(r); return a<b?a:b; }
+static inline mrb_int sp_range_max_v(sp_Range r){ if(sp_range_count(r)<=0)return SP_INT_NIL; mrb_int a=r.first,b=sp_range_last_elem(r); return a>b?a:b; }
 static mrb_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.last==b.last&&a.excl==b.excl;}
 /* `Range#include?`/`#cover?` on the boxed (SP_TAG_OBJ cls_id
    SP_BUILTIN_RANGE) Range value. The direct sp_Range typed path

@@ -6587,7 +6587,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       }
     }
     static const char *const rmeths[] = {
-      "to_a", "include?", "member?", "cover?", "===", "sum", "min", "max",
+      "to_a", "entries", "include?", "member?", "cover?", "===", "sum", "min", "max",
       "first", "last", "size", "count", "begin", "end",
       "exclude_end?", "eql?", "equal?", "minmax", "overlap?", NULL };
     int known = 0;
@@ -6622,7 +6622,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Range _t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-      if (sp_streq(name, "to_a"))
+      if (sp_streq(name, "to_a") || sp_streq(name, "entries"))
         buf_printf(b, "sp_range_to_ia(_t%d)", t);
       else if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
                sp_streq(name, "cover?") || sp_streq(name, "===")) {
@@ -6675,6 +6675,12 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "max"))  /* largest enumerated element (direction-aware) */
         buf_printf(b, "sp_range_max_v(_t%d)", t);
+      else if (sp_streq(name, "end") && ({ int _rr = unwrap_parens(c, recv);
+               nt_type(nt, _rr) && sp_streq(nt_type(nt, _rr), "RangeNode") &&
+               nt_ref(nt, _rr, "right") < 0; })) {
+        /* an ENDLESS literal range: #end is nil (#2413) */
+        buf_puts(b, "sp_box_nil()"); (void)t;
+      }
       else if (sp_streq(name, "last") || sp_streq(name, "end")) {
         if (argc == 1 && sp_streq(name, "last")) {
           /* last(n): collect up to n elements ending at last */
@@ -6715,9 +6721,14 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
                    t, t2, t2, t2, t, t, t);
       }
       else if (sp_streq(name, "minmax")) {
-        int ma = ++g_tmp;
-        buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_range_min_v(_t%d));"
-                      " sp_IntArray_push(_t%d, sp_range_max_v(_t%d)); _t%d; })", ma, ma, t, ma, t, ma);
+        /* a poly pair: an empty (backwards) range yields [nil, nil] (#2412) */
+        int ma = ++g_tmp, mv = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " mrb_int _t%d = sp_range_min_v(_t%d);"
+                      " sp_PolyArray_push(_t%d, _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d));"
+                      " _t%d = sp_range_max_v(_t%d);"
+                      " sp_PolyArray_push(_t%d, _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d));"
+                      " _t%d; })", ma, ma, mv, t, ma, mv, mv, mv, t, ma, mv, mv, ma);
       }
       return 1;
     }
