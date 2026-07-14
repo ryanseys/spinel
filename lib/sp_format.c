@@ -21,23 +21,42 @@ static int sp_complex_mag(char *out, size_t sz, mrb_float v, int is_f) {
     return snprintf(out, sz, "%lld", (long long)v);
   return snprintf(out, sz, "%g", v);
 }
-/* Append the imaginary part ("+<mag>i" / "-<mag>i") to buf. MRI inserts a `*`
-   before a non-numeric magnitude (Infinity/NaN) so `Infinity*i` stays readable,
-   while a plain number is written as `10i`. */
-static int sp_complex_imag(char *buf, int n, size_t sz, mrb_float im, int is_f) {
-  if (n < 0 || (size_t)n >= sz) return 0;
-  char mag[64];
-  sp_complex_mag(mag, sizeof mag, im < 0 ? -im : im, is_f);
-  const char *sep = (mag[0] >= '0' && mag[0] <= '9') ? "" : "*";
-  return snprintf(buf + n, sz - (size_t)n, "%c%s%si", im < 0 ? '-' : '+', mag, sep);
+/* Render one component's magnitude (absolute value) of `c` into out. `im`
+   selects the imaginary component; `insp` wraps an exact Rational in parens
+   (inspect form `(1/2)`) vs bare (to_s form `1/2`). Returns the component's
+   sign (negative -> -1, else 0). An exact Rational prints as its reduced n/d;
+   a Float/Integer part defers to sp_complex_mag's float-or-whole rendering.
+   The inspect parens on a Rational make its magnitude start with `(`, which
+   the caller's `*`-separator rule then renders as `(1/1)*i` -- exactly MRI's
+   split between inspect (`*`) and to_s (`1/1i`). */
+static int sp_cpart_mag(char *out, size_t sz, sp_Complex c, int im, int insp) {
+  if (c.exact & (im ? SP_CPLX_IM_X : SP_CPLX_RE_X)) {
+    sp_Rational r = im ? c.im_r : c.re_r;
+    int neg = r.num < 0;
+    /* Imaginary part: the sign moves to the join (`3-(1/2)*i`), so render the
+       absolute magnitude and report the sign. Real part: the sign stays with
+       the value inside the parens (`(-1/2)+3i`), so render it signed and
+       report a non-negative sign the caller won't re-prepend. */
+    long long n = (long long)(im && neg ? -r.num : r.num);
+    snprintf(out, sz, insp ? "(%lld/%lld)" : "%lld/%lld", n, (long long)r.den);
+    return im && neg ? -1 : 0;
+  }
+  mrb_float v = im ? c.im : c.re;
+  sp_complex_mag(out, sz, v < 0 ? -v : v, c.fl & (im ? SP_CPLX_IM_F : SP_CPLX_RE_F));
+  return v < 0 ? -1 : 0;
+}
+/* MRI inserts a `*` before a non-numeric imaginary magnitude (Infinity/NaN,
+   or an inspect-form Rational `(1/1)`) so it stays readable; a plain number is
+   written `10i`. */
+static const char *sp_cpart_imag_sep(const char *mag) {
+  return (mag[0] >= '0' && mag[0] <= '9') ? "" : "*";
 }
 const char *sp_complex_inspect(sp_Complex c) {
-  char buf[128], re[64];
-  sp_complex_mag(re, sizeof re, c.re < 0 ? -c.re : c.re, c.fl & SP_CPLX_RE_F);
-  int n = snprintf(buf, sizeof buf, "(%s%s", c.re < 0 ? "-" : "", re);
-  if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
-  n += sp_complex_imag(buf, n, sizeof buf, c.im, c.fl & SP_CPLX_IM_F);
-  if (n < (int)sizeof buf) n += snprintf(buf + n, sizeof(buf) - (size_t)n, ")");
+  char re[80], im[80], buf[192];
+  int rs = sp_cpart_mag(re, sizeof re, c, 0, 1);
+  int is = sp_cpart_mag(im, sizeof im, c, 1, 1);
+  int n = snprintf(buf, sizeof buf, "(%s%s%c%s%si)",
+                   rs < 0 ? "-" : "", re, is < 0 ? '-' : '+', im, sp_cpart_imag_sep(im));
   if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
   char *r = sp_str_alloc_raw(n + 1);
   memcpy(r, buf, n);
@@ -46,11 +65,11 @@ const char *sp_complex_inspect(sp_Complex c) {
 }
 /* Complex#to_s: bare `re+imi` (no surrounding parens, unlike #inspect). */
 const char *sp_complex_to_s(sp_Complex c) {
-  char buf[128], re[64];
-  sp_complex_mag(re, sizeof re, c.re < 0 ? -c.re : c.re, c.fl & SP_CPLX_RE_F);
-  int n = snprintf(buf, sizeof buf, "%s%s", c.re < 0 ? "-" : "", re);
-  if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
-  n += sp_complex_imag(buf, n, sizeof buf, c.im, c.fl & SP_CPLX_IM_F);
+  char re[80], im[80], buf[192];
+  int rs = sp_cpart_mag(re, sizeof re, c, 0, 0);
+  int is = sp_cpart_mag(im, sizeof im, c, 1, 0);
+  int n = snprintf(buf, sizeof buf, "%s%s%c%s%si",
+                   rs < 0 ? "-" : "", re, is < 0 ? '-' : '+', im, sp_cpart_imag_sep(im));
   if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
   char *r = sp_str_alloc_raw(n + 1);
   memcpy(r, buf, n);
@@ -110,6 +129,9 @@ const char *sp_Time_inspect(sp_Time *t) { return sp_Time_fmt(t, 1); }
 const char *sp_Time_to_s(sp_Time *t)    { return sp_Time_fmt(t, 0); }
 
 /* ---- Complex arithmetic ---- */
+/* All-zero Complex (defined below); every builder starts from it so the exact
+   fields (exact / re_r / im_r) are never left as stack garbage. */
+static sp_Complex sp_complex_zero(void);
 /* Component-class (fl) propagation mirrors CRuby's numeric tower: add/sub act
    per component, so each Float bit carries through independently; mul/div mix
    all four components, so any Float input floats both results. */
@@ -118,7 +140,7 @@ const char *sp_Time_to_s(sp_Time *t)    { return sp_Time_fmt(t, 0); }
    any other angle computes both components as Floats. m_is_f carries the
    magnitude's static class from codegen. */
 sp_Complex sp_complex_polar(mrb_float m, mrb_float a, int m_is_f) {
-  sp_Complex c;
+  sp_Complex c = sp_complex_zero();
   int mf = m_is_f ? 1 : 0;
   if (a == 0)      { c.re = m;  c.im = 0.0; c.fl = (unsigned char)((mf ? SP_CPLX_RE_F : 0) | SP_CPLX_IM_F); return c; }
   if (a == M_PI_2) { c.re = 0.0; c.im = m;  c.fl = (unsigned char)(SP_CPLX_RE_F | (mf ? SP_CPLX_IM_F : 0)); return c; }
@@ -126,12 +148,106 @@ sp_Complex sp_complex_polar(mrb_float m, mrb_float a, int m_is_f) {
   c.re = m * cos(a); c.im = m * sin(a); c.fl = SP_CPLX_RE_F | SP_CPLX_IM_F;
   return c;
 }
-sp_Complex sp_complex_add(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.re + b.re; c.im = a.im + b.im; c.fl = a.fl | b.fl; return c; }
-sp_Complex sp_complex_mul(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = (a.re * b.re) - (a.im * b.im); c.im = (a.re * b.im) + (a.im * b.re); c.fl = (a.fl | b.fl) ? (SP_CPLX_RE_F | SP_CPLX_IM_F) : 0; return c; }
-sp_Complex sp_complex_conjugate(sp_Complex a) { sp_Complex c; c.re = a.re; c.im = -a.im; c.fl = a.fl; return c; }
-sp_Complex sp_complex_sub(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.re - b.re; c.im = a.im - b.im; c.fl = a.fl | b.fl; return c; }
+/* ---- exact Complex components ----
+   A part is one of: FLOAT (fl bit), RATIONAL (exact bit, value in re_r/im_r),
+   or INT (a whole float mirror). Arithmetic promotes per part: float wins;
+   a rational operand keeps the result rational even when whole ((1/1), like
+   MRI); int op int stays int. The float mirror is always refreshed so the
+   float-only readers (abs/arg/polar) need no changes. */
+typedef struct { unsigned char k; sp_Rational r; mrb_float f; } sp_cpart;  /* k: 0=int 1=float 2=rational */
+static sp_cpart sp_cpart_get(sp_Complex c, int im) {
+  sp_cpart p;
+  p.f = im ? c.im : c.re;
+  if (c.exact & (im ? SP_CPLX_IM_X : SP_CPLX_RE_X)) { p.k = 2; p.r = im ? c.im_r : c.re_r; }
+  else if (c.fl & (im ? SP_CPLX_IM_F : SP_CPLX_RE_F)) { p.k = 1; p.r.num = 0; p.r.den = 1; }
+  else { p.k = 0; p.r.num = (mrb_int)p.f; p.r.den = 1; }
+  return p;
+}
+static void sp_cpart_put(sp_Complex *c, int im, sp_cpart p) {
+  if (p.k == 2) p.f = sp_rational_to_f(p.r);
+  if (im) c->im = p.f; else c->re = p.f;
+  if (p.k == 1) { c->fl |= im ? SP_CPLX_IM_F : SP_CPLX_RE_F; }
+  if (p.k == 2) {
+    c->exact |= im ? SP_CPLX_IM_X : SP_CPLX_RE_X;
+    if (im) c->im_r = p.r; else c->re_r = p.r;
+  }
+}
+static sp_cpart sp_cpart_op(char op, sp_cpart a, sp_cpart b) {
+  sp_cpart r;
+  if (a.k == 1 || b.k == 1) {  /* any Float operand floats the result */
+    r.k = 1; r.r.num = 0; r.r.den = 1;
+    mrb_float x = a.k == 2 ? sp_rational_to_f(a.r) : a.f;
+    mrb_float y = b.k == 2 ? sp_rational_to_f(b.r) : b.f;
+    r.f = op == '+' ? x + y : op == '-' ? x - y : op == '*' ? x * y : x / y;
+    return r;
+  }
+  sp_Rational x = a.r, y = b.r;
+  sp_Rational v = op == '+' ? sp_rational_add(x, y)
+                : op == '-' ? sp_rational_sub(x, y)
+                : op == '*' ? sp_rational_mul(x, y)
+                :             sp_rational_div(x, y);
+  r.r = v; r.f = sp_rational_to_f(v);
+  /* MRI canonicalization is operation-directed: Complex#/ demotes a whole
+     result to Integer (Complex(1,2)/2 -> imag 1, not (1/1)), while a Rational
+     operand under +/-/* keeps the result Rational even when whole (Integer *
+     Rational -> (1/1)). int op int (no Rational, no divide) stays Integer. */
+  if (op == '/') r.k = (v.den == 1) ? 0 : 2;
+  else if (a.k == 2 || b.k == 2) r.k = 2;
+  else r.k = 0;
+  return r;
+}
+static int sp_complex_any_exact(sp_Complex a, sp_Complex b) { return (a.exact | b.exact) != 0; }
+static sp_Complex sp_complex_zero(void) { sp_Complex c; memset(&c, 0, sizeof c); return c; }
+sp_Complex sp_complex_from_rational(sp_Rational r) {
+  sp_Complex c = sp_complex_zero();
+  c.re = sp_rational_to_f(r);
+  c.exact = SP_CPLX_RE_X;
+  c.re_r = r;
+  c.im_r.den = 1;
+  return c;
+}
+sp_Complex sp_complex_add(sp_Complex a, sp_Complex b) {
+  if (sp_complex_any_exact(a, b)) {
+    sp_Complex c = sp_complex_zero();
+    sp_cpart_put(&c, 0, sp_cpart_op('+', sp_cpart_get(a, 0), sp_cpart_get(b, 0)));
+    sp_cpart_put(&c, 1, sp_cpart_op('+', sp_cpart_get(a, 1), sp_cpart_get(b, 1)));
+    return c;
+  }
+  sp_Complex c = sp_complex_zero(); c.re = a.re + b.re; c.im = a.im + b.im; c.fl = a.fl | b.fl; return c; }
+sp_Complex sp_complex_mul(sp_Complex a, sp_Complex b) {
+  if (sp_complex_any_exact(a, b)) {
+    sp_cpart ar = sp_cpart_get(a, 0), ai = sp_cpart_get(a, 1);
+    sp_cpart br = sp_cpart_get(b, 0), bi = sp_cpart_get(b, 1);
+    sp_Complex c = sp_complex_zero();
+    sp_cpart_put(&c, 0, sp_cpart_op('-', sp_cpart_op('*', ar, br), sp_cpart_op('*', ai, bi)));
+    sp_cpart_put(&c, 1, sp_cpart_op('+', sp_cpart_op('*', ar, bi), sp_cpart_op('*', ai, br)));
+    return c;
+  }
+  sp_Complex c = sp_complex_zero(); c.re = (a.re * b.re) - (a.im * b.im); c.im = (a.re * b.im) + (a.im * b.re); c.fl = (a.fl | b.fl) ? (SP_CPLX_RE_F | SP_CPLX_IM_F) : 0; return c; }
+/* Complex <*|/> a real operand: MRI scales each component by the real value
+   rather than running the cross formula, so a Float zero in the (absent)
+   imaginary part cannot pollute the other component's exactness
+   (Complex(0.5,1)*Rational(1,2) -> (0.25+(1/2)*i), not (0.25+0.5i)). `r`
+   carries the real operand in its real component (imaginary is 0). `op` is
+   '*' or '/'. */
+sp_Complex sp_complex_scale(sp_Complex a, sp_Complex r, char op) {
+  sp_cpart s = sp_cpart_get(r, 0);
+  sp_Complex c = sp_complex_zero();
+  sp_cpart_put(&c, 0, sp_cpart_op(op, sp_cpart_get(a, 0), s));
+  sp_cpart_put(&c, 1, sp_cpart_op(op, sp_cpart_get(a, 1), s));
+  return c;
+}
+sp_Complex sp_complex_conjugate(sp_Complex a) { sp_Complex c = sp_complex_zero(); c.re = a.re; c.im = -a.im; c.fl = a.fl; return c; }
+sp_Complex sp_complex_sub(sp_Complex a, sp_Complex b) {
+  if (sp_complex_any_exact(a, b)) {
+    sp_Complex c = sp_complex_zero();
+    sp_cpart_put(&c, 0, sp_cpart_op('-', sp_cpart_get(a, 0), sp_cpart_get(b, 0)));
+    sp_cpart_put(&c, 1, sp_cpart_op('-', sp_cpart_get(a, 1), sp_cpart_get(b, 1)));
+    return c;
+  }
+  sp_Complex c = sp_complex_zero(); c.re = a.re - b.re; c.im = a.im - b.im; c.fl = a.fl | b.fl; return c; }
 sp_Complex sp_complex_div(sp_Complex a, sp_Complex b) {
-  mrb_float d = (b.re * b.re) + (b.im * b.im); sp_Complex c;
+  mrb_float d = (b.re * b.re) + (b.im * b.im); sp_Complex c = sp_complex_zero();
   c.re = ((a.re * b.re) + (a.im * b.im)) / d; c.im = ((a.im * b.re) - (a.re * b.im)) / d;
   c.fl = (a.fl | b.fl) ? (SP_CPLX_RE_F | SP_CPLX_IM_F) : 0;
   return c;
@@ -140,18 +256,38 @@ sp_Complex sp_complex_div(sp_Complex a, sp_Complex b) {
    conjugate formula, this yields Infinity (not NaN) when the divisor is 0.0,
    matching MRI's Complex#/ against a Float. */
 sp_Complex sp_complex_div_real(sp_Complex a, mrb_float b) {
-  sp_Complex c; c.re = a.re / b; c.im = a.im / b; c.fl = SP_CPLX_RE_F | SP_CPLX_IM_F; return c;
+  sp_Complex c = sp_complex_zero(); c.re = a.re / b; c.im = a.im / b; c.fl = SP_CPLX_RE_F | SP_CPLX_IM_F; return c;
 }
 /* Complex divided by an Integer follows integer zero-division rules: dividing
-   by 0 raises ZeroDivisionError, as in MRI (a Float divisor gives Infinity). */
+   by 0 raises ZeroDivisionError, as in MRI (a Float divisor gives Infinity).
+   Each component divides exactly: an integer/rational part yields a reduced
+   Rational (whole results demote to Integer, like MRI's Complex#/), while a
+   Float part stays Float. */
 sp_Complex sp_complex_div_int(sp_Complex a, mrb_int b) {
   if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
-  sp_Complex c; c.re = a.re / (mrb_float)b; c.im = a.im / (mrb_float)b; c.fl = a.fl; return c;
+  sp_cpart d; d.k = 0; d.f = (mrb_float)b; d.r.num = b; d.r.den = 1;
+  sp_Complex c = sp_complex_zero();
+  sp_cpart_put(&c, 0, sp_cpart_op('/', sp_cpart_get(a, 0), d));
+  sp_cpart_put(&c, 1, sp_cpart_op('/', sp_cpart_get(a, 1), d));
+  return c;
 }
-sp_Complex sp_complex_neg(sp_Complex a) { sp_Complex c; c.re = -a.re; c.im = -a.im; c.fl = a.fl; return c; }
+sp_Complex sp_complex_neg(sp_Complex a) { sp_Complex c = sp_complex_zero(); c.re = -a.re; c.im = -a.im; c.fl = a.fl; return c; }
 mrb_float sp_complex_abs2(sp_Complex a) { return (a.re * a.re) + (a.im * a.im); }
 mrb_float sp_complex_abs(sp_Complex a) { return sqrt((a.re * a.re) + (a.im * a.im)); }
-mrb_bool sp_complex_eq(sp_Complex a, sp_Complex b) { return a.re == b.re && a.im == b.im; }
+mrb_bool sp_complex_eq(sp_Complex a, sp_Complex b) {
+  if (a.exact || b.exact) {
+    sp_cpart ar = sp_cpart_get(a, 0), br = sp_cpart_get(b, 0);
+    sp_cpart ai = sp_cpart_get(a, 1), bi = sp_cpart_get(b, 1);
+    /* a float part compares by mirror; non-float parts compare exactly */
+    if ((ar.k == 1) != (br.k == 1) || (ai.k == 1) != (bi.k == 1))
+      return a.re == b.re && a.im == b.im;
+    if (ar.k != 1 && (ar.r.num * br.r.den != br.r.num * ar.r.den)) return FALSE;
+    if (ai.k != 1 && (ai.r.num * bi.r.den != bi.r.num * ai.r.den)) return FALSE;
+    if (ar.k == 1 && a.re != b.re) return FALSE;
+    if (ai.k == 1 && a.im != b.im) return FALSE;
+    return TRUE;
+  }
+  return a.re == b.re && a.im == b.im; }
 /* z ** w for a non-integer exponent: exp(w * ln z); an integral real w
    defers to the exact integer power (preserving component classes). */
 sp_Complex sp_complex_pow_c(sp_Complex z, sp_Complex w) {
@@ -162,17 +298,17 @@ sp_Complex sp_complex_pow_c(sp_Complex z, sp_Complex w) {
   mrb_float xa = w.re * lr - w.im * th;
   mrb_float xb = w.re * th + w.im * lr;
   mrb_float m = exp(xa);
-  sp_Complex r;
+  sp_Complex r = sp_complex_zero();
   r.re = m * cos(xb);
   r.im = m * sin(xb);
   r.fl = SP_CPLX_RE_F | SP_CPLX_IM_F;
   return r;
 }
 sp_Complex sp_complex_pow(sp_Complex a, mrb_int e) {
-  sp_Complex r; r.re = 1; r.im = 0; r.fl = 0;
+  sp_Complex r = sp_complex_zero(); r.re = 1; r.im = 0; r.fl = 0;
   mrb_int k = e < 0 ? -e : e;
   for (mrb_int i = 0; i < k; i++) r = sp_complex_mul(r, a);
-  if (e < 0) { sp_Complex one; one.re = 1; one.im = 0; one.fl = 0; r = sp_complex_div(one, r); }
+  if (e < 0) { sp_Complex one = sp_complex_zero(); one.re = 1; one.im = 0; one.fl = 0; r = sp_complex_div(one, r); }
   return r;
 }
 

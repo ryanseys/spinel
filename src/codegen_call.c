@@ -600,12 +600,11 @@ static void emit_rat_coerce(Compiler *c, int node, Buf *b) {
    becomes re+0i (a Float operand marks the real component Float-classed). */
 static void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_COMPLEX) { emit_expr(c, node, b); return; }
-  /* a Rational operand computes in floats (owner-approved divergence: CRuby
-     keeps rational components, spinel's Complex stores machine floats --
-     documented in docs/limitations.md) */
+  /* a Rational operand enters the numeric tower exactly: the real component
+     becomes the Rational itself (the imaginary component is Integer 0), so
+     mixed Complex/Rational arithmetic keeps exact components like CRuby. */
   if (comp_ntype(c, node) == TY_RATIONAL) {
-    buf_puts(b, "((sp_Complex){sp_rational_to_f("); emit_expr(c, node, b);
-    buf_puts(b, "), 0, 1})");
+    buf_puts(b, "sp_complex_from_rational("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
   buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, node, b);
@@ -1309,13 +1308,39 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
     int re_rat = comp_ntype(c, argv[0]) == TY_RATIONAL;
     int im_rat = argc >= 2 && comp_ntype(c, argv[1]) == TY_RATIONAL;
-    int fl = (comp_ntype(c, argv[0]) == TY_FLOAT || re_rat ? 1 : 0) |
-             (argc >= 2 && (comp_ntype(c, argv[1]) == TY_FLOAT || im_rat) ? 2 : 0);
-    buf_puts(b, "((sp_Complex){");
-    buf_puts(b, re_rat ? "sp_rational_to_f(" : "(mrb_float)(");
+    /* A Rational component is kept exact (re_r/im_r + exact bit), so it renders
+       and computes as a Rational like CRuby; the float mirror is filled too.
+       Assemble via a statement expression, binding each Rational to a temp so
+       it flows into both the mirror and the exact field without re-evaluation. */
+    if (re_rat || im_rat) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_Complex _t%d = (sp_Complex){0}; ", t);
+      if (re_rat) {
+        int r = ++g_tmp;
+        buf_printf(b, "sp_Rational _t%d = ", r); emit_expr(c, argv[0], b);
+        buf_printf(b, "; _t%d.re = sp_rational_to_f(_t%d); _t%d.re_r = _t%d; _t%d.exact |= SP_CPLX_RE_X; ", t, r, t, r, t);
+      } else {
+        buf_printf(b, "_t%d.re = (mrb_float)(", t); emit_expr(c, argv[0], b); buf_puts(b, "); ");
+        if (comp_ntype(c, argv[0]) == TY_FLOAT) buf_printf(b, "_t%d.fl |= SP_CPLX_RE_F; ", t);
+      }
+      if (im_rat) {
+        int r = ++g_tmp;
+        buf_printf(b, "sp_Rational _t%d = ", r); emit_expr(c, argv[1], b);
+        buf_printf(b, "; _t%d.im = sp_rational_to_f(_t%d); _t%d.im_r = _t%d; _t%d.exact |= SP_CPLX_IM_X; ", t, r, t, r, t);
+      } else {
+        buf_printf(b, "_t%d.im = (mrb_float)(", t);
+        if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "0");
+        buf_puts(b, "); ");
+        if (argc >= 2 && comp_ntype(c, argv[1]) == TY_FLOAT) buf_printf(b, "_t%d.fl |= SP_CPLX_IM_F; ", t);
+      }
+      buf_printf(b, "_t%d; })", t);
+      return 1;
+    }
+    int fl = (comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0) |
+             (argc >= 2 && comp_ntype(c, argv[1]) == TY_FLOAT ? 2 : 0);
+    buf_puts(b, "((sp_Complex){(mrb_float)(");
     emit_expr(c, argv[0], b);
-    buf_puts(b, "), ");
-    buf_puts(b, im_rat ? "sp_rational_to_f(" : "(mrb_float)(");
+    buf_puts(b, "), (mrb_float)(");
     if (argc >= 2) emit_expr(c, argv[1], b);
     else buf_puts(b, "0");
     buf_printf(b, "), %d})", fl);
@@ -1409,13 +1434,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "real")) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_complex_comp_v(_t%d.re, _t%d.fl & SP_CPLX_RE_F); })", t, t);
+        buf_printf(b, "; sp_complex_comp_x(_t%d, 0); })", t);
         return 1;
       }
       if (sp_streq(name, "imaginary") || sp_streq(name, "imag")) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_complex_comp_v(_t%d.im, _t%d.fl & SP_CPLX_IM_F); })", t, t);
+        buf_printf(b, "; sp_complex_comp_x(_t%d, 1); })", t);
         return 1;
       }
       if (sp_streq(name, "conjugate") || sp_streq(name, "conj")) { buf_puts(b, "sp_complex_conjugate("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
@@ -1444,9 +1469,9 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         int t = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
         buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new();"
-                      " sp_PolyArray_push(_t%d, sp_complex_comp_v(_t%d.re, _t%d.fl & SP_CPLX_RE_F));"
-                      " sp_PolyArray_push(_t%d, sp_complex_comp_v(_t%d.im, _t%d.fl & SP_CPLX_IM_F)); _t%d; })",
-                   o, o, t, t, o, t, t, o);
+                      " sp_PolyArray_push(_t%d, sp_complex_comp_x(_t%d, 0));"
+                      " sp_PolyArray_push(_t%d, sp_complex_comp_x(_t%d, 1)); _t%d; })",
+                   o, o, t, o, t, o);
         return 1;
       }
       if (sp_streq(name, "-@") && argc == 0) { buf_puts(b, "sp_complex_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
@@ -1467,6 +1492,16 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       }
       if (argc == 1 && sp_streq(name, "/") && cxa == TY_INT) {
         buf_puts(b, "sp_complex_div_int("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_int)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+        return 1;
+      }
+      /* Complex <*|/|quo> a real operand scales each component (MRI does not
+         run the cross formula for a real, so exact components survive); a
+         Complex operand uses the full formula. */
+      if (cx_ok && cxa != TY_COMPLEX && argc == 1 &&
+          (sp_streq(name, "*") || sp_streq(name, "/") || sp_streq(name, "quo"))) {
+        buf_puts(b, "sp_complex_scale("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_complex_coerce(c, argv[0], b);
+        buf_printf(b, ", '%c')", name[0] == '*' ? '*' : '/');
         return 1;
       }
       if (cx_ok && argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") ||
@@ -1819,15 +1854,23 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "+@") && argc == 0) { emit_expr(c, recv, b); return 1; }
       if (sp_streq(name, "abs") && argc == 0) { buf_puts(b, "sp_rational_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       TyKind rat = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-      /* Rational <op> Complex computes in floats (same divergence note as
-         emit_complex_coerce) */
+      /* Rational <op> Complex lifts the Rational to an exact re+0i Complex so
+         the result keeps exact components, mirroring the Complex-receiver arm.
+         Multiplication is commutative and scales the Complex component-wise by
+         the Rational (no cross formula, so exactness survives); +/-// use the
+         full formula on the lifted operand. */
+      if (rat == TY_COMPLEX && argc == 1 && sp_streq(name, "*")) {
+        buf_puts(b, "sp_complex_scale("); emit_expr(c, argv[0], b);
+        buf_puts(b, ", sp_complex_from_rational("); emit_expr(c, recv, b);
+        buf_puts(b, "), '*')");
+        return 1;
+      }
       if (rat == TY_COMPLEX && argc == 1 &&
-          (sp_streq(name, "+") || sp_streq(name, "-") ||
-           sp_streq(name, "*") || sp_streq(name, "/"))) {
-        const char *cfn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
-        buf_printf(b, "sp_complex_%s(((sp_Complex){sp_rational_to_f(", cfn);
+          (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "/"))) {
+        const char *cfn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : "div";
+        buf_printf(b, "sp_complex_%s(sp_complex_from_rational(", cfn);
         emit_expr(c, recv, b);
-        buf_puts(b, "), 0, 1}), ");
+        buf_puts(b, "), ");
         emit_expr(c, argv[0], b);
         buf_puts(b, ")");
         return 1;
