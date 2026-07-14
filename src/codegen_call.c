@@ -4598,6 +4598,21 @@ static void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, 
   int blk_node = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
   if (cm->nparams > 0) buf_puts(b, ", ");
   if (blk_node < 0) { buf_puts(b, "NULL"); return; }
+  /* `inner(child, &block)` from a REAL function (not a yield-inline splice):
+     the caller's &blk is a live sp_Proc* local -- pass it through instead of
+     lowering (a BlockArgumentNode is not a proc literal). An anonymous `&`
+     forwards the caller's own blk param (#2444). */
+  if (nt_type(c->nt, blk_node) && sp_streq(nt_type(c->nt, blk_node), "BlockArgumentNode")) {
+    int fe = nt_ref(c->nt, blk_node, "expression");
+    if (fe >= 0 && comp_ntype(c, fe) == TY_PROC) { emit_expr(c, fe, b); return; }
+    if (fe < 0) {
+      Scope *caller9 = comp_scope_of(c, id);
+      if (caller9 && caller9->blk_param && caller9->blk_param[0] && !caller9->yields) {
+        buf_printf(b, "lv_%s", caller9->blk_param); return;
+      }
+    }
+    buf_puts(b, "NULL"); return;
+  }
   if (blk_tmp < 0) {
     blk_tmp = ++g_tmp;
     Buf pb; memset(&pb, 0, sizeof pb);
@@ -7211,6 +7226,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_method_cname(c, ms, b);
         buf_puts(b, "(");
         emit_args_filled(c, smi, nt_ref(nt, id, "arguments"), "", b);
+        emit_cmethod_block_arg(c, id, ms, -1, b);
         buf_puts(b, ")");
         return;
       }
@@ -7224,6 +7240,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_method_cname(c, ms, b);
       buf_puts(b, "(");
       emit_args_filled(c, smi, nt_ref(nt, id, "arguments"), "", b);
+      emit_cmethod_block_arg(c, id, ms, -1, b);
       buf_puts(b, ")");
       return;
     }

@@ -418,7 +418,15 @@ int a_block_is_lifted(Compiler *c, int id) {
   int mi = -1;
   if (recv < 0) {
     mi = comp_method_index(c, name);
-    if (mi < 0) { Scope *self = comp_scope_of(c, id); if (self && self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL); }
+    if (mi < 0) {
+      Scope *self = comp_scope_of(c, id);
+      if (self && self->class_id >= 0) {
+        mi = comp_method_in_chain(c, self->class_id, name, NULL);
+        /* an implicit-self call inside a class method resolves to a CLASS
+           method; its literal block is lifted all the same (#2444) */
+        if (mi < 0) mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
+      }
+    }
   }
 else {
     const char *rty = nt_type(nt, recv);
