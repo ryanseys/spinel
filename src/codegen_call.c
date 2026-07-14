@@ -10290,6 +10290,51 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else { buf_puts(b, name[0] == '-' ? "(-" : "(+"); emit_expr(c, recv, b); buf_puts(b, ")"); }
     return;
   }
+  /* h.default_proc = ->(hh, k) { ... }: lower the lambda literal to the same
+     dedicated dproc C function Hash.new{} uses and install it on the receiver
+     (dproc + dproc_self slots exist on every poly-valued variant) (#2371). */
+  if (recv >= 0 && sp_streq(name, "default_proc=") && argc == 1 &&
+      (comp_ntype(c, recv) == TY_STR_POLY_HASH || comp_ntype(c, recv) == TY_SYM_POLY_HASH ||
+       comp_ntype(c, recv) == TY_POLY_POLY_HASH) &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "LambdaNode")) {
+    TyKind hrt = comp_ntype(c, recv);
+    const char *hn2 = ty_hash_cname(hrt);
+    int lam = argv[0];
+    int lbody = nt_ref(nt, lam, "body");
+    /* LambdaNode carries its ParametersNode directly (the BlockParameters
+       wrapper is unwrapped at parse time), so read requireds by hand */
+    const char *hp = NULL, *kp = NULL;
+    { int pn = nt_ref(nt, lam, "parameters");
+      if (pn >= 0) { int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+        if (rn > 0) hp = nt_str(nt, reqs[0], "name");
+        if (rn > 1) kp = nt_str(nt, reqs[1], "name"); } }
+    int dn = ++g_proc_counter;
+    Buf *pb = &g_procs;
+    const char *keyct = hrt == TY_SYM_POLY_HASH ? "sp_sym"
+                      : hrt == TY_STR_POLY_HASH ? "const char *" : "sp_RbVal";
+    buf_printf(pb, "static sp_RbVal _sp_hash_dproc_%d(sp_%sHash *_self_h, %s _key, void *_dproc_self) {\n",
+               dn, hn2, keyct);
+    buf_puts(pb, "  (void)_dproc_self;\n");
+    if (hp) buf_printf(pb, "  sp_%sHash *lv_%s = _self_h; (void)lv_%s;\n", hn2, rename_local(hp), rename_local(hp));
+    if (kp) {
+      const char *box = hrt == TY_SYM_POLY_HASH ? "sp_box_sym(_key)"
+                      : hrt == TY_STR_POLY_HASH ? "sp_box_str(_key)" : "_key";
+      buf_printf(pb, "  sp_RbVal lv_%s = %s; (void)lv_%s;\n", rename_local(kp), box, rename_local(kp));
+    }
+    { Buf *sv_pre = g_pre; int sv_ind = g_indent;
+      g_pre = pb; g_indent = 1;
+      int bn = 0; const int *bb = lbody >= 0 ? nt_arr(nt, lbody, "body", &bn) : NULL;
+      for (int k = 0; k + 1 < bn; k++) emit_stmt(c, bb[k], pb, 1);
+      buf_puts(pb, "  return ");
+      if (bn > 0) emit_boxed(c, bb[bn - 1], pb); else buf_puts(pb, "sp_box_nil()");
+      buf_puts(pb, ";\n}\n");
+      g_pre = sv_pre; g_indent = sv_ind; }
+    int th = ++g_tmp;
+    buf_printf(b, "({ sp_%sHash *_t%d = ", hn2, th); emit_expr(c, recv, b);
+    buf_printf(b, "; _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = NULL; _t%d; })",
+               th, dn, th, th);
+    return;
+  }
   /* value-position String#[]= (s[i] = v / s[i, n] = v / s[range] = v / s["sub"]
      = v on an assignable receiver): run the mutate statement, the expression's
      value is the assigned string (#2370). */

@@ -1253,6 +1253,9 @@ TyKind infer_call(Compiler *c, int id) {
      (NULL-encoded nil when the hash has none) */
   if (recv >= 0 && ty_is_hash(rt) && argc == 0 && sp_streq(name, "default_proc"))
     return TY_PROC;
+  /* default_proc= installs the lambda; the assignment's value is the proc (#2371) */
+  if (recv >= 0 && ty_is_hash(rt) && argc == 1 && sp_streq(name, "default_proc="))
+    return TY_PROC;
 
   /* k = Struct.new(:a, :b): the value IS the synthesized anonymous struct
      class, as a first-class class object */

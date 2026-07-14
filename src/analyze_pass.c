@@ -1403,6 +1403,24 @@ int infer_write_types(Compiler *c) {
         /* concat(other): the other array's elements splice in */
         is_push = 1; vt = splice_incoming_elem(c, argv[0]);
       }
+      else if (name && sp_streq(name, "default_proc=") && an == 1) {
+        /* installing a default proc needs the poly-valued variant (the proc
+           can return any value, and only those variants carry the dproc
+           slot): widen a typed-value hash local accordingly (#2371). */
+        if (recv < 0) continue;
+        const char *dpty = nt_type(nt, recv);
+        if (!dpty || !sp_streq(dpty, "LocalVariableReadNode")) continue;
+        const char *dpnm = nt_str(nt, recv, "name");
+        Scope *dpsc = dpnm ? comp_scope_of(c, recv) : NULL;
+        LocalVar *dplv = dpsc ? scope_local(dpsc, dpnm) : NULL;
+        if (dplv && !dplv->is_param && !dplv->is_block_param && ty_is_hash(dplv->type)) {
+          TyKind kt2 = ty_hash_key(dplv->type);
+          TyKind want2 = kt2 == TY_SYMBOL ? TY_SYM_POLY_HASH
+                       : kt2 == TY_STRING ? TY_STR_POLY_HASH : TY_POLY_POLY_HASH;
+          if (dplv->type != want2) { dplv->type = want2; changed = 1; }
+        }
+        continue;
+      }
       else if (name && sp_streq(name, "replace") && an == 1) {
         /* replace(other) splices the WHOLE other container in: a hash local
            must be able to hold other's variant (transform_keys! desugars to
