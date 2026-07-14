@@ -4376,8 +4376,13 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     /* infer the bounds so codegen can tell an int range from a string range */
     int lo = nt_ref(nt, id, "left"), hi = nt_ref(nt, id, "right");
-    if (lo >= 0) infer_type(c, lo);
-    if (hi >= 0) infer_type(c, hi);
+    TyKind lot = lo >= 0 ? infer_type(c, lo) : TY_UNKNOWN;
+    TyKind hit = hi >= 0 ? infer_type(c, hi) : TY_UNKNOWN;
+    /* ("a".."d"): strings enumerate by succession -- the whole range lowers
+       to a string array, like the symbol form above. The int-backed sp_Range
+       cannot hold string endpoints (the old materialization cast the char*
+       to int, invalid C through a parameter). */
+    if (lot == TY_STRING && hit == TY_STRING) return TY_STR_ARRAY;
     return TY_RANGE;
   }
   /* A splat inside an array literal (`[*0..10]`, `[*arr]`) contributes the

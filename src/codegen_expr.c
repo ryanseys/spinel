@@ -718,6 +718,17 @@ void emit_expr(Compiler *c, int id, Buf *b) {
                  ta);
       return;
     }
+    /* string endpoints: materialize the succession walk (typed TY_STR_ARRAY
+       by inference, mirroring the symbol form above) */
+    if (left >= 0 && right >= 0 &&
+        comp_ntype(c, left) == TY_STRING && comp_ntype(c, right) == TY_STRING) {
+      buf_puts(b, "sp_StrArray_from_string_range(");
+      emit_expr(c, left, b);
+      buf_puts(b, ", ");
+      emit_expr(c, right, b);
+      buf_printf(b, ", %d)", excl);
+      return;
+    }
     buf_puts(b, "sp_range_new(");
     if (left >= 0) emit_int_expr(c, left, b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
     buf_puts(b, ", ");
