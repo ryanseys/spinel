@@ -882,6 +882,14 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   const char *saved_deref = g_self_deref;
   g_self_deref = (s->class_id >= 0 && !s->is_cmethod && c->classes[s->class_id].is_value_type &&
                   s->name && !sp_streq(s->name, "initialize")) ? "." : "->";
+  /* inside a class method, bare `self` is the Class object -- there is no
+     `self` C parameter to name (#2443) */
+  const char *saved_self9 = g_self;
+  char cm_self9[32];
+  if (s->class_id >= 0 && s->is_cmethod) {
+    snprintf(cm_self9, sizeof cm_self9, "((sp_Class){%d})", s->class_id);
+    g_self = cm_self9;
+  }
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
   g_exc_frame_depth = 0; g_method_pr_exc_depth = 0; g_rescue_save_depth = 0;
   /* real-function funnel mirror: no proc-return frame yet (set below when
@@ -952,6 +960,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_method_pr_label = NULL; g_method_pr_var = NULL;
   g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_UNKNOWN;
   g_self_deref = saved_deref;
+  g_self = saved_self9;
   g_ret_type = saved_rt; g_ensure_depth = saved_ed;
   g_emitting_class_id = saved_emcls;
   g_dm_subst_name = saved_dmn; g_dm_subst_node = saved_dmnode;

@@ -4813,6 +4813,18 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
   }
   int dv = m->pdefault[idx];
   const char *dty = dv >= 0 ? nt_type(c->nt, dv) : NULL;
+  /* A default expression evaluates in the CALLEE's context: a `self` inside
+     it (e.g. `def self.f(rel = Wrap.new(self))`) is the callee's class, not
+     whatever `self` the caller happens to have (#2443). Only the class-method
+     case is representable at the call site (the Class object is a constant);
+     an instance-method default referencing self keeps the caller's g_self,
+     correct for the common same-class implicit-self call. */
+  const char *sv_self_dv = g_self;
+  char dv_self9[32];
+  if (dv >= 0 && m->class_id >= 0 && m->is_cmethod) {
+    snprintf(dv_self9, sizeof dv_self9, "((sp_Class){%d})", m->class_id);
+    g_self = dv_self9;
+  }
   if (dv < 0) {
     /* A missing required arg pads the slot with a zero-ish compat value so
        codegen completes (a compile-time warning already flagged the call).
@@ -4853,6 +4865,7 @@ else if (dty && sp_streq(dty, "NilNode")) {
       else emit_expr(c, dv, out);
     }
   }
+  g_self = sv_self_dv;
 }
 
 /* Emit a comma-separated argument list filling defaults for omitted

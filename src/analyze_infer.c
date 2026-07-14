@@ -4594,6 +4594,8 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_SelfNode) {
     Scope *s = comp_scope_of(c, id);
     int self_cls = s->class_id;
+    /* inside a class method, bare `self` is the Class object (#2443) */
+    if (self_cls >= 0 && s->is_cmethod) return TY_CLASS;
     /* `self` inside an instance_eval/exec block is the rebound receiver. */
     if (self_cls < 0) self_cls = (an_ie_class_id >= 0) ? an_ie_class_id : ie_class_of(c, id);
     if (self_cls < 0) return TY_UNKNOWN;
