@@ -6148,15 +6148,22 @@ void emit_call(Compiler *c, int id, Buf *b) {
      yields the indices. A chained/terminal use (each_with_index.map/.to_a) is
      matched earlier by emit_each_with_index_terminal and never reaches here. */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      ty_is_array(comp_ntype(c, recv)) &&
+      (ty_is_array(comp_ntype(c, recv)) || comp_ntype(c, recv) == TY_ENUMERATOR) &&
       (sp_streq(name, "each_with_index") || sp_streq(name, "each_index"))) {
+    /* An Enumerator receiver (`arr.each.each_with_index`) is materialized to its
+       element array first (#2487). */
+    int is_enum = comp_ntype(c, recv) == TY_ENUMERATOR;
     if (sp_streq(name, "each_with_index")) {
       buf_puts(b, "sp_Enumerator_new_ewi(");
-      emit_boxed(c, recv, b); buf_puts(b, ", 0)");
+      if (is_enum) { buf_puts(b, "sp_box_poly_array(sp_Enumerator_to_a("); emit_expr(c, recv, b); buf_puts(b, "))"); }
+      else emit_boxed(c, recv, b);
+      buf_puts(b, ", 0)");
     }
     else {
       buf_puts(b, "sp_Enumerator_new_indices(");
-      emit_boxed(c, recv, b); buf_puts(b, ")");
+      if (is_enum) { buf_puts(b, "sp_box_poly_array(sp_Enumerator_to_a("); emit_expr(c, recv, b); buf_puts(b, "))"); }
+      else emit_boxed(c, recv, b);
+      buf_puts(b, ")");
     }
     return;
   }
@@ -6310,6 +6317,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "peek") && argc == 0) {
       buf_puts(b, "sp_Enumerator_peek("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
+    /* #next_values / #peek_values return the yielded value(s) as an array (#2482). */
+    if (sp_streq(name, "next_values") && argc == 0) {
+      buf_puts(b, "sp_Enumerator_next_values("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "peek_values") && argc == 0) {
+      buf_puts(b, "sp_Enumerator_peek_values("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    /* Enumerator#+ chains two enumerators (#2481): the concatenation of their
+       element sequences, materialized. */
+    if (sp_streq(name, "+") && argc == 1 && comp_ntype(c, argv[0]) == TY_ENUMERATOR) {
+      buf_puts(b, "sp_Enumerator_new_from(sp_box_poly_array(sp_PolyArray_concat(sp_Enumerator_to_a(");
+      emit_expr(c, recv, b); buf_puts(b, "), sp_Enumerator_to_a(");
+      emit_expr(c, argv[0], b); buf_puts(b, "))))");
+      return;
+    }
     if (sp_streq(name, "rewind") && argc == 0) {
       buf_puts(b, "sp_Enumerator_rewind("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
@@ -6381,6 +6403,16 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_kernel_srand("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
+  }
+
+  /* Enumerator.product(a, b[, c]) -> an Enumerator over the cartesian product. */
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Enumerator") &&
+      sp_streq(name, "product") && (argc == 2 || argc == 3)) {
+    buf_printf(b, "sp_Enumerator_product%d(", argc);
+    for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); emit_boxed(c, argv[i], b); }
+    buf_puts(b, ")");
+    return;
   }
 
   /* Random instance methods */

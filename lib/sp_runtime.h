@@ -7294,6 +7294,34 @@ static sp_RbVal sp_enum_gen_pull(sp_Enumerator *e) {
   if (!sp_Fiber_alive(e->fib)) { e->gen_result = v; sp_raise_stop_iteration(v); }
   return v;
 }
+/* Enumerator.product(a, b[, c]): an Enumerator over the cartesian product,
+   materialized as poly-array tuples in row-major order (#2484). */
+static sp_Enumerator *sp_Enumerator_product2(sp_RbVal a, sp_RbVal b) {
+  mrb_int na = sp_poly_length(a), nb = sp_poly_length(b);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  for (mrb_int i = 0; i < na; i++)
+    for (mrb_int j = 0; j < nb; j++) {
+      sp_PolyArray *t = sp_PolyArray_new();
+      sp_PolyArray_push(t, sp_poly_arr_get(a, i));
+      sp_PolyArray_push(t, sp_poly_arr_get(b, j));
+      sp_PolyArray_push(out, sp_box_poly_array(t));
+    }
+  return sp_Enumerator_new_from(sp_box_poly_array(out));
+}
+static sp_Enumerator *sp_Enumerator_product3(sp_RbVal a, sp_RbVal b, sp_RbVal cc) {
+  mrb_int na = sp_poly_length(a), nb = sp_poly_length(b), nc = sp_poly_length(cc);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  for (mrb_int i = 0; i < na; i++)
+    for (mrb_int j = 0; j < nb; j++)
+      for (mrb_int k = 0; k < nc; k++) {
+        sp_PolyArray *t = sp_PolyArray_new();
+        sp_PolyArray_push(t, sp_poly_arr_get(a, i));
+        sp_PolyArray_push(t, sp_poly_arr_get(b, j));
+        sp_PolyArray_push(t, sp_poly_arr_get(cc, k));
+        sp_PolyArray_push(out, sp_box_poly_array(t));
+      }
+  return sp_Enumerator_new_from(sp_box_poly_array(out));
+}
 static sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {
   if (e->gen) {
     if (e->peeked) { e->peeked = FALSE; return e->peek_val; }
@@ -7310,6 +7338,17 @@ static sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {
   if (!e->items || e->cursor >= e->items->len) sp_raise_stop_iteration(e->source);
   return e->items->data[e->cursor];
 }
+/* #next_values / #peek_values return the yielded value(s) as an array. A yield of
+   several values (already a poly array element) is returned as-is; a single value
+   is wrapped in a one-element array. (#2482) */
+static sp_PolyArray *sp_enum_values_wrap(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)v.v.p;
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  sp_PolyArray_push(a, v);
+  return a;
+}
+static sp_PolyArray *sp_Enumerator_next_values(sp_Enumerator *e) { return sp_enum_values_wrap(sp_Enumerator_next(e)); }
+static sp_PolyArray *sp_Enumerator_peek_values(sp_Enumerator *e) { return sp_enum_values_wrap(sp_Enumerator_peek(e)); }
 static sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) {
   if (!e) return NULL;
   if (e->gen) { e->fib = NULL; e->peeked = FALSE; e->gen_result = sp_box_nil(); }

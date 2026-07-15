@@ -1848,6 +1848,8 @@ else {
       if (cn2 && sp_streq(name, "new") && (sp_streq(cn2, "Mutex") || sp_streq(cn2, "Monitor"))) return TY_MUTEX;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "ConditionVariable")) return TY_CONDVAR;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) return TY_RANDOM;
+      if (cn2 && sp_streq(cn2, "Enumerator") && sp_streq(name, "product") && (argc == 2 || argc == 3))
+        return TY_ENUMERATOR;   /* #2484 */
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "current")) return TY_THREAD;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "main")) return TY_THREAD;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "list")) return TY_POLY_ARRAY;
@@ -1911,6 +1913,8 @@ else {
   /* TY_ENUMERATOR instance methods */
   if (recv >= 0 && rt == TY_ENUMERATOR) {
     if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;
+    if (sp_streq(name, "next_values") || sp_streq(name, "peek_values")) return TY_POLY_ARRAY;   /* #2482 */
+    if (sp_streq(name, "+") && argc == 1 && infer_type(c, argv[0]) == TY_ENUMERATOR) return TY_ENUMERATOR;  /* #2481 */
     if (sp_streq(name, "rewind")) return TY_ENUMERATOR;
     if (sp_streq(name, "frozen?")) return TY_BOOL;
     if ((sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) && argc == 1) return TY_BOOL;
@@ -1919,6 +1923,9 @@ else {
     /* blockless enum.with_index(off) is another materialized Enumerator (over
        [element, index] pairs); the block/terminal-chain forms are typed below */
     if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
+    /* blockless enum.each_with_index / each_index -> a chained Enumerator (#2487) */
+    if ((sp_streq(name, "each_with_index") || sp_streq(name, "each_index")) &&
+        argc == 0 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     /* Stored-enumerator block form returns the underlying each return (the
        boxed source). Immediate chains (arr.each.with_index { } and the
        map/select shapes) keep their own typed arms below -- skip a blockless
