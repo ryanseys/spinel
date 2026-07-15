@@ -55,6 +55,8 @@ Compiler *comp_new(const NodeTable *nt) {
   for (int i = 0; i < n; i++) c->node_cbody[i] = -1;
   c->empty_arr_recv = calloc((size_t)n, 1);
   c->empty_hash_recv = calloc((size_t)n, 1);
+  c->obj_ext_target = malloc((size_t)n * sizeof(int));   /* -1 = no o.extend(M) mark */
+  for (int i = 0; i < n; i++) c->obj_ext_target[i] = -1;
   c->node_cap = n;
   return c;
 }
@@ -70,7 +72,8 @@ void comp_grow_node_arrays(Compiler *c) {
   c->node_cbody = realloc(c->node_cbody, sizeof(int) * (size_t)n);
   c->empty_arr_recv = realloc(c->empty_arr_recv, (size_t)n);
   c->empty_hash_recv = realloc(c->empty_hash_recv, (size_t)n);
-  for (int i = c->node_cap; i < n; i++) { c->ntype[i] = TY_UNKNOWN; c->nilnarrow[i] = TY_UNKNOWN; c->nscope[i] = 0; c->node_cbody[i] = -1; c->empty_arr_recv[i] = 0; c->empty_hash_recv[i] = 0; }
+  c->obj_ext_target = realloc(c->obj_ext_target, sizeof(int) * (size_t)n);
+  for (int i = c->node_cap; i < n; i++) { c->ntype[i] = TY_UNKNOWN; c->nilnarrow[i] = TY_UNKNOWN; c->nscope[i] = 0; c->node_cbody[i] = -1; c->empty_arr_recv[i] = 0; c->empty_hash_recv[i] = 0; c->obj_ext_target[i] = -1; }
   c->node_cap = n;
 }
 
@@ -125,6 +128,7 @@ void comp_free(Compiler *c) {
   free(c->node_cbody);
   free(c->empty_arr_recv);
   free(c->empty_hash_recv);
+  free(c->obj_ext_target);
   free(c);
 }
 

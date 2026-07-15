@@ -4619,6 +4619,14 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (!ty) return TY_UNKNOWN;
   NodeKind nk = nt_kind(nt, id);
 
+  /* `o.extend(M)` returns its receiver (self); see register_object_extends. The
+     marked post-extend dispatch calls (obj_ext_target >= 0) fall through to
+     ordinary method inference, which resolves the synthesized ObjectExt_<M>
+     method's return type. */
+  if (nk == NK_CallNode && id < c->node_cap && c->obj_ext_target[id] == -2) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r >= 0) return infer_type(c, r);
+  }
   if (nk == NK_IntegerNode)             return nt_str(nt, id, "bigval") ? TY_BIGINT : TY_INT;
   if (nk == NK_FloatNode)               return TY_FLOAT;
   if (nk == NK_ImaginaryNode)           return TY_COMPLEX;
