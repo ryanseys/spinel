@@ -3879,11 +3879,21 @@ else {
                    ti, ti, tn, ti, to, ti, th, th);
         return 1;
       }
-      if (sp_streq(name, "default") && argc <= 1) {  /* default(key) ignores key (#2409) */
+      if (sp_streq(name, "default") && argc <= 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
         if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
-          buf_printf(b, "; _t%d ? _t%d->default_v : sp_box_nil(); })", t, t);
+          /* default(key): a hash built with a block calls its default_proc with
+             (self, key); default() (or a hash with no proc) returns default_v
+             (#2464). Only the poly-value variants carry a dproc. */
+          if (argc == 1) {
+            buf_printf(b, "; (_t%d && _t%d->dproc) ? _t%d->dproc(_t%d, ", t, t, t, t);
+            if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[0], b);
+            else emit_expr(c, argv[0], b);
+            buf_printf(b, ", _t%d->dproc_self) : (_t%d ? _t%d->default_v : sp_box_nil()); })", t, t, t);
+          } else {
+            buf_printf(b, "; _t%d ? _t%d->default_v : sp_box_nil(); })", t, t);
+          }
         }
         else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
           buf_printf(b, "; (_t%d && _t%d->default_v != SP_INT_NIL) ? sp_box_int(_t%d->default_v) : sp_box_nil(); })", t, t, t);
