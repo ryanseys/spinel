@@ -5862,6 +5862,9 @@ else {
       if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
       else emit_expr(c, v, b);
     }
+    /* a poly-typed global/const slot boxes a scalar value (`$g = 42` where $g
+       elsewhere holds a string/array, so its slot is sp_RbVal) */
+    else if (lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
     buf_puts(b, ";\n");
     if (!isg && lv->init_guarded) {
