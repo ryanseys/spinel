@@ -2405,8 +2405,11 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         }
       }
     }
-    /* each_entry is each for the sequential-yield shapes spinel compiles */
-    if (sp_streq(nm, "each_entry")) {
+    /* each_entry is each for the sequential-yield shapes spinel compiles -- but
+       only the BLOCK form. Blockless #each_entry returns an Enumerator (a user
+       class's blockless #each would instead raise LocalJumpError), so leave it
+       for the Enumerable redirect / struct enumerator path to materialize. */
+    if (sp_streq(nm, "each_entry") && nt_ref(nt, id, "block") >= 0) {
       nt_node_set_str(nt, id, "name", "each");
       continue;
     }
@@ -3864,11 +3867,15 @@ int desugar_enum_method_recv(Compiler *c) {
        not the LocalJumpError the synthesized yielding #each would raise. Route
        it through the member array's blockless #each, which materializes the
        enumerator. (each_entry was already renamed to each upstream.) */
-    if (c->classes[cid].is_struct && nt_ref(nt, id, "block") < 0 && sp_streq(nm, "each")) {
+    if (c->classes[cid].is_struct && nt_ref(nt, id, "block") < 0 &&
+        (sp_streq(nm, "each") || sp_streq(nm, "each_entry"))) {
       int wrap = nt_new_node(nt, "CallNode");
       nt_node_set_str(nt, wrap, "name", "__enum_to_a");
       nt_node_set_ref(nt, wrap, "receiver", recv);
       nt_node_set_ref(nt, id, "receiver", wrap);
+      /* the array's blockless #each yields the Enumerator; each_entry keeps its
+         own name (array #each_entry with no block also materializes one) */
+      if (sp_streq(nm, "each_entry")) nt_node_set_str(nt, id, "name", "each");
       comp_grow_node_arrays(c);
       c->nscope[wrap] = c->nscope[id];
       changed = 1;

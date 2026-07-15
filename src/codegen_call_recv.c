@@ -2308,6 +2308,14 @@ else {
       }
       if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
         TyKind init_t = comp_ntype(c, argv[0]);
+        /* a String initial value over numeric elements is a TypeError (String#+
+           rejects an Integer), matching CRuby (#2504). */
+        if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && init_t == TY_STRING) {
+          buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+          emit_expr(c, argv[0], b);
+          buf_puts(b, "), sp_raise_cls(\"TypeError\", \"no implicit conversion of Integer into String\"), (mrb_int)0)");
+          return 1;
+        }
         /* a String initial value concatenates (["a","b"].sum("") == "ab") */
         if (rt == TY_STR_ARRAY && init_t == TY_STRING) {
           buf_puts(b, "sp_StrArray_sum_str("); emit_expr(c, recv, b); buf_puts(b, ", ");
