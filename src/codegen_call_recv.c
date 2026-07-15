@@ -5360,6 +5360,15 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
+        /* int.clamp(float_range): the clamped-to bound is the Float endpoint (a
+           boxed result); an in-range Int receiver stays Int. */
+        int tv3 = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = (%s); sp_FloatRange _fr%d = ", tv3, r, tv3); emit_expr(c, argv[0], b);
+        buf_printf(b, "; ((double)_t%d < _fr%d.first) ? sp_box_float(_fr%d.first)"
+                      " : ((double)_t%d > _fr%d.last) ? sp_box_float(_fr%d.last)"
+                      " : sp_box_int(_t%d); })", tv3, tv3, tv3, tv3, tv3, tv3, tv3);
+      }
       else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE &&
                nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
                ((nt_ref(nt, argv[0], "left") >= 0 && comp_ntype(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
@@ -5522,7 +5531,17 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                      tg, r, tg, tg, tg, cfn, tg);
         }
       }
-      else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+      else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE &&
+               nt_type(nt, unwrap_parens(c, argv[0])) && !sp_streq(nt_type(nt, unwrap_parens(c, argv[0])), "RangeNode")) {
+        /* Float#clamp(float_range) held in a variable: clamp against sp_FloatRange
+           (boxed, matching the literal path and TY_POLY inference). */
+        int tf = ++g_tmp;
+        buf_printf(b, "({ double _t%d = (%s); sp_FloatRange _fr%d = ", tf, r, tf); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_box_float(_t%d < _fr%d.first ? _fr%d.first : (_t%d > _fr%d.last ? _fr%d.last : _t%d)); })",
+                   tf, tf, tf, tf, tf, tf, tf);
+      }
+      else if (sp_streq(name, "clamp") && argc == 1 &&
+               (comp_ntype(c, argv[0]) == TY_RANGE || comp_ntype(c, argv[0]) == TY_FLOAT_RANGE)) {
         /* the clamped-to bound is the range's endpoint itself (keeping its
            own class); an in-range receiver stays the Float. A literal range
            with a Float bound cannot ride sp_Range (mrb_int bounds truncate
@@ -5531,7 +5550,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         int is_lit = rn3 >= 0 && nt_type(nt, rn3) && sp_streq(nt_type(nt, rn3), "RangeNode");
         int flo = is_lit ? nt_ref(nt, rn3, "left") : -1;
         int fhi = is_lit ? nt_ref(nt, rn3, "right") : -1;
-        int any_f = is_lit && ((flo >= 0 && comp_ntype(c, flo) == TY_FLOAT) ||
+        int any_f = is_lit && (comp_ntype(c, argv[0]) == TY_FLOAT_RANGE ||
+                               (flo >= 0 && comp_ntype(c, flo) == TY_FLOAT) ||
                                (fhi >= 0 && comp_ntype(c, fhi) == TY_FLOAT));
         if (any_f) {
           int excl3 = (int)(nt_int(nt, rn3, "flags", 0) & 4) ? 1 : 0;

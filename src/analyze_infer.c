@@ -840,6 +840,10 @@ TyKind infer_call(Compiler *c, int id) {
       (sp_streq(name, "%") || sp_streq(name, "modulo"))) return TY_FLOAT;
   if (rt == TY_FLOAT && sp_streq(name, "clamp") && argc == 1 &&
       comp_ntype(c, argv[0]) == TY_RANGE) return TY_POLY;
+  /* clamp(Float range): the clamped-to bound keeps its Float class; the result
+     is boxed (Float, or Int for an in-range Int receiver) -> poly. */
+  if ((rt == TY_FLOAT || rt == TY_INT) && sp_streq(name, "clamp") && argc == 1 &&
+      comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) return TY_POLY;
   if (rt == TY_INT && sp_streq(name, "round") && argc >= 1 &&
       nt_type(nt, argv[argc - 1]) &&
       sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) return TY_INT;
