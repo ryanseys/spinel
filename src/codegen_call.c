@@ -631,6 +631,100 @@ int lazy_endpoint_is_infinite(Compiler *c, int right) {
   return 0;
 }
 
+/* `<source>.lazy.<ops>.size`: the source size propagated through the chain, no
+   iteration. Size-preserving stages (map/collect) keep it; take(n)/drop(n)
+   transform it (min / max(0,-)); any element-count-changing stage (select,
+   reject, filter, filter_map, flat_map, take_while, drop_while) makes it nil. An
+   endless source is Float::INFINITY unless a take bounds it. (#2485) */
+int emit_lazy_size_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *tname = nt_str(nt, id, "name");
+  if (!tname || !sp_streq(tname, "size") || nt_ref(nt, id, "block") >= 0) return 0;
+  { int ar = nt_ref(nt, id, "arguments"); int ac = 0; if (ar >= 0) nt_arr(nt, ar, "arguments", &ac); if (ac != 0) return 0; }
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  enum { LK_MAP, LK_TAKE, LK_DROP, LK_KILL };
+  struct { int kind; int arg; } ops[32]; int nops = 0;
+  int cur = recv, lazy_src = -1;
+  while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
+    const char *nm = nt_str(nt, cur, "name");
+    if (!nm) return 0;
+    if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = unwrap_parens(c, nt_ref(nt, cur, "receiver")); break; }
+    int blk = nt_ref(nt, cur, "block");
+    if (nops >= 32) return 0;
+    if ((sp_streq(nm, "take") || sp_streq(nm, "drop")) && blk < 0) {
+      int ar = nt_ref(nt, cur, "arguments"); int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
+      if (ac != 1 || !av) return 0;
+      ops[nops].kind = sp_streq(nm, "take") ? LK_TAKE : LK_DROP; ops[nops].arg = av[0]; nops++;
+      cur = nt_ref(nt, cur, "receiver"); continue;
+    }
+    if (blk < 0) return 0;
+    if (sp_streq(nm, "map") || sp_streq(nm, "collect")) { ops[nops].kind = LK_MAP; ops[nops].arg = -1; nops++; }
+    else if (sp_streq(nm, "select") || sp_streq(nm, "filter") || sp_streq(nm, "find_all") ||
+             sp_streq(nm, "reject") || sp_streq(nm, "take_while") || sp_streq(nm, "drop_while") ||
+             sp_streq(nm, "filter_map") || sp_streq(nm, "flat_map") || sp_streq(nm, "collect_concat")) {
+      ops[nops].kind = LK_KILL; ops[nops].arg = -1; nops++;
+    }
+    else return 0;
+    cur = nt_ref(nt, cur, "receiver");
+  }
+  if (lazy_src < 0) return 0;
+  TyKind st = infer_type(c, lazy_src);
+  int src_is_range = (st == TY_RANGE);
+  /* an empty `[]` literal source infers UNKNOWN; treat any ArrayNode as an array */
+  int src_is_arr = ty_is_array(st) ||
+                   (nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ArrayNode"));
+  if (!src_is_range && !src_is_arr) return 0;
+  /* any element-count-changing stage -> nil */
+  for (int i = 0; i < nops; i++) if (ops[i].kind == LK_KILL) { buf_puts(b, "sp_box_nil()"); return 1; }
+  int has_take = 0; for (int i = 0; i < nops; i++) if (ops[i].kind == LK_TAKE) has_take = 1;
+  int endless = 0, excl = 0, range_lit = 0, lo = -1, hi = -1, trange = -1;
+  if (src_is_range) {
+    range_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "RangeNode");
+    if (range_lit) {
+      excl = (nt_int(nt, lazy_src, "flags", 0) & 4) ? 1 : 0;
+      hi = nt_ref(nt, lazy_src, "right"); lo = nt_ref(nt, lazy_src, "left");
+      endless = lazy_endpoint_is_infinite(c, hi);
+    } else {
+      trange = ++g_tmp; Buf sb = expr_buf(c, lazy_src);
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_Range _t%d = %s;\n", trange, sb.p ? sb.p : "(sp_Range){0}"); free(sb.p);
+    }
+  }
+  /* endless source with no bounding take -> Float::INFINITY */
+  if (endless && !has_take) { buf_puts(b, "(1.0/0.0)"); return 1; }
+  /* compute source length (INTPTR_MAX sentinel for an endless source; a take
+     below reduces it to a finite value -- guaranteed here since has_take). */
+  /* build the source-length expression into a local buffer first: an array
+     literal source boxes with its own g_pre decls, which must precede this line. */
+  Buf lenb; memset(&lenb, 0, sizeof lenb);
+  if (src_is_range) {
+    if (endless) buf_puts(&lenb, "INTPTR_MAX");
+    else if (range_lit) { buf_puts(&lenb, "("); emit_int_expr(c, hi, &lenb); buf_puts(&lenb, " - "); emit_int_expr(c, lo, &lenb); buf_printf(&lenb, " + %d)", 1 - excl); }
+    else buf_printf(&lenb, "(_t%d.last - _t%d.first + 1 - (mrb_int)_t%d.excl)", trange, trange, trange);
+  } else {
+    buf_puts(&lenb, "sp_poly_length("); emit_boxed(c, lazy_src, &lenb); buf_puts(&lenb, ")");
+  }
+  int tsz = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "mrb_int _t%d = %s;\n", tsz, lenb.p ? lenb.p : "0");
+  free(lenb.p);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (_t%d < 0) _t%d = 0;\n", tsz, tsz);
+  /* apply take/drop source->terminal (ops were collected terminal-first) */
+  for (int i = nops - 1; i >= 0; i--) {
+    if (ops[i].kind == LK_MAP) continue;
+    emit_indent(g_pre, g_indent);
+    if (ops[i].kind == LK_TAKE) {
+      buf_puts(g_pre, "{ mrb_int _n = "); emit_int_expr(c, ops[i].arg, g_pre);
+      buf_printf(g_pre, "; if (_n < 0) _n = 0; if (_n < _t%d) _t%d = _n; }\n", tsz, tsz);
+    } else {
+      buf_puts(g_pre, "{ mrb_int _n = "); emit_int_expr(c, ops[i].arg, g_pre);
+      buf_printf(g_pre, "; _t%d = _t%d > _n ? _t%d - _n : 0; }\n", tsz, tsz, tsz);
+    }
+  }
+  buf_printf(b, "_t%d", tsz);
+  return 1;
+}
+
 /* (int-range | int-array).lazy.<map/select/reject/filter/take_while...>
    .{first(n) | take(n) | to_a | force}: fuse the whole lazy chain into one int
    loop collecting into an sp_IntArray, short-circuiting at the terminal count.
@@ -5038,6 +5132,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  if (emit_lazy_size_expr(c, id, b)) return;
   if (emit_lazy_pipeline_expr(c, id, b)) return;
   if (emit_partition_expr(c, id, b)) return;
   if (emit_with_index_expr(c, id, b)) return;

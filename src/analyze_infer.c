@@ -3666,6 +3666,49 @@ else {
       return TY_POLY_ARRAY;
   }
 
+  /* `<source>.lazy.<ops>.size` -> the propagated source size: nil if any stage
+     changes the element count, Float::INFINITY for an unbounded endless source,
+     else Integer. (#2485) */
+  if (sp_streq(name, "size") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+    int cur = recv, lazy_src = -1, ok = 1, kill = 0, has_take = 0;
+    while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
+      const char *nm = nt_str(nt, cur, "name");
+      if (!nm) { ok = 0; break; }
+      if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
+      if ((sp_streq(nm, "take") || sp_streq(nm, "drop")) && nt_ref(nt, cur, "block") < 0) {
+        if (sp_streq(nm, "take")) has_take = 1;
+        cur = nt_ref(nt, cur, "receiver"); continue;
+      }
+      if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
+      if (sp_streq(nm, "map") || sp_streq(nm, "collect")) { cur = nt_ref(nt, cur, "receiver"); continue; }
+      if (sp_streq(nm, "select") || sp_streq(nm, "filter") || sp_streq(nm, "find_all") ||
+          sp_streq(nm, "reject") || sp_streq(nm, "take_while") || sp_streq(nm, "drop_while") ||
+          sp_streq(nm, "filter_map") || sp_streq(nm, "flat_map") || sp_streq(nm, "collect_concat")) {
+        kill = 1; cur = nt_ref(nt, cur, "receiver"); continue;
+      }
+      ok = 0; break;
+    }
+    /* unwrap `(1..n)` parentheses so the endless check sees the RangeNode */
+    while (lazy_src >= 0 && nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ParenthesesNode")) {
+      int pb = nt_ref(nt, lazy_src, "body"); int pn = 0;
+      const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+      lazy_src = pn == 1 ? pd[0] : -1;
+    }
+    if (ok && lazy_src >= 0) {
+      TyKind st = infer_type(c, lazy_src);
+      int is_arr_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ArrayNode");
+      if (st == TY_RANGE || ty_is_array(st) || is_arr_lit) {
+        if (kill) return TY_POLY;   /* nil */
+        int endless = 0;
+        if (st == TY_RANGE && nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "RangeNode"))
+          endless = lazy_endpoint_is_infinite(c, nt_ref(nt, lazy_src, "right"));
+        if (endless && !has_take) return TY_FLOAT;   /* Float::INFINITY */
+        return TY_INT;
+      }
+    }
+  }
+
   /* General lazy pipeline: <int range | int array>.lazy.<map/select/reject/
      filter/take_while...>.{first(n) | take(n) | to_a | force} -> an int array. */
   if ((sp_streq(name, "first") ||
