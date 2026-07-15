@@ -4503,7 +4503,7 @@ else {
 /* String#upcase and friends take an optional casemap symbol. `:ascii`
    restricts folding to A-Z/a-z; return the "_ascii" runtime suffix for it so
    non-ASCII bytes pass through. Full-Unicode folding (no arg) returns "". */
-static const char *case_map_suffix(Compiler *c, int argc, int *argv) {
+static const char *case_map_suffix(Compiler *c, int argc, const int *argv) {
   if (argc >= 1 && nt_type(c->nt, argv[0]) &&
       sp_streq(nt_type(c->nt, argv[0]), "SymbolNode") &&
       nt_str(c->nt, argv[0], "value") &&

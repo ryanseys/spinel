@@ -3676,11 +3676,12 @@ int desugar_enum_method_recv(Compiler *c) {
            receiver array directly (#2468). */
         if (cbase >= 0 && can >= 0) {
           int acc = cbase;
-          /* A struct receiver has no #+; fold over its member array instead
-             (`s.chain(x).to_a` -> `s.to_a + x`). */
+          /* A struct or user Enumerable receiver has no #+; fold over its element
+             array instead (`c.chain(x).to_a` -> `c.to_a + x`). */
           TyKind cbt = infer_type(c, cbase);
           if (ty_is_object(cbt) && ty_object_class(cbt) >= 0 &&
-              c->classes[ty_object_class(cbt)].is_struct) {
+              (c->classes[ty_object_class(cbt)].is_struct ||
+               comp_method_in_chain(c, ty_object_class(cbt), "__enum_to_a", NULL) >= 0)) {
             int toa = te_call(nt, cbase, "to_a", -1, -1);
             comp_grow_node_arrays(c);
             c->nscope[toa] = c->nscope[id];
