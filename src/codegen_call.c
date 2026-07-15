@@ -6743,6 +6743,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) { buf_puts(b, "sp_str_to_i_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_FLOAT) { buf_puts(b, "((mrb_int)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
+      else if (at == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, av[0], b); buf_puts(b, "), sp_raise_cls(\"TypeError\", \"can't convert nil into Integer\"), (mrb_int)0)"); }  /* #2514 */
       else if (at == TY_POLY) { buf_puts(b, "sp_poly_Integer("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       return;
@@ -6753,13 +6754,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_puts(b, "sp_str_to_i_strict_base("); emit_expr(c, av[0], b);
         buf_puts(b, ", "); emit_expr(c, av[1], b); buf_puts(b, ")");
       }
-      else { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      /* a base with a non-String value raises ArgumentError, as CRuby (#2515) */
+      else { buf_puts(b, "((void)("); emit_expr(c, av[0], b); buf_puts(b, "), (void)("); emit_expr(c, av[1], b); buf_puts(b, "), sp_raise_cls(\"ArgumentError\", \"base specified for non string value\"), (mrb_int)0)"); }
       return;
     }
     if (sp_streq(name, "Float") && ac == 1) {
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) { buf_puts(b, "sp_str_to_f_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_INT) { buf_puts(b, "((mrb_float)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
+      else if (at == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, av[0], b); buf_puts(b, "), sp_raise_cls(\"TypeError\", \"can't convert nil into Float\"), 0.0)"); }  /* #2514 */
       else if (at == TY_POLY) { buf_puts(b, "sp_poly_Float("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       return;
