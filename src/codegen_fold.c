@@ -4637,6 +4637,16 @@ int emit_grep_expr(Compiler *c, int id, Buf *b) {
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc != 1) return 0;
   TyKind rt = comp_ntype(c, recv);
+  /* An empty array literal ([].grep(x)) matches nothing -> an empty array,
+     whatever its (unknown) element type would be. comp_ntype leaves a bare
+     literal TY_UNKNOWN, so handle it before the array-kind gate (#2459). */
+  if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+    int en = 0; nt_arr(nt, recv, "elements", &en);
+    if (en == 0) {
+      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_PolyArray_new())");
+      return 1;
+    }
+  }
   if (!ty_is_array(rt)) return 0;
   const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
