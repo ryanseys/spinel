@@ -6759,6 +6759,34 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
                    te9, tb9, excl9, te9, te9);
         return 1;
       }
+      /* String-endpoint range accessors: the int-backed sp_Range stores the
+         endpoint string POINTERS in its first/last fields, so begin/end/first/
+         last/min/max must read them back as strings, not raw ints (#2467). */
+      if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode")) {
+        int lo9 = nt_ref(nt, rn9, "left"), hi9 = nt_ref(nt, rn9, "right");
+        if (lo9 >= 0 && hi9 >= 0 &&
+            comp_ntype(c, lo9) == TY_STRING && comp_ntype(c, hi9) == TY_STRING) {
+          int excl9 = (int)(nt_int(nt, rn9, "flags", 0) & 4) ? 1 : 0;
+          if (argc == 0 && (sp_streq(name, "begin") || sp_streq(name, "first") ||
+                            sp_streq(name, "min"))) { emit_expr(c, lo9, b); return 1; }
+          if (argc == 0 && (sp_streq(name, "end") || sp_streq(name, "last"))) {
+            emit_expr(c, hi9, b); return 1;
+          }
+          if (argc == 0 && sp_streq(name, "max") && !excl9) { emit_expr(c, hi9, b); return 1; }
+          if (argc == 1 && (sp_streq(name, "first") || sp_streq(name, "last"))) {
+            int ta9 = ++g_tmp, tn9 = ++g_tmp;
+            buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_from_string_range(", ta9);
+            emit_expr(c, lo9, b); buf_puts(b, ", "); emit_expr(c, hi9, b);
+            buf_printf(b, ", %d); mrb_int _t%d = ", excl9, tn9); emit_int_expr(c, argv[0], b);
+            if (sp_streq(name, "first"))
+              buf_printf(b, "; sp_StrArray_slice(_t%d, 0, _t%d); })", ta9, tn9);
+            else
+              buf_printf(b, "; mrb_int _s9 = _t%d->len - _t%d; if (_s9 < 0) _s9 = 0;"
+                            " sp_StrArray_slice(_t%d, _s9, _t%d); })", ta9, tn9, ta9, tn9);
+            return 1;
+          }
+        }
+      }
       if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
           (nt_ref(nt, rn9, "right") < 0 ||
            lazy_endpoint_is_infinite(c, nt_ref(nt, rn9, "right"))) &&

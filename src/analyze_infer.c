@@ -3450,6 +3450,31 @@ else {
           return TY_STR_ARRAY;
       }
     }
+    /* String-endpoint range accessors read/return strings, not ints (#2467) */
+    {
+      int rn = recv;
+      while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
+        int body = nt_ref(nt, rn, "body"); int bn = 0;
+        const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        rn = bn == 1 ? bd[0] : -1;
+      }
+      if (rn >= 0 && nt_type(nt, rn) && !sp_streq(nt_type(nt, rn), "RangeNode")) {
+        int sl = local_sole_range_node(c, rn);
+        if (sl >= 0) rn = sl;
+      }
+      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+        if (lo >= 0 && hi >= 0 &&
+            infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING) {
+          if (argc == 0 && (sp_streq(name, "begin") || sp_streq(name, "end") ||
+                            sp_streq(name, "first") || sp_streq(name, "last") ||
+                            sp_streq(name, "min") || sp_streq(name, "max")))
+            return TY_STRING;
+          if (argc == 1 && (sp_streq(name, "first") || sp_streq(name, "last")))
+            return TY_STR_ARRAY;
+        }
+      }
+    }
     if (sp_streq(name, "to_a") || sp_streq(name, "entries")) return TY_INT_ARRAY;  /* (#2414) */
     if (sp_streq(name, "minmax")) return TY_POLY_ARRAY;   /* [nil, nil] when empty (#2412) */
     /* an ENDLESS literal range: #end is nil (#2413) */
