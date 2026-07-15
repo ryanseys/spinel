@@ -858,6 +858,24 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     else emit_expr(c, bd3[bn3 - 1], b);
     buf_puts(b, "; ");
   }
+  else if (as_expr && !nx_own && bn3 > 0 &&
+           nt_type(nt, bd3[bn3 - 1]) &&
+           (sp_streq(nt_type(nt, bd3[bn3 - 1]), "IfNode") ||
+            sp_streq(nt_type(nt, bd3[bn3 - 1]), "UnlessNode") ||
+            sp_streq(nt_type(nt, bd3[bn3 - 1]), "CaseNode") ||
+            sp_streq(nt_type(nt, bd3[bn3 - 1]), "BeginNode"))) {
+    /* A GNU statement-expression's value is its last statement only when that
+       statement is an EXPRESSION; a trailing if/case/begin STATEMENT yields
+       void, so a block whose value is such a construct (`wrap { if c then a
+       else b end }`) produced a void ({...}). Emit the tail value-compound as
+       an expression (a bare-expression tail already carries its value). */
+    if (c->blk_body_map && bbody >= 0 && bbody < c->nt->count &&
+        c->blk_body_map[bbody] >= 0)
+      emit_block_locals_reset(c, c->blk_body_map[bbody], b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
+    emit_expr(c, bd3[bn3 - 1], b);
+    buf_puts(b, "; ");
+  }
   else
     emit_stmts(c, bbody, b, as_expr ? 0 : (nx_own ? indent + 1 : indent));
   if (nx_own) {
