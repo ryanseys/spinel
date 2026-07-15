@@ -3258,7 +3258,8 @@ else {
       /* nil-aware conversions (a nil local widens to poly): boxed results */
       if (argc == 0 && nt_ref(nt, id, "block") < 0 &&
           (sp_streq(name, "to_a") || sp_streq(name, "to_h") ||
-           sp_streq(name, "to_r") || sp_streq(name, "to_c"))) {
+           sp_streq(name, "to_r") || sp_streq(name, "rationalize") ||
+           sp_streq(name, "to_c"))) {
         int has_user = 0;
         for (int k = 0; k < c->nclasses && !has_user; k++)
           if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
@@ -3267,7 +3268,7 @@ else {
              local settled on an early (pre-widening) pass stays consistent */
           if (sp_streq(name, "to_a")) return TY_POLY_ARRAY;
           if (sp_streq(name, "to_h")) return TY_SYM_POLY_HASH;
-          if (sp_streq(name, "to_r")) return TY_RATIONAL;
+          if (sp_streq(name, "to_r") || sp_streq(name, "rationalize")) return TY_RATIONAL;
           return TY_COMPLEX;
         }
       }

@@ -7151,12 +7151,14 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      nil there, so the payload really is the concrete kind. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "to_h") ||
-       sp_streq(name, "to_r") || sp_streq(name, "to_c"))) {
+       sp_streq(name, "to_r") || sp_streq(name, "rationalize") || sp_streq(name, "to_c"))) {
     int has_user = 0;
     for (int k = 0; k < c->nclasses && !has_user; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
     if (!has_user) {
-      if (sp_streq(name, "to_r")) {
+      /* rationalize with no argument equals to_r for the values a poly nil/int
+         can hold (nil -> (0/1), int -> (n/1)) (#2460). */
+      if (sp_streq(name, "to_r") || sp_streq(name, "rationalize")) {
         buf_puts(b, "(*(sp_Rational *)sp_poly_to_r_m(");
         emit_expr(c, recv, b);
         buf_puts(b, ").v.p)");
