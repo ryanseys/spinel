@@ -584,7 +584,7 @@ sp_StrArray*sp_str_split(const char*s,const char*sep){if(!s)sp_nil_recv("split")
 /* Same as sp_str_split but removes trailing empty strings
    (CRuby default limit behavior: split without limit drops
    trailing empties; split(sep, -1) keeps them). */
-sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep){sp_StrArray*a=sp_str_split(s,sep);while(a->len>0&&a->data[a->len-1][0]==0)a->len--;return a;}
+sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep){if(!sep||(sep[0]==' '&&sep[1]==0))return sp_str_split_ws(s);sp_StrArray*a=sp_str_split(s,sep);while(a->len>0&&a->data[a->len-1][0]==0)a->len--;return a;}
 /* `s.split(sep, n)` with explicit limit. Positive n caps the result
    at n elements: the last element holds the unsplit remainder.
    n == 0 means "no limit" and drops trailing empty strings (same as
@@ -593,6 +593,7 @@ sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep){sp_StrArray*
    splits into Unicode characters; the limit caps the array.
    Issue #619 puzzle 2. */
 sp_StrArray*sp_str_split_limit(const char*s,const char*sep,mrb_int n){if(!s)sp_nil_recv("split");
+  if(!sep||(sep[0]==' '&&sep[1]==0))return sp_str_split_ws_limit(s,n);
   if(n==0)return sp_str_split_drop_trailing(s,sep);
   if(n<0)return sp_str_split(s,sep);
   SP_GC_ROOT_STR(s);
@@ -645,6 +646,36 @@ sp_StrArray*sp_str_split_ws(const char*s){if(!s)sp_nil_recv("split");
     sp_str_split_push(a,start,n);
     while(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'||*p=='\f'||*p=='\v')p++;
   }
+  return a;
+}
+/* Whitespace-mode split with an explicit limit. A single-space separator is
+   special in Ruby: it skips leading whitespace and collapses separator runs,
+   including when the separator comes from a variable or a limit is present.
+   Positive limits preserve the unsplit remainder; negative limits retain a
+   trailing empty field. */
+sp_StrArray*sp_str_split_ws_limit(const char*s,mrb_int n){if(!s)sp_nil_recv("split");
+  if(n==0)return sp_str_split_ws(s);
+  SP_GC_ROOT_STR(s);
+  sp_StrArray*a=sp_StrArray_new();
+  SP_GC_ROOT(a);
+  if(*s==0)return a;
+  if(n==1){sp_str_split_push(a,s,strlen(s));return a;}
+  const char*p=s;
+#define SP_SPLIT_WS(c) ((c)==' '||(c)=='\t'||(c)=='\n'||(c)=='\r'||(c)=='\f'||(c)=='\v')
+  while(SP_SPLIT_WS(*p))p++;
+  if(!*p){sp_str_split_push(a,p,0);return a;}
+  mrb_int k=0;
+  while(*p){
+    const char*start=p;
+    while(*p&&!SP_SPLIT_WS(*p))p++;
+    sp_str_split_push(a,start,(size_t)(p-start));
+    k++;
+    const char*sep_start=p;
+    while(SP_SPLIT_WS(*p))p++;
+    if(!*p){if(p>sep_start&&(n<0||(n>0&&k<n)))sp_str_split_push(a,p,0);break;}
+    if(n>0&&k==n-1){sp_str_split_push(a,p,strlen(p));break;}
+  }
+#undef SP_SPLIT_WS
   return a;
 }
 /* String#gsub(pat, rep) for literal (non-regex) patterns. Issue #827: the
