@@ -6585,7 +6585,15 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_MATCHDATA) {
     Buf rs = expr_buf(c, recv);
     const char *r = rs.p ? rs.p : "";
-    if (sp_streq(name, "[]") && argc == 1) {
+    if (sp_streq(name, "[]") && argc == 1 &&
+        (comp_ntype(c, argv[0]) == TY_RANGE ||
+         (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")))) {
+      /* md[range]: the groups over that index range (#2532) */
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_Range _t%d = ", t); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_MatchData_aref_range(%s, _t%d.first, _t%d.last, (int)_t%d.excl); })", r, t, t, t);
+    }
+    else if (sp_streq(name, "[]") && argc == 1) {
       /* A Symbol/String key selects a named capture group; an Integer key is a
          positional group (the existing path). */
       TyKind kt = comp_ntype(c, argv[0]);
@@ -6617,6 +6625,18 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       else { buf_printf(b, "((void)(%s), (void)(", r); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)"); }
     }
     else if (sp_streq(name, "named_captures") && argc == 0) buf_printf(b, "sp_md_named_captures(%s)", r);
+    /* named_captures(symbolize_names: true): symbol keys (#2530) */
+    else if (sp_streq(name, "named_captures") && argc == 1) buf_printf(b, "sp_md_named_captures_sym(%s)", r);
+    else if (sp_streq(name, "inspect") && argc == 0) buf_printf(b, "sp_MatchData_inspect(%s)", r);   /* #2500 */
+    /* MatchData#match(n) is the group substring, #match_length(n) its byte
+       length (nil when the group did not participate) (#2501) */
+    else if (sp_streq(name, "match") && argc == 1) { buf_printf(b, "sp_MatchData_aref(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "match_length") && argc == 1) { buf_printf(b, "sp_MatchData_match_length(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+    /* #deconstruct is the captures array; #deconstruct_keys the named captures
+       as a symbol-keyed hash (#2503) */
+    else if (sp_streq(name, "deconstruct") && argc == 0) buf_printf(b, "sp_MatchData_captures(%s)", r);
+    else if (sp_streq(name, "deconstruct_keys") && argc == 1) buf_printf(b, "sp_md_named_captures_sym(%s)", r);
+    else if (sp_streq(name, "regexp") && argc == 0) buf_printf(b, "((mrb_regexp_pattern *)(%s)->pat)", r);   /* #2499 */
     else if (sp_streq(name, "names") && argc == 0) buf_printf(b, "sp_MatchData_names(%s)", r);
     else if (sp_streq(name, "string") && argc == 0) buf_printf(b, "sp_MatchData_string(%s)", r);
     else if (sp_streq(name, "pre_match"))  buf_printf(b, "sp_MatchData_pre_match(%s)", r);

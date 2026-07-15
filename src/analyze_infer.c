@@ -1683,9 +1683,20 @@ else {
 
   /* MatchData instance methods */
   if (recv >= 0 && rt == TY_MATCHDATA) {
+    if (sp_streq(name, "[]") && argc == 1 &&
+        (comp_ntype(c, argv[0]) == TY_RANGE ||
+         (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode"))))
+      return TY_POLY_ARRAY;   /* md[range] (#2532) */
     if (sp_streq(name, "[]") && argc == 1) return TY_STRING;
     if (sp_streq(name, "[]") && argc == 2) return TY_POLY_ARRAY;   /* md[start, length] (#2507) */
     if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) return TY_BOOL;   /* (#2529) */
+    if (sp_streq(name, "inspect") && argc == 0) return TY_STRING;   /* (#2500) */
+    if (sp_streq(name, "match") && argc == 1) return TY_STRING;   /* group substring (#2501) */
+    if (sp_streq(name, "match_length") && argc == 1) return TY_POLY;   /* int or nil (#2501) */
+    if (sp_streq(name, "deconstruct") && argc == 0) return TY_POLY_ARRAY;   /* (#2503) */
+    if (sp_streq(name, "deconstruct_keys") && argc == 1) return TY_SYM_POLY_HASH;   /* (#2503) */
+    if (sp_streq(name, "named_captures") && argc == 1) return TY_SYM_POLY_HASH;   /* symbolize (#2530) */
+    if (sp_streq(name, "regexp") && argc == 0) return TY_REGEX;   /* (#2499) */
     if (sp_streq(name, "pre_match") || sp_streq(name, "post_match") || sp_streq(name, "to_s")) return TY_STRING;
     if (sp_streq(name, "begin") || sp_streq(name, "end") || sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
     if (sp_streq(name, "bytebegin") || sp_streq(name, "byteend")) return TY_INT;

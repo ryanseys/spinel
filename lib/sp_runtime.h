@@ -4412,6 +4412,14 @@ static sp_StrPolyHash *sp_md_named_captures(sp_MatchData *m) {
   }
   return h;
 }
+/* MatchData#match_length(n): the byte length of group n's match, or nil when
+   the group did not participate (#2501). */
+static sp_RbVal sp_MatchData_match_length(sp_MatchData *m, mrb_int i) {
+  if (!m) return sp_box_nil();
+  if (i < 0) i += m->ncap;
+  if (i < 0 || i >= m->ncap || m->caps[i * 2] < 0) return sp_box_nil();
+  return sp_box_int(m->caps[i * 2 + 1] - m->caps[i * 2]);
+}
 static sp_StrPolyHash*sp_StrPolyHash_from_str_int_hash(sp_StrIntHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;r->default_v=sp_box_int(h->default_v);for(mrb_int i=0;i<h->len;i++){const char*k=h->order[i];sp_StrPolyHash_set(r,k,sp_box_int(sp_StrIntHash_get(h,k)));}return r;}
 
 /* SymPolyHash: symbol keys, sp_RbVal values — same shape as SymStrHash but with poly values. */
@@ -4442,6 +4450,20 @@ static mrb_bool sp_SymPolyHash_has_value(sp_SymPolyHash*h,sp_RbVal v){if(!h)retu
 static sp_sym sp_SymPolyHash_key(sp_SymPolyHash*h,sp_RbVal v){if(!h)return (sp_sym)-1;for(mrb_int i=0;i<h->len;i++)if(sp_poly_eq(sp_SymPolyHash_get(h,h->order[i]),v))return h->order[i];return (sp_sym)-1;}
 static sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b){sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_SymPolyHash_get(b,b->order[i]));return r;}
 static void sp_SymPolyHash_update(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(a,b->order[i],sp_SymPolyHash_get(b,b->order[i]));}
+/* MatchData#named_captures(symbolize_names: true) and #deconstruct_keys: the
+   named captures as a symbol-keyed hash (#2503, #2530). */
+static sp_sym sp_sym_intern(const char *s);
+static sp_SymPolyHash *sp_md_named_captures_sym(sp_MatchData *m) {
+  sp_SymPolyHash *h = sp_SymPolyHash_new();
+  if (!m) return h;
+  int n = re_num_named(m->pat);
+  for (int i = 0; i < n; i++) {
+    int g = -1;
+    const char *nm = re_named_name(m->pat, i, &g);
+    if (nm) sp_SymPolyHash_set(h, sp_sym_intern(nm), sp_box_nullable_str(sp_MatchData_aref(m, g)));
+  }
+  return h;
+}
 /* A `**hash` forwarded into a method with fixed keyword params (and no
    keyword-rest to absorb extras) must carry only declared keys; CRuby raises
    ArgumentError otherwise. `allowed` is a NULL-terminated array of the callee's

@@ -784,6 +784,21 @@ mrb_bool sp_MatchData_eq(sp_MatchData *a, sp_MatchData *b) {
   for (int i = 0; i < a->ncap * 2; i++) if (a->caps[i] != b->caps[i]) return FALSE;
   return TRUE;
 }
+/* MatchData#[range]: the groups selected by a Range of indices (#2532). */
+sp_PolyArray *sp_MatchData_aref_range(sp_MatchData *m, mrb_int beg, mrb_int end, int excl) {
+  sp_PolyArray *a = sp_PolyArray_new();
+  if (!m) return a;
+  mrb_int n = m->ncap;
+  if (beg < 0) beg += n;
+  if (end < 0) end += n;
+  mrb_int last = excl ? end - 1 : end;
+  if (beg < 0 || beg > n) return NULL;   /* nil in Ruby */
+  for (mrb_int i = beg; i <= last && i < n; i++) {
+    const char *g = sp_MatchData_aref(m, i);
+    sp_PolyArray_push(a, g ? sp_box_str(g) : sp_box_nil());
+  }
+  return a;
+}
 /* MatchData#[start, length]: an Array of `length` groups from `start` (nil for
    a group that did not participate), like Array#[start, length] (#2507). */
 sp_PolyArray *sp_MatchData_aref_len(sp_MatchData *m, mrb_int start, mrb_int len) {
