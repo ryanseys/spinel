@@ -62,9 +62,9 @@ chr_spec__001	PASS
 chr_spec__002	PASS
 chr_spec__003	HARNESS-SKEW
 chr_spec__004	HARNESS-SKEW
-chr_spec__005	REJECT
+chr_spec__005	FAIL
 chr_spec__006	PASS
-chr_spec__007	REJECT
+chr_spec__007	FAIL
 chr_spec__008	PASS
 chr_spec__009	HARNESS-SKEW
 chr_spec__010	REJECT-BYDESIGN

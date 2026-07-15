@@ -536,7 +536,7 @@ join_spec__003	HARNESS-SKEW
 join_spec__004	HARNESS-SKEW
 join_spec__005	ERROR
 join_spec__006	PASS
-join_spec__007	REJECT
+join_spec__007	FAIL
 join_spec__008	HARNESS-SKEW
 join_spec__009	HARNESS-SKEW
 join_spec__010	HARNESS-SKEW
