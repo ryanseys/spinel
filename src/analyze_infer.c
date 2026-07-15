@@ -1658,9 +1658,13 @@ else {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     if ((sp_streq(name, "escape") || sp_streq(name, "quote")) && argc >= 1) return TY_STRING;
     if (sp_streq(name, "union")) return TY_REGEX;  /* argc 0 = the never-matching /(?!)/ */
-    if (sp_streq(name, "last_match") && argc == 0) return TY_POLY;
+    if (sp_streq(name, "last_match") && argc == 0) return TY_MATCHDATA;
     if (sp_streq(name, "last_match") && argc == 1) return TY_STRING;
     if (sp_streq(name, "linear_time?") && argc == 1) return TY_BOOL;
+    if (sp_streq(name, "try_convert") && argc == 1) return TY_POLY;
+    if (sp_streq(name, "timeout") && argc == 0) return TY_POLY;   /* nil */
+    if (sp_streq(name, "timeout") && argc == 1) return TY_POLY;   /* timeout= returns its arg */
+    if (sp_streq(name, "timeout=") && argc == 1) return TY_POLY;
   }
 
   /* Regexp instance methods */
@@ -1668,6 +1672,7 @@ else {
     if (sp_streq(name, "match?") || sp_streq(name, "===")) return TY_BOOL;
     if (sp_streq(name, "match")) return TY_MATCHDATA;
     if (sp_streq(name, "=~")) return TY_POLY;
+    if (sp_streq(name, "~") && argc == 0) return TY_POLY;   /* ~ /re/ == /re/ =~ $_ */
     if (sp_streq(name, "source") || sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
     if (sp_streq(name, "names")) return TY_STR_ARRAY;
     if (sp_streq(name, "named_captures")) return TY_STR_POLY_HASH;  /* {name => [group indices]} */
@@ -1679,6 +1684,8 @@ else {
     if (sp_streq(name, "encoding")) return TY_POLY;  /* a boxed Encoding value */
     if (sp_streq(name, "fixed_encoding?")) return TY_BOOL;
     if (sp_streq(name, "options")) return TY_INT;
+    if (sp_streq(name, "casefold?")) return TY_BOOL;
+    if (sp_streq(name, "timeout")) return TY_POLY;   /* nil: no per-instance timeout */
   }
 
   /* MatchData instance methods */
@@ -4677,6 +4684,10 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     if (par_nm && sp_streq(par_nm, "Math")) {
       if (nm && (sp_streq(nm, "PI") || sp_streq(nm, "E"))) return TY_FLOAT;
+    }
+    if (par_nm && sp_streq(par_nm, "Regexp")) {
+      if (nm && (sp_streq(nm, "IGNORECASE") || sp_streq(nm, "EXTENDED") ||
+                 sp_streq(nm, "MULTILINE"))) return TY_INT;
     }
     if (par_nm && sp_streq(par_nm, "Encoding") && nm &&
         (sp_streq(nm, "UTF_8") || sp_streq(nm, "UTF8") || sp_streq(nm, "US_ASCII") ||

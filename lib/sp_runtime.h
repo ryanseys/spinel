@@ -1825,6 +1825,9 @@ static sp_RbVal sp_box_regexp(void *p) { return p ? sp_box_obj(p, SP_BUILTIN_REG
 const char *sp_re_inspect_str(void *pat);
 const char *sp_re_to_s_str(void *pat);
 const char *sp_re_source(void *pat);
+mrb_int sp_re_options(void *pat);
+mrb_bool sp_re_casefold_p(void *pat);
+uint32_t sp_re_raw_flags(void *pat);
 /* Built-in pointer boxes — share SP_TAG_OBJ with a reserved negative
    cls_id so the dispatch path is uniform. */
 static sp_RbVal sp_box_int_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_INT_ARRAY); }

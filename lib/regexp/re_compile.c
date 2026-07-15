@@ -1654,3 +1654,25 @@ const char *sp_re_to_s_str(void *vpat) {
   if (nf) return sp_sprintf("(?%s-%s:%s)", on, off, sp_re_source(pat));
   return sp_sprintf("(?%s:%s)", on, sp_re_source(pat));
 }
+/* Regexp#options: CRuby's public option bits IGNORECASE=1, EXTENDED=2,
+   MULTILINE=4 (the /m "dot matches newline", our internal DOTALL). The
+   internal RE_FLAG_MULTILINE (^/$ at line ends) is not a Ruby-visible option. */
+mrb_int sp_re_options(void *vpat) {
+  mrb_regexp_pattern *pat = (mrb_regexp_pattern *)vpat;
+  uint32_t f = pat ? pat->flags : 0;
+  mrb_int o = 0;
+  if (f & RE_FLAG_IGNORECASE) o |= 1;
+  if (f & RE_FLAG_EXTENDED)   o |= 2;
+  if (f & RE_FLAG_DOTALL)     o |= 4;
+  return o;
+}
+mrb_bool sp_re_casefold_p(void *vpat) {
+  mrb_regexp_pattern *pat = (mrb_regexp_pattern *)vpat;
+  return (pat && (pat->flags & RE_FLAG_IGNORECASE)) ? TRUE : FALSE;
+}
+/* The engine's own internal flag word, for re-compiling a copy (Regexp.new(re))
+   with the source pattern's exact options preserved. */
+uint32_t sp_re_raw_flags(void *vpat) {
+  mrb_regexp_pattern *pat = (mrb_regexp_pattern *)vpat;
+  return pat ? pat->flags : 0;
+}

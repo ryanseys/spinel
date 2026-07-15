@@ -602,6 +602,23 @@ else {
   buf[j] = 0;
   return buf;
 }
+/* Regexp.union over a runtime array (elements known only at run time, e.g. an
+   Array held in a variable). Each element joins by alternation: a String is
+   regexp-escaped, a Regexp contributes its #to_s form `(?on-off:src)` so its
+   options survive. An empty array yields the never-matching /(?!)/. */
+mrb_regexp_pattern *sp_re_union_array(sp_PolyArray *a) {
+  if (!a || a->len == 0) return re_compile("(?!)", 4, 0);
+  const char *joined = NULL;
+  for (mrb_int i = 0; i < a->len; i++) {
+    sp_RbVal v = sp_PolyArray_get(a, i);
+    const char *part;
+    if (v.tag == SP_TAG_STR) part = sp_re_escape(v.v.s ? v.v.s : "");
+    else if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_REGEX) part = sp_re_to_s_str(v.v.p);
+    else { sp_raise_cls("TypeError", "no implicit conversion of element into String or Regexp"); return NULL; }
+    joined = (i == 0) ? part : sp_sprintf("%s|%s", joined, part);
+  }
+  return re_compile(joined, (int64_t)strlen(joined), 0);
+}
 sp_PolyArray *sp_re_scan_poly(mrb_regexp_pattern *pat, const char *str) {
   SP_GC_ROOT_STR(str);
   sp_PolyArray *arr = sp_PolyArray_new();
