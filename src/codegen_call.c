@@ -4453,20 +4453,20 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
          Pure literal / bare-read operands need no rooting. */
       /* A poly operand (statically typed string here, holds a string at
          runtime) must be coerced to a C string for sp_str_concat. */
-      int arg_poly = comp_ntype(c, argv[0]) == TY_POLY;
+      /* emit_str_expr coerces both a TY_POLY operand (sp_poly_to_s) and the
+         unresolved-call gate's sp_raise_nomethod(...) (which is sp_RbVal, not a
+         const char*) to a C string, so a raise-all operand type-checks (#2457). */
       if (subtree_may_allocate(nt, recv) || subtree_may_allocate(nt, argv[0])) {
         int ta = ++g_tmp, tb = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "({ const char *_t%d = ", ta); emit_str_expr(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb);
-        if (arg_poly) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[0], b);
+        emit_str_expr(c, argv[0], b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_plus(_t%d, _t%d); })", tb, ta, tb);
       }
       else {
         buf_puts(b, "sp_str_plus(");
-        emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (arg_poly) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[0], b);
+        emit_str_expr(c, recv, b); buf_puts(b, ", ");
+        emit_str_expr(c, argv[0], b);
         buf_puts(b, ")");
       }
       return 1;
