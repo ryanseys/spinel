@@ -5445,6 +5445,13 @@ else {
       emit_unbox_text(c, ivt, _rb.p ? _rb.p : "sp_box_nil()", b);
       free(_rb.p);
     }
+    else if (ivt == TY_STRING && comp_ntype(c, v) == TY_UNKNOWN) {
+      /* an unresolved call typed TY_UNKNOWN whose value is the gate's
+         sp_raise_nomethod(...) poly token, assigned to a const char* ivar
+         (`@settings = TypedStore.write(...)` where write is unresolved):
+         emit_str_expr coerces the token to the string slot, keeping the raise. */
+      emit_str_expr(c, v, b);
+    }
     else {
       emit_expr(c, v, b);
     }
@@ -7751,7 +7758,11 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "sp_String_append_bin(lv_%s, ", bn2);
         if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")"); }
         else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, arg, b); buf_puts(b, ")"); }
-        else emit_expr(c, arg, b);
+        /* a string-typed arg whose value is really the unresolved-call gate's
+           sp_raise_nomethod(...) poly (`s << time_or_nil.strftime(...)`, the
+           receiver being nilable): emit_str_expr coerces it to the string slot,
+           keeping the raise, instead of passing the sp_RbVal through raw. */
+        else emit_str_expr(c, arg, b);
         buf_puts(b, ");\n");
       }
       return 1;
@@ -7800,7 +7811,11 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         emit_expr(c, cur, b); buf_puts(b, ", ");
         if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")"); }
         else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, arg, b); buf_puts(b, ")"); }
-        else emit_expr(c, arg, b);
+        /* a string-typed arg whose value is really the unresolved-call gate's
+           sp_raise_nomethod(...) poly (`s << time_or_nil.strftime(...)`, the
+           receiver being nilable): emit_str_expr coerces it to the string slot,
+           keeping the raise, instead of passing the sp_RbVal through raw. */
+        else emit_str_expr(c, arg, b);
         buf_puts(b, ");\n");
       }
       return 1;

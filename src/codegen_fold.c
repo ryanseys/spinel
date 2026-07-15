@@ -4863,6 +4863,12 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
         else if (at == TY_NIL && pt == TY_FLOAT) { buf_puts(out, "((void)("); emit_expr(c, provided, out); buf_puts(out, "), sp_float_nil())"); }
         else if (at == TY_NIL && pt == TY_STRING) { buf_puts(out, "((void)("); emit_expr(c, provided, out); buf_puts(out, "), NULL)"); }
         else if (at == TY_POLY && pt == TY_STRING) { buf_puts(out, "sp_poly_to_s("); emit_expr(c, provided, out); buf_puts(out, ")"); }
+        /* An unresolved call typed TY_UNKNOWN whose emitted value is the gate's
+           sp_raise_nomethod(...) poly token, landing in a const char* param
+           slot (`raw(rec.created_at.strftime(...))` on a nilable receiver):
+           emit_str_expr coerces the token to the string slot, keeping the
+           raise, instead of passing the sp_RbVal through raw. */
+        else if (at == TY_UNKNOWN && pt == TY_STRING) { emit_str_expr(c, provided, out); }
         else if (at == TY_POLY && pt == TY_FLOAT) { buf_puts(out, "sp_poly_to_f("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && pt == TY_SYMBOL) { buf_puts(out, "(sp_sym)sp_poly_to_i("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && (pt == TY_INT || pt == TY_BOOL)) { buf_puts(out, "sp_poly_to_i("); emit_expr(c, provided, out); buf_puts(out, ")"); }

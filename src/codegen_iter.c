@@ -1477,8 +1477,18 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (!hn) return 0;
     const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
     int t = ++g_tmp;
+    /* Hoist the receiver into one temp instead of splicing its text into the
+       loop bound and every key/val access. When the receiver is an inlined
+       block-method statement-expression (e.g. a Ruby-defined `group_by` that
+       lowers to `({ ...produce hash... })`), re-emitting it per access both
+       truncates into invalid C and re-runs its side effects. */
+    int th = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_%sHash *_t%d = ", hn, th);
+    emit_expr(c, recv, b);
+    buf_puts(b, ";\n");
     Buf rb; memset(&rb, 0, sizeof rb);
-    emit_expr(c, recv, &rb);
+    buf_printf(&rb, "_t%d", th);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < ", t, t);
     buf_puts(b, rb.p); buf_printf(b, "->len; _t%d++) {\n", t);
