@@ -1895,6 +1895,30 @@ static int te_stmts1(NodeTable *nt, int s) {
    so every inherited Enumerable method (map/select/sum/min/include?/...)
    rides the __enum_to_a machinery synthesized right below. Unused copies
    prune by reachability. */
+/* `StructConst[a, b]` is Struct::[], an alias for StructConst.new(a, b). Rewrite
+   the `[]` call to `new` once the struct classes are registered so the whole
+   .new machinery (positional/keyword member fill, typing) serves it. */
+static void desugar_struct_index_ctor(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "[]")) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    const char *rty = nt_type(nt, recv);
+    int ci = -1;
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
+      ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    else if (rty && sp_streq(rty, "LocalVariableReadNode"))
+      ci = class_var_static_ci(c, recv);
+    if (ci < 0 || !c->classes[ci].is_struct) continue;
+    nt_node_set_str(nt, id, "name", "new");
+  }
+}
+
 static void synth_struct_each(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int ncls0 = c->nclasses;
@@ -1951,6 +1975,36 @@ static void synth_struct_each(Compiler *c) {
       ps->yields = 1;
       comp_grow_node_arrays(c);
       walk_scope(c, pbody, c->nscopes - 1, ci);
+    }
+    /* def each_with_index; yield @m1, 0; yield @m2, 1; ...; self; end
+       (returns the receiver, unlike the __enum_to_a redirect which would
+       return the flat member array). The index is a literal per member. */
+    if (comp_method_in_class(c, ci, "each_with_index") < 0) {
+      int wst[65]; int wn = 0;
+      for (int j = 0; j < cls->nivars && wn < 64; j++) {
+        int ivr = nt_new_node(nt, "InstanceVariableReadNode");
+        nt_node_set_str(nt, ivr, "name", cls->ivars[j]);
+        int ixn = nt_new_node(nt, "IntegerNode");
+        nt_node_set_int(nt, ixn, "value", j);
+        int ya[2] = { ivr, ixn };
+        int yargs = nt_new_node(nt, "ArgumentsNode");
+        nt_node_set_arr(nt, yargs, "arguments", ya, 2);
+        int yn = nt_new_node(nt, "YieldNode");
+        nt_node_set_ref(nt, yn, "arguments", yargs);
+        wst[wn++] = yn;
+      }
+      wst[wn++] = nt_new_node(nt, "SelfNode");
+      int wbody = nt_new_node(nt, "StatementsNode");
+      nt_node_set_arr(nt, wbody, "body", wst, wn);
+      int wdef = nt_new_node(nt, "DefNode");
+      nt_node_set_str(nt, wdef, "name", "each_with_index");
+      nt_node_set_ref(nt, wdef, "body", wbody);
+      Scope *ws = comp_scope_new(c, "each_with_index", wdef);
+      ws->class_id = ci;
+      ws->body = wbody;
+      ws->yields = 1;
+      comp_grow_node_arrays(c);
+      walk_scope(c, wbody, c->nscopes - 1, ci);
     }
   }
 }
@@ -2171,7 +2225,8 @@ static int is_array_enum_method(const char *nm) {
     "find_all", "zip", "grep", "grep_v", "to_h", "uniq", "reverse",
     "member?", "minmax", "join", "index", "each",
     "each_cons", "each_slice", "chunk", "chunk_while", "slice_when",
-    "minmax_by", "cycle", "lazy", "each_entry", NULL };
+    "minmax_by", "cycle", "lazy", "each_entry", "reverse_each", "compact",
+    "chain", "slice_before", "slice_after", NULL };
   for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) return 1;
   return 0;
 }
@@ -2242,13 +2297,23 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       if (!has_set_cls) continue;
       int cst = nt_new_node(nt, "ConstantReadNode");
       int one = nt_new_node(nt, "ArgumentsNode");
-      if (cst >= 0 && one >= 0) {
+      /* Materialize the receiver to a flat array first (`Set.new(recv.to_a)`):
+         Set#initialize iterates its arg via `enum.each`, and a struct/user object
+         passed as a poly value does not dispatch #each through the poly path (it
+         would add nothing). to_a rides the struct-native / __enum_to_a machinery,
+         and is a no-op copy for array/range/hash receivers. */
+      int toa = nt_new_node(nt, "CallNode");
+      if (cst >= 0 && one >= 0 && toa >= 0) {
+        nt_node_set_str(nt, toa, "name", "to_a");
+        nt_node_set_ref(nt, toa, "receiver", recv);
         nt_node_set_str(nt, cst, "name", "Set");
-        nt_node_set_arr(nt, one, "arguments", &recv, 1);
+        nt_node_set_arr(nt, one, "arguments", &toa, 1);
         nt_node_set_str(nt, id, "name", "new");
         nt_node_set_ref(nt, id, "receiver", cst);
         nt_node_set_ref(nt, id, "arguments", one);
         comp_grow_node_arrays(c);
+        c->nscope[toa] = c->nscope[id];
+        c->nscope[cst] = c->nscope[id];
       }
       continue;
     }
@@ -3547,6 +3612,16 @@ int desugar_enum_method_recv(Compiler *c) {
            receiver array directly (#2468). */
         if (cbase >= 0 && can >= 0) {
           int acc = cbase;
+          /* A struct receiver has no #+; fold over its member array instead
+             (`s.chain(x).to_a` -> `s.to_a + x`). */
+          TyKind cbt = infer_type(c, cbase);
+          if (ty_is_object(cbt) && ty_object_class(cbt) >= 0 &&
+              c->classes[ty_object_class(cbt)].is_struct) {
+            int toa = te_call(nt, cbase, "to_a", -1, -1);
+            comp_grow_node_arrays(c);
+            c->nscope[toa] = c->nscope[id];
+            acc = toa;
+          }
           for (int ci2 = 0; ci2 < can; ci2++) {
             int cargs2 = te_args1(nt, cav[ci2]);
             int plus = te_call(nt, acc, "+", cargs2, -1);
@@ -3785,6 +3860,20 @@ int desugar_enum_method_recv(Compiler *c) {
     if (!ty_is_object(rt)) continue;
     int cid = ty_object_class(rt);
     if (comp_method_in_chain(c, cid, "__enum_to_a", NULL) < 0) continue;  /* not an #each class */
+    /* A Struct's blockless #each returns an Enumerator over its members (CRuby),
+       not the LocalJumpError the synthesized yielding #each would raise. Route
+       it through the member array's blockless #each, which materializes the
+       enumerator. (each_entry was already renamed to each upstream.) */
+    if (c->classes[cid].is_struct && nt_ref(nt, id, "block") < 0 && sp_streq(nm, "each")) {
+      int wrap = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, wrap, "name", "__enum_to_a");
+      nt_node_set_ref(nt, wrap, "receiver", recv);
+      nt_node_set_ref(nt, id, "receiver", wrap);
+      comp_grow_node_arrays(c);
+      c->nscope[wrap] = c->nscope[id];
+      changed = 1;
+      continue;
+    }
     if (comp_method_in_chain(c, cid, nm, NULL) >= 0) continue;            /* class defines it */
     /* a Struct/Data class serves these natively in the struct emit section
        (member-pair to_h, ordered to_a/values, size, dig, ...); the flat
@@ -3798,7 +3887,7 @@ int desugar_enum_method_recv(Compiler *c) {
       char mn[272]; snprintf(mn, sizeof mn, "@%s", nm);
       if (comp_ivar_index(&c->classes[cid], mn) >= 0) continue;
       static const char *const snative[] = {
-        "to_a", "entries", "values", "to_h", "members", "size", "length",
+        "to_a", "values", "to_h", "members", "size", "length",
         "dig", "deconstruct", "deconstruct_keys", "with", "inspect", "to_s",
         NULL };
       int nat = 0;
@@ -5059,6 +5148,7 @@ void analyze_program(Compiler *c) {
   qualify_colliding_classes(c);
   walk_scope(c, c->nt->root_id, 0, -1);
   register_structs(c);
+  desugar_struct_index_ctor(c);
   fix_struct_block_scopes(c);
   register_module_functions(c);
   register_locals(c);

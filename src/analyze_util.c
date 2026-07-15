@@ -1,4 +1,5 @@
 #include "analyze_internal.h"
+#include <limits.h>
 
 int is_builtin_class_name(const char *n) {
   if (!n) return 0;
@@ -232,7 +233,8 @@ int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode) {
     return iv;  /* ivar order == member order */
   }
   if (sp_streq(kty, "IntegerNode")) {
-    int idx = (int)nt_int(nt, keynode, "value", -1);
+    int idx = (int)nt_int(nt, keynode, "value", INT_MIN);
+    if (idx < 0) idx += sc->nivars;   /* negative counts from the last member */
     if (idx >= 0 && idx < sc->nivars) return idx;
   }
   return -1;

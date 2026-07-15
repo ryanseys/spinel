@@ -146,6 +146,8 @@ typedef struct {
                           that additionally supports the `#with` copy-update. */
   int is_anon_struct;  /* k = Struct.new(:a, :b): synthesized for a local-held
                           anonymous struct class; #inspect omits the name. */
+  int kw_init;         /* Struct#keyword_init?: 0 unspecified (nil), 1 true,
+                          -1 explicit false. */
   /* Native-bound class (Path B typed object): C-backed, declared by a package
      via native_struct/native_new/native_method. It is a first-class object
      (ty_object(i), a runtime cls_id, GC-managed) whose methods dispatch to

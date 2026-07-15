@@ -1191,6 +1191,16 @@ TyKind infer_call(Compiler *c, int id) {
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) return TY_POLY_ARRAY;
   }
+  if (recv >= 0 && sp_streq(name, "keyword_init?") && argc == 0) {
+    const char *krty = nt_type(nt, recv);
+    int kci = -1;
+    if (krty && (sp_streq(krty, "ConstantReadNode") || sp_streq(krty, "ConstantPathNode")))
+      kci = comp_class_index(c, nt_str(nt, recv, "name"));
+    else if (krty && sp_streq(krty, "LocalVariableReadNode"))
+      kci = class_var_static_ci(c, recv);
+    if (kci >= 0 && c->classes[kci].is_struct &&
+        comp_cmethod_in_chain(c, kci, "keyword_init?", NULL) < 0) return TY_POLY;  /* nil/true/false */
+  }
   /* Integer.sqrt(Bignum) -> Bignum (#2420) */
   if (recv >= 0 && sp_streq(name, "sqrt") && argc == 1 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&

@@ -1042,6 +1042,23 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
   int an = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   for (int a = 0; a < an; a++) {
+    /* trailing `keyword_init: true` -> the members are keyword-initialized;
+       Struct#keyword_init? reports it (a KeywordHashNode holds the pairs). */
+    if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "KeywordHashNode")) {
+      int en = 0; const int *elems = nt_arr(nt, argv[a], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int key = nt_ref(nt, elems[e], "key");
+        const char *kn = key >= 0 ? nt_str(nt, key, "unescaped") : NULL;
+        if (!kn) kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
+        if (kn && sp_streq(kn, "keyword_init")) {
+          int kv = nt_ref(nt, elems[e], "value");
+          const char *kvt = kv >= 0 ? nt_type(nt, kv) : NULL;
+          if (kvt && sp_streq(kvt, "TrueNode")) cls->kw_init = 1;
+          else if (kvt && sp_streq(kvt, "FalseNode")) cls->kw_init = -1;  /* explicit false */
+        }
+      }
+      continue;
+    }
     if (!nt_type(nt, argv[a]) || !sp_streq(nt_type(nt, argv[a]), "SymbolNode")) continue;
     const char *m = nt_str(nt, argv[a], "value");
     if (!m) continue;

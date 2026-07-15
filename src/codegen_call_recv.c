@@ -2579,6 +2579,17 @@ else {
         buf_puts(b, "sp_PolyArray_concat("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
+      /* poly_array + typed array: box the typed operand to poly, then concat. */
+      if (sp_streq(name, "+") && argc == 1 && ty_is_array(a0) && a0 != TY_POLY_ARRAY) {
+        const char *conv = a0 == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
+                           a0 == TY_FLOAT_ARRAY ? "sp_FloatArray_to_poly" :
+                           a0 == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" : NULL;
+        if (conv) {
+          buf_puts(b, "sp_PolyArray_concat("); emit_expr(c, recv, b);
+          buf_printf(b, ", %s(", conv); emit_expr(c, argv[0], b); buf_puts(b, "))");
+          return 1;
+        }
+      }
       if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
            sp_streq(name, "|") || sp_streq(name, "union") ||
            sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 && (a0 == TY_POLY_ARRAY || a0 == TY_UNKNOWN)) {

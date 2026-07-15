@@ -2912,6 +2912,23 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* StructClass.keyword_init? -> whether the struct was defined keyword_init: true
+     (a Data class is not keyword-init in CRuby's sense: keyword_init? is nil, but
+     spinel has no separate nil-class answer here, so report false). */
+  if (recv >= 0 && sp_streq(name, "keyword_init?") && argc == 0) {
+    const char *krty = nt_type(nt, recv);
+    int kci = -1;
+    if (krty && (sp_streq(krty, "ConstantReadNode") || sp_streq(krty, "ConstantPathNode")))
+      kci = comp_class_index(c, nt_str(nt, recv, "name"));
+    else if (krty && sp_streq(krty, "LocalVariableReadNode"))
+      kci = class_var_static_ci(c, recv);
+    if (kci >= 0 && c->classes[kci].is_struct &&
+        comp_cmethod_in_chain(c, kci, "keyword_init?", NULL) < 0) {
+      int kw = c->classes[kci].kw_init;
+      buf_puts(b, kw == 1 ? "sp_box_bool(TRUE)" : kw == -1 ? "sp_box_bool(FALSE)" : "sp_box_nil()");
+      return 1;
+    }
+  }
   /* Class.new(args) -> sp_<Class>_new(args) */
   /* Array.try_convert(x): x if it is array-like (statically an array type),
      else nil. Result is array-or-nil -> poly (#2325). */
