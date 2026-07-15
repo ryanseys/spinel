@@ -256,6 +256,9 @@ int is_blk_param_call(Compiler *c, int node, int mi) {
 }
 int g_yvt_mi[MAX_YVT_DEPTH];
 int g_yvt_depth = 0;
+/* set by yield_value_diverges to make yield_value_type unify all call sites
+   (rather than take the first concrete one) for divergence detection */
+int g_yvt_unify_all = 0;
 int an_ie_class_id = -1;
 int g_cbody_class_id = -1;
 int g_cbody_direct = -1;
@@ -427,11 +430,23 @@ else {
        non-inlined method (an escaping &block called via the proc ABI) has one
        body, so its block value type must unify ALL call sites (string + int
        block -> poly). */
-    if (c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) { result = bt; break; }
+    if ((c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) && !g_yvt_unify_all) { result = bt; break; }
     result = ty_unify(result, bt);
   }
   g_yvt_depth--;
   return result;
+}
+/* Whether a yield-inlined method's block value type DIVERGES across its call
+   sites (one caller's block returns int, another's an object): the shared
+   accumulator that receives yield results must then hold a poly element (an
+   sp_IntArray built from an object-returning block miscompiles, #2454). Reuses
+   yield_value_type's site scan with the first-concrete break disabled. */
+int yield_value_diverges(Compiler *c, int mi) {
+  if (mi < 0 || !c->scopes[mi].yields) return 0;
+  int sv = g_yvt_unify_all; g_yvt_unify_all = 1;
+  TyKind t = yield_value_type(c, mi);
+  g_yvt_unify_all = sv;
+  return t == TY_POLY;
 }
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);

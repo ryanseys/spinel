@@ -754,6 +754,27 @@ int reconcile_locals_reading_ivars(Compiler *c) {
   return changed;
 }
 
+/* Element type contributed by a pushed value. A `yield` whose enclosing
+   method's block value type diverges across call sites must widen the
+   accumulator to a poly array: the shared inlined body cannot size the array
+   for both an int- and an object-returning block (#2454). Otherwise the value's
+   own inferred type. */
+static TyKind push_elem_ty(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  int n = node;
+  while (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "ParenthesesNode")) {
+    int body = nt_ref(nt, n, "body"); int bn = 0;
+    const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    n = bn == 1 ? bd[0] : -1;
+  }
+  if (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "YieldNode")) {
+    Scope *sc = comp_scope_of(c, n);
+    int mi = sc ? (int)(sc - c->scopes) : -1;
+    if (mi >= 0 && yield_value_diverges(c, mi)) return TY_POLY;
+  }
+  return infer_type(c, node);
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -1414,19 +1435,19 @@ int infer_write_types(Compiler *c) {
            receiver is a shift, so don't promote its slot to an array. push/append
            take any number of arguments; every one of them is element evidence. */
         if (sp_streq(name, "<<") && recv_has_scalar_numeric_write(c, recv)) continue;
-        is_push = 1; vt = infer_type(c, argv[0]);
-        for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, infer_type(c, argv[ai]));
+        is_push = 1; vt = push_elem_ty(c, argv[0]);
+        for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
       }
       else if (name && (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && an >= 1) {
         /* unshift(v, ...): every argument is element evidence, like push
            (a foreign value used to store its raw bits into the typed slots) */
-        is_push = 1; vt = infer_type(c, argv[0]);
-        for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, infer_type(c, argv[ai]));
+        is_push = 1; vt = push_elem_ty(c, argv[0]);
+        for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
       }
       else if (name && sp_streq(name, "insert") && an >= 2) {
         /* insert(i, v, ...): the values from position 1 on are evidence */
-        is_push = 1; vt = infer_type(c, argv[1]);
-        for (int ai = 2; ai < an; ai++) vt = ty_unify(vt, infer_type(c, argv[ai]));
+        is_push = 1; vt = push_elem_ty(c, argv[1]);
+        for (int ai = 2; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
       }
       else if (name && sp_streq(name, "concat") && an == 1) {
         /* concat(other): the other array's elements splice in */
