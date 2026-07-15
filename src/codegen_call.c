@@ -6368,6 +6368,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
+    if (sp_streq(name, "new_seed") && argc == 0) {   /* #2523 */
+      buf_puts(b, "sp_Random_new_seed()");
+      return;
+    }
+    if (sp_streq(name, "urandom") && argc == 1) {     /* #2543 */
+      buf_puts(b, "sp_Random_urandom("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    if (sp_streq(name, "srand")) {                    /* #2525 (returns previous seed) */
+      if (argc == 0) { buf_puts(b, "sp_kernel_srand((mrb_int)time(NULL))"); return; }
+      buf_puts(b, "sp_kernel_srand("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
   }
 
   /* Random instance methods */
@@ -6378,8 +6391,20 @@ void emit_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
-        buf_puts(b, "sp_Random_rand_range("); emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_expr(c, argv[0], b); buf_puts(b, ")");
+        /* a Float-endpoint range yields a Float (#2521); an int range an Int. */
+        const char *atype = nt_type(nt, argv[0]);
+        int lo = atype && sp_streq(atype, "RangeNode") ? nt_ref(nt, argv[0], "left") : -1;
+        int is_float = lo >= 0 && comp_ntype(c, lo) == TY_FLOAT;
+        if (is_float) {
+          int tr = ++g_tmp;
+          buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+          buf_printf(b, "; sp_Random_rand_float_range(", tr);
+          emit_expr(c, recv, b);
+          buf_printf(b, ", (mrb_float)_t%d.first, (mrb_float)_t%d.last); })", tr, tr);
+        } else {
+          buf_puts(b, "sp_Random_rand_range("); emit_expr(c, recv, b); buf_puts(b, ", ");
+          emit_expr(c, argv[0], b); buf_puts(b, ")");
+        }
       }
       else if (argc >= 1) {
         buf_puts(b, "sp_Random_rand_int("); emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -6393,6 +6418,31 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "bytes") && argc == 1) {
       buf_puts(b, "sp_Random_bytes("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    if (sp_streq(name, "seed") && argc == 0) {   /* #2522 */
+      buf_puts(b, "sp_Random_seed("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
+    /* a Random instance is an opaque object: #class, and identity #==/#equal? (#2524) */
+    if (sp_streq(name, "class") && argc == 0) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ((sp_Class){0, SPL(\"Random\")}))");
+      return;
+    }
+    /* equal? is identity; == / eql? compare by internal PRNG state (#2524). */
+    if (sp_streq(name, "equal?") && argc == 1) {
+      buf_puts(b, "((void *)("); emit_expr(c, recv, b); buf_puts(b, ") == (void *)(");
+      if (comp_ntype(c, argv[0]) == TY_RANDOM) emit_expr(c, argv[0], b);
+      else buf_puts(b, "0");
+      buf_puts(b, "))");
+      return;
+    }
+    if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) {
+      if (comp_ntype(c, argv[0]) == TY_RANDOM) {
+        buf_puts(b, "sp_Random_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      } else {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), FALSE)");
+      }
       return;
     }
   }
@@ -6921,14 +6971,26 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (ac == 0) { buf_puts(b, "(mrb_float)((double)rand() / (RAND_MAX + 1.0))"); return; }
       TyKind a0t = comp_ntype(c, av[0]);
       if (a0t == TY_RANGE) {
-        int tr = ++g_tmp;
-        /* is the range a float range? */
-        int is_float = 0;
         const char *atype = nt_type(nt, av[0]);
-        if (atype && sp_streq(atype, "RangeNode")) {
-          int lo = nt_ref(nt, av[0], "left");
-          if (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) is_float = 1;
+        int islit = atype && sp_streq(atype, "RangeNode");
+        int lo = islit ? nt_ref(nt, av[0], "left") : -1;
+        int hi = islit ? nt_ref(nt, av[0], "right") : -1;
+        /* an endless/beginless range has no finite span -> Errno::EDOM (#2544) */
+        if (islit && (lo < 0 || hi < 0)) {
+          buf_puts(b, "(sp_raise_cls(\"Errno::EDOM\", \"Domain error - rand\"), (mrb_int)0)");
+          return;
         }
+        int is_float = lo >= 0 && comp_ntype(c, lo) == TY_FLOAT;
+        /* a statically empty/reversed int range -> nil (#2519) */
+        if (islit && !is_float && lo >= 0 && hi >= 0 &&
+            nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&
+            nt_type(nt, hi) && sp_streq(nt_type(nt, hi), "IntegerNode")) {
+          long long lov = nt_int(nt, lo, "value", 0);
+          long long hiv = nt_int(nt, hi, "value", 0);
+          int excl = (nt_int(nt, av[0], "flags", 0) & 4) ? 1 : 0;
+          if ((excl ? hiv - 1 : hiv) < lov) { buf_puts(b, "sp_box_nil()"); return; }
+        }
+        int tr = ++g_tmp;
         buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, av[0], b); buf_puts(b, "; ");
         if (is_float)
           buf_printf(b, "(mrb_float)_t%d.first + sp_Random_rand_float(sp_random_default_get()) * (mrb_float)(_t%d.last - _t%d.first); })", tr, tr, tr);
@@ -6936,12 +6998,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_printf(b, "_t%d.first + sp_Random_rand_int(sp_random_default_get(), _t%d.last - _t%d.first + 1 - _t%d.excl); })", tr, tr, tr, tr);
         return;
       }
-      buf_puts(b, "((mrb_int)("); emit_expr(c, av[0], b); buf_printf(b, " > 0 ? rand() %% (int)"); emit_expr(c, av[0], b); buf_puts(b, " : rand()))");
+      /* rand(int): 0 behaves like rand() (a Float in [0,1)); a nonzero magnitude
+         gives an Integer in [0, |n|) (#2518). A literal folds to the exact form;
+         a dynamic argument keeps the Integer form with a runtime abs + guard. */
+      if (nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "IntegerNode")) {
+        long long v = nt_int(nt, av[0], "value", 0);
+        if (v == 0) { buf_puts(b, "(mrb_float)((double)rand() / (RAND_MAX + 1.0))"); return; }
+        long long m = v < 0 ? -v : v;
+        buf_printf(b, "((mrb_int)(rand() %% %lldLL))", m);
+        return;
+      }
+      int tn = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, av[0], b);
+      buf_printf(b, "; if (_t%d < 0) _t%d = -_t%d; _t%d > 0 ? (mrb_int)(rand() %% (int)_t%d) : (mrb_int)0; })", tn, tn, tn, tn, tn);
       return;
     }
     if (sp_streq(name, "srand")) {
-      if (ac == 0) { buf_puts(b, "(srand((unsigned)time(NULL)), (mrb_int)0)"); return; }
-      buf_puts(b, "({ unsigned _sv = (unsigned)("); emit_expr(c, av[0], b); buf_puts(b, "); srand(_sv); (mrb_int)_sv; })");
+      /* srand returns the PREVIOUS seed (#2517). */
+      if (ac == 0) { buf_puts(b, "sp_kernel_srand((mrb_int)time(NULL))"); return; }
+      buf_puts(b, "sp_kernel_srand("); emit_int_expr(c, av[0], b); buf_puts(b, ")");
       return;
     }
   }

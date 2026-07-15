@@ -7489,7 +7489,7 @@ static void sp_hashproc_cap_scan(void *p) { sp_gc_mark(p); }
    portable xorshift64 (rand_r is POSIX-only, absent on MinGW), so
    the *sequence* differs from MRI but each Random object keeps its
    own reproducible stream from its seed. Issue #898. */
-typedef struct { uint64_t state; } sp_Random;
+typedef struct { uint64_t state; mrb_int seed; } sp_Random;
 static uint64_t sp_random_next(sp_Random *r) {
   uint64_t x = r->state ? r->state : 0x9E3779B97F4A7C15ULL;
   x ^= x << 13; x ^= x >> 7; x ^= x << 17;
@@ -7499,7 +7499,17 @@ static uint64_t sp_random_next(sp_Random *r) {
 static sp_Random *sp_Random_new(mrb_int seed) {
   sp_Random *r = (sp_Random *)sp_gc_alloc(sizeof(sp_Random), NULL, NULL);
   r->state = (uint64_t)seed ^ 0x9E3779B97F4A7C15ULL;
+  r->seed = seed;
   return r;
+}
+/* Random#seed: the seed the instance was constructed from. */
+static mrb_int sp_Random_seed(sp_Random *r) { return r ? r->seed : 0; }
+/* Random#== compares by internal state (two same-seed, same-position instances
+   are equal; advancing one makes them differ). */
+static mrb_bool sp_Random_eq(sp_Random *a, sp_Random *b) {
+  if (a == b) return TRUE;
+  if (!a || !b) return FALSE;
+  return (a->state == b->state && a->seed == b->seed) ? TRUE : FALSE;
 }
 /* Random.new with no seed: OS-entropy-ish auto seed. time() alone made two
    instances created in the same second identical; mix in a per-thread counter
@@ -7510,6 +7520,7 @@ static sp_Random *sp_Random_new_auto(void) {
   r->state = (((uint64_t)time(NULL)) << 20) ^ (++sp_random_auto_ctr * 0x9E3779B97F4A7C15ULL) ^
              (uint64_t)(uintptr_t)r;
   if (!r->state) r->state = 0x9E3779B97F4A7C15ULL;
+  r->seed = (mrb_int)(r->state >> 1);
   return r;
 }
 /* Random#rand(Range): an integer in the (int-endpoint) range, empty raises. */
@@ -7561,6 +7572,36 @@ static const char *sp_Random_bytes(sp_Random *r, mrb_int n) {
   b[n] = 0;
   sp_str_set_len(b, (size_t)n);
   return b;
+}
+/* Random#rand(Float range): a Float in [lo, hi) (or [lo, hi] for an inclusive
+   range, though the float boundary is effectively open). */
+static mrb_float sp_Random_rand_float_range(sp_Random *r, mrb_float lo, mrb_float hi) {
+  return lo + sp_Random_rand_float(r) * (hi - lo);
+}
+/* Random.new_seed: a fresh nonneg seed drawn from the default stream. */
+static mrb_int sp_Random_new_seed(void) {
+  mrb_int s = (mrb_int)(sp_random_next(sp_random_default_get()) >> 1);
+  return s < 0 ? -s : s;
+}
+/* Random.urandom(n): n random bytes as a String (spinel has no real OS entropy
+   source wired up, so this draws from a freshly time-seeded stream). */
+static const char *sp_Random_urandom(mrb_int n) {
+  if (n < 0) sp_raise_cls("ArgumentError", "negative string size");
+  sp_Random tmp; tmp.state = ((uint64_t)time(NULL) << 20) ^ (uint64_t)(uintptr_t)&tmp ^ 0x9E3779B97F4A7C15ULL; tmp.seed = 0;
+  char *b = sp_str_alloc((size_t)n);
+  for (mrb_int i = 0; i < n; i++) b[i] = (char)(sp_random_next(&tmp) & 0xff);
+  b[n] = 0;
+  sp_str_set_len(b, (size_t)n);
+  return b;
+}
+/* Kernel#srand: seed libc rand() and remember the previous seed, which srand
+   returns (CRuby returns the prior seed, not the new one). */
+static SP_TLS mrb_int sp_kernel_seed = 0;
+static mrb_int sp_kernel_srand(mrb_int seed) {
+  mrb_int prev = sp_kernel_seed;
+  sp_kernel_seed = seed;
+  srand((unsigned)seed);
+  return prev;
 }
 
 /* StringIO is a native-bound spin package (packages/stringio). */

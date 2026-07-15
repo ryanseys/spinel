@@ -1861,6 +1861,9 @@ else {
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand"))
         return argc >= 1 ? (infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_INT) : TY_FLOAT;
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "bytes")) return TY_STRING;
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "new_seed")) return TY_INT;
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "urandom")) return TY_STRING;
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "srand")) return TY_INT;
     }
   }
 
@@ -1968,10 +1971,22 @@ else {
 
   /* TY_RANDOM instance methods */
   if (recv >= 0 && rt == TY_RANDOM) {
-    if (sp_streq(name, "rand"))
-      return argc >= 1 ? (infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_INT) : TY_FLOAT;
+    if (sp_streq(name, "rand")) {
+      if (argc < 1) return TY_FLOAT;
+      if (infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
+      /* rand(Float range) -> Float (#2521) */
+      const char *atype = nt_type(nt, argv[0]);
+      if (atype && sp_streq(atype, "RangeNode")) {
+        int lo = nt_ref(nt, argv[0], "left");
+        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) return TY_FLOAT;
+      }
+      return TY_INT;
+    }
     if (sp_streq(name, "bytes")) return TY_STRING;
     if (sp_streq(name, "seed")) return TY_INT;
+    if (sp_streq(name, "class")) return TY_CLASS;
+    if ((sp_streq(name, "==") || sp_streq(name, "equal?") || sp_streq(name, "eql?")) && argc == 1)
+      return TY_BOOL;
   }
 
   /* ARGF pseudo-IO methods */
@@ -2574,12 +2589,25 @@ else {
     if (sp_streq(name, "trap") && argc >= 1) return TY_STRING;
     if (sp_streq(name, "rand")) {
       if (argc == 0) return TY_FLOAT;
-      /* rand(float_range) → Float */
       const char *atype = nt_type(nt, argv[0]);
       if (atype && sp_streq(atype, "RangeNode")) {
         int lo = nt_ref(nt, argv[0], "left");
-        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) return TY_FLOAT;
+        int hi = nt_ref(nt, argv[0], "right");
+        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) return TY_FLOAT;   /* rand(float_range) */
+        /* a statically empty/reversed int range yields nil (#2519) */
+        if (lo >= 0 && hi >= 0 &&
+            nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&
+            nt_type(nt, hi) && sp_streq(nt_type(nt, hi), "IntegerNode")) {
+          long long lov = nt_int(nt, lo, "value", 0);
+          long long hiv = nt_int(nt, hi, "value", 0);
+          int excl = (nt_int(nt, argv[0], "flags", 0) & 4) ? 1 : 0;
+          if ((excl ? hiv - 1 : hiv) < lov) return TY_POLY;   /* nil */
+        }
+        return TY_INT;
       }
+      /* rand(literal 0) is a Float in [0,1) like rand(); nonzero -> Integer */
+      if (atype && sp_streq(atype, "IntegerNode") && nt_int(nt, argv[0], "value", 0) == 0)
+        return TY_FLOAT;
       return TY_INT;
     }
     if (sp_streq(name, "srand")) return TY_INT;

@@ -630,12 +630,20 @@ else {
   }
   if (sp_streq(name, "srand")) {
     emit_indent(b, indent);
-    if (argc == 0) buf_puts(b, "srand((unsigned)time(NULL));\n");
-    else { buf_puts(b, "srand((unsigned)("); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
+    if (argc == 0) buf_puts(b, "(void)sp_kernel_srand((mrb_int)time(NULL));\n");
+    else { buf_puts(b, "(void)sp_kernel_srand("); emit_int_expr(c, argv[0], b); buf_puts(b, ");\n"); }
     return 1;
   }
   if (sp_streq(name, "rand") && argc >= 1) {
-    /* stmt-level rand: evaluate for side effects; result unused */
+    /* stmt-level rand: evaluate for side effects; result unused. An endless/
+       beginless range still raises Errno::EDOM (#2544), so keep that raise. */
+    const char *raty = nt_type(nt, argv[0]);
+    if (raty && sp_streq(raty, "RangeNode") &&
+        (nt_ref(nt, argv[0], "left") < 0 || nt_ref(nt, argv[0], "right") < 0)) {
+      emit_indent(b, indent);
+      buf_puts(b, "sp_raise_cls(\"Errno::EDOM\", \"Domain error - rand\");\n");
+      return 1;
+    }
     emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, ");\n");
     return 1;
   }
