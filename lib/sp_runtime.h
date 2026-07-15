@@ -7065,6 +7065,20 @@ static sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) {
                           e->meth ? e->meth : "generator"));
   return sp_box_nil();
 }
+/* Enumerator#with_index block-form return value, given the block results collected
+   as `mapped`: a map/collect enumerator returns the mapped array; each/
+   each_with_index returns the source receiver; anything else is unsupported. */
+static sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped) __attribute__((unused));
+static sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped) {
+  if (e->meth && (strcmp(e->meth, "map") == 0 || strcmp(e->meth, "collect") == 0))
+    return sp_box_poly_array(mapped);
+  if (e->meth && (strcmp(e->meth, "each") == 0 || strcmp(e->meth, "each_with_index") == 0))
+    return e->source;
+  sp_raise_cls("NotImplementedError",
+               sp_sprintf("Enumerator#with_index return value for a stored %s enumerator",
+                          e->meth ? e->meth : "generator"));
+  return sp_box_nil();
+}
 static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside) {
   mrb_int n = sp_poly_length(h);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);

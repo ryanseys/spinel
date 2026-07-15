@@ -3061,6 +3061,8 @@ else {
       }
       return ty_array_elem(rt);
     }
+    if (sp_streq(name, "each_with_object") && argc > 0 && argv && block < 0)
+      return TY_ENUMERATOR;   /* blockless each_with_object -> Enumerator (#2540) */
     if (sp_streq(name, "each_with_object") && argc > 0 && argv) {
       TyKind at = infer_type(c, argv[0]);
       if (at == TY_UNKNOWN) {

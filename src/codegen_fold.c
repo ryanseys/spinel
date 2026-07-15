@@ -4387,12 +4387,18 @@ int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
   const char *p1_orig = block_param_name(c, block, 1);
   const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
   int body = nt_ref(nt, block, "body");
+  /* Collect the block results as we drive it; the return value is then decided by
+     the enumerator's method at run time: a map/collect enumerator returns the
+     collected array (#2510), each/each_with_index the source receiver. */
   int te = ++g_tmp, ta = ++g_tmp, ti = ++g_tmp, toff = ++g_tmp;
+  int tres = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n",
              te, rb.p ? rb.p : "", te);
   free(rb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_Enumerator_to_a(_t%d); SP_GC_ROOT(_t%d);\n",
              ta, te, ta);
@@ -4425,9 +4431,18 @@ int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
     else
       buf_printf(g_pre, "lv_%s = _t%d + _t%d;\n", p1, ti, toff);
   }
-  emit_loop_body(c, body, g_pre, g_indent + 1);
+  {
+    int tv = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d;\n", tv);
+    char dv[24]; snprintf(dv, sizeof dv, "_t%d", tv);
+    emit_block_value_into(c, block, dv, 1, g_indent + 1);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tres, tv);
+  }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  buf_printf(b, "sp_enum_with_index_value(_t%d)", te);
+  buf_printf(b, "sp_enum_with_index_result(_t%d, _t%d)", te, tres);
+  (void)body;
   return 1;
 }
 
@@ -6327,13 +6342,41 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   int block = nt_ref(nt, id, "block");
-  if (block < 0) return 0;
-  const char *bty = nt_type(nt, block);
-  if (!bty || !sp_streq(bty, "BlockNode")) return 0;
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc < 1 || !argv) return 0;
   TyKind rt = comp_ntype(c, recv);
+  /* Blockless each_with_object(memo) -> an Enumerator yielding [elem, memo]
+     pairs (#2540). Materialize the source to a poly array, pair each element
+     with the (shared, evaluated-once) memo, and wrap in an Enumerator. */
+  if (block < 0 && comp_ntype(c, id) == TY_ENUMERATOR) {
+    int tm = ++g_tmp, tsrc = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp;
+    /* box the memo and source into local buffers first: their embedded literals
+       push their own decls to g_pre, which must precede these statements. */
+    Buf mb; memset(&mb, 0, sizeof mb); emit_boxed(c, argv[0], &mb);
+    Buf sb; memset(&sb, 0, sizeof sb);
+    if (rt == TY_ENUMERATOR) { buf_puts(&sb, "sp_Enumerator_to_a("); emit_expr(c, recv, &sb); buf_puts(&sb, ")"); }
+    else { buf_puts(&sb, "sp_poly_to_poly_array("); emit_boxed(c, recv, &sb); buf_puts(&sb, ")"); }
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tm, mb.p ? mb.p : "sp_box_nil()");
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tm);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", tsrc, sb.p ? sb.p : "sp_PolyArray_new()");
+    free(mb.p); free(sb.p);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tsrc);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tp, tp);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) { "
+                      "sp_PolyArray *_pr = sp_PolyArray_new(); sp_PolyArray_push(_pr, sp_PolyArray_get(_t%d, _t%d)); "
+                      "sp_PolyArray_push(_pr, _t%d); sp_PolyArray_push(_t%d, sp_box_poly_array(_pr)); }\n",
+               ti, ti, tsrc, ti, tsrc, ti, tm, tp);
+    buf_printf(b, "sp_Enumerator_new_from(sp_box_poly_array(_t%d))", tp);
+    return 1;
+  }
+  if (block < 0) return 0;
+  const char *bty = nt_type(nt, block);
+  if (!bty || !sp_streq(bty, "BlockNode")) return 0;
 
   /* Hash receiver: hash.each_with_object(memo) { |(k,v), acc| } or { |k,v,acc| } */
   if (ty_is_hash(rt)) {
