@@ -945,7 +945,19 @@ void emit_expr(Compiler *c, int id, Buf *b) {
              ivt3 == TY_FIBER || ivt3 == TY_THREAD || ivt3 == TY_QUEUE || ivt3 == TY_MUTEX || ivt3 == TY_CONDVAR || ivt3 == TY_PROC || ivt3 == TY_IO ||
              ivt3 == TY_MATCHDATA || ivt3 == TY_EXCEPTION || ivt3 == TY_REGEX) {
       buf_printf(b, "({ if (%s%s) %s = ", is_or ? "!" : "", ref3, ref3);
-      emit_expr(c, v, b);
+      /* an unresolved-call RHS (`@x ||= recv.map{...}` where recv typed
+         poly/unknown) is a raise-all returning sp_RbVal; into a pointer-backed
+         slot, keep the raise for effect but yield the slot's typed NULL so the
+         assignment compiles -- the raise aborts before the NULL is reached
+         (#2457). */
+      Buf ivb; memset(&ivb, 0, sizeof ivb);
+      emit_expr(c, v, &ivb);
+      const char *ivtxt = ivb.p ? ivb.p : "";
+      if (strncmp(ivtxt, "sp_raise_nomethod(", 18) == 0 ||
+          strncmp(ivtxt, "(sp_raise_cls(", 14) == 0)
+        buf_printf(b, "(%s, %s)", ivtxt, default_value(ivt3));
+      else buf_puts(b, ivtxt);
+      free(ivb.p);
       buf_printf(b, "; %s; })", ref3);
     }
     else if (!is_or) {
