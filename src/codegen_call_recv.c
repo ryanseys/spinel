@@ -3495,9 +3495,14 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "to_proc") && argc == 0) {
         TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
         int pn = ++g_proc_counter;
+        /* a PolyPolyHash key is an sp_RbVal, delivered on the proc's poly
+           side-channel (args[] carries only scalar bits); the get() takes it
+           directly. Scalar-keyed variants read the mrb_int slot. */
         const char *keyexpr = (kt == TY_SYMBOL) ? "(sp_sym)args[0]"
                             : (kt == TY_STRING) ? "(const char *)(uintptr_t)args[0]"
+                            : (rt == TY_POLY_POLY_HASH) ? "_sp_proc_poly_args[0]"
                             : "args[0]";
+        if (rt == TY_POLY_POLY_HASH) g_needs_proc_poly_argslot = 1;
         buf_printf(&g_proc_protos, "static mrb_int _hashproc_%d(void *cap, mrb_int argc, mrb_int *args);\n", pn);
         buf_printf(&g_procs, "static mrb_int _hashproc_%d(void *cap, mrb_int argc, mrb_int *args) {\n", pn);
         buf_printf(&g_procs, "  if (argc < 1) return 0;\n");
@@ -4314,6 +4319,14 @@ else {
         int is_rassoc = sp_streq(name, "rassoc");
         TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
         int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, ta = ++g_tmp;
+        /* PolyPolyHash's order[] holds SLOT INDEXES; keys/vals index directly.
+           The other variants store the KEY in order[] and read values through
+           sp_<hn>Hash_get(key). Build the value-read expression accordingly. */
+        char vget[96];
+        if (rt == TY_POLY_POLY_HASH)
+          snprintf(vget, sizeof vget, "_t%d->vals[_t%d->order[_t%d]]", th, th, ti);
+        else
+          snprintf(vget, sizeof vget, "sp_%sHash_get(_t%d, _t%d->order[_t%d])", hn, th, th, ti);
         buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b); buf_puts(b, ";");
         /* store argument */
         if (!is_rassoc) {
@@ -4337,9 +4350,9 @@ else {
         else {
           /* rassoc: compare value (boxed) */
           buf_printf(b, " sp_RbVal _rv%d = ", ti);
-          if (vt == TY_POLY) buf_printf(b, "sp_%sHash_get(_t%d, _t%d->order[_t%d]);", hn, th, th, ti);
-          else if (vt == TY_INT) buf_printf(b, "sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d]));", hn, th, th, ti);
-          else buf_printf(b, "sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d]));", hn, th, th, ti);
+          if (vt == TY_POLY) buf_printf(b, "%s;", vget);
+          else if (vt == TY_INT) buf_printf(b, "sp_box_int(%s);", vget);
+          else buf_printf(b, "sp_box_str(%s);", vget);
           buf_printf(b, " if (sp_poly_eq(_rv%d, _t%d)) {", ti, ta);
         }
         /* build pair */
@@ -4353,11 +4366,11 @@ else {
         else
           buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]);", tr, th, th, ti);
         if (vt == TY_POLY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d->order[_t%d]));", tr, hn, th, th, ti);
+          buf_printf(b, " sp_PolyArray_push(_t%d, %s);", tr, vget);
         else if (vt == TY_INT)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tr, hn, th, th, ti);
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(%s));", tr, vget);
         else
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tr, hn, th, th, ti);
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(%s));", tr, vget);
         buf_printf(b, " break; } } _t%d; })", tr);  /* NULL = nil in poly context */
         return 1;
       }
