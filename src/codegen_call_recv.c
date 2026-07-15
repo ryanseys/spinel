@@ -2871,9 +2871,10 @@ else {
         buf_printf(b, "sp_PolyArray_get(_t%d, sp_PolyArray_length(_t%d) - 1)", t, t);
         return 1;
       }
-      if (sp_streq(name, "include?") && argc == 1) {
-        /* an empty [] literal receiver contains nothing; folding avoids the
-           kind mismatch when the literal narrowed to a typed array elsewhere */
+      if ((sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1) {
+        /* member? is a pure alias of include? for arrays. An empty [] literal
+           receiver contains nothing; folding avoids the kind mismatch when the
+           literal narrowed to a typed array elsewhere */
         int iel = 0;
         if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
           int ien = 0; nt_arr(nt, recv, "elements", &ien);
@@ -3774,6 +3775,17 @@ else {
       }
       if (sp_streq(name, "empty?") && argc == 0) {
         buf_printf(b, "(sp_%sHash_length(", hn); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
+        return 1;
+      }
+      if (sp_streq(name, "sum") && argc <= 1 && nt_ref(nt, id, "block") < 0) {
+        /* Hash#sum without a block folds each [k,v] PAIR into the init value;
+           `init + [k,v]` is Integer#+ Array -> TypeError, so only an empty hash
+           (which returns the init unchanged) is well-defined. */
+        int t = ++g_tmp;
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_%sHash_length(_t%d) == 0 ? (mrb_int)(", hn, t);
+        if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "0");
+        buf_puts(b, ") : (sp_raise_cls(\"TypeError\", \"Array can't be coerced into Integer\"), (mrb_int)0); })");
         return 1;
       }
       if (sp_streq(name, "clear") && argc == 0) {

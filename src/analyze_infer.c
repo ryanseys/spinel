@@ -3712,6 +3712,11 @@ else {
       return TY_BOOL;
     if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "sum"))
       return TY_POLY;   /* boxed accumulation via sp_poly_add */
+    /* blockless Hash#sum: folds each [k, v] pair into the init, which is only
+       well-defined for an empty hash (else `init + [k,v]` raises TypeError).
+       The result is the init's type -- int by default. */
+    if (nt_ref(nt, id, "block") < 0 && sp_streq(name, "sum") && argc <= 1)
+      return TY_INT;
     if (nt_ref(nt, id, "block") >= 0 &&
         (sp_streq(name, "flat_map") || sp_streq(name, "collect_concat") ||
          sp_streq(name, "filter_map") || sp_streq(name, "partition")))
