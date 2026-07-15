@@ -3797,7 +3797,7 @@ else {
     /* blockless one? -> bool (exactly one pair) (#2354) */
     if (sp_streq(name, "one?") && argc == 0 && nt_ref(nt, id, "block") < 0) return TY_BOOL;
     /* in-place merge mutates and returns the receiver (its variant is fixed) */
-    if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc == 1) return rt;
+    if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc >= 1) return rt;
     if (sp_streq(name, "has_key?") || sp_streq(name, "key?") ||
         sp_streq(name, "include?") || sp_streq(name, "member?") ||
         sp_streq(name, "has_value?") || sp_streq(name, "value?") ||
