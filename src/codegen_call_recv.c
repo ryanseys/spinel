@@ -4521,12 +4521,30 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[1], b); buf_puts(b, ")");
         free(rp.p);
       }
+      else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 &&
+               comp_ntype(c, argv[0]) == TY_REGEX) {
+        /* pattern held in a regex-typed value (e.g. a local bound to an
+           interpolated /.../); dispatch to the compiled-pattern overload
+           rather than the string-pattern one. */
+        const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
+        buf_printf(b, "sp_re_%s%s(", name, suf);
+        emit_expr(c, argv[0], b); buf_printf(b, ", %s, ", r);
+        emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_split(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
       else if (sp_streq(name, "split") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_split_limit(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
         emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (sp_streq(name, "split") && argc == 1 && comp_ntype(c, argv[0]) == TY_REGEX) {
+        buf_puts(b, "sp_re_split("); emit_expr(c, argv[0], b);
+        buf_printf(b, ", %s)", r);
+      }
+      else if (sp_streq(name, "split") && argc == 2 && comp_ntype(c, argv[0]) == TY_REGEX) {
+        buf_puts(b, "sp_re_split_limit("); emit_expr(c, argv[0], b);
+        buf_printf(b, ", %s, ", r); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
                nt_ref(nt, id, "block") >= 0) {
