@@ -3939,6 +3939,17 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
+    /* MatchData#== : structural equality with another MatchData, else false (#2529) */
+    if (recv >= 0 && rt == TY_MATCHDATA) {
+      if (a0 == TY_MATCHDATA) {
+        buf_printf(b, "(%ssp_MatchData_eq(", eq ? "" : "!"); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      } else {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+        emit_boxed(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
+      }
+      return 1;
+    }
     unsupported(c, id, "equality");
   }
   return 0;

@@ -1684,6 +1684,8 @@ else {
   /* MatchData instance methods */
   if (recv >= 0 && rt == TY_MATCHDATA) {
     if (sp_streq(name, "[]") && argc == 1) return TY_STRING;
+    if (sp_streq(name, "[]") && argc == 2) return TY_POLY_ARRAY;   /* md[start, length] (#2507) */
+    if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) return TY_BOOL;   /* (#2529) */
     if (sp_streq(name, "pre_match") || sp_streq(name, "post_match") || sp_streq(name, "to_s")) return TY_STRING;
     if (sp_streq(name, "begin") || sp_streq(name, "end") || sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
     if (sp_streq(name, "bytebegin") || sp_streq(name, "byteend")) return TY_INT;

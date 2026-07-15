@@ -6605,6 +6605,17 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       }
       else { buf_printf(b, "sp_MatchData_aref(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     }
+    /* md[start, length]: an Array of `length` groups from `start` (#2507) */
+    else if (sp_streq(name, "[]") && argc == 2) {
+      buf_printf(b, "sp_MatchData_aref_len(%s, ", r); emit_int_expr(c, argv[0], b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+    }
+    /* MatchData#== / #eql?: structural equality (#2529) */
+    else if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) {
+      TyKind at = comp_ntype(c, argv[0]);
+      if (at == TY_MATCHDATA) { buf_printf(b, "sp_MatchData_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else { buf_printf(b, "((void)(%s), (void)(", r); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)"); }
+    }
     else if (sp_streq(name, "named_captures") && argc == 0) buf_printf(b, "sp_md_named_captures(%s)", r);
     else if (sp_streq(name, "names") && argc == 0) buf_printf(b, "sp_MatchData_names(%s)", r);
     else if (sp_streq(name, "string") && argc == 0) buf_printf(b, "sp_MatchData_string(%s)", r);

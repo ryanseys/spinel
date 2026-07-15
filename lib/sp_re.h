@@ -94,6 +94,8 @@ sp_StrArray *sp_Regexp_names(const mrb_regexp_pattern *pat);
 int re_num_named(const mrb_regexp_pattern *pat);
 const char *re_named_name(const mrb_regexp_pattern *pat, int i, int *group_out);
 mrb_int sp_MatchData_length(sp_MatchData *m);
+mrb_bool sp_MatchData_eq(sp_MatchData *a, sp_MatchData *b);
+sp_PolyArray *sp_MatchData_aref_len(sp_MatchData *m, mrb_int start, mrb_int len);
 mrb_int sp_md_char_off(sp_MatchData *m, int byteoff);
 mrb_int sp_MatchData_begin(sp_MatchData *m, mrb_int i);
 mrb_int sp_MatchData_end(sp_MatchData *m, mrb_int i);

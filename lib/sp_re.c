@@ -722,7 +722,9 @@ sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str, mrb_i
 }
 /* group i substring, or NULL for a non-participating / out-of-range group */
 const char *sp_MatchData_aref(sp_MatchData *m, mrb_int i) {
-  if (!m || i < 0 || i >= m->ncap) return NULL;
+  if (!m) return NULL;
+  if (i < 0) i += m->ncap;   /* MatchData#[-1] is the last group (#2531) */
+  if (i < 0 || i >= m->ncap) return NULL;
   int s = m->caps[i * 2], e = m->caps[(i * 2) + 1];
   if (s < 0 || e < s) return NULL;
   int len = e - s;
@@ -772,6 +774,29 @@ sp_StrArray *sp_MatchData_names(sp_MatchData *m) {
   return a;
 }
 mrb_int sp_MatchData_length(sp_MatchData *m) { return m ? m->ncap : 0; }
+/* MatchData#== / #eql?: same match over the same source with identical capture
+   spans (#2529). */
+mrb_bool sp_MatchData_eq(sp_MatchData *a, sp_MatchData *b) {
+  if (a == b) return TRUE;
+  if (!a || !b || a->ncap != b->ncap) return FALSE;
+  if (a->source && b->source) { if (strcmp(a->source, b->source) != 0) return FALSE; }
+  else if (a->source != b->source) return FALSE;
+  for (int i = 0; i < a->ncap * 2; i++) if (a->caps[i] != b->caps[i]) return FALSE;
+  return TRUE;
+}
+/* MatchData#[start, length]: an Array of `length` groups from `start` (nil for
+   a group that did not participate), like Array#[start, length] (#2507). */
+sp_PolyArray *sp_MatchData_aref_len(sp_MatchData *m, mrb_int start, mrb_int len) {
+  sp_PolyArray *a = sp_PolyArray_new();
+  if (!m) return a;
+  if (start < 0) start += m->ncap;
+  if (start < 0 || start > m->ncap || len < 0) return NULL;   /* nil in Ruby */
+  for (mrb_int i = start; i < start + len && i < m->ncap; i++) {
+    const char *g = sp_MatchData_aref(m, i);
+    sp_PolyArray_push(a, g ? sp_box_str(g) : sp_box_nil());
+  }
+  return a;
+}
 /* char offset of a byte position within source */
 mrb_int sp_md_char_off(sp_MatchData *m, int byteoff) {
   if (byteoff < 0) return SP_INT_NIL;
