@@ -10303,7 +10303,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
       int tm = ++g_tmp, tr2 = ++g_tmp;
       buf_printf(b, "({ sp_MatchData *_t%d = sp_re_matchdata(sp_re_pat_%d, ", tm, are);
-      emit_expr(c, recv, b);
+      emit_str_expr(c, recv, b);
       buf_printf(b, "); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d) { ",
                  tr2, tr2, tm);
       if (mp0r) buf_printf(b, "lv_%s = _t%d; ", mp0r, tm);
@@ -10318,10 +10318,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (are >= 0 && sp_streq(name, "match")) {
       if (argc == 1) {
-        buf_printf(b, "sp_re_matchdata(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")");
+        /* recv is the subject string; emit_str_expr coerces a poly/nilable
+           receiver (`@message.subject.match(/re/)`) to the const char* slot */
+        buf_printf(b, "sp_re_matchdata(sp_re_pat_%d, ", are); emit_str_expr(c, recv, b); buf_puts(b, ")");
       }
       else {
-        buf_printf(b, "sp_re_matchdata_at(sp_re_pat_%d, ", are); emit_expr(c, recv, b);
+        buf_printf(b, "sp_re_matchdata_at(sp_re_pat_%d, ", are); emit_str_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
       return;
