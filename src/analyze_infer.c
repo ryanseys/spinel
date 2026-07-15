@@ -4223,6 +4223,14 @@ else {
     if ((rt == TY_POLY || a0 == TY_POLY) &&
         (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")))
       return TY_POLY;
+    /* An Integer/Bignum arith op with a non-coercible (String/Symbol/nil/bool/
+       Array/Hash/Range) argument raises TypeError at run time; type the raising
+       expression as int so any value position (p, assignment) can emit it -- the
+       codegen raise-expr is int-typed too (#2471). */
+    if ((rt == TY_INT || rt == TY_BIGINT) &&
+        (a0 == TY_STRING || a0 == TY_SYMBOL || a0 == TY_NIL || a0 == TY_BOOL ||
+         ty_is_array(a0) || ty_is_hash(a0) || a0 == TY_RANGE))
+      return TY_INT;
     return TY_UNKNOWN;
   }
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) return TY_INT;

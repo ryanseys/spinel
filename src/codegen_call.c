@@ -4255,6 +4255,31 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
        /* bigint shifts aren't "int arith" ops but lower through the same
           TY_BIGINT branch below (sp_bigint_shl / sp_bigint_shr). */
        (res == TY_BIGINT && (sp_streq(name, "<<") || sp_streq(name, ">>"))))) {
+    /* An Integer/Bignum arith op coerces its argument via coerce/to_int; a
+       String/Symbol/Array/Hash/nil/bool/Range has neither, so CRuby raises
+       "X can't be coerced into Integer" rather than aborting compilation
+       (#2471). Numeric args (int/float/bigint/rational/complex) fall through
+       to the real arithmetic below. */
+    if ((rt == TY_INT || rt == TY_BIGINT) && is_arith_op(name)) {
+      TyKind at9 = comp_ntype(c, argv[0]);
+      const char *cn9 =
+        at9 == TY_STRING ? "String" : at9 == TY_SYMBOL ? "Symbol" :
+        at9 == TY_NIL ? "nil" : ty_is_array(at9) ? "Array" :
+        ty_is_hash(at9) ? "Hash" : at9 == TY_RANGE ? "Range" : NULL;
+      if (at9 == TY_BOOL) {
+        buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+        buf_puts(b, "); sp_raise_cls(\"TypeError\", sp_sprintf(\"%s can't be coerced into Integer\", (");
+        emit_expr(c, argv[0], b);
+        buf_puts(b, ") ? \"true\" : \"false\")); (mrb_int)0; })");
+        return 1;
+      }
+      if (cn9) {
+        buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)(");
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "); sp_raise_cls(\"TypeError\", \"%s can't be coerced into Integer\"); (mrb_int)0; })", cn9);
+        return 1;
+      }
+    }
     if (rt == TY_STRING && sp_streq(name, "+")) {
       /* `str + <non-string>` is a TypeError in CRuby (no implicit conversion);
          a statically non-string, non-poly argument raises rather than emitting
@@ -10747,8 +10772,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        counts are always small and non-negative -- routing it through a branchy
        helper cost ~4% fps). */
     int is_shift = sp_streq(name, "<<") || sp_streq(name, ">>");
-    /* a non-integer operand raises TypeError, as CRuby (#2421) */
-    if (at0 == TY_FLOAT || at0 == TY_STRING || at0 == TY_NIL || at0 == TY_SYMBOL ||
+    /* a non-integer operand raises TypeError, as CRuby (#2421) -- except that
+       the SHIFT operators accept a Float count and truncate it via to_int
+       (`10 << 2.9` is 40); the bitwise &/|/^ still reject a Float. */
+    if ((at0 == TY_FLOAT && !is_shift) || at0 == TY_STRING || at0 == TY_NIL || at0 == TY_SYMBOL ||
         at0 == TY_BOOL || ty_is_array(at0) || ty_is_hash(at0)) {
       const char *tn9 = at0 == TY_FLOAT ? "Float" : at0 == TY_STRING ? "String"
                       : at0 == TY_NIL ? "nil" : at0 == TY_SYMBOL ? "Symbol"
@@ -10788,6 +10815,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else emit_expr(c, recv, b);
       buf_puts(b, ", ");
       if (at0 == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (at0 == TY_FLOAT) { buf_puts(b, "(mrb_int)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_expr(c, argv[0], b);
       buf_puts(b, ")");
       return;
