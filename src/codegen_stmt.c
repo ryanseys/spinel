@@ -906,6 +906,13 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     /* string slot, poly RHS (holds a string at runtime): coerce */
     buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")");
   }
+  else if (lv && lv->type != TY_POLY && lv->type != TY_UNKNOWN &&
+           comp_ntype(c, v) == TY_UNKNOWN) {
+    /* a typed local assigned an unresolved call (the gate's raise-all token):
+       coerce the sp_RbVal token to the slot type (`k = yield rec` where the
+       yield is unresolvable, into an mrb_int k). A non-token RHS emits raw. */
+    emit_unresolved_coerced(c, v, lv->type, b);
+  }
   else {
     emit_expr(c, v, b);
   }
@@ -4207,7 +4214,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
        method(:sym) target pinned to mrb_int that returns a poly @ivar, or an
        RBS-typed String/object method whose body yields poly -- needs coercing. */
     else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
-    else emit_tail_value(c, a[0], b);
+    else emit_tail_value(c, a[0], b);   /* coerces an unresolved TY_UNKNOWN token */
     buf_puts(b, ";\n");
   }
   else if (g_ret_type == TY_POLY) buf_puts(b, "return sp_box_nil();\n");
@@ -5445,12 +5452,12 @@ else {
       emit_unbox_text(c, ivt, _rb.p ? _rb.p : "sp_box_nil()", b);
       free(_rb.p);
     }
-    else if (ivt == TY_STRING && comp_ntype(c, v) == TY_UNKNOWN) {
+    else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, v) == TY_UNKNOWN) {
       /* an unresolved call typed TY_UNKNOWN whose value is the gate's
-         sp_raise_nomethod(...) poly token, assigned to a const char* ivar
+         sp_raise_nomethod(...) poly token, assigned to a typed ivar slot
          (`@settings = TypedStore.write(...)` where write is unresolved):
-         emit_str_expr coerces the token to the string slot, keeping the raise. */
-      emit_str_expr(c, v, b);
+         coerce the token to the slot type, keeping the raise. */
+      emit_unresolved_coerced(c, v, ivt, b);
     }
     else {
       emit_expr(c, v, b);

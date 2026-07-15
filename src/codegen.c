@@ -174,6 +174,32 @@ void emit_str_expr(Compiler *c, int node, Buf *b) {
   free(tmp.p);
 }
 
+/* Coerce an unresolved-call value into a concretely-typed slot. An unresolved
+   call is typed TY_UNKNOWN and lowers to the gate's sp_raise_nomethod(...) poly
+   token (an sp_RbVal that always raises); when it lands in a non-poly slot the
+   emitted C would assign sp_RbVal to a scalar/pointer. The token never returns,
+   so any type-correct wrapper keeps the C compiling: coerce it to `target`.
+   A value that is NOT the token is emitted raw -- callers reach this only for a
+   TY_UNKNOWN RHS, where a raw emit is exactly the prior behavior. Returns 1 if
+   it coerced the token, 0 if it emitted raw. */
+int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
+  Buf tmp; memset(&tmp, 0, sizeof tmp);
+  emit_expr(c, node, &tmp);
+  const char *txt = tmp.p ? tmp.p : "";
+  int is_tok = strncmp(txt, "sp_raise_nomethod(", 18) == 0;
+  if (is_tok) {
+    if (target == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", txt);
+    else if (target == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", txt);
+    else if (target == TY_SYMBOL) buf_printf(b, "(sp_sym)sp_poly_to_i(%s)", txt);
+    else if (target == TY_INT || target == TY_BOOL) buf_printf(b, "sp_poly_to_i(%s)", txt);
+    else if (target == TY_POLY) buf_puts(b, txt);   /* already sp_RbVal */
+    else emit_unbox_text(c, target, txt, b);         /* pointer/object/hash slot */
+  }
+  else buf_puts(b, txt);
+  free(tmp.p);
+  return is_tok;
+}
+
 /* A handful of builtins are typed TY_INT but return the SP_INT_NIL sentinel for
    their nil case (bsearch/bsearch_index find-miss, nonzero?/infinite? on the
    boundary, MatchData#begin/end of an unmatched optional group). Typed

@@ -615,6 +615,7 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 void emit_boxed(Compiler *c, int node, Buf *b);
 void emit_int_expr(Compiler *c, int node, Buf *b);
 void emit_str_expr(Compiler *c, int node, Buf *b);
+int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b);
 void emit_int_divisor(Compiler *c, int node, Buf *b);
 void emit_float_expr(Compiler *c, int node, Buf *b);
 /* Emit `node` as a scalar operand: like a plain emit_expr, except an
