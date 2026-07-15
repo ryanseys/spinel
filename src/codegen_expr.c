@@ -455,6 +455,17 @@ static int loop_has_valued_break(Compiler *c, int root) {
   return 0;
 }
 
+/* A receiverless `raise`/`fail` call: it diverges, so in a value position it
+   yields no value (its C form is void). A branch whose value is such a call
+   must be emitted as a statement, not assigned to the result temp. */
+static int node_is_raise(Compiler *c, int nd) {
+  const NodeTable *nt = c->nt;
+  if (nd < 0 || !nt_type(nt, nd) || !sp_streq(nt_type(nt, nd), "CallNode")) return 0;
+  if (nt_ref(nt, nd, "receiver") >= 0) return 0;
+  const char *nm = nt_str(nt, nd, "name");
+  return nm && (sp_streq(nm, "raise") || sp_streq(nm, "fail"));
+}
+
 /* One arm of a value-position if/unless: box a concrete arm into a poly
    result, and give empty []/{} literals the result's container type. */
 static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
@@ -1992,11 +2003,16 @@ else {
       Buf te; memset(&te, 0, sizeof te);
       Buf pa; memset(&pa, 0, sizeof pa);
       Buf pe; memset(&pe, 0, sizeof pe);
+      /* a `raise`/`fail` arm diverges: it produces no value to assign, so it
+         cannot ride the flat C ternary (which needs both arms to be values of
+         the result type) -- force the branch form and emit it as a statement. */
+      int then_raise = node_is_raise(c, tb[0]);
+      int else_raise = node_is_raise(c, eb[0]);
       Buf *sv_pre = g_pre;
       g_pre = &pa; emit_ternary_arm(c, tb[0], res, &ta);
       g_pre = &pe; emit_ternary_arm(c, eb[0], res, &te);
       g_pre = sv_pre;
-      int hoists = (pa.p && pa.p[0]) || (pe.p && pe.p[0]);
+      int hoists = (pa.p && pa.p[0]) || (pe.p && pe.p[0]) || then_raise || else_raise;
       if (!hoists) {
         buf_puts(b, "(");
         if (is_unless) buf_puts(b, "!(");
@@ -2018,9 +2034,17 @@ else {
         if (is_unless) buf_puts(b, "!(");
         emit_cond(c, pred, b);
         if (is_unless) buf_puts(b, ")");
-        buf_printf(b, ") {\n%s _t%d = %s;\n} else {\n%s _t%d = %s;\n} _t%d; })",
-                   pa.p ? pa.p : "", tr, ta.p ? ta.p : "0",
-                   pe.p ? pe.p : "", tr, te.p ? te.p : "0", tr);
+        buf_puts(b, ") {\n");
+        buf_puts(b, pa.p ? pa.p : "");
+        /* a diverging (raise/fail) arm is emitted as a statement; the result
+           temp keeps its default (never read, since the arm never returns) */
+        if (then_raise) buf_printf(b, " %s;\n", ta.p ? ta.p : "0");
+        else buf_printf(b, " _t%d = %s;\n", tr, ta.p ? ta.p : "0");
+        buf_puts(b, "} else {\n");
+        buf_puts(b, pe.p ? pe.p : "");
+        if (else_raise) buf_printf(b, " %s;\n", te.p ? te.p : "0");
+        else buf_printf(b, " _t%d = %s;\n", tr, te.p ? te.p : "0");
+        buf_printf(b, "} _t%d; })", tr);
       }
       free(ta.p); free(te.p); free(pa.p); free(pe.p);
       return;
