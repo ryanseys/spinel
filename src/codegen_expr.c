@@ -2131,7 +2131,11 @@ else {
       return;
     }
     /* value form: a || b  ->  truthy(a) ? a : b ;  a && b -> truthy(a) ? b : a.
-       Evaluate the left once into a temp; results widen to the unified type. */
+       Evaluate the left once into a temp; results widen to the unified type.
+       The result is always a real value (a nil left boxes to sp_box_nil), never
+       void -- a VOID/UNKNOWN unified type (`() && true`, an empty-parens operand
+       whose cached type settled void) becomes poly so the temp is not `void`. */
+    if (res == TY_VOID || res == TY_UNKNOWN || res == TY_NIL) res = TY_POLY;
     int t = ++g_tmp;
     int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */
     buf_puts(b, "({ ");

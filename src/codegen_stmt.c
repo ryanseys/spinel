@@ -3027,10 +3027,16 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
     pt = comp_ntype(c, pred);
     t = ++g_tmp;
     emit_indent(b, indent);
-    emit_ctype(c, pt, b);
-    buf_printf(b, " _t%d = ", t);
-    emit_expr(c, pred, b);
-    buf_puts(b, ";\n");
+    if (pt == TY_UNKNOWN || pt == TY_VOID || pt == TY_NIL) {
+      emit_ctype(c, TY_POLY, b); buf_printf(b, " _t%d = ", t); emit_boxed(c, pred, b);
+      buf_puts(b, ";\n"); pt = TY_POLY;
+    }
+    else {
+      emit_ctype(c, pt, b);
+      buf_printf(b, " _t%d = ", t);
+      emit_expr(c, pred, b);
+      buf_puts(b, ";\n");
+    }
   }
 
   /* Fast path: `case <int/poly> when <integer literals>` lowers to a C switch
@@ -3346,7 +3352,14 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
   if (pred >= 0) {
     pt = comp_ntype(c, pred);
     t = ++g_tmp;
-    emit_ctype(c, pt, b); buf_printf(b, " _t%d = ", t); emit_expr(c, pred, b); buf_puts(b, "; ");
+    /* a scrutinee with no usable C storage type (an empty `[]`/`{}` literal
+       caches UNKNOWN, and nil/void have no slot) is boxed poly so the temp is
+       not declared `void`; the when arms compare it via sp_poly_eq. */
+    if (pt == TY_UNKNOWN || pt == TY_VOID || pt == TY_NIL) {
+      emit_ctype(c, TY_POLY, b); buf_printf(b, " _t%d = ", t); emit_boxed(c, pred, b); buf_puts(b, "; ");
+      pt = TY_POLY;
+    }
+    else { emit_ctype(c, pt, b); buf_printf(b, " _t%d = ", t); emit_expr(c, pred, b); buf_puts(b, "; "); }
   }
 
   /* Fast path: `case <int> when <integer literals>` captures the branch value
