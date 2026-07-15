@@ -3542,7 +3542,10 @@ int desugar_enum_method_recv(Compiler *c) {
         int cargs = nt_ref(nt, crc, "arguments");
         int can = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &can) : NULL;
         int cbase = nt_ref(nt, crc, "receiver");
-        if (cbase >= 0 && can >= 1) {
+        /* can == 0 (`arr.chain.to_a`): the chain is just the receiver's own
+           elements, so the loop below folds in nothing and to_a aliases the
+           receiver array directly (#2468). */
+        if (cbase >= 0 && can >= 0) {
           int acc = cbase;
           for (int ci2 = 0; ci2 < can; ci2++) {
             int cargs2 = te_args1(nt, cav[ci2]);
