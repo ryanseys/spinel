@@ -4311,6 +4311,9 @@ else {
     if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) &&
         argc == 1) return TY_BOOL;
     if (sp_streq(name, "gcdlcm") && argc == 1) return TY_POLY_ARRAY;
+    /* to_r/rationalize/quo on a Bignum produce a boxed big Rational (#2469) */
+    if ((sp_streq(name, "to_r") || sp_streq(name, "rationalize")) && argc == 0) return TY_POLY;
+    if (sp_streq(name, "quo") && argc == 1) return TY_POLY;
   }
   /* poly recv bitwise op: result is int (sp_poly_to_i applied). */
   if (recv >= 0 && argc == 1 && rt == TY_POLY &&

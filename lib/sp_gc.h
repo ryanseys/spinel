@@ -39,6 +39,9 @@
    lib/sp_marshal.c can recognize them by cls_id. */
 #define SP_BUILTIN_COMPLEX  (-26)
 #define SP_BUILTIN_RATIONAL (-27)
+/* A Rational whose numerator/denominator exceed mrb_int: a boxed object with
+   two sp_Bigint* fields, distinct from the by-value int Rational (#2469). */
+#define SP_BUILTIN_BIG_RATIONAL (-35)
 typedef struct { int tag; int cls_id; union { mrb_int i; const char *s; mrb_float f; mrb_bool b; void *p; } v; } sp_RbVal;
 
 /* ---- Collector globals shared with the generated TU ----

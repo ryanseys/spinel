@@ -12153,6 +12153,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                  ta, ta, ta, tr, t, ta, tr, t, ta);
       free(rs.p); return;
     }
+    /* to_r / rationalize on a Bignum -> Rational(self, 1); quo -> Rational(self,
+       arg). The numerator exceeds mrb_int, so these produce a boxed big
+       Rational (poly) rather than the by-value int Rational (#2469). */
+    if ((sp_streq(name, "to_r") || sp_streq(name, "rationalize")) && argc == 0) {
+      buf_printf(b, "sp_brat_from_bigint(%s)", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "quo") && argc == 1) {
+      buf_printf(b, "sp_box_brat(%s, ", r); emit_bigint_operand(c, argv[0], b); buf_puts(b, ")");
+      free(rs.p); return;
+    }
     free(rs.p);
   }
 
