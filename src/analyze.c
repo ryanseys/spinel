@@ -1870,6 +1870,67 @@ static int te_call(NodeTable *nt, int recv, const char *name, int argsnode, int 
 static int te_stmts1(NodeTable *nt, int s) {
   int n = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, n, "body", &s, 1); return n;
 }
+static int te_lvwrite(NodeTable *nt, const char *name, int value) {
+  int n = nt_new_node(nt, "LocalVariableWriteNode");
+  nt_node_set_str(nt, n, "name", name);
+  nt_node_set_ref(nt, n, "value", value);
+  return n;
+}
+
+/* `Enumerator.produce(init) { |prev| nxt }` -> a fiber-backed generator that
+   yields init, then repeatedly applies the block. Rewritten (before the inference
+   fixpoint, so the generator's block body is typed) to:
+     Enumerator.new { |__py|
+       __pv = init
+       loop { __py << __pv; prev = __pv; __pv = begin nxt end }
+     }
+   The block's param name (`prev`) is bound to the current value each round and its
+   body inlined via a begin-expression. `<<` lowers to Fiber.yield. (#2483) */
+static void desugar_enumerator_produce(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "produce")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "ConstantReadNode")) continue;
+    if (!nt_str(nt, recv, "name") || !sp_streq(nt_str(nt, recv, "name"), "Enumerator")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockNode")) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an != 1 || !av) continue;   /* only produce(init) { } for now */
+    int init = av[0];
+    int bbody = nt_ref(nt, blk, "body");
+    const char *pname = block_param_name(c, blk, 0);
+    if (!pname || bbody < 0) continue;
+    int pv_w = te_lvwrite(nt, "__pv", init);
+    /* loop body: __py << __pv ; <pname> = __pv ; __pv = begin <body> end */
+    int yshl = te_call(nt, te_lvread(nt, "__py"), "<<", te_args1(nt, te_lvread(nt, "__pv")), -1);
+    int bind_p = te_lvwrite(nt, pname, te_lvread(nt, "__pv"));
+    int beginn = nt_new_node(nt, "BeginNode"); nt_node_set_ref(nt, beginn, "statements", bbody);
+    int pv_w2 = te_lvwrite(nt, "__pv", beginn);
+    int loopbodyarr[3] = { yshl, bind_p, pv_w2 };
+    int loopbody = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, loopbody, "body", loopbodyarr, 3);
+    int loopblk = nt_new_node(nt, "BlockNode"); nt_node_set_ref(nt, loopblk, "body", loopbody);
+    int loopcall = te_call(nt, -1, "loop", -1, loopblk);
+    /* generator block: |__py| __pv=...; loop {...} */
+    int genarr[2] = { pv_w, loopcall };
+    int genbody = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, genbody, "body", genarr, 2);
+    int pyreq = nt_new_node(nt, "RequiredParameterNode"); nt_node_set_str(nt, pyreq, "name", "__py");
+    int genparams = nt_new_node(nt, "ParametersNode"); nt_node_set_arr(nt, genparams, "requireds", &pyreq, 1);
+    int genbp = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, genbp, "parameters", genparams);
+    int genblk = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, genblk, "parameters", genbp);
+    nt_node_set_ref(nt, genblk, "body", genbody);
+    /* rewrite THIS node into Enumerator.new { |__py| ... } */
+    nt_node_set_str(nt, id, "name", "new");
+    nt_node_set_ref(nt, id, "block", genblk);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    comp_grow_node_arrays(c);
+  }
+}
 
 /* Synthesize, on every class that defines an instance `#each` that yields, a
    helper method
@@ -5151,6 +5212,7 @@ void analyze_program(Compiler *c) {
                                             map(&:sym.to_proc): to_proc->lambda first,
                                             then the lambda block attaches) */
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
+  desugar_enumerator_produce(c);         /* Enumerator.produce -> fiber generator */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
   walk_scope(c, c->nt->root_id, 0, -1);
