@@ -1841,6 +1841,14 @@ else {
         if (rt == TY_STR_ARRAY) { buf_printf(b, "sp_StrArray_tally("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
         if (rt == TY_POLY_ARRAY) { buf_printf(b, "sp_PolyArray_tally("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       }
+      /* tally(hash): count INTO the given accumulator (any hash variant, boxed)
+         and return it (#2533). The accumulator's own type is immaterial at run
+         time -- it is a Hash. */
+      if (sp_streq(name, "tally") && argc == 1) {
+        buf_puts(b, "sp_array_tally_into_poly("); emit_boxed(c, recv, b); buf_puts(b, ", ");
+        emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
       if (sp_streq(name, "slice!") && argc == 2) {
         /* slice!(start, len): remove and return the subarray (raises
            FrozenError inside the runtime helper when the array is frozen) */

@@ -5148,6 +5148,14 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
       if (key.tag == SP_TAG_STR && val.tag == SP_TAG_INT)
         sp_StrIntHash_set((sp_StrIntHash*)v.v.p, key.v.s, val.v.i);
       break;
+    case SP_BUILTIN_INT_INT_HASH:
+      if (key.tag == SP_TAG_INT && val.tag == SP_TAG_INT)
+        sp_IntIntHash_set((sp_IntIntHash*)v.v.p, key.v.i, val.v.i);
+      break;
+    case SP_BUILTIN_INT_STR_HASH:
+      if (key.tag == SP_TAG_INT && val.tag == SP_TAG_STR)
+        sp_IntStrHash_set((sp_IntStrHash*)v.v.p, key.v.i, val.v.s);
+      break;
     case SP_BUILTIN_SYM_POLY_HASH:
       if (key.tag == SP_TAG_SYM) sp_SymPolyHash_set((sp_SymPolyHash*)v.v.p, (sp_sym)key.v.i, val);
       break;
@@ -5409,6 +5417,21 @@ static sp_RbVal sp_poly_hash_probe(sp_RbVal h, sp_RbVal k, mrb_bool *found) {
     case SP_BUILTIN_POLY_POLY_HASH: { sp_PolyPolyHash *x=(sp_PolyPolyHash*)h.v.p; if (!sp_PolyPolyHash_has_key(x,k)) return sp_box_nil(); *found=TRUE; return sp_PolyPolyHash_get(x,k); }
     default: return sp_box_nil();
   }
+}
+/* Enumerable#tally(hash): count each element INTO the given accumulator hash
+   (any variant, held as a boxed value) and return it. Missing keys start from the
+   hash's current count (0 if absent), matching CRuby. (#2533) */
+static sp_RbVal sp_array_tally_into_poly(sp_RbVal arr, sp_RbVal hash) {
+  SP_GC_ROOT_RBVAL(arr); SP_GC_ROOT_RBVAL(hash);
+  mrb_int n = sp_poly_length(arr);
+  for (mrb_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(arr, i);
+    mrb_bool found = FALSE;
+    sp_RbVal cur = sp_poly_hash_probe(hash, e, &found);
+    mrb_int c = (found && cur.tag == SP_TAG_INT) ? cur.v.i : 0;
+    sp_poly_set_poly(hash, e, sp_box_int(c + 1));
+  }
+  return hash;
 }
 static mrb_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b) {
   if (!a.v.p || !b.v.p) return a.v.p == b.v.p;

@@ -3094,6 +3094,8 @@ else {
       /* poly array: keys are the elements (any type), counts are ints. */
       if (rt == TY_POLY_ARRAY) return TY_POLY_POLY_HASH;
     }
+    if (sp_streq(name, "tally") && argc == 1)   /* tally(hash) returns the accumulator, boxed (#2533) */
+      return TY_POLY;
     if (sp_streq(name, "group_by") && block >= 0 && ty_is_array(rt))
       return TY_POLY_POLY_HASH;
     if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) return rt;  /* first(n)/last(n) -> subarray */
