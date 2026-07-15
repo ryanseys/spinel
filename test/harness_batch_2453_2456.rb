@@ -13,7 +13,11 @@ module OpenSSL
       out = ""
       i = 0
       while i < n
-        out = out + rand(256).chr
+        # 1..255, never 0: a "\\0" byte would embed a NUL that spinel's
+        # NUL-terminated string storage truncates at, making .length flaky
+        # (~1.5% of builds). This test exercises module reopening + dispatch,
+        # not embedded-NUL strings.
+        out = out + (rand(255) + 1).chr
         i += 1
       end
       out
