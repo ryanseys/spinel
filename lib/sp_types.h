@@ -133,6 +133,11 @@ typedef mrb_int sp_sym;
    A zero step (every range built by the literal `a..b` / sp_range_new path) is
    treated as +1, so existing constructions need no change. */
 typedef struct{mrb_int first;mrb_int last;mrb_int excl;mrb_int step;}sp_Range;
+/* A Float range (1.0..3.0): endpoints kept as mrb_float so cover?/include?/begin/
+   end are exact (an int-backed sp_Range truncated them). Iteration is a TypeError
+   in Ruby (only #step traverses a Float range), so no step/iteration state here.
+   beginless/endless ends use -HUGE_VAL / +HUGE_VAL. */
+typedef struct{mrb_float first;mrb_float last;mrb_int excl;}sp_FloatRange;
 /* A class value. `name`, when non-NULL, is a rodata class name carried by a
    class whose cls_id table entry may not exist (an exception's class -- the
    Errno:: family and many builtin error classes have no assigned cls_id). It

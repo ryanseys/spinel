@@ -1876,6 +1876,60 @@ static sp_RbVal sp_box_range(sp_Range v) {
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_RANGE);
 }
+/* Float range (1.0..3.0). Endpoints stay mrb_float, so cover?/include?/begin/end
+   are exact. -HUGE_VAL / +HUGE_VAL are the beginless / endless sentinels. */
+static sp_FloatRange sp_frange_new(mrb_float f, mrb_float l, mrb_int e) __attribute__((unused));
+static sp_FloatRange sp_frange_new(mrb_float f, mrb_float l, mrb_int e) {
+  sp_FloatRange r; r.first = f; r.last = l; r.excl = e; return r;
+}
+static mrb_bool sp_frange_cover(sp_FloatRange r, mrb_float x) __attribute__((unused));
+static mrb_bool sp_frange_cover(sp_FloatRange r, mrb_float x) {
+  if (r.first != -HUGE_VAL && x < r.first) return 0;
+  if (r.last != HUGE_VAL && (r.excl ? x >= r.last : x > r.last)) return 0;
+  return 1;
+}
+static mrb_bool sp_frange_eq(sp_FloatRange a, sp_FloatRange b) __attribute__((unused));
+static mrb_bool sp_frange_eq(sp_FloatRange a, sp_FloatRange b) {
+  return a.first == b.first && a.last == b.last && a.excl == b.excl;
+}
+static const char *sp_frange_inspect(sp_FloatRange r) __attribute__((unused));
+static const char *sp_frange_inspect(sp_FloatRange r) {
+  const char *lo = r.first == -HUGE_VAL ? "" : sp_float_to_s(r.first);
+  const char *hi = r.last == HUGE_VAL ? "" : sp_float_to_s(r.last);
+  return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
+}
+static sp_RbVal sp_box_frange(sp_FloatRange v) __attribute__((unused));
+static sp_RbVal sp_box_frange(sp_FloatRange v) {
+  sp_FloatRange *p = (sp_FloatRange *)sp_gc_alloc(sizeof(sp_FloatRange), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_FLOAT_RANGE);
+}
+/* Float#max: the exclusive form has no greatest element (Ruby raises). */
+static mrb_float sp_frange_max(sp_FloatRange r) __attribute__((unused));
+static mrb_float sp_frange_max(sp_FloatRange r) {
+  if (r.excl) sp_raise_cls("TypeError", "cannot exclude end value with non Integer begin value");
+  return r.last;
+}
+/* #step(n) over a Float range -> a Float array toward last. A negative step walks
+   descending; a wrong-direction step yields an empty array; the count is derived
+   so accumulated float rounding does not drift. */
+static sp_FloatArray *sp_frange_step(sp_FloatRange r, mrb_float st) __attribute__((unused));
+static sp_FloatArray *sp_frange_step(sp_FloatRange r, mrb_float st) {
+  sp_FloatArray *a = sp_FloatArray_new(); SP_GC_ROOT(a);
+  if (st == 0) sp_raise_cls("ArgumentError", "step can't be 0");
+  mrb_float span = r.last - r.first;
+  if (span == span && st == st) {   /* not NaN */
+    if ((span > 0 && st < 0) || (span < 0 && st > 0)) return a;   /* wrong direction */
+  }
+  mrb_int n = (mrb_int)(span / st + (r.excl ? -1e-9 : 1e-9));
+  for (mrb_int i = 0; i <= n; i++) {
+    mrb_float v = r.first + (mrb_float)i * st;
+    if (st > 0) { if (r.excl ? v >= r.last : v > r.last + 1e-9) break; }
+    else        { if (r.excl ? v <= r.last : v < r.last - 1e-9) break; }
+    sp_FloatArray_push(a, v);
+  }
+  return a;
+}
 /* Complex / Rational are wider value types (two components); like sp_Range they
    heap-copy when crossing into a poly slot. No internal pointers, so no scan. */
 static sp_RbVal sp_box_complex(sp_Complex v) {
@@ -2014,6 +2068,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
           break;
         }
         case SP_BUILTIN_RANGE: puts(sp_Range_inspect((sp_Range *)v.v.p)); break;
+        case SP_BUILTIN_FLOAT_RANGE: puts(sp_frange_inspect(*(sp_FloatRange *)v.v.p)); break;
         case SP_BUILTIN_TIME: puts(sp_Time_to_s((sp_Time *)v.v.p)); break;
         case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
         case SP_BUILTIN_RATIONAL: puts(sp_rational_to_s(*(sp_Rational *)v.v.p)); break;
@@ -2076,6 +2131,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_SYM_ARRAY: return sp_SymArray_inspect((sp_IntArray *)v.v.p);
         case SP_BUILTIN_PTR_ARRAY: return sp_PtrArray_inspect((sp_PtrArray *)v.v.p);
         case SP_BUILTIN_RANGE: return sp_Range_inspect((sp_Range *)v.v.p);
+        case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
         case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);
         case SP_BUILTIN_COMPLEX: return sp_complex_to_s(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
@@ -2126,6 +2182,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_SYM_STR_HASH: case SP_BUILTIN_STR_POLY_HASH:
         case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH: return SPL("Hash");
         case SP_BUILTIN_RANGE: return SPL("Range");
+        case SP_BUILTIN_FLOAT_RANGE: return SPL("Range");
         case SP_BUILTIN_TIME: return SPL("Time");
         case SP_BUILTIN_COMPLEX: return SPL("Complex");
         case SP_BUILTIN_RATIONAL: return SPL("Rational");
@@ -4222,6 +4279,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_PTR_ARRAY: return sp_PtrArray_inspect((sp_PtrArray *)v.v.p);
         case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
         case SP_BUILTIN_RANGE:     return sp_Range_inspect((sp_Range *)v.v.p);
+        case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
         case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
         case SP_BUILTIN_COMPLEX:   return sp_complex_inspect(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL:  return sp_rational_inspect(*(sp_Rational *)v.v.p);
