@@ -1980,7 +1980,8 @@ else {
   if (recv >= 0 && rt == TY_RANDOM) {
     if (sp_streq(name, "rand")) {
       if (argc < 1) return TY_FLOAT;
-      if (infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
+      TyKind a0 = infer_type(c, argv[0]);
+      if (a0 == TY_FLOAT || a0 == TY_FLOAT_RANGE) return TY_FLOAT;   /* rand(Float range) -> Float (#2521) */
       /* rand(Float range) -> Float (#2521) */
       const char *atype = nt_type(nt, argv[0]);
       if (atype && sp_streq(atype, "RangeNode")) {
@@ -2596,6 +2597,7 @@ else {
     if (sp_streq(name, "trap") && argc >= 1) return TY_STRING;
     if (sp_streq(name, "rand")) {
       if (argc == 0) return TY_FLOAT;
+      if (infer_type(c, argv[0]) == TY_FLOAT_RANGE) return TY_FLOAT;   /* rand(float range) */
       const char *atype = nt_type(nt, argv[0]);
       if (atype && sp_streq(atype, "RangeNode")) {
         int lo = nt_ref(nt, argv[0], "left");

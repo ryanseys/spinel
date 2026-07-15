@@ -6517,6 +6517,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_Random_rand_float_bound("); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
+      else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
+        /* Random#rand(1.0..2.0) -> a Float in [first, last), exact endpoints. */
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, argv[0], b);
+        buf_puts(b, "; sp_Random_rand_float_range("); emit_expr(c, recv, b);
+        buf_printf(b, ", _t%d.first, _t%d.last); })", tr, tr);
+      }
       else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
         /* a Float-endpoint range yields a Float (#2521); an int range an Int. */
         const char *atype = nt_type(nt, argv[0]);
@@ -7097,6 +7104,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "rand")) {
       if (ac == 0) { buf_puts(b, "(mrb_float)((double)rand() / (RAND_MAX + 1.0))"); return; }
       TyKind a0t = comp_ntype(c, av[0]);
+      if (a0t == TY_FLOAT_RANGE) {   /* rand(1.0..10.0) -> a Float in [first, last) */
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, av[0], b);
+        buf_printf(b, "; _t%d.first + sp_Random_rand_float(sp_random_default_get()) * (_t%d.last - _t%d.first); })", tr, tr, tr);
+        return;
+      }
       if (a0t == TY_RANGE) {
         const char *atype = nt_type(nt, av[0]);
         int islit = atype && sp_streq(atype, "RangeNode");
