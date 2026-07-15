@@ -1365,15 +1365,24 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* (range).step(k) { |x| ... } -- materialise the stepped values (shared with
      the no-block path so they match exactly) and walk them; the element type
      follows the array, int or float. */
-  if (sp_streq(name, "step") && rt == TY_RANGE) {
+  if (sp_streq(name, "step") && (rt == TY_RANGE || rt == TY_FLOAT_RANGE)) {
     int args = nt_ref(nt, id, "arguments"); int sargc = 0;
-    if (args >= 0) nt_arr(nt, args, "arguments", &sargc);
+    const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
     if (sargc < 1) return 0;
     int t = ++g_tmp, ti = ++g_tmp;
     Buf ab; memset(&ab, 0, sizeof ab);
-    TyKind at = emit_range_step_array(c, id, &ab);
-    const char *aty = at == TY_FLOAT_ARRAY ? "sp_FloatArray" : "sp_IntArray";
-    TyKind et = at == TY_FLOAT_ARRAY ? TY_FLOAT : TY_INT;
+    TyKind at, et; const char *aty;
+    if (rt == TY_FLOAT_RANGE) {
+      /* (1.0..2.0).step(0.5) { } -> the float step array, then iterate it */
+      int trf = ++g_tmp;
+      buf_printf(&ab, "({ sp_FloatRange _t%d = ", trf); emit_expr(c, recv, &ab);
+      buf_printf(&ab, "; sp_frange_step(_t%d, ", trf); emit_float_expr(c, sargv[0], &ab); buf_puts(&ab, "); })");
+      at = TY_FLOAT_ARRAY; et = TY_FLOAT; aty = "sp_FloatArray";
+    } else {
+      at = emit_range_step_array(c, id, &ab);
+      aty = at == TY_FLOAT_ARRAY ? "sp_FloatArray" : "sp_IntArray";
+      et = at == TY_FLOAT_ARRAY ? TY_FLOAT : TY_INT;
+    }
     emit_indent(b, indent);
     buf_printf(b, "%s *_t%d = %s; SP_GC_ROOT(_t%d);\n", aty, t, ab.p ? ab.p : "", t);
     free(ab.p);

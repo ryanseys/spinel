@@ -904,12 +904,14 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
      mrb_int sp_Range, so bisect the float interval directly (CRuby find-minimum
      over the reals, a fixed ~100-iteration halving to double precision). The
      block is truthy at/after the answer, falsy before. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_RANGE && range_float_begin(c, recv)) {
+  if (recv >= 0 && ((comp_ntype(c, recv) == TY_RANGE && range_float_begin(c, recv)) ||
+                    comp_ntype(c, recv) == TY_FLOAT_RANGE)) {
     int rn9 = unwrap_parens(c, recv);
     if (rn9 >= 0 && nt_type(nt, rn9) && !sp_streq(nt_type(nt, rn9), "RangeNode"))
       rn9 = local_sole_range_node(c, rn9);
     int rleft = rn9 >= 0 ? nt_ref(nt, rn9, "left") : -1;
     int rright = rn9 >= 0 ? nt_ref(nt, rn9, "right") : -1;
+    if (comp_ntype(c, recv) == TY_FLOAT_RANGE && (rleft < 0 || rright < 0)) return 0;  /* variable float range: not yet */
     TyKind blt9 = rleft >= 0 ? infer_type(c, rleft) : TY_NIL;
     TyKind brt9 = rright >= 0 ? infer_type(c, rright) : TY_NIL;
     if ((blt9 == TY_INT || blt9 == TY_FLOAT) && (brt9 == TY_INT || brt9 == TY_FLOAT) &&
