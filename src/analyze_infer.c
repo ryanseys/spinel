@@ -1957,6 +1957,14 @@ else {
   if (recv < 0 && (sp_streq(name, "puts") || sp_streq(name, "print")) &&
       nt_ref(nt, id, "block") < 0)
     return TY_NIL;
+  /* Kernel#warn / #printf / p() (no args) return nil in value position. */
+  if (recv < 0 && (sp_streq(name, "warn") || sp_streq(name, "printf") ||
+                   ((sp_streq(name, "p") || sp_streq(name, "pp")) && argc == 0)) &&
+      nt_ref(nt, id, "block") < 0)
+    return TY_NIL;
+  /* Kernel#putc returns its argument. */
+  if (recv < 0 && sp_streq(name, "putc") && argc == 1 && nt_ref(nt, id, "block") < 0)
+    return infer_type(c, argv[0]);
 
   /* TY_RANDOM instance methods */
   if (recv >= 0 && rt == TY_RANDOM) {
@@ -2554,6 +2562,12 @@ else {
       if (at == TY_STRING) return TY_STR_ARRAY;    /* Array(str)   -> [str]   */
       if (at == TY_RANGE)  return TY_INT_ARRAY;    /* Array(range) enumerates */
       return TY_POLY_ARRAY;
+    }
+    if (sp_streq(name, "Hash") && argc == 1) {
+      TyKind at = infer_type(c, argv[0]);
+      if (ty_is_hash(at)) return at;              /* Hash(hash) -> the hash */
+      if (at == TY_POLY) return TY_POLY;          /* nil-or-hash decided at runtime */
+      return TY_POLY_POLY_HASH;                   /* Hash(nil) / Hash([]) -> {} */
     }
     if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && argc >= 1) return TY_STRING;
     if (sp_streq(name, "system") && argc >= 1) return TY_BOOL;

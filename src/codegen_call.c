@@ -6767,6 +6767,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          sp_streq(krty, "InstanceVariableReadNode") || sp_streq(krty, "SelfNode"));
     int kname_ok = sp_streq(name, "Integer") || sp_streq(name, "Float") ||
         sp_streq(name, "String") || sp_streq(name, "Array") ||
+        sp_streq(name, "Hash") ||
         sp_streq(name, "Rational") || sp_streq(name, "Complex");
     if (krecv_ok && kname_ok) {
       if (ty_is_object(krt) &&
@@ -6852,6 +6853,32 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "); _t%d; })", t);
       }
       else { buf_puts(b, "sp_kernel_array("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }
+      return;
+    }
+    if (sp_streq(name, "Hash") && ac == 1) {
+      /* Kernel#Hash: nil or [] -> {}, a Hash is returned as-is, anything else is
+         a TypeError (unlike Array, no per-element wrapping). */
+      TyKind at = comp_ntype(c, av[0]);
+      int empty_arr_lit = 0;
+      if (nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "ArrayNode")) {
+        int _en = 0; nt_arr(nt, av[0], "elements", &_en);
+        empty_arr_lit = (_en == 0);
+      }
+      if (ty_is_hash(at)) { emit_expr(c, av[0], b); }
+      else if (at == TY_NIL || empty_arr_lit) {
+        /* result type is TY_POLY_POLY_HASH: emit the raw hash pointer */
+        buf_puts(b, "((void)("); emit_expr(c, av[0], b);
+        buf_puts(b, "), sp_PolyPolyHash_new())");
+      }
+      else if (at == TY_POLY) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, av[0], b);
+        buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"
+                      " : (_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)) ? _t%d"
+                      " : (sp_raise_cls(\"TypeError\", \"can't convert to Hash\"), sp_box_nil()); })",
+                   t, t, t, t);
+      }
+      else { buf_puts(b, "((void)("); emit_expr(c, av[0], b); buf_puts(b, "), sp_raise_cls(\"TypeError\", \"can't convert to Hash\"), sp_PolyPolyHash_new())"); }
       return;
     }
     if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && ac == 1 &&
@@ -6997,6 +7024,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); fputs(sp_poly_inspect(_t%d), stdout); putchar('\\n'); ", t, t);
     char tv[16]; snprintf(tv, sizeof tv, "_t%d", t);
     emit_unbox_text(c, at, tv, b);
+    buf_puts(b, "; })");
+    return;
+  }
+  /* Kernel#warn / #printf / #putc / p() as an expression: run the statement
+     emitter inside a statement-expression and yield the Ruby value (nil for
+     warn/printf/p(), the argument for putc). */
+  if (recv < 0 && (sp_streq(name, "warn") || sp_streq(name, "printf") ||
+                   (sp_streq(name, "putc") && argc == 1) ||
+                   ((sp_streq(name, "p") || sp_streq(name, "pp")) && argc == 0)) &&
+      nt_ref(nt, id, "block") < 0) {
+    buf_puts(b, "({ ");
+    emit_output_call(c, id, b, 0);
+    if (sp_streq(name, "putc") && argc == 1) emit_expr(c, argv[0], b);  /* putc returns its arg */
+    else buf_puts(b, "sp_box_nil()");
     buf_puts(b, "; })");
     return;
   }
