@@ -5515,7 +5515,9 @@ sp_Bigint *sp_bigint_shr(sp_Bigint *a, int64_t n) {
 }
 
 sp_Bigint *sp_bigint_not(sp_Bigint *a) {
-  return sp_bigint_new_int(~sp_bigint_to_int(a));
+  /* ~a == -a - 1 for any integer; the earlier sp_bigint_to_int form truncated
+     a to 64 bits, so ~(2**100) came back -1 (#2469). */
+  return sp_bigint_sub(sp_bigint_sub(sp_bigint_new_int(0), a), sp_bigint_new_int(1));
 }
 
 const char *sp_bigint_to_s(sp_Bigint *b) {
@@ -5615,6 +5617,22 @@ sp_Bigint *sp_bigint_abs_v(sp_Bigint *b) {
   if (!b) return sp_bigint_new_int(0);
   if (sp_bigint_sign(b) >= 0) return b;
   return sp_bigint_sub(sp_bigint_new_int(0), b);
+}
+
+sp_Bigint *sp_bigint_gcd(sp_Bigint *a, sp_Bigint *b) {
+  sp_Bigint *r = sp_bigint_alloc();
+  mpz_init(sp_mpz_ctx, &r->mpz);
+  mpz_gcd(sp_mpz_ctx, &r->mpz, &a->mpz, &b->mpz);
+  return sp_bigint_abs_v(r);   /* Integer#gcd is always non-negative */
+}
+
+sp_Bigint *sp_bigint_lcm(sp_Bigint *a, sp_Bigint *b) {
+  /* lcm(a, b) = |a| / gcd(a, b) * |b|; 0 when either operand is 0, matching
+     Ruby. Dividing before multiplying keeps the intermediate value smaller. */
+  if (sp_bigint_sign(a) == 0 || sp_bigint_sign(b) == 0) return sp_bigint_new_int(0);
+  sp_Bigint *g = sp_bigint_gcd(a, b);
+  sp_Bigint *q = sp_bigint_div(sp_bigint_abs_v(a), g);
+  return sp_bigint_mul(q, sp_bigint_abs_v(b));
 }
 
 /* Integer.sqrt for a Bignum argument: exact integer square root via mpz (#2420) */

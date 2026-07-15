@@ -4297,6 +4297,20 @@ else {
     if (sp_streq(name, "class") && argc == 0) return TY_CLASS;
     if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) &&
         (argc == 0 || argc == 1)) return TY_BIGINT;  /* #2303 */
+    /* Integer/Float/bool-returning Bignum methods that need no Rational (#2469).
+       to_r/rationalize/quo would need a bigint-backed Rational and stay
+       unsupported. */
+    if (sp_streq(name, "~") && argc == 0) return TY_BIGINT;
+    if ((sp_streq(name, "numerator") || sp_streq(name, "ord")) && argc == 0) return TY_BIGINT;
+    if ((sp_streq(name, "denominator") || sp_streq(name, "size")) && argc == 0) return TY_INT;
+    if (sp_streq(name, "nonzero?") && argc == 0) return TY_POLY;   /* self or nil */
+    if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
+    if (sp_streq(name, "pow") && argc == 1) return TY_BIGINT;
+    if ((sp_streq(name, "div") || sp_streq(name, "gcd") || sp_streq(name, "lcm") ||
+         sp_streq(name, "ceildiv")) && argc == 1) return TY_BIGINT;
+    if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) &&
+        argc == 1) return TY_BOOL;
+    if (sp_streq(name, "gcdlcm") && argc == 1) return TY_POLY_ARRAY;
   }
   /* poly recv bitwise op: result is int (sp_poly_to_i applied). */
   if (recv >= 0 && argc == 1 && rt == TY_POLY &&

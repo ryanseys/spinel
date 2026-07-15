@@ -12087,6 +12087,72 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "to_f") && argc == 0) {
       buf_printf(b, "sp_bigint_to_double(%s)", r); free(rs.p); return;
     }
+    /* Bignum-receiver methods that return an Integer/Float/bool without a
+       Rational (those need a bigint-backed Rational and stay unsupported)
+       (#2469). */
+    if (sp_streq(name, "~") && argc == 0) { buf_printf(b, "sp_bigint_not(%s)", r); free(rs.p); return; }
+    /* numerator/ord of an Integer is the value itself; denominator is 1 */
+    if ((sp_streq(name, "numerator") || sp_streq(name, "ord")) && argc == 0) {
+      buf_printf(b, "(%s)", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "denominator") && argc == 0) {
+      buf_printf(b, "((void)(%s), (mrb_int)1)", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "size") && argc == 0) {
+      /* Integer#size is ceil(bit_length / 8); sp_bigint_byte_len rounds up to
+         whole limbs, which overcounts (2**100 -> 16 not 13). */
+      buf_printf(b, "((sp_bigint_bit_length(%s) + 7) / 8)", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "nonzero?") && argc == 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; sp_bigint_sign(_t%d) != 0 ? sp_box_bigint(_t%d) : sp_box_nil(); })", t, r, t, t);
+      free(rs.p); return;
+    }
+    if (sp_streq(name, "fdiv") && argc == 1) {
+      TyKind at = comp_ntype(c, argv[0]);
+      buf_printf(b, "(sp_bigint_to_double(%s) / ", r);
+      if (at == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (at == TY_FLOAT) { buf_puts(b, "("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else { buf_puts(b, "(double)("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_puts(b, ")"); free(rs.p); return;
+    }
+    if (sp_streq(name, "pow") && argc == 1) {
+      buf_printf(b, "sp_bigint_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      free(rs.p); return;
+    }
+    if ((sp_streq(name, "div") || sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1) {
+      const char *fn = sp_streq(name, "div") ? "div" : name;
+      buf_printf(b, "sp_bigint_%s(%s, ", fn, r);
+      emit_bigint_operand(c, argv[0], b); buf_puts(b, ")");
+      free(rs.p); return;
+    }
+    if (sp_streq(name, "ceildiv") && argc == 1) {
+      /* ceil division = -((-a) div b); div is floor division */
+      buf_printf(b, "sp_bigint_sub(sp_bigint_new_int(0), sp_bigint_div(sp_bigint_sub(sp_bigint_new_int(0), %s), ", r);
+      emit_bigint_operand(c, argv[0], b); buf_puts(b, "))");
+      free(rs.p); return;
+    }
+    if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) && argc == 1) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = ", t); emit_bigint_operand(c, argv[0], b); buf_puts(b, "; ");
+      if (sp_streq(name, "allbits?"))
+        buf_printf(b, "(sp_bigint_cmp(sp_bigint_and(%s, _t%d), _t%d) == 0); })", r, t, t);
+      else if (sp_streq(name, "anybits?"))
+        buf_printf(b, "(sp_bigint_sign(sp_bigint_and(%s, _t%d)) != 0); })", r, t);
+      else
+        buf_printf(b, "(sp_bigint_sign(sp_bigint_and(%s, _t%d)) == 0); })", r, t);
+      free(rs.p); return;
+    }
+    if (sp_streq(name, "gcdlcm") && argc == 1) {
+      int t = ++g_tmp, ta = ++g_tmp, tr = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; sp_Bigint *_t%d = ", tr, r, t);
+      emit_bigint_operand(c, argv[0], b);
+      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_box_bigint(sp_bigint_gcd(_t%d, _t%d)));"
+                    " sp_PolyArray_push(_t%d, sp_box_bigint(sp_bigint_lcm(_t%d, _t%d))); _t%d; })",
+                 ta, ta, ta, tr, t, ta, tr, t, ta);
+      free(rs.p); return;
+    }
     free(rs.p);
   }
 
