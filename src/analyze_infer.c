@@ -4154,7 +4154,7 @@ else {
     if (cgn) { LocalVar *cv = comp_const(c, cgn); if (cv && cv->type != TY_UNKNOWN) return cv->type; return TY_POLY; }
   }
   if (sp_streq(name, "nil?") && recv >= 0 && argc == 0) return TY_BOOL;
-  if (sp_streq(name, "object_id") && recv >= 0 && argc == 0) return TY_INT;
+  if ((sp_streq(name, "object_id") || sp_streq(name, "__id__")) && recv >= 0 && argc == 0) return TY_INT;
   /* #hash on a primitive returns an Integer (CRuby's any_hash contract): the
      value is the receiver boxed through sp_rbval_hash_key, the same hashing the
      Hash container uses, so a user `def hash = v.hash` composes consistently. A
