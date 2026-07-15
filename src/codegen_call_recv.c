@@ -530,12 +530,18 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     int lvw9 = rvt9 && (sp_streq(rvt9, "LocalVariableReadNode") ||
                         sp_streq(rvt9, "InstanceVariableReadNode"));
     int tn9 = ++g_tmp;
+    /* append_as_bytes accepts String AND Integer arguments; an Integer is the
+       raw byte value (100 -> "d"), materialized via sp_int_chr (#2463). */
     buf_printf(b, "({ const char *_t%d = sp_str_concat(", tn9);  /* reassigned per extra arg: keep non-const? const char* variable is reassignable (the POINTEE is const) */
     emit_expr(c, recv, b); buf_puts(b, ", ");
-    emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+    if (comp_ntype(c, argv[0]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else emit_str_expr(c, argv[0], b);
+    buf_puts(b, ")");
     for (int a9 = 1; a9 < argc; a9++) {
       buf_printf(b, "; _t%d = sp_str_concat(_t%d, ", tn9, tn9);
-      emit_str_expr(c, argv[a9], b); buf_puts(b, ")");
+      if (comp_ntype(c, argv[a9]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[a9], b); buf_puts(b, ")"); }
+      else emit_str_expr(c, argv[a9], b);
+      buf_puts(b, ")");
     }
     if (lvw9) { buf_puts(b, "; "); emit_expr(c, recv, b); buf_printf(b, " = _t%d", tn9); }
     buf_printf(b, "; _t%d; })", tn9);
