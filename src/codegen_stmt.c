@@ -104,6 +104,11 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_Range_inspect(&_t%d), stdout); putchar('\\n'); }\n", tv);
   }
+  else if (t == TY_FLOAT_RANGE) {
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_FloatRange _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_frange_inspect(_t%d), stdout); putchar('\\n'); }\n", tv);
+  }
   else if (t == TY_CLASS) {
     int _tc = ++g_tmp;
     buf_printf(b, "{ sp_Class _cl%d = ", _tc); emit_expr(c, arg, b);
@@ -266,6 +271,11 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_Range_inspect(&_t%d), stdout); }\n", tv);
   }
+  else if (t == TY_FLOAT_RANGE) {
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_FloatRange _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_frange_inspect(_t%d), stdout); }\n", tv);
+  }
   else if (ty_is_array(t) || ty_is_hash(t) || t == TY_EXCEPTION || t == TY_TIME) {
     /* print of a collection renders its to_s (== inspect for Array/Hash);
        box once and go through the poly renderer. */
@@ -424,6 +434,11 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_Range_inspect(&_t%d), stdout); putchar('\\n'); }\n", tv);
+  }
+  else if (t == TY_FLOAT_RANGE) {   /* a Float range inspects as "1.0..3.0" */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_FloatRange _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_frange_inspect(_t%d), stdout); putchar('\\n'); }\n", tv);
   }
   else if (t == TY_CLASS) {   /* a Class/Module inspects as its name */
     int cv = ++g_tmp;
@@ -3224,6 +3239,13 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             if (pt == TY_POLY) buf_printf(b, "; sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", tr, t);
             else buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
           }
+          else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE) {
+            /* `when 1.0..3.0`: float range membership via sp_frange_cover */
+            int tr = ++g_tmp;
+            buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, conds[j], b);
+            if (pt == TY_POLY) buf_printf(b, "; sp_frange_cover(_t%d, sp_poly_to_f(_t%d)); })", tr, t);
+            else buf_printf(b, "; sp_frange_cover(_t%d, (mrb_float)_t%d); })", tr, t);
+          }
           else if (eq_family(pt) && eq_family(comp_ntype(c, conds[j])) && eq_family(pt) != eq_family(comp_ntype(c, conds[j]))) {
             /* a when value of a different comparable family never matches */
             buf_puts(b, "0");
@@ -3449,6 +3471,12 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
           if (pt == TY_POLY) buf_printf(b, "; sp_range_include(&_t%d, sp_poly_to_i(_t%d)); })", tr, t);
           else buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
+        }
+        else if (comp_ntype(c, conds[j]) == TY_FLOAT_RANGE) {
+          int tr = ++g_tmp;
+          buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, conds[j], b);
+          if (pt == TY_POLY) buf_printf(b, "; sp_frange_cover(_t%d, sp_poly_to_f(_t%d)); })", tr, t);
+          else buf_printf(b, "; sp_frange_cover(_t%d, (mrb_float)_t%d); })", tr, t);
         }
         else if (eq_family(pt) && eq_family(comp_ntype(c, conds[j])) && eq_family(pt) != eq_family(comp_ntype(c, conds[j]))) {
           buf_puts(b, "0");

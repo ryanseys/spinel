@@ -2623,6 +2623,7 @@ else {
         if (at == TY_INT) {
           buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
           buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = sp_range_include((sp_Range *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = sp_frange_cover(*(sp_FloatRange *)_t%d.v.p, (mrb_float)_t%d); break;", tr, tv, atmp[0]);
         }
         else if (at == TY_STRING) {
           buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = sp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
@@ -2643,6 +2644,7 @@ else {
              fits the element type (a Set difference against an Array literal
              reaches these; a mismatched tag is simply not a member). */
           buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = sp_range_include((sp_Range *)_t%d.v.p, sp_poly_to_i(_t%d)); break;", tr, tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = sp_frange_cover(*(sp_FloatRange *)_t%d.v.p, sp_poly_to_f(_t%d)); break;", tr, tv, atmp[0]);
           buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = _t%d.tag == SP_TAG_INT && sp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d.v.i); break;", tr, atmp[0], tv, atmp[0]);
           buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = _t%d.tag == SP_TAG_FLT && sp_FloatArray_include((sp_FloatArray *)_t%d.v.p, _t%d.v.f); break;", tr, atmp[0], tv, atmp[0]);
           buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = _t%d.tag == SP_TAG_STR && sp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d.v.s); break;", tr, atmp[0], tv, atmp[0]);
@@ -3632,7 +3634,9 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
      handlers and fall through here. */
   if (argc == 1 && sp_streq(name, "===")) {
     int fr = eq_family(rt), fa = eq_family(a0);
-    if (fr && fr != 5 && fa && fa != 5) {
+    /* Range/float-range `===` is membership, not value equality; both fall
+       through to their dedicated cover handlers. */
+    if (fr && fr != 5 && fr != 6 && fa && fa != 5 && fa != 6) {
       if (fr == fa) {
         if (fr == 2) { buf_puts(b, "sp_str_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, " == "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -3644,7 +3648,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
        integer param `=== y` where y unified to poly across call sites): case
        equality is value equality, so box the receiver and compare by the poly
        runtime rule (int/float cross-compare numerically, other tags by tag). */
-    if (fr && fr != 5 && a0 == TY_POLY) {
+    if (fr && fr != 5 && fr != 6 && a0 == TY_POLY) {
       buf_puts(b, "sp_poly_eq("); emit_boxed(c, recv, b); buf_puts(b, ", ");
       emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;
@@ -3892,6 +3896,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         if (fr == 2 && emit_strchar_cmp(c, recv, argv[0], eq, b)) return 1;
         if (fr == 2) { buf_puts(b, eq ? "sp_str_eq(" : "(!sp_str_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
         else if (fr == 5) { buf_puts(b, eq ? "sp_range_eq(" : "(!sp_range_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
+        else if (fr == 6) { buf_puts(b, eq ? "sp_frange_eq(" : "(!sp_frange_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
         else { buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, " %s ", eq ? "==" : "!="); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         return 1;
       }
@@ -5120,12 +5125,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
       int bbn = 0; const int *bbb = bbd >= 0 ? nt_arr(nt, bbd, "body", &bbn) : NULL;
       if (bl >= 0 && br >= 0 && bbn >= 1 && infer_type(c, bbb[bbn - 1]) != TY_INT)
         bsearch_float_ok = 1;
+      /* a distinct-typed float range bsearch (variable or literal) bisects too */
+      if (rcv >= 0 && comp_ntype(c, rcv) == TY_FLOAT_RANGE) bsearch_float_ok = 1;
     }
     if (rcv >= 0 && cn && nt_ref(nt, id, "block") >= 0 &&
         !sp_streq(cn, "step") && !sp_streq(cn, "tap") &&
         !sp_streq(cn, "then") && !sp_streq(cn, "yield_self") &&
         !bsearch_float_ok &&
-        comp_ntype(c, rcv) == TY_RANGE && range_float_begin(c, rcv)) {
+        ((comp_ntype(c, rcv) == TY_RANGE && range_float_begin(c, rcv)) ||
+         comp_ntype(c, rcv) == TY_FLOAT_RANGE)) {
       const char *dv = default_value(comp_ntype(c, id));
       buf_printf(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); %s; })",
                  dv ? dv : "0");

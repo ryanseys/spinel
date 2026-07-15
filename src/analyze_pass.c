@@ -5189,8 +5189,13 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?") ||
               sp_streq(name, "one?") || sp_streq(name, "sum") || sp_streq(name, "min_by") ||
               sp_streq(name, "max_by") || sp_streq(name, "bsearch") ||
-              sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")) && rt == TY_RANGE) {
-      /* a float-bounded range binds a FLOAT element (bsearch bisects the reals) */
+              sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")) &&
+             (rt == TY_RANGE || rt == TY_FLOAT_RANGE)) {
+      /* a distinct float range binds a FLOAT block element (its bsearch
+         bisects the reals; the enumerating forms raise but still bind). */
+      if (rt == TY_FLOAT_RANGE) { pt = TY_FLOAT; }
+      else {
+      /* a float-bounded int range binds a FLOAT element (bsearch bisects the reals) */
       int frn = recv;
       while (frn >= 0 && nt_type(nt, frn) && sp_streq(nt_type(nt, frn), "ParenthesesNode")) {
         int pb = nt_ref(nt, frn, "body"); int pbn = 0;
@@ -5207,6 +5212,7 @@ int infer_block_params(Compiler *c) {
         pt = TY_FLOAT;
       else
         pt = TY_INT;
+      }
     }
     /* (range).lazy.select/reject/filter { |x| } : x is an integer range element */
     else if ((sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter")) &&

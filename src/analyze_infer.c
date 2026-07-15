@@ -658,6 +658,49 @@ TyKind infer_call(Compiler *c, int id) {
   if (!g_infer_ignore_brk && call_breaks(c, id)) return TY_POLY;
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+  /* A Float range (1.0..3.0) is a distinct type with float endpoints; it is
+     not iterable, so its whole method face reduces to endpoint queries,
+     membership tests, and the sole materializing method, step. */
+  if (rt == TY_FLOAT_RANGE) {
+    if (sp_streq(name, "begin") || sp_streq(name, "end") ||
+        sp_streq(name, "first") || sp_streq(name, "last") ||
+        sp_streq(name, "min") || sp_streq(name, "max"))
+      return argc == 0 ? TY_FLOAT : TY_POLY;   /* first(n)/last(n) raise anyway */
+    if (sp_streq(name, "cover?") || sp_streq(name, "include?") ||
+        sp_streq(name, "member?") || sp_streq(name, "===") ||
+        sp_streq(name, "==") || sp_streq(name, "eql?") ||
+        sp_streq(name, "exclude_end?") || sp_streq(name, "frozen?") ||
+        sp_streq(name, "respond_to?") || sp_streq(name, "nil?") ||
+        sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
+        sp_streq(name, "instance_of?") || sp_streq(name, "equal?"))
+      return TY_BOOL;
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
+    if (sp_streq(name, "step")) return TY_FLOAT_ARRAY;
+    if (sp_streq(name, "bsearch") && nt_ref(nt, id, "block") >= 0) return TY_FLOAT;
+    if (sp_streq(name, "class")) return TY_CLASS;
+    if (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
+        sp_streq(name, "dup") || sp_streq(name, "clone"))
+      return TY_FLOAT_RANGE;
+    /* each/map/sum/to_a/... raise "can't iterate from Float" at run time; a
+       poly result keeps the boxed-nil slot the raise leaves behind valid (and
+       lets respond_to? report these Enumerable methods as present, like CRuby).
+       A name outside this set is genuinely undefined, so leave it UNKNOWN: the
+       respond_to? probe reads that as "not dispatchable" (false), matching an
+       ordinary int range, and a real call errors like any unknown method. */
+    {
+      static const char *const iter[] = {
+        "each", "map", "collect", "select", "filter", "reject", "to_a", "to_h",
+        "entries", "find", "detect", "find_index", "count", "sum", "sort",
+        "sort_by", "min_by", "max_by", "reduce", "inject", "each_with_index",
+        "flat_map", "collect_concat", "any?", "all?", "none?", "one?", "take",
+        "drop", "take_while", "drop_while", "filter_map", "partition",
+        "group_by", "each_with_object", "tally", "find_all", "zip", "grep",
+        "grep_v", "uniq", "reverse", "minmax", "join", "index", "size", "lazy",
+        "each_cons", "each_slice", "chunk", "chunk_while", "cycle", NULL };
+      for (int k = 0; iter[k]; k++) if (sp_streq(name, iter[k])) return TY_POLY;
+    }
+    return TY_UNKNOWN;
+  }
   /* endless literal range: size is the Float infinity; take/first with a
      count materialize just the counted prefix (nothing else can) */
   if (rt == TY_RANGE && recv >= 0) {
@@ -4611,8 +4654,14 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     /* infer the bounds so codegen can tell an int range from a string range */
     int lo = nt_ref(nt, id, "left"), hi = nt_ref(nt, id, "right");
-    if (lo >= 0) infer_type(c, lo);
-    if (hi >= 0) infer_type(c, hi);
+    TyKind lt = lo >= 0 ? infer_type(c, lo) : TY_UNKNOWN;
+    TyKind ht = hi >= 0 ? infer_type(c, hi) : TY_UNKNOWN;
+    /* (1.0..3.0): a BOUNDED range with both endpoints float lowers to the
+       distinct sp_FloatRange type. A mixed int/float range (1..3.0) and any
+       beginless/endless float range stay on the ordinary int TY_RANGE path,
+       which already serves their (narrow, mostly-raising) method surface. */
+    if (lo >= 0 && hi >= 0 && lt == TY_FLOAT && ht == TY_FLOAT)
+      return TY_FLOAT_RANGE;
     return TY_RANGE;
   }
   /* A splat inside an array literal (`[*0..10]`, `[*arr]`) contributes the

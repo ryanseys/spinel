@@ -718,6 +718,16 @@ void emit_expr(Compiler *c, int id, Buf *b) {
                  ta);
       return;
     }
+    /* (1.0..3.0): the distinct float range, endpoints kept as mrb_float.
+       A missing bound uses -/+HUGE_VAL as the beginless/endless sentinel. */
+    if (comp_ntype(c, id) == TY_FLOAT_RANGE) {
+      buf_puts(b, "sp_frange_new(");
+      if (left >= 0) emit_float_expr(c, left, b); else buf_puts(b, "(-HUGE_VAL)");
+      buf_puts(b, ", ");
+      if (right >= 0) emit_float_expr(c, right, b); else buf_puts(b, "HUGE_VAL");
+      buf_printf(b, ", %d)", excl);
+      return;
+    }
     buf_puts(b, "sp_range_new(");
     if (left >= 0) emit_int_expr(c, left, b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
     buf_puts(b, ", ");
