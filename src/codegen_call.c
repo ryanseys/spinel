@@ -9857,15 +9857,30 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     /* poly receiver `poly =~ /re/`: String#=~ when it holds a string at runtime
-       (e.g. an element read out of an array that widened to poly); any other tag
-       has no =~ (Object#=~ was removed) -> NoMethodError, matching CRuby. */
+       (e.g. an element read out of an array that widened to poly), nil when it
+       holds nil (NilClass#=~ is always nil); any other tag has no =~ (Object#=~
+       was removed) -> NoMethodError, matching CRuby. */
     if (are >= 0 && sp_streq(name, "=~") && rt == TY_POLY) {
       int tv = ++g_tmp;
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
       buf_printf(b, "(_t%d.tag == SP_TAG_STR ? sp_re_match_poly(sp_re_pat_%d, _t%d.v.s)"
+                    " : _t%d.tag == SP_TAG_NIL ? sp_box_nil()"
                     " : sp_raise_nomethod(\"undefined method '=~' for poly\"))",
-                 tv, are, tv);
+                 tv, are, tv, tv);
+      return;
+    }
+    /* poly receiver `poly !~ /re/`: nil !~ is always true, a string tests the
+       negated match; any other tag has no =~ so !~ raises NoMethodError. A
+       non-poly (string) receiver keeps the direct negated-match emit. */
+    if (are >= 0 && sp_streq(name, "!~") && rt == TY_POLY) {
+      int tv = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
+      buf_printf(b, "(_t%d.tag == SP_TAG_STR ? !sp_re_match_p(sp_re_pat_%d, _t%d.v.s)"
+                    " : _t%d.tag == SP_TAG_NIL ? 1"
+                    " : (sp_raise_nomethod(\"undefined method '=~' for poly\"), 0))",
+                 tv, are, tv, tv);
       return;
     }
     if (are >= 0 && sp_streq(name, "!~")) {
@@ -10878,13 +10893,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        to the object-receiver path, which would misread a boxed int's payload
        as a user-class pointer and recurse into this same `<=>`. */
     if (lrt == TY_POLY || lat == TY_POLY) {
-      int ta = ++g_tmp, tb = ++g_tmp, tk = ++g_tmp, tr2 = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
-      buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
-      /* incomparable runtime operands answer nil (the int-nil sentinel),
-         matching CRuby -- discarding the flag returned a bogus 0 */
-      buf_printf(b, "; mrb_bool _t%d; mrb_int _t%d = sp_poly_cmp(_t%d, _t%d, &_t%d);"
-                    " _t%d ? _t%d : SP_INT_NIL; })", tk, tr2, ta, tb, tk, tk, tr2);
+      /* sp_poly_spaceship answers nil for incomparable runtime operands (the
+         int-nil sentinel) but 0 for identical singletons -- `nil <=> nil` is 0
+         even though the two are not "comparable" in the Comparable sense. */
+      buf_puts(b, "sp_poly_spaceship("); emit_boxed(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     /* Statically incomparable concrete operands (1 <=> "a"): Ruby answers

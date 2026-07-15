@@ -2431,6 +2431,18 @@ static void sp_poly_cmp_fail(sp_RbVal a, sp_RbVal b) {
   sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed",
                                            sp_poly_class_name(a), sp_cmperr_desc(b)));
 }
+/* The `<=>` operator: sp_poly_cmp when the operands are mutually comparable,
+   else Object#<=> -- 0 when they are the same object, nil otherwise. nil and
+   the booleans are value-identity singletons, so `nil <=> nil` is 0 (while
+   `nil < nil` still raises, since NilClass does not mix in Comparable). */
+static mrb_int sp_poly_spaceship(sp_RbVal a, sp_RbVal b) {
+  mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable);
+  if (comparable) return cmp;
+  if (a.tag == b.tag &&
+      (a.tag == SP_TAG_NIL || (a.tag == SP_TAG_BOOL && a.v.b == b.v.b)))
+    return 0;
+  return SP_INT_NIL;
+}
 static mrb_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp < 0; }
 static mrb_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp <= 0; }
 static mrb_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp > 0; }
