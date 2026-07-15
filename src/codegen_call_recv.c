@@ -4453,6 +4453,18 @@ else {
    variable yields the same object, so the reflexive case is certainly true,
    while method calls / literals (which would produce fresh objects, or which the
    C compiler merges) are excluded. */
+/* String#upcase and friends take an optional casemap symbol. `:ascii`
+   restricts folding to A-Z/a-z; return the "_ascii" runtime suffix for it so
+   non-ASCII bytes pass through. Full-Unicode folding (no arg) returns "". */
+static const char *case_map_suffix(Compiler *c, int argc, int *argv) {
+  if (argc >= 1 && nt_type(c->nt, argv[0]) &&
+      sp_streq(nt_type(c->nt, argv[0]), "SymbolNode") &&
+      nt_str(c->nt, argv[0], "value") &&
+      sp_streq(nt_str(c->nt, argv[0], "value"), "ascii"))
+    return "_ascii";
+  return "";
+}
+
 static int same_sefree_lvalue(Compiler *c, int a, int b) {
   if (a < 0 || b < 0) return 0;
   const char *ta = nt_type(c->nt, a), *tb = nt_type(c->nt, b);
@@ -4584,10 +4596,10 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         else buf_printf(b, "sp_str_length_m(%s)", r);
       }
       else if (sp_streq(name, "bytesize")) buf_printf(b, "sp_str_bytesize_m(%s)", r);
-      else if (sp_streq(name, "upcase"))     buf_printf(b, "sp_str_upcase(%s)", r);
-      else if (sp_streq(name, "downcase"))   buf_printf(b, "sp_str_downcase(%s)", r);
-      else if (sp_streq(name, "capitalize")) buf_printf(b, "sp_str_capitalize(%s)", r);
-      else if (sp_streq(name, "swapcase"))   buf_printf(b, "sp_str_swapcase(%s)", r);
+      else if (sp_streq(name, "upcase"))     buf_printf(b, "sp_str_upcase%s(%s)", case_map_suffix(c, argc, argv), r);
+      else if (sp_streq(name, "downcase"))   buf_printf(b, "sp_str_downcase%s(%s)", case_map_suffix(c, argc, argv), r);
+      else if (sp_streq(name, "capitalize")) buf_printf(b, "sp_str_capitalize%s(%s)", case_map_suffix(c, argc, argv), r);
+      else if (sp_streq(name, "swapcase"))   buf_printf(b, "sp_str_swapcase%s(%s)", case_map_suffix(c, argc, argv), r);
       else if (sp_streq(name, "dedup") && argc == 0) buf_printf(b, "sp_str_uminus_val(%s)", r);
       else if (sp_streq(name, "delete_prefix") && argc == 1) { buf_printf(b, "sp_str_delete_prefix(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "delete_suffix") && argc == 1) { buf_printf(b, "sp_str_delete_suffix(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }

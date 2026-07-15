@@ -137,9 +137,47 @@ const char *sp_sym_inspect_name(const char *name) {
 const char *sp_sym_inspect_key(const char *name) {
   return sp_sym_simple_p(name) ? name : sp_str_inspect(name);
 }
-const char*sp_str_upcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("upcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++)r[i]=toupper((unsigned char)s[i]);r[l]=0;return r;}
-const char*sp_str_downcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("downcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++)r[i]=tolower((unsigned char)s[i]);r[l]=0;return r;}
-const char*sp_str_swapcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("swapcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char c=(unsigned char)s[i];if(isupper(c))r[i]=tolower(c);else if(islower(c))r[i]=toupper(c);else r[i]=s[i];}r[l]=0;return r;}
+/* Simple Unicode case mapping for ASCII + Latin-1 Supplement (U+00C0-00FF)
+   + Latin Extended-A (U+0100-017F), the ranges the ruby/spec string case
+   specs exercise. Full Unicode is out of scope (one internal UTF-8 rep). */
+uint32_t sp_uc_toupper(uint32_t cp){
+  if(cp<0x80)return (uint32_t)toupper((int)cp);
+  if(cp>=0xE0&&cp<=0xFE&&cp!=0xF7)return cp-0x20; /* Latin-1 lower -> upper */
+  if(cp==0xFF)return 0x178;                       /* ÿ -> Ÿ */
+  if(cp>=0x100&&cp<=0x137){ if(cp&1)return cp-1; return cp; } /* Latin-Ext-A pairs */
+  if(cp>=0x139&&cp<=0x148){ if((cp&1)==0)return cp-1; return cp; }
+  if(cp>=0x14A&&cp<=0x177){ if(cp&1)return cp-1; return cp; }
+  if(cp>=0x179&&cp<=0x17E){ if((cp&1)==0)return cp-1; return cp; }
+  return cp;
+}
+uint32_t sp_uc_tolower(uint32_t cp){
+  if(cp<0x80)return (uint32_t)tolower((int)cp);
+  if(cp>=0xC0&&cp<=0xDE&&cp!=0xD7)return cp+0x20; /* Latin-1 upper -> lower */
+  if(cp==0x178)return 0xFF;                        /* Ÿ -> ÿ */
+  if(cp>=0x100&&cp<=0x137){ if((cp&1)==0)return cp+1; return cp; }
+  if(cp>=0x139&&cp<=0x148){ if(cp&1)return cp+1; return cp; }
+  if(cp>=0x14A&&cp<=0x177){ if((cp&1)==0)return cp+1; return cp; }
+  if(cp>=0x179&&cp<=0x17E){ if(cp&1)return cp+1; return cp; }
+  return cp;
+}
+/* Map every codepoint of s through fn; ß (U+00DF) upcases to "SS" when
+   up is set, so allocate room for a 3x expansion. */
+static const char*sp_str_case_map(const char*s,uint32_t(*fn)(uint32_t),int up){
+  size_t l=strlen(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;
+  for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;
+    if(up&&cp==0xDF){r[oi++]='S';r[oi++]='S';continue;}
+    oi+=(size_t)sp_utf8_encode(fn(cp),r+oi);}
+  r[oi]=0;return r;
+}
+const char*sp_str_upcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("upcase");return sp_str_case_map(s,sp_uc_toupper,1);}
+const char*sp_str_downcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("downcase");return sp_str_case_map(s,sp_uc_tolower,0);}
+const char*sp_str_swapcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("swapcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;uint32_t up=sp_uc_toupper(cp),lo=sp_uc_tolower(cp);if(up!=cp){/* cp is lowercase -> uppercase */if(cp==0xDF){r[oi++]='S';r[oi++]='S';}else oi+=(size_t)sp_utf8_encode(up,r+oi);}else if(lo!=cp){/* cp is uppercase -> lowercase */oi+=(size_t)sp_utf8_encode(lo,r+oi);}else oi+=(size_t)sp_utf8_encode(cp,r+oi);}r[oi]=0;return r;}
+/* The `:ascii` option (upcase(:ascii)) restricts folding to A-Z/a-z and leaves
+   every non-ASCII byte untouched, so these copy byte-for-byte. */
+const char*sp_str_upcase_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("upcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];r[i]=(ch>='a'&&ch<='z')?(char)(ch-32):(char)ch;}r[l]=0;return r;}
+const char*sp_str_downcase_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("downcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];r[i]=(ch>='A'&&ch<='Z')?(char)(ch+32):(char)ch;}r[l]=0;return r;}
+const char*sp_str_swapcase_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("swapcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];if(ch>='a'&&ch<='z')r[i]=(char)(ch-32);else if(ch>='A'&&ch<='Z')r[i]=(char)(ch+32);else r[i]=(char)ch;}r[l]=0;return r;}
+const char*sp_str_capitalize_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];if(i==0)r[i]=(ch>='a'&&ch<='z')?(char)(ch-32):(char)ch;else r[i]=(ch>='A'&&ch<='Z')?(char)(ch+32):(char)ch;}r[l]=0;return r;}
 /* String#dump: a double-quoted, escaped form that sp_str_undump reverses.
    UTF-8 high bytes pass through literally (undump copies them back), so a
    dump/undump round-trip is byte-identical. */
@@ -275,7 +313,7 @@ const char*sp_str_bytesplice(const char*s,mrb_int start,mrb_int len,const char*v
 int sp_str_ascii_only(const char*s){mrb_int bl=(mrb_int)sp_str_byte_len(s);for(mrb_int i=0;i<bl;i++){if((unsigned char)s[i]>=0x80)return 0;}return 1;}
 const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a){SP_GC_ROOT_STR(fmt);size_t cap=strlen(fmt)+64;char*buf=(char*)malloc(cap);if(!buf){perror("malloc");exit(1);}size_t out=0;mrb_int idx=0;const char*p=fmt;while(*p){if(*p=='%'){if(p[1]=='s'){const char*s=(idx<a->len)?a->data[idx]:"";size_t sl=strlen(s);if(out+sl>=cap){size_t nc=((out+sl)*2)+1;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}memcpy(buf+out,s,sl);out+=sl;idx++;p+=2;}else if(p[1]=='%'){if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]='%';p+=2;}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}buf[out]=0;char*r=sp_str_alloc(out);memcpy(r,buf,out);free(buf);return r;}
 const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return s;const char*f=strstr(s,pat);if(!f)return s;char*rep_exp=sp_str_rep_expand(rep,pat,strlen(pat));if(rep_exp)rep=rep_exp;size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl+1);if(rep_exp)free(rep_exp);return r;}
-const char*sp_str_capitalize(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<=l;i++)r[i]=tolower((unsigned char)s[i]);if(l>0)r[0]=toupper((unsigned char)r[0]);return r;}
+const char*sp_str_capitalize(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");size_t l=strlen(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;int first=1;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;if(first){uint32_t u=sp_uc_toupper(cp);if(cp==0xDF){r[oi++]='S';r[oi++]='S';}else oi+=(size_t)sp_utf8_encode(u,r+oi);first=0;}else oi+=(size_t)sp_utf8_encode(sp_uc_tolower(cp),r+oi);}r[oi]=0;return r;}
 const char*sp_str_repeat(const char*s,mrb_int n){SP_GC_ROOT_STR(s);
   if(n<0) sp_raise_cls("ArgumentError","negative argument");
   if(!s)sp_nil_recv("*");if(n<=0)return sp_str_empty;

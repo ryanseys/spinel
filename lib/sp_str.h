@@ -38,6 +38,8 @@ static inline void sp_str_split_push(sp_StrArray*a,const char*p,size_t n){
 }
 
 int sp_utf8_set_has(const uint32_t*cps,size_t n,uint32_t cp);
+uint32_t sp_uc_toupper(uint32_t cp);
+uint32_t sp_uc_tolower(uint32_t cp);
 mrb_int sp_str_casecmp(const char*a,const char*b);
 mrb_bool sp_str_valid_encoding(const char*s);
 const char*sp_str_field(const char*s,const char*sep,mrb_int n);
@@ -54,6 +56,10 @@ const char *sp_sym_inspect_key(const char *name);
 const char*sp_str_upcase(const char*s);
 const char*sp_str_downcase(const char*s);
 const char*sp_str_swapcase(const char*s);
+const char*sp_str_upcase_ascii(const char*s);
+const char*sp_str_downcase_ascii(const char*s);
+const char*sp_str_swapcase_ascii(const char*s);
+const char*sp_str_capitalize_ascii(const char*s);
 const char*sp_str_dump(const char*s);
 const char*sp_str_delete_prefix(const char*s,const char*p);
 const char*sp_str_substr(const char*s,mrb_int start,mrb_int len);
