@@ -8682,6 +8682,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
     }
+    /* a named class/module value is never a singleton class (spinel has no
+       singleton-class objects), so #singleton_class? is always false. */
+    if (sp_streq(name, "singleton_class?") && argc == 0) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+      return;
+    }
     /* Klass === obj is obj.is_a?(Klass): does the operand's runtime class have
        the receiver class among its ancestors. Only for a user-class receiver --
        the primitive type names (Integer === 5, Comparable === 5) have their own
@@ -11683,12 +11689,34 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_POLY) { buf_puts(b, "(!sp_poly_truthy("); emit_expr(c, recv, b); buf_puts(b, "))"); }
     else if (rt == TY_INT) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)"); }
     else if (rt == TY_FLOAT) { buf_puts(b, "sp_float_is_nil("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+    /* a by-value object has no pointer to null-check and is never falsy (#2633) */
+    else if (ty_is_object(rt) && comp_ty_value_obj(c, rt)) {
+      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+    }
     else if (rt == TY_STRING || ty_is_array(rt) || ty_is_hash(rt) || ty_is_object(rt) ||
              rt == TY_PROC ||
              rt == TY_MATCHDATA || rt == TY_EXCEPTION || rt == TY_FIBER || rt == TY_IO) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");  /* NULL pointer is falsy */
     }
     else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); }  /* always-truthy -> false */
+    return;
+  }
+
+  /* default Object#<=>: 0 when the operands are the same object, nil otherwise
+     (identity). Only for a reference user object with no user `<=>` (#2686). */
+  if (sp_streq(name, "<=>") && argc == 1 && recv >= 0 && ty_is_object(rt) &&
+      !comp_ty_value_obj(c, rt) && comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) < 0) {
+    const char *cn = c->classes[ty_object_class(rt)].c_name;
+    if (comp_ntype(c, argv[0]) == rt) {
+      int ta = ++g_tmp, tb = ++g_tmp;
+      buf_printf(b, "({ sp_%s *_t%d = ", cn, ta); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_%s *_t%d = ", cn, tb); emit_expr(c, argv[0], b);
+      buf_printf(b, "; _t%d == _t%d ? sp_box_int(0) : sp_box_nil(); })", ta, tb);
+    } else {
+      /* a different-class operand is never the same object: nil */
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_boxed(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
+    }
     return;
   }
 

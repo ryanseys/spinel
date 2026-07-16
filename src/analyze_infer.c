@@ -1446,6 +1446,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 0 && (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect")))
       return TY_STRING;
     if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
+    if (argc == 0 && sp_streq(name, "singleton_class?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "class")) return TY_CLASS;
     if (argc == 0 && sp_streq(name, "superclass")) return TY_CLASS;
     if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=") ||
@@ -2452,6 +2453,9 @@ else {
     /* Comparable#between?(lo, hi) on an object with `<=>` is a boolean. */
     if (sp_streq(name, "between?") && argc == 2 &&
         comp_method_in_chain(c, cid, "<=>", NULL) >= 0) return TY_BOOL;
+    /* default Object#<=> (no user method): 0 or nil, so poly (#2686). */
+    if (sp_streq(name, "<=>") && argc == 1 &&
+        comp_method_in_chain(c, cid, "<=>", NULL) < 0) return TY_POLY;
     /* instance_variable_get(:@x) yields @x's declared type; instance_variable_set
        yields the field type too (C `lvalue = v` evaluates to the lvalue). The
        codegen lowers both to a direct iv_ field access on the known layout. */
