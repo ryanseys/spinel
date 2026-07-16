@@ -6020,15 +6020,25 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     int rn2 = unwrap_parens(c, argv[0]);
     if (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "RangeNode")) {
       int rlo = nt_ref(nt, rn2, "left"), rhi = nt_ref(nt, rn2, "right");
-      if (rlo >= 0 && rhi >= 0 &&
-          comp_ntype(c, rlo) == rt && comp_ntype(c, rhi) == rt) {
-        /* an exclusive range (`lo...hi`) cannot clamp -- CRuby raises
-           ArgumentError regardless of whether the end would be applied
-           (#2587). Evaluate the operands in order, then raise. */
-        if ((int)(nt_int(nt, rn2, "flags", 0) & 4)) {
+      /* a side is present unless it is absent (-1) or an explicit nil */
+      int has_lo = rlo >= 0 && !(nt_type(nt, rlo) && sp_streq(nt_type(nt, rlo), "NilNode"));
+      int has_hi = rhi >= 0 && !(nt_type(nt, rhi) && sp_streq(nt_type(nt, rhi), "NilNode"));
+      int lo_obj = has_lo && comp_ntype(c, rlo) == rt;
+      int hi_obj = has_hi && comp_ntype(c, rhi) == rt;
+      /* At least one endpoint is the receiver's class and no present endpoint is
+         a different type -- covers two-sided (`lo..hi`), beginless (`..hi`), and
+         endless (`lo..`) object ranges. An sp_Range cannot carry the endpoints'
+         class (its bounds are mrb_int), so unfold to sp_obj_clamp with a nil
+         bound for the missing side; sp_obj_clamp skips a nil side. */
+      if ((lo_obj || hi_obj) && (!has_lo || lo_obj) && (!has_hi || hi_obj)) {
+        /* an exclusive range with a real end (`lo...hi`, `...hi`) cannot clamp
+           -- CRuby raises ArgumentError regardless of whether the end would be
+           applied (#2587). An endless `lo...` has no end, so it is fine.
+           Evaluate the operands in order, then raise. */
+        if (has_hi && (int)(nt_int(nt, rn2, "flags", 0) & 4)) {
           const char *ccn = c->classes[ty_object_class(rt)].c_name;
           buf_puts(b, "({ (void)("); emit_boxed(c, recv, b);
-          buf_puts(b, "); (void)("); emit_boxed(c, rlo, b);
+          if (has_lo) { buf_puts(b, "); (void)("); emit_boxed(c, rlo, b); }
           buf_puts(b, "); (void)("); emit_boxed(c, rhi, b);
           buf_puts(b, "); sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\"); ");
           /* dead default in the receiver's own C type (value vs pointer) */
@@ -6041,8 +6051,9 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         else { buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")"); }
         buf_puts(b, "sp_obj_clamp(");
         emit_boxed(c, recv, b); buf_puts(b, ", ");
-        emit_boxed(c, rlo, b); buf_puts(b, ", ");
-        emit_boxed(c, rhi, b);
+        if (lo_obj) emit_boxed(c, rlo, b); else buf_puts(b, "sp_box_nil()");
+        buf_puts(b, ", ");
+        if (hi_obj) emit_boxed(c, rhi, b); else buf_puts(b, "sp_box_nil()");
         buf_puts(b, ").v.p)");
         return 1;
       }

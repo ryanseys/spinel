@@ -2412,8 +2412,14 @@ else {
       }
       if (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "RangeNode")) {
         int rlo2 = nt_ref(nt, rn2, "left"), rhi2 = nt_ref(nt, rn2, "right");
-        if (rlo2 >= 0 && rhi2 >= 0 &&
-            infer_type(c, rlo2) == rt && infer_type(c, rhi2) == rt) return rt;
+        /* two-sided, beginless (`..hi`), and endless (`lo..`) object ranges all
+           unfold to sp_obj_clamp, whose result is one of the same-class values;
+           the missing side becomes a nil bound. Mirror the codegen guard. */
+        int has_lo2 = rlo2 >= 0 && !(nt_type(nt, rlo2) && sp_streq(nt_type(nt, rlo2), "NilNode"));
+        int has_hi2 = rhi2 >= 0 && !(nt_type(nt, rhi2) && sp_streq(nt_type(nt, rhi2), "NilNode"));
+        int lo_obj2 = has_lo2 && infer_type(c, rlo2) == rt;
+        int hi_obj2 = has_hi2 && infer_type(c, rhi2) == rt;
+        if ((lo_obj2 || hi_obj2) && (!has_lo2 || lo_obj2) && (!has_hi2 || hi_obj2)) return rt;
       }
       return TY_POLY;
     }
