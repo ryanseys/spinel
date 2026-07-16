@@ -1149,8 +1149,10 @@ static const char *sp_str_dedup(const char *s) {
 }
 static inline const char *sp_str_uminus_val(const char *s) {
   if (!s) return s;
-  /* intern by content so two dedups of equal contents share one frozen object
-     (#2462). The result reports frozen? (0xf1). */
+  /* an already-frozen receiver dedups to itself (#2630) */
+  if (((const unsigned char *)s)[-1] == 0xf1) return s;
+  /* otherwise intern by content so two dedups of equal contents share one
+     frozen object (#2462). The result reports frozen? (0xf1). */
   return sp_str_dedup(s);
 }
 /* String#clone: a copy that preserves the frozen state, unlike #dup which always
