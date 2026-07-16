@@ -3248,6 +3248,119 @@ int desugar_public_method(Compiler *c) {
   return changed;
 }
 
+/* Is `n` a value spinel can materialize with #to_a -- i.e. an operand a chain
+   may concatenate? Arrays/ranges/hashes/enumerators answer directly; a user
+   object qualifies when its class defines #each (the Enumerable contract). */
+static int chain_operand_ok(Compiler *c, int n) {
+  if (n < 0) return 0;
+  TyKind t = infer_type(c, n);
+  if (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE || t == TY_ENUMERATOR) return 1;
+  /* An empty array literal never narrows, so `a = []; a.chain.to_a` leaves the
+     receiver UNKNOWN (#2474 / #2468). #chain is Enumerable-specific and a
+     user-defined #chain is excluded by the caller, so an untyped operand is
+     taken at its word; if it turns out to have no #to_a, that call reports it. */
+  if (t == TY_UNKNOWN) return 1;
+  if (ty_is_object(t)) {
+    int ci = ty_object_class(t);
+    return ci >= 0 && comp_method_in_chain(c, ci, "each", NULL) >= 0;
+  }
+  return 0;
+}
+
+/* Synthesize `<n>.to_a` (a fresh CallNode), or -1 on node-table OOM. */
+static int chain_mk_to_a(Compiler *c, int n) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int call = nt_new_node(nt, "CallNode");
+  if (call < 0) return -1;
+  nt_node_set_ref(nt, call, "receiver", n);
+  nt_node_set_str(nt, call, "name", "to_a");
+  nt_node_set_ref(nt, call, "arguments", -1);
+  nt_node_set_ref(nt, call, "block", -1);
+  return call;
+}
+
+/* Synthesize `<a> + <b>`, or -1 on node-table OOM. */
+static int chain_mk_concat(Compiler *c, int a, int b) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int args = nt_new_node(nt, "ArgumentsNode");
+  if (args < 0) return -1;
+  nt_node_set_arr(nt, args, "arguments", &b, 1);
+  int call = nt_new_node(nt, "CallNode");
+  if (call < 0) return -1;
+  nt_node_set_ref(nt, call, "receiver", a);
+  nt_node_set_str(nt, call, "name", "+");
+  nt_node_set_ref(nt, call, "arguments", args);
+  nt_node_set_ref(nt, call, "block", -1);
+  return call;
+}
+
+/* `recv.chain(a, b)` and `enum + enum` -> `__enum_chain(recv.to_a + a.to_a + b.to_a)`.
+   Ruby's chain is lazy over its sources; spinel materializes them at build time
+   and hands the concatenation to a snapshot enumerator, which serves every
+   terminal the sources support (#to_a, #each, #map, #next, ...). Reusing #to_a
+   is what lets a Struct, a user Enumerable, or another enumerator be an operand:
+   each already knows how to materialize itself. #2545 / #2548 / #2551 */
+int desugar_enumerable_chain(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (!nm || recv < 0) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;   /* chain{} is not a thing; leave it */
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+
+    int is_chain = sp_streq(nm, "chain");
+    /* Enumerator#+ only: `+` is overwhelmingly numeric/array/string, so require
+       BOTH operands to be enumerators before touching it. */
+    int is_plus = sp_streq(nm, "+") && argc == 1 && argv &&
+                  infer_type(c, recv) == TY_ENUMERATOR &&
+                  infer_type(c, argv[0]) == TY_ENUMERATOR;
+    if (!is_chain && !is_plus) continue;
+    /* `arr.chain` with no argument is just the receiver's own elements (#2468),
+       so argc == 0 is valid for chain (but `+` always has its operand). */
+    if (argc > 32 || (argc > 0 && !argv) || (is_plus && argc != 1)) continue;
+
+    if (is_chain) {
+      /* a user-defined #chain wins over Enumerable's */
+      TyKind rt = infer_type(c, recv);
+      if (ty_is_object(rt)) {
+        int ci = ty_object_class(rt);
+        if (ci >= 0 && comp_method_in_chain(c, ci, "chain", NULL) >= 0) continue;
+      }
+      if (!chain_operand_ok(c, recv)) continue;
+    }
+    int ok = 1;
+    for (int k = 0; k < argc && ok; k++) if (!chain_operand_ok(c, argv[k])) ok = 0;
+    if (!ok) continue;
+
+    int saved[32];
+    for (int k = 0; k < argc; k++) saved[k] = argv[k];  /* copy before realloc */
+    int base = nt->count;
+    int acc = chain_mk_to_a(c, recv);
+    for (int k = 0; k < argc && acc >= 0; k++) {
+      int t = chain_mk_to_a(c, saved[k]);
+      acc = (t >= 0) ? chain_mk_concat(c, acc, t) : -1;
+    }
+    if (acc < 0) continue;   /* node-table OOM: leave the call alone */
+    int newargs = nt_new_node(nt, "ArgumentsNode");
+    if (newargs < 0) continue;
+    nt_node_set_arr(nt, newargs, "arguments", &acc, 1);
+    nt_node_set_str(nt, id, "name", "__enum_chain");
+    nt_node_set_ref(nt, id, "receiver", -1);
+    nt_node_set_ref(nt, id, "arguments", newargs);
+
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_implicit_send(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;

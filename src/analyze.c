@@ -3719,51 +3719,9 @@ int desugar_enum_method_recv(Compiler *c) {
       }
 
     }
-    /* eager chain: a.chain(b, c).to_a is a + b + c (#2392). Rewrite this
-       node (`to_a`) into the nested `+` chain in place. */
-    if (nm && sp_streq(nm, "to_a") && nt_ref(nt, id, "block") < 0) {
-      int crc = nt_ref(nt, id, "receiver");
-      if (crc >= 0 && nt_type(nt, crc) && sp_streq(nt_type(nt, crc), "CallNode") &&
-          nt_str(nt, crc, "name") && sp_streq(nt_str(nt, crc, "name"), "chain") &&
-          nt_ref(nt, crc, "block") < 0) {
-        int cargs = nt_ref(nt, crc, "arguments");
-        int can = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &can) : NULL;
-        int cbase = nt_ref(nt, crc, "receiver");
-        /* can == 0 (`arr.chain.to_a`): the chain is just the receiver's own
-           elements, so the loop below folds in nothing and to_a aliases the
-           receiver array directly (#2468). */
-        if (cbase >= 0 && can >= 0) {
-          int acc = cbase;
-          /* A struct or user Enumerable receiver has no #+; fold over its element
-             array instead (`c.chain(x).to_a` -> `c.to_a + x`). */
-          TyKind cbt = infer_type(c, cbase);
-          if (ty_is_object(cbt) && ty_object_class(cbt) >= 0 &&
-              (c->classes[ty_object_class(cbt)].is_struct ||
-               comp_method_in_chain(c, ty_object_class(cbt), "__enum_to_a", NULL) >= 0)) {
-            int toa = te_call(nt, cbase, "to_a", -1, -1);
-            comp_grow_node_arrays(c);
-            c->nscope[toa] = c->nscope[id];
-            acc = toa;
-          }
-          for (int ci2 = 0; ci2 < can; ci2++) {
-            int cargs2 = te_args1(nt, cav[ci2]);
-            int plus = te_call(nt, acc, "+", cargs2, -1);
-            /* synthesized nodes need compiler-side per-node slots and a
-               scope assignment, or later passes write out of bounds */
-            comp_grow_node_arrays(c);
-            c->nscope[cargs2] = c->nscope[id];
-            c->nscope[plus] = c->nscope[id];
-            acc = plus;
-          }
-          /* turn `to_a` into a transparent alias of the last `+` result:
-             re-point this node at the chain via itself */
-          nt_node_set_str(nt, id, "name", "itself");
-          nt_node_set_ref(nt, id, "receiver", acc);
-          changed = 1;
-          continue;
-        }
-      }
-    }
+    /* `a.chain(b, c)` is desugared wholesale by desugar_enumerable_chain into
+       `__enum_chain(a.to_a + b.to_a + c.to_a)` -- a real Enumerator::Chain that
+       serves every terminal, not just a `.to_a` directly on the chain call. */
     /* find_all is a full alias of select on the builtin containers; rename
        so the select/with_index machinery serves both (#2389) */
     if (nm && sp_streq(nm, "find_all")) {
@@ -5588,6 +5546,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
     ch |= type_block_rest_params(c);           /* |*rest| locals are poly arrays */
     ch |= desugar_public_method(c);            /* recv.public_method(:m) -> recv.method(:m) */
+    ch |= desugar_enumerable_chain(c);               /* x.chain(y) / enum+enum -> __enum_chain(x.to_a + y.to_a) */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
     ch |= desugar_public_send_recv(c);         /* r.public_send(:m, a) -> r.m(a), visibility-stamped */
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */

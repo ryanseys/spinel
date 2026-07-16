@@ -826,6 +826,8 @@ TyKind infer_call(Compiler *c, int id) {
     return TY_INT_ARRAY;
 
   /* Complex / Rational value types. */
+  /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+ (#2545) */
+  if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
   if (recv < 0 && sp_streq(name, "Complex")) return TY_COMPLEX;
   if (recv < 0 && sp_streq(name, "Rational") && (argc == 1 || argc == 2)) return TY_RATIONAL;
   if (recv >= 0) {

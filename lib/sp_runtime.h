@@ -6468,6 +6468,9 @@ typedef struct {
                                              the items are an eager snapshot, but CRuby shows
                                              #<Enumerator: #<Enumerator::Generator:0x..>:each> */
   mrb_bool frozen;                        /* Object#freeze observed (sp_gc_alloc zero-fills) */
+  mrb_bool is_chain;                      /* built by Enumerable#chain / Enumerator#+: the items
+                                             are the concatenated sources, and #class reports
+                                             Enumerator::Chain (sp_gc_alloc zero-fills) */
 } sp_Enumerator;
 /* Enumerator#dup / #clone: a shallow struct copy is a distinct object (its
    cursor rewinds independently; == compares by pointer, so dup != original). */
@@ -6626,6 +6629,16 @@ static sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = "each";
+  return e;
+}
+/* Enumerable#chain(*others) / Enumerator#+ : the sources are materialized and
+   concatenated by the caller (the desugar builds `recv.to_a + other.to_a ...`),
+   so the chain is a snapshot enumerator that reports as Enumerator::Chain. */
+static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) __attribute__((unused));
+static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) {
+  sp_PolyArray *items = sp_enum_items_from(arr);
+  sp_Enumerator *e = sp_Enumerator_new_from_items(items);
+  e->is_chain = TRUE;
   return e;
 }
 /* A blockless Array#each_with_index enumerator: an [element, index] pair for

@@ -1398,6 +1398,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
+  /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+. The arg is
+     already the concatenation of every source's #to_a, so the chain enumerator
+     just snapshots it. #2545 / #2548 / #2551 */
+  if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) {
+    buf_puts(b, "sp_enum_chain_new("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  }
   /* ---- Complex / Rational value types ---- */
   /* Kernel#Complex(re[, im]): a Float argument marks its component
      Float-classed so rendering and abs/abs2 keep CRuby's classes. */
@@ -8540,7 +8547,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_RANGE) cn = "Range";
     else if (rt == TY_TIME) cn = "Time";
     else if (rt == TY_FIBER) cn = "Fiber";
-    else if (rt == TY_ENUMERATOR) cn = "Enumerator";
+    else if (rt == TY_ENUMERATOR) {
+      /* a chain built by Enumerable#chain / Enumerator#+ reports as
+         Enumerator::Chain; every other enumerator is an Enumerator (#2545) */
+      int te = ++g_tmp;
+      buf_printf(b, "({ sp_Enumerator *_t%d = ", te); emit_expr(c, recv, b);
+      buf_printf(b, "; (_t%d && _t%d->is_chain) ? ((sp_Class){(mrb_int)-1, \"Enumerator::Chain\"})"
+                    " : ((sp_Class){(mrb_int)-1, \"Enumerator\"}); })", te, te);
+      return;
+    }
     else if (rt == TY_IO) cn = "IO";
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
     else if (rt == TY_NIL) cn = "NilClass";
