@@ -153,3 +153,48 @@ void sp_str_sweep(void) {
 __attribute__((constructor)) static void sp_alloc_install_hooks(void) {
   sp_gc_str_sweep_hook = sp_str_sweep;
 }
+
+/* Float#to_s / #inspect (declared in sp_alloc.h): shortest round-trip decimal.
+   Moved out-of-line from the header -- cold (display only) and large. */
+const char *sp_float_to_s(mrb_float f) {
+  if(f!=f){char*r=sp_str_alloc_raw(4);r[0]='N';r[1]='a';r[2]='N';r[3]=0;return r;}
+  if(f==HUGE_VAL||f==-HUGE_VAL){if(f<0){char*r=sp_str_alloc_raw(10);memcpy(r,"-Infinity",10);return r;}char*r=sp_str_alloc_raw(9);memcpy(r,"Infinity",9);return r;}
+  if(f==0.0){if(signbit(f)){char*r=sp_str_alloc_raw(5);memcpy(r,"-0.0",5);return r;}char*r=sp_str_alloc_raw(4);memcpy(r,"0.0",4);return r;}
+  /* integer-valued doubles skip the shortest-representation search below
+     (up to 18 snprintf+strtod probes): write the integer digits + ".0"
+     directly. |f| < 2^53 keeps the mrb_int cast exact. */
+  if(f>-1e15&&f<1e15&&f==(mrb_float)(mrb_int)f){
+    /* bound matches the fixed-notation window below (decimal exponent <= 15);
+       larger integer-valued doubles print scientific like CRuby */
+    char*r=sp_str_alloc_raw(32);
+    char*e=sp_w_int(r,(mrb_int)f);
+    *e++='.';*e++='0';*e=0;
+    sp_str_set_len(r,(size_t)(e-r));
+    return r;
+  }
+  char tmp[64];int p;
+  for(p=0;p<=17;p++){snprintf(tmp,sizeof(tmp),"%.*e",p,(double)f);if(strtod(tmp,NULL)==f)break;}
+  int neg=(tmp[0]=='-')?1:0;const char*s=tmp+neg;char digits[32];int dlen=0;
+  digits[dlen++]=*s++;
+  if(*s=='.'){s++;while(*s&&*s!='e'&&*s!='E')digits[dlen++]=*s++;}
+  while(*s&&*s!='e'&&*s!='E')s++;
+  int exp_val=(*s)?atoi(s+1):0;int decpt=exp_val+1;
+  char*out=sp_str_alloc_raw(64);int o=0;
+  if(neg)out[o++]='-';
+  /* fixed notation when the point sits within the digits (a fractional part,
+     dlen>decpt) OR the integer part is <= 15 digits; a longer integer-valued
+     value (dlen<=decpt, decpt>15) prints scientific like CRuby (#2593). */
+  if(decpt>0&&(decpt<=15||dlen>decpt)){
+    if(decpt<dlen){memcpy(out+o,digits,decpt);o+=decpt;out[o++]='.';memcpy(out+o,digits+decpt,dlen-decpt);o+=(dlen-decpt);}
+    else{memcpy(out+o,digits,dlen);o+=dlen;for(int i=dlen;i<decpt;i++)out[o++]='0';out[o++]='.';out[o++]='0';}
+  }else if(decpt<=0&&decpt>-4){
+    out[o++]='0';out[o++]='.';for(int i=decpt;i<0;i++)out[o++]='0';memcpy(out+o,digits,dlen);o+=dlen;
+  }else{
+    out[o++]=digits[0];out[o++]='.';
+    if(dlen==1)out[o++]='0';else{memcpy(out+o,digits+1,dlen-1);o+=(dlen-1);}
+    out[o++]='e';int e=decpt-1;
+    if(e>=0)out[o++]='+';else{out[o++]='-';e=-e;}
+    if(e<10){out[o++]='0';out[o++]=(char)('0'+e);}else o+=snprintf(out+o,16,"%d",e);
+  }
+  out[o]=0;sp_str_set_len(out,(size_t)o);return out;
+}
