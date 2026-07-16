@@ -2647,7 +2647,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* Include if call supplies all required params (pad defaults / truncate extras) */
       if (mi >= 0 && argc >= c->scopes[mi].nrequired) ncand++;
     }
-    if (ncand > 0 || is_index || is_include || is_fetch || is_push || is_pred) {
+    /* strftime on a poly value that is really a Time: a nilable Time
+       (`created_at : Time?`) is held as a poly sp_RbVal, so `t.strftime(fmt)`
+       would otherwise lower to the unresolved-call raise even when the value
+       is a genuine Time. Give the switch a SP_BUILTIN_TIME arm so a real Time
+       formats and nil/anything-else raises NoMethodError, matching CRuby
+       (issue #2457, the family2 nilable value-method dispatch gap). Only when
+       no user class defines strftime, so the default-raise arm is unambiguous. */
+    int is_strftime = ncand == 0 && sp_streq(name, "strftime") && argc == 1 &&
+                      infer_type(c, argv[0]) == TY_STRING;
+    if (ncand > 0 || is_index || is_include || is_fetch || is_push || is_pred || is_strftime) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
       int *atmp = malloc(sizeof(int) * argc);
@@ -2902,6 +2911,15 @@ else {
           emit_boxed_text(c, at, tn, b);
           buf_printf(b, "; _t%d = sp_PolyPolyHash_has_key((sp_PolyPolyHash *)_t%d.v.p, _t%d); break; }", tr, tv, tbox);
         }
+      }
+      /* strftime on a poly value that is really a Time: format it; nil or any
+         other runtime class raises NoMethodError as CRuby does. */
+      if (is_strftime) {
+        if (ret == TY_POLY)
+          buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_box_str(sp_time_strftime(*(sp_Time *)_t%d.v.p, _t%d)); break;", tr, tv, atmp[0]);
+        else
+          buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_time_strftime(*(sp_Time *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+        buf_printf(b, " default: sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"strftime\", _t%d)); break;", tv);
       }
       /* the poly value may actually be a string-keyed hash: dispatch `[]` /
          `fetch` to the matching hash storage, boxing the value into the poly

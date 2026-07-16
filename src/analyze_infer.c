@@ -1350,6 +1350,23 @@ TyKind infer_call(Compiler *c, int id) {
     if (!has_user_call) return TY_POLY;
   }
 
+  /* strftime on a poly value that is really a Time formats to a String. A
+     nilable Time (`created_at : Time?`) is held as a poly sp_RbVal, so the
+     call would otherwise infer poly/unknown and the formatted string get
+     discarded; the codegen poly dispatch gives it a SP_BUILTIN_TIME arm that
+     formats a real Time and raises NoMethodError otherwise, so its non-raising
+     result is always a String. Only when no user class supplies strftime, to
+     match the codegen guard. Issue #2457 (family2 nilable value-method). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "strftime") && argc == 1 &&
+      infer_type(c, argv[0]) == TY_STRING) {
+    int ncand = 0;
+    for (int k = 0; k < c->nclasses; k++) {
+      int mi = comp_method_in_chain(c, k, name, NULL);
+      if (mi >= 0 && argc >= c->scopes[mi].nrequired) ncand++;
+    }
+    if (ncand == 0) return TY_STRING;
+  }
+
   /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
   if (is_proc_literal(c, id)) return TY_PROC;
 
