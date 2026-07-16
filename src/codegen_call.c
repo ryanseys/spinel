@@ -8200,11 +8200,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       Buf ab; memset(&ab, 0, sizeof ab);
       const char *resrc = re_lit_src(c, ops[i]);
       if (resrc) {
-        /* Regexp operand. A flagged operand (i/x/m) has its options preserved by
-           splicing its #to_s form `(?on-off:src)`, which the engine honours as an
-           inline option group; a flagless operand splices its bare source. */
+        /* Regexp operand. CRuby splices each operand's #to_s form
+           `(?on-off:src)` -- an inline option group carrying its flags -- for
+           EVERY Regexp operand in a multi-operand union, flagged or not
+           (Regexp.union(/a/, /b/) == /(?-mix:a)|(?-mix:b)/, #2624). */
         int rli = re_lit_index(c, ops[i]);
-        if (rli >= 0 && re_engine_flags(re_lit_flags(c, ops[i])) != 0)
+        if (rli >= 0)
           buf_printf(&ab, "sp_re_to_s_str((void *)sp_re_pat_%d)", rli);
         else
           emit_str_literal(&ab, resrc);
