@@ -1095,13 +1095,61 @@ static inline const char *sp_str_freeze_val(const char *s) {
   }
   return s;
 }
+/* Frozen-string dedup (String#-@ / #dedup) interning: equal-content dedups
+   must return the SAME immortal frozen object, like CRuby's fstring table, so
+   `-"x".equal?(-"x")` is true. An interned string is a 0xf1 frozen heap string,
+   which sp_str_sweep keeps across every collection, so the table needs no GC
+   rooting; it only grows (interned strings are permanent, as in CRuby). The
+   table is guarded by the heap lock; the frozen copy is allocated OUTSIDE the
+   lock (allocators take the heap lock themselves), then a re-check under the
+   lock keeps a single canonical entry per content. */
+static const char **sp_fstr_tab = NULL;
+static size_t sp_fstr_cap = 0, sp_fstr_len = 0;
+static const char *sp_fstr_lookup(const char *s) {  /* caller holds the heap lock */
+  if (!sp_fstr_cap) return NULL;
+  size_t mask = sp_fstr_cap - 1, idx = (size_t)(sp_str_hash(s) & mask);
+  while (sp_fstr_tab[idx]) {
+    if (sp_str_eq(sp_fstr_tab[idx], s)) return sp_fstr_tab[idx];
+    idx = (idx + 1) & mask;
+  }
+  return NULL;
+}
+static void sp_fstr_insert(const char *f) {  /* caller holds the heap lock */
+  if (sp_fstr_cap == 0 || sp_fstr_len * 2 >= sp_fstr_cap) {
+    size_t nc = sp_fstr_cap ? sp_fstr_cap * 2 : 64;
+    const char **ntab = (const char **)calloc(nc, sizeof(const char *));
+    if (!ntab) return;
+    for (size_t i = 0; i < sp_fstr_cap; i++) {
+      const char *k = sp_fstr_tab[i];
+      if (!k) continue;
+      size_t idx = (size_t)(sp_str_hash(k) & (nc - 1));
+      while (ntab[idx]) idx = (idx + 1) & (nc - 1);
+      ntab[idx] = k;
+    }
+    free(sp_fstr_tab); sp_fstr_tab = ntab; sp_fstr_cap = nc;
+  }
+  size_t mask = sp_fstr_cap - 1, idx = (size_t)(sp_str_hash(f) & mask);
+  while (sp_fstr_tab[idx]) idx = (idx + 1) & mask;
+  sp_fstr_tab[idx] = f; sp_fstr_len++;
+}
+static const char *sp_str_dedup(const char *s) {
+  SP_HEAP_LOCK();
+  const char *hit = sp_fstr_lookup(s);
+  SP_HEAP_UNLOCK();
+  if (hit) return hit;
+  const char *f = sp_str_freeze_val(sp_str_dup_external(s));  /* immortal 0xf1 copy */
+  SP_HEAP_LOCK();
+  const char *hit2 = sp_fstr_lookup(f);  /* another thread may have won the race */
+  if (hit2) { SP_HEAP_UNLOCK(); return hit2; }
+  sp_fstr_insert(f);
+  SP_HEAP_UNLOCK();
+  return f;
+}
 static inline const char *sp_str_uminus_val(const char *s) {
   if (!s) return s;
-  /* only an explicitly-frozen heap string (0xf1) is identity; a rodata
-     literal (0xff) still takes the freeze-copy so `-"x"` reports frozen?
-     (0xff literals are deliberately NOT reported frozen -- see above). */
-  if (((const unsigned char *)s)[-1] == 0xf1) return s;
-  return sp_str_freeze_val(sp_str_dup_external(s));
+  /* intern by content so two dedups of equal contents share one frozen object
+     (#2462). The result reports frozen? (0xf1). */
+  return sp_str_dedup(s);
 }
 /* String#clone: a copy that preserves the frozen state, unlike #dup which always
    returns an unfrozen copy (CRuby semantics). Carries the 0xf1 heap-frozen marker
