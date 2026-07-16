@@ -1408,7 +1408,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
     if (sp_streq(name, "frozen?")) return TY_BOOL;
     if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
-        sp_streq(name, "itself") || sp_streq(name, "ruby2_keywords")) return TY_PROC;
+        sp_streq(name, "itself")) return TY_PROC;
   }
   /* Proc identity: equal?/eql?/== against another Proc -> bool */
   if (recv >= 0 && rt == TY_PROC && argc == 1 &&

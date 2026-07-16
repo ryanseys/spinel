@@ -83,6 +83,11 @@ Limited today, but additively fixable; listed roughly easiest-first.
   [int-overflow.md](int-overflow.md).
 - **Float `round(ndigits)`** — the value is always correct; the *return class*
   follows CRuby (Integer for `round` with 0 digits, Float otherwise).
+- **`Proc#ruby2_keywords`** — not supported (rejected at compile time). It is a
+  migration shim for the Ruby 2.x-to-3.0 keyword-argument transition, flagging a
+  proc so a trailing `Hash` forwarded through `*args` is treated as keywords.
+  Spinel targets modern Ruby keyword semantics directly, so the shim has nothing
+  to toggle; there is no 2.x behavior to opt back into.
 - **Frozen literals** — explicit `.freeze` then mutation raises `FrozenError`,
   matching CRuby. (String literals are *not* implicitly frozen — see below.)
 - **Comparable is keyed on `<=>` presence** — the Comparable operator methods

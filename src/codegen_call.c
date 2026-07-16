@@ -6685,12 +6685,6 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "parameters")) {
     buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
-  /* Proc#ruby2_keywords: flags the proc for keyword forwarding and returns the
-     proc itself. Spinel does not model the ruby2_keywords hash flag, so this is
-     a no-op that yields the receiver. #2652 */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "ruby2_keywords")) {
-    emit_expr(c, recv, b); return;
-  }
   /* Proc#source_location: [file, line] of a proc LITERAL receiver (its
      definition site is the node itself). #2649 */
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "source_location") &&
@@ -11421,7 +11415,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (!resolved && recv >= 0 && rt == TY_PROC) {
         static const char *const procm[] = {
           "call", "()", "[]", "yield", "arity", "lambda?", "curry",
-          "to_proc", "parameters", "<<", ">>", "ruby2_keywords", NULL };
+          "to_proc", "parameters", "<<", ">>", NULL };
         for (int u = 0; procm[u]; u++) if (sp_streq(qm, procm[u])) { yes = resolved = 1; break; }
       }
       /* Time: a fixed builtin surface. Unknown names answer false (CRuby),
