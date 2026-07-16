@@ -486,6 +486,14 @@ int yield_value_diverges(Compiler *c, int mi) {
    slot, and the other emits into it. Used for an explicit `acc << yield(x)`
    (#2454) and for the collector an iterator builds from a `yield` block body
    -- `[x].map { |v| yield v }` inside a wrapper method (#2457). */
+/* Does the program define a method of this name itself? A builtin fallback for
+   a poly receiver must decline then: the user method is the likelier target. */
+int an_user_defines_method(Compiler *c, const char *name) {
+  for (int uk = 0; uk < c->nclasses; uk++)
+    if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
+  return comp_method_index(c, name) >= 0;
+}
+
 TyKind yield_aware_elem_ty(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   int n = node;

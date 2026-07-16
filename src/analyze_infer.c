@@ -826,6 +826,13 @@ TyKind infer_call(Compiler *c, int id) {
     return TY_INT_ARRAY;
 
   /* Complex / Rational value types. */
+  /* A class-tagged poly value answers #name/#to_s/#inspect with its class name
+     (Base.subclasses / #ancestors hand back boxed classes, #2656). Only when no
+     user class defines the method -- then it dispatches to that instead. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
+      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      !an_user_defines_method(c, name))
+    return TY_STRING;
   /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+ (#2545) */
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
   if (recv < 0 && sp_streq(name, "Complex")) return TY_COMPLEX;

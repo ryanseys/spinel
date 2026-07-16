@@ -2590,12 +2590,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     int is_lengthlike = sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count");
     int is_empty = sp_streq(name, "empty?");
+    /* A class-tagged poly value answers these with its class name (#2656); only
+       when no user class defines them, or that user method is the real target. */
+    int is_class_named = (sp_streq(name, "name") || sp_streq(name, "to_s") ||
+                          sp_streq(name, "inspect")) && !diag_user_defines(c, name);
     int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, 0);
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
           (c->classes[k].is_native_class && comp_native_method_find(c, k, name, 0, 0) >= 0)) ncand++;
-    if (ncand > 0 || is_lengthlike || is_pred) {
+    if (ncand > 0 || is_lengthlike || is_pred || is_class_named) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -2617,6 +2621,18 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (is_empty) {
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %ssp_str_length(_t%d.v.s) == 0%s; else ", tv, tr, ebopen, tv, ebclose);
         buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = %sstrlen(sp_sym_to_s((sp_sym)_t%d.v.i)) == 0%s; else ", tv, tr, ebopen, tv, ebclose);
+      }
+      /* a class-tagged poly value answers its name: `Base.subclasses` and
+         `#ancestors` hand back boxed classes, so `.map { |c| c.name }` reaches
+         here (#2656). The tag is checked ahead of the cls_id switch, because a
+         boxed class carries the CLASS's id and would otherwise alias that
+         user class's arm. Declined when a user class defines the method --
+         then a user object is the likelier receiver and it must win. */
+      if (is_class_named) {
+        const char *sbopen = (ret == TY_POLY) ? "sp_box_str(" : "";
+        const char *sbclose = (ret == TY_POLY) ? ")" : "";
+        buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %ssp_class_val_name(_t%d)%s; else ",
+                   tv, tr, sbopen, tv, sbclose);
       }
       /* class 0 emits a `case 0:` arm here when it defines/inherits the method
          (nrequired 0) or exposes it as a reader; the dispatch key is then guarded
