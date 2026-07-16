@@ -9470,6 +9470,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                       "\"can't convert %s into an exact number\"); (sp_Time){0, 0, 0}; })", atc);
         return;
       }
+      /* a poly argument (`Time.at(x)` where x is a heterogeneous/nullable
+         numeric) reaches sp_time_at_int's mrb_int slot: coerce it. A boxed
+         float is understood by sp_poly_to_f, so route poly through the float
+         ctor (which also accepts an integral value). */
+      if (at == TY_POLY) {
+        buf_puts(b, "sp_time_at_float(sp_poly_to_f("); emit_expr(c, argv[0], b);
+        buf_puts(b, "))");
+        return;
+      }
       buf_printf(b, "sp_time_at_%s(", at == TY_FLOAT ? "float" : "int");
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;

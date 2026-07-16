@@ -2439,7 +2439,12 @@ else {
         const char *fn = (sp_streq(name, "include?") || sp_streq(name, "member?")) ? "include" : "index";
         buf_printf(b, "sp_%sArray_%s(", k, fn);
         emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (sp_streq(k, "Int")) emit_int_expr(c, argv[0], b); else emit_expr(c, argv[0], b);
+        /* a poly argument into a string array's const char* slot (`arr.include?(
+           params[k])`) needs coercing; emit_str_expr passes a plain string
+           through and sp_poly_to_s's a poly value. */
+        if (sp_streq(k, "Int")) emit_int_expr(c, argv[0], b);
+        else if (rt == TY_STR_ARRAY) emit_str_expr(c, argv[0], b);
+        else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
         return 1;
       }
