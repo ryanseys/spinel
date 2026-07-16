@@ -6718,22 +6718,55 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
     else if (sp_streq(name, "class")) buf_puts(b, "((sp_Class){(mrb_int)-1, \"Time\"})");
     else if (sp_streq(name, "strftime") && argc == 1) { buf_printf(b, "sp_time_strftime(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "between?") && argc == 2) {
+      int tt = ++g_tmp, ta = ++g_tmp, tb2 = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = %s; sp_Time _t%d = ", tt, r, ta); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_Time _t%d = ", tb2); emit_expr(c, argv[1], b);
+      buf_printf(b, "; sp_time_cmp(_t%d, _t%d) >= 0 && sp_time_cmp(_t%d, _t%d) <= 0; })", tt, ta, tt, tb2);
+    }
+    else if (sp_streq(name, "clamp") && argc == 2) {
+      int tt = ++g_tmp, ta = ++g_tmp, tb2 = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = %s; sp_Time _t%d = ", tt, r, ta); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_Time _t%d = ", tb2); emit_expr(c, argv[1], b);
+      buf_printf(b, "; sp_time_cmp(_t%d, _t%d) < 0 ? _t%d : (sp_time_cmp(_t%d, _t%d) > 0 ? _t%d : _t%d); })",
+                 tt, ta, ta, tt, tb2, tb2, tt);
+    }
     else if ((sp_streq(name, "+") || sp_streq(name, "-")) && argc == 1) {
       buf_printf(b, "sp_time_add(%s, %s(mrb_float)(", r, name[0] == '-' ? "-" : "");
       emit_expr(c, argv[0], b); buf_puts(b, "))");
     }
     else if ((sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-              sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=")) && argc == 1) {
+              sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=")) && argc == 1 &&
+             comp_ntype(c, argv[0]) == TY_TIME) {
       int tt = ++g_tmp, tu = ++g_tmp;
       buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = %s; sp_Time _t%d = ", tt, r, tu);
       emit_expr(c, argv[0], b);
       buf_printf(b, "; sp_time_cmp(_t%d, _t%d) %s 0; })", tt, tu, name);
     }
-    else if (sp_streq(name, "<=>") && argc == 1) {
+    /* a relational comparison against a non-Time operand: CRuby's Comparable
+       raises ArgumentError (its <=> returned nil). Evaluate the operand first. */
+    else if ((sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
+              sp_streq(name, ">=")) && argc == 1) {
+      buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
+      buf_puts(b, "); sp_raise_cls(\"ArgumentError\", \"comparison of Time with an incompatible value failed\"); 0; })");
+    }
+    else if (sp_streq(name, "<=>") && argc == 1 && comp_ntype(c, argv[0]) == TY_TIME) {
       int tt = ++g_tmp, tu = ++g_tmp;
       buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = %s; sp_Time _t%d = ", tt, r, tu);
       emit_expr(c, argv[0], b);
       buf_printf(b, "; (mrb_int)sp_time_cmp(_t%d, _t%d); })", tt, tu);
+    }
+    /* Time <=> non-Time is nil (poly). A poly operand is checked at runtime. */
+    else if (sp_streq(name, "<=>") && argc == 1) {
+      TyKind a0t = comp_ntype(c, argv[0]);
+      if (a0t == TY_POLY || a0t == TY_UNKNOWN) {
+        int tt = ++g_tmp, tu = ++g_tmp;
+        buf_printf(b, "({ sp_Time _t%d = %s; sp_RbVal _t%d = ", tt, r, tu); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? "
+                      "sp_box_int(sp_time_cmp(_t%d, *(sp_Time *)_t%d.v.p)) : sp_box_nil(); })",
+                   tu, tu, tt, tu);
+      }
+      else { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())"); }
     }
     else done = 0;
     free(rs.p);

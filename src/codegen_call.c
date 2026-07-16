@@ -4312,12 +4312,28 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
-    /* Time == / != via sp_time_cmp */
+    /* Time == / != via sp_time_cmp. A non-Time operand is never equal (CRuby
+       compares Time only to Time); a poly operand is checked at runtime. */
     if (rt == TY_TIME) {
-      int tt = ++g_tmp, tu = ++g_tmp;
-      buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", tt); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
-      buf_printf(b, "; sp_time_cmp(_t%d, _t%d) %s 0; })", tt, tu, eq ? "==" : "!=");
+      TyKind a0t = comp_ntype(c, argv[0]);
+      if (a0t == TY_TIME) {
+        int tt = ++g_tmp, tu = ++g_tmp;
+        buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_time_cmp(_t%d, _t%d) %s 0; })", tt, tu, eq ? "==" : "!=");
+        return 1;
+      }
+      if (a0t == TY_POLY || a0t == TY_UNKNOWN) {
+        int tt = ++g_tmp, tu = ++g_tmp;
+        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_RbVal _t%d = ", tu); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; %s(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME && "
+                      "sp_time_cmp(_t%d, *(sp_Time *)_t%d.v.p) == 0); })",
+                   eq ? "" : "!", tu, tu, tt, tu);
+        return 1;
+      }
+      /* a concrete non-Time operand: not equal, but evaluate it for effect */
+      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
       return 1;
     }
     /* cross-type: primitive vs user-object */
@@ -4902,6 +4918,14 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; sp_time_add_f(_t%d, _t%d); })", tt, tu);
         else
           buf_printf(b, "; sp_time_add_f(_t%d, -_t%d); })", tt, tu);
+      }
+      else if (at == TY_RATIONAL) {
+        /* Time +/- Rational: add the fractional seconds through the float path.
+           spinel's Time keeps nanosecond precision, so a Rational whose value
+           is representable in ns (e.g. 1/2) round-trips exactly (#2678). */
+        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; double _t%d = sp_rational_to_f(", tu); emit_expr(c, argv[0], b);
+        buf_printf(b, "); sp_time_add_f(_t%d, %s_t%d); })", tt, sp_streq(name, "-") ? "-" : "", tu);
       }
       else {
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
@@ -9897,6 +9921,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
+    /* Time.at(sec, usec): the second positional argument is microseconds
+       (no unit keyword). tv_nsec = usec * 1000. (#2646) */
+    if (sp_streq(name, "at") && argc == 2 &&
+        !(nt_type(nt, argv[1]) && (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
+                                   sp_streq(nt_type(nt, argv[1]), "HashNode")))) {
+      TyKind st = comp_ntype(c, argv[0]);
+      int ts = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = ", ts);
+      if (st == TY_FLOAT) { buf_puts(b, "sp_time_at_float("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (st == TY_POLY || st == TY_UNKNOWN) { buf_puts(b, "sp_time_at_float(sp_poly_to_f("); emit_boxed(c, argv[0], b); buf_puts(b, "))"); }
+      else { buf_puts(b, "sp_time_at_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_printf(b, "; _t%d.tv_nsec += (int32_t)(", ts);
+      TyKind ut = comp_ntype(c, argv[1]);
+      if (ut == TY_FLOAT) { emit_expr(c, argv[1], b); buf_puts(b, " * 1000.0"); }
+      else if (ut == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[1], b); buf_puts(b, ") * 1000.0"); }
+      else { buf_puts(b, "("); emit_int_expr(c, argv[1], b); buf_puts(b, ") * 1000"); }
+      buf_printf(b, "); _t%d; })", ts);
+      return;
+    }
     if ((sp_streq(name, "local") || sp_streq(name, "mktime") ||
          sp_streq(name, "utc") || sp_streq(name, "gm") || sp_streq(name, "new")) && argc >= 1) {
       int is_utc = (sp_streq(name, "utc") || sp_streq(name, "gm"));
@@ -11805,10 +11848,26 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (lrt == TY_TIME) {
-      int ta = ++g_tmp, tb = ++g_tmp;
-      buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", ta); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Time _t%d = ", tb); emit_expr(c, argv[0], b);
-      buf_printf(b, "; (mrb_int)sp_time_cmp(_t%d, _t%d); })", ta, tb);
+      TyKind a0t = comp_ntype(c, argv[0]);
+      if (a0t == TY_TIME) {
+        int ta = ++g_tmp, tb = ++g_tmp;
+        buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Time _t%d = ", tb); emit_expr(c, argv[0], b);
+        buf_printf(b, "; (mrb_int)sp_time_cmp(_t%d, _t%d); })", ta, tb);
+        return;
+      }
+      /* Time <=> non-Time is nil (poly result). A poly operand is checked at
+         run time; a concrete non-Time operand is unconditionally nil. */
+      if (a0t == TY_POLY || a0t == TY_UNKNOWN) {
+        int ta = ++g_tmp, tb = ++g_tmp;
+        buf_printf(b, "({ sp_Time _t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? "
+                      "sp_box_int(sp_time_cmp(_t%d, *(sp_Time *)_t%d.v.p)) : sp_box_nil(); })",
+                   tb, tb, ta, tb);
+        return;
+      }
+      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
       return;
     }
     /* Array <=> Array: lexicographic element-wise compare, or nil when an
@@ -11896,12 +11955,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, ") %s 0)", name);
       return;
     }
-    /* Time comparison via sp_time_cmp */
+    /* Time comparison via sp_time_cmp; a relational against a non-Time operand
+       raises ArgumentError (CRuby's Comparable, its <=> having returned nil). */
     if (rt == TY_TIME) {
-      int tt = ++g_tmp, tu = ++g_tmp;
-      buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", tt); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
-      buf_printf(b, "; sp_time_cmp(_t%d, _t%d) %s 0; })", tt, tu, name);
+      if (comp_ntype(c, argv[0]) == TY_TIME) {
+        int tt = ++g_tmp, tu = ++g_tmp;
+        buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_time_cmp(_t%d, _t%d) %s 0; })", tt, tu, name);
+        return;
+      }
+      buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
+      buf_puts(b, "); sp_raise_cls(\"ArgumentError\", \"comparison of Time with an incompatible value failed\"); 0; })");
       return;
     }
     /* An object whose class defines the comparison operator itself (e.g.

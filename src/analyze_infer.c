@@ -2173,6 +2173,7 @@ else {
     if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc") ||
         sp_streq(name, "localtime") || sp_streq(name, "getlocal") || sp_streq(name, "+") ||
         sp_streq(name, "-")) return TY_TIME;
+    if (sp_streq(name, "clamp") && argc == 2) return TY_TIME;  /* self or a bound */
     if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) return TY_STRING;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect") || sp_streq(name, "strftime") ||
         sp_streq(name, "zone") || sp_streq(name, "asctime") ||
@@ -2185,7 +2186,10 @@ else {
         sp_streq(name, "sunday?") || sp_streq(name, "monday?") ||
         sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
         sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
-    if (sp_streq(name, "<=>")) return TY_INT;
+    /* Time <=> Time is an Integer; against a non-Time operand it is nil, so
+       the result is poly (#2677). */
+    if (sp_streq(name, "<=>") && argc == 1)
+      return infer_type(c, argv[0]) == TY_TIME ? TY_INT : TY_POLY;
     if (sp_streq(name, "class")) return TY_STRING;
     /* predicates (is_a?/kind_of?/instance_of?/between?/...) before the int
        catch-all below swallows them */
