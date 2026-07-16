@@ -2773,16 +2773,39 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         const char *saved_self = g_self;
         char selfpbuf2[64];  /* stack-local: nested inlines each need their own receiver buffer */
         snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_%s *)_t%d.v.p", c->classes[defcls].c_name, tv);
+        int r_idx = c->scopes[mi].rest_idx;
+        int npost = c->scopes[mi].npost_rest;
+        int rest_end = argc - npost;   /* where the *rest collection stops */
         for (int a = 0; a < mnp; a++) {
+          buf_puts(&cb, ", ");
+          /* a *rest parameter collects the trailing call-site temps (evaluated
+             once above) into a PolyArray; without this the raw scalar temp was
+             passed straight into the sp_PolyArray* slot, a C type error at the
+             poly-dispatch arm (issue #2457). */
+          if (r_idx >= 0 && a == r_idx) {
+            int rt2 = ++g_tmp;
+            buf_printf(&cb, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rt2, rt2);
+            for (int a2 = a; a2 < rest_end && a2 < argc; a2++) {
+              char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a2]);
+              Buf eb; memset(&eb, 0, sizeof eb);
+              if (atmp_ty[a2] == TY_POLY) buf_puts(&eb, tn);
+              else emit_boxed_text(c, atmp_ty[a2], tn, &eb);
+              buf_printf(&cb, " sp_PolyArray_push(_t%d, %s);", rt2, eb.p ? eb.p : "sp_box_nil()");
+              free(eb.p);
+            }
+            buf_printf(&cb, " _t%d; })", rt2);
+            continue;
+          }
           /* box the call-site arg if this candidate's parameter is poly;
              emit default for args beyond the call-site count (padding) */
           TyKind pt = TY_UNKNOWN;
           LocalVar *pv = scope_local(&c->scopes[mi], c->scopes[mi].pnames[a]);
           if (pv) pt = pv->type;
-          buf_puts(&cb, ", ");
-          if (a < argc) {
-            TyKind at = atmp_ty[a];   /* the temp's actual type (poly for a nil/void arg) */
-            char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
+          /* post-*rest required params take from the tail of the call args */
+          int src = (r_idx >= 0 && npost > 0 && a > r_idx) ? rest_end + (a - r_idx - 1) : a;
+          if (src < argc) {
+            TyKind at = atmp_ty[src];   /* the temp's actual type (poly for a nil/void arg) */
+            char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[src]);
             if (pt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, tn, &cb);
             else if (at == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, tn, &cb);
             else buf_puts(&cb, tn);
