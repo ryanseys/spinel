@@ -1853,6 +1853,34 @@ int infer_write_types(Compiler *c) {
     }
   }
 
+  /* The container-usage fold above can widen a hash's value layout after the
+     main write-site scan has already typed a destination local. Reconcile the
+     direct `value = hash[key]` shape now that the receiver is final: a boxed
+     hash value must flow into a boxed local, rather than being coerced through
+     an earlier scalar slot (for example, false becoming integer zero).
+
+     Keep this deliberately local to the affected assignment. The normal node
+     cache rebuild propagates the new slot type to its reads, while occurrence
+     typing can still narrow guarded reads later in analysis. */
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    int value = nt_ref(nt, id, "value");
+    if (value < 0 || nt_kind(nt, value) != NK_CallNode) continue;
+    const char *name = nt_str(nt, value, "name");
+    if (!name || !sp_streq(name, "[]") || nt_ref(nt, value, "block") >= 0) continue;
+    int args = nt_ref(nt, value, "arguments");
+    int argc = 0;
+    if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+    if (argc != 1) continue;
+    int recv = nt_ref(nt, value, "receiver");
+    TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+    if (!ty_is_hash(rt) || ty_hash_val(rt) != TY_POLY) continue;
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
+    if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+    TyKind merged = ty_unify(lv->type, TY_POLY);
+    if (merged != lv->type) { lv->type = merged; changed = 1; }
+  }
+
   /* Second pass: re-compute proc_ret for proc-typed locals after body-internal
      locals have been typed. The first pass resets all locals to TY_UNKNOWN, so
      computing proc_ret there would see stale TY_UNKNOWN for variables assigned
