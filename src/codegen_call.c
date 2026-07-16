@@ -8688,6 +8688,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
       return;
     }
+    /* Module#include?(mod): mod must be a Module (a Class arg is a TypeError);
+       true when mod is a proper ancestor of the receiver (#2674). */
+    if (sp_streq(name, "include?") && argc == 1 && comp_ntype(c, argv[0]) == TY_CLASS) {
+      int m = ++g_tmp;
+      buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Class _cl%d = ", m); emit_expr(c, argv[0], b);
+      buf_printf(b, "; if (!sp_class_is_module_val(_cl%d)) sp_raise_cls(\"TypeError\", "
+                    "\"wrong argument type Class (expected Module)\");", m);
+      buf_printf(b, " _cl%d.cls_id != _cl%d.cls_id && sp_class_le(_cl%d, _cl%d); })", _clt, m, _clt, m);
+      return;
+    }
     /* Klass === obj is obj.is_a?(Klass): does the operand's runtime class have
        the receiver class among its ancestors. Only for a user-class receiver --
        the primitive type names (Integer === 5, Comparable === 5) have their own

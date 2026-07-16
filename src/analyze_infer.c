@@ -1457,6 +1457,7 @@ TyKind infer_call(Compiler *c, int id) {
                       sp_streq(name, ">=") || sp_streq(name, "<=>"))) return TY_POLY;
     if (argc == 0 && sp_streq(name, "ancestors")) return TY_POLY_ARRAY;
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) return TY_BOOL;
+    if (argc == 1 && sp_streq(name, "include?")) return TY_BOOL;
     if (argc <= 1 && (sp_streq(name, "instance_methods") ||
                       sp_streq(name, "public_instance_methods") ||
                       sp_streq(name, "private_instance_methods") ||
