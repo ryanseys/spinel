@@ -143,6 +143,16 @@ typedef struct{mrb_float first;mrb_float last;mrb_int excl;}sp_FloatRange;
    Errno:: family and many builtin error classes have no assigned cls_id). It
    takes precedence over cls_id for to_s / boxing / equality. */
 typedef struct{mrb_int cls_id;const char *name;}sp_Class;
+/* The nil-class sentinel: a TY_CLASS value can be nil (BasicObject#superclass),
+   carried in-band via a reserved cls_id with no name -- the same nullable-scalar
+   convention as SP_INT_NIL for int?. It is distinct from every real class id
+   (user >= 0, builtins -100..-146, SP_CLASS_BY_NAME 0x7F000000). It MUST stay
+   negative: the class-chain walks route a non-negative cls_id to the user-class
+   table (`cur.cls_id>=0 ? sp_class_superclass : sp_builtin_superclass`), so a
+   positive sentinel would be looked up as a user class. */
+#define SP_CLASS_NIL_ID ((mrb_int)-900)
+#define sp_class_nil_p(c) ((c).name == NULL && (c).cls_id == SP_CLASS_NIL_ID)
+#define SP_CLASS_NIL ((sp_Class){SP_CLASS_NIL_ID, NULL})
 /* fl marks a component as Float-classed (renders "2.0"); clear bits keep the
    Integer-style rendering for whole values. Zero-init (every positional
    compound literal) is the Integer-classed default. */

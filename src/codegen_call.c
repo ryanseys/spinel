@@ -8630,7 +8630,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "; sp_class_to_s(_cl%d); })", _clt);
       return;
     }
-    if (sp_streq(name, "nil?")) { buf_puts(b, "0"); return; }
+    if (sp_streq(name, "nil?")) {
+      /* a class value is nil only when it is the nil-class sentinel
+         (BasicObject#superclass); every real class is non-nil (#2654) */
+      buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_class_nil_p(_cl%d); })", _clt);
+      return;
+    }
     /* const_defined?(:NAME) with a literal name answers at compile time from
        the (flat) constant and class tables -- constants carry no class
        qualifier in the registry, so this is the same namespace a read
@@ -8661,18 +8667,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (sp_streq(name, "superclass") && argc == 0) {
-      /* BasicObject is the hierarchy root: its superclass is nil (#2654). */
-      {
-        const char *_rn = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
-                          ? nt_str(nt, recv, "name") : NULL;
-        if (_rn && sp_streq(_rn, "BasicObject")) {
-          buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_INT_NIL)");
-          return;
-        }
-      }
       /* sp_class_superclass only knows the user chain; a builtin class needs
          sp_builtin_superclass (Integer -> Numeric), as sp_class_is_ancestor
-         already dispatches. A Module has no #superclass -> NoMethodError. */
+         already dispatches. BasicObject (the root) yields the nil-class
+         sentinel there (#2654). A Module has no #superclass -> NoMethodError. */
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_class_is_module_val(_cl%d) ? "
                     "(sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method 'superclass' for module %%s\", sp_class_to_s(_cl%d))), (sp_Class){0}) : "

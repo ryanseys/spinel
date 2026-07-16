@@ -4697,7 +4697,7 @@ char *codegen_program(const NodeTable *nt) {
      program could reach those (user classes, class values, any poly-capable
      slot -- see the render-reach scan); a purely-scalar program skips it. */
   if (g_emit_class_names) {
-    buf_puts(&b, "static const char *sp_class_to_s(sp_Class c){if(c.name)return c.name;switch(c.cls_id){");
+    buf_puts(&b, "static const char *sp_class_to_s(sp_Class c){if(sp_class_nil_p(c))return SPL(\"nil\");if(c.name)return c.name;switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++) {
       if (!is_builtin_reopen(c->classes[i].name)) {
         const char *qname = class_ruby_name(c, i);
@@ -4805,6 +4805,9 @@ char *codegen_program(const NodeTable *nt) {
   }
   /* Builtin superclass chain (simplified Ruby class hierarchy) */
   buf_puts(&b, "static sp_Class sp_builtin_superclass(sp_Class c){\n");
+  /* nil has no superclass: stay nil rather than falling to the Object default,
+     which would resurrect a terminated chain into a cycle (#2654) */
+  buf_puts(&b, "  if(sp_class_nil_p(c))return SP_CLASS_NIL;\n");
   buf_puts(&b, "  switch(c.cls_id){\n");
   /* Integer, Float, Complex, Rational -> Numeric -> Object */
   buf_puts(&b, "  case -100:case -101:case -131:case -142: return ((sp_Class){-113});\n"); /* -> Numeric */
@@ -4835,8 +4838,8 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(&b, "  case -109: return ((sp_Class){-108});\n");
   /* Object -> BasicObject */
   buf_puts(&b, "  case -116: return ((sp_Class){-117});\n");
-  /* BasicObject: root */
-  buf_puts(&b, "  case -117: return ((sp_Class){-117});\n");
+  /* BasicObject: the hierarchy root -- its superclass is nil (#2654) */
+  buf_puts(&b, "  case -117: return SP_CLASS_NIL;\n");
   buf_puts(&b, "  default: return ((sp_Class){-116});\n  }\n}\n");
 
   buf_puts(&b, "static int sp_class_lt(sp_Class a,sp_Class b){return a.cls_id!=b.cls_id&&sp_class_is_ancestor(b,a);}\n");
@@ -4930,7 +4933,9 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "        if(cur.cls_id==-102||cur.cls_id==-103) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* String/Symbol->Comparable */
     buf_puts(&b, "        if(cur.cls_id==-116) sp_PolyArray_push(a,sp_box_class(((sp_Class){-119})));\n");  /* Object->Kernel */
     buf_puts(&b, "        sp_Class bn=sp_builtin_superclass(cur);\n");
-    buf_puts(&b, "        if(bn.cls_id==cur.cls_id)break;\n");
+    /* the root (BasicObject) yields the nil class: that terminates the walk.
+       Chain end used to be marked by a self-reference, so keep that check too. */
+    buf_puts(&b, "        if(sp_class_nil_p(bn)||bn.cls_id==cur.cls_id)break;\n");
     buf_puts(&b, "        cur=bn;\n");
     buf_puts(&b, "      }\n");
     buf_puts(&b, "      break;\n    }\n");

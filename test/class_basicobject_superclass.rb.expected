@@ -3,3 +3,7 @@ nil
 true
 BasicObject
 false
+nil
+true
+[BasicObject, nil]
+nil

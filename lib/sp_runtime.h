@@ -1757,7 +1757,7 @@ static inline mrb_int sp_int_shr(mrb_int a, mrb_int n) {
 #define SP_CLASS_BY_NAME 0x7F000000
 static sp_RbVal sp_box_class_name(const char *name) { sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = SP_CLASS_BY_NAME; r.v.s = name; return r; }
 /* box a sp_Class into a poly slot (a name-backed class boxes by name). */
-static sp_RbVal sp_box_class(sp_Class c) { if (c.name) return sp_box_class_name(c.name); sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = (int)c.cls_id; r.v.i = c.cls_id; return r; }
+static sp_RbVal sp_box_class(sp_Class c) { if (sp_class_nil_p(c)) return sp_box_nil(); if (c.name) return sp_box_class_name(c.name); sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = (int)c.cls_id; r.v.i = c.cls_id; return r; }
 /* box a sp_Bigint* into a poly slot (heterogeneous container element, or a
    promote-mode overflow result). */
 static sp_RbVal sp_box_bigint(sp_Bigint *b) { sp_RbVal r; r.tag = SP_TAG_BIGINT; r.cls_id = 0; r.v.p = b; return r; }
