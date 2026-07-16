@@ -2088,7 +2088,11 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       TyKind bp0_tp = bp0p ? bp0p->type : TY_UNKNOWN;
       int npp = 0; while (block_param_name(c, block, npp)) npp++;
       int did_destruct = 0;
-      if (npp >= 2 && bp0_tp != TY_POLY && bp0_tp != TY_UNKNOWN) {
+      /* An Enumerator's items are boxed PolyArray pairs (each_with_index etc.),
+         never a typed inner array, so reading them as an sp_<K>Array would
+         misinterpret the memory (#2622). Route those through the poly auto-splat
+         below, which unboxes each sub-element. */
+      if (npp >= 2 && bp0_tp != TY_POLY && bp0_tp != TY_UNKNOWN && rt != TY_ENUMERATOR) {
         const char *inner_kk = array_kind(ty_array_of(bp0_tp));
         if (inner_kk) {
           int tsub = ++g_tmp;
