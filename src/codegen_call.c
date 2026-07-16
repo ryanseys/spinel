@@ -10261,6 +10261,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL && rt != TY_NIL && !ty_is_object(rt) &&
       (sp_streq(name, "match?") || sp_streq(name, "!~") || sp_streq(name, "=~") || sp_streq(name, "match"))) {
     int are = re_lit_index(c, argv[0]);
+    /* a numeric receiver has no =~/!~/match?/match (Object#=~ was removed):
+       raise NoMethodError rather than matching the number as a string. */
+    if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) &&
+        (sp_streq(name, "=~") || sp_streq(name, "!~") ||
+         sp_streq(name, "match?") || sp_streq(name, "match"))) {
+      const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
+      const char *dv9 = default_value(comp_ntype(c, id));
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_printf(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for an instance of %s\"), %s))",
+                 name, tn9, dv9 ? dv9 : "sp_box_nil()");
+      return;
+    }
     if (are >= 0 && sp_streq(name, "=~") && rt == TY_STRING) {
       buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
@@ -10395,6 +10407,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           rp_ok = 1;
         }
         if (rp_ok && rp.p) {
+          /* `5 =~ /re/`, `3.5 !~ /re/`, `5.match?(/re/)`: Object#=~ was removed,
+             so a numeric receiver has no =~/!~/match?/match -- raise
+             NoMethodError instead of matching the number as a string (which
+             would pass a numeric into sp_re_match_p's const char* slot). */
+          if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) &&
+              (sp_streq(name, "=~") || sp_streq(name, "!~") ||
+               sp_streq(name, "match?") || sp_streq(name, "match"))) {
+            const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
+            const char *dv9 = default_value(comp_ntype(c, id));
+            buf_puts(b, "((void)("); emit_expr(c, recv, b);
+            buf_printf(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for an instance of %s\"), %s))",
+                       name, tn9, dv9 ? dv9 : "sp_box_nil()");
+            free(rp.p); return;
+          }
           if (sp_streq(name, "match?") && argc == 1) {
             /* A symbol receiver matches over its name, so feed the runtime
                pattern the symbol's string rather than the raw sp_sym. */
