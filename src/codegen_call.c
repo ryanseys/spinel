@@ -8726,6 +8726,24 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
     }
+    /* Class#subclasses: the direct, instantiated subclasses, known from the
+       compile-time class graph. Constant class receiver only. (#2656) */
+    if (sp_streq(name, "subclasses") && argc == 0) {
+      const char *scty = nt_type(nt, recv);
+      int scid = (scty && sp_streq(scty, "ConstantReadNode")) ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+      if (scid >= 0) {
+        int ta = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+        for (int k = 0; k < c->nclasses; k++) {
+          if (c->classes[k].parent != scid) continue;   /* defined subclasses, even if never .new'd */
+          if (is_builtin_reopen(c->classes[k].name)) continue;
+          const char *kn = class_ruby_name(c, k); if (!kn) kn = c->classes[k].name;
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_class(((sp_Class){%d, \"%s\"})));", ta, k, kn);
+        }
+        buf_printf(b, " _t%d; })", ta);
+        return;
+      }
+    }
     /* a named class/module value is never a singleton class (spinel has no
        singleton-class objects), so #singleton_class? is always false. */
     if (sp_streq(name, "singleton_class?") && argc == 0) {
@@ -11796,6 +11814,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else buf_printf(b, "(_t%d < 0); })", t);
     return;
   }
+
   if (sp_streq(name, "!") && recv >= 0 && argc == 0) {
     /* Ruby truthiness: only nil and false are falsy. `!x` negates the same
        per-type truthiness emit_cond uses -- a poly / nullable scalar / nullable
