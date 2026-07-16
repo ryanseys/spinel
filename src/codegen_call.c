@@ -3860,6 +3860,21 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  /* Object#equal? is pointer identity and is never overridden, so a plain user
+     object (e.g. a package's Set) answers it even with no user-defined method
+     (#2629). A pointer-backed arg compares by address; anything else (a scalar,
+     or a value-type object with no stable identity) is never the same object. */
+  if (argc == 1 && sp_streq(name, "equal?") && recv >= 0 && ty_is_object(rt) &&
+      !comp_ty_value_obj(c, rt)) {
+    if (ty_is_object(a0) && !comp_ty_value_obj(c, a0)) {
+      buf_puts(b, "((void *)("); emit_expr(c, recv, b); buf_puts(b, ") == (void *)(");
+      emit_expr(c, argv[0], b); buf_puts(b, "))");
+    } else {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_expr(c, argv[0], b); buf_puts(b, "), FALSE)");
+    }
+    return 1;
+  }
   /* `===` on a scalar comparable (bool/int/float/string/symbol) is case
      equality == value equality. Range/Class/Regexp `===` have their own
      handlers and fall through here. */
