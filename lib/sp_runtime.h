@@ -4804,6 +4804,12 @@ static mrb_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
         sp_Time *ta = (sp_Time *)a.v.p, *tb = (sp_Time *)b.v.p;
         return (ta && tb) ? (ta->tv_sec == tb->tv_sec && ta->tv_nsec == tb->tv_nsec) : (ta == tb);
       }
+      if (a.cls_id == SP_BUILTIN_COMPLEX) {
+        /* value-based so an equal Complex serves as one Hash key (#2615),
+           paired with the value-based hash above */
+        sp_Complex *ca = (sp_Complex *)a.v.p, *cb = (sp_Complex *)b.v.p;
+        return (ca && cb) ? (ca->re == cb->re && ca->im == cb->im) : (ca == cb);
+      }
       if (sp_obj_eql_hook) return sp_obj_eql_hook(a.cls_id, a.v.p, b.v.p);
       return FALSE;
   }
