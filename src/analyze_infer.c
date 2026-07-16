@@ -1443,7 +1443,8 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "class")) return TY_CLASS;
     if (argc == 0 && sp_streq(name, "superclass")) return TY_CLASS;
-    if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!="))) return TY_BOOL;
+    if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=") ||
+                      sp_streq(name, "==="))) return TY_BOOL;
     /* Class ordering is tri-state: true/false when related, nil when the two
        classes have no subclass relationship (CRuby). <=> is -1/0/1 or nil. */
     if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||

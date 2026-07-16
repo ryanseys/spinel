@@ -5972,6 +5972,15 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         int uni = !sp_streq(name, "instance_of?") &&
                   (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") ||
                    sp_streq(cn, "Kernel"));
+        /* a builtin CLASS ancestor in the superclass chain (Data -146, Struct
+           -145, Numeric ...): check the object's class against its cls_id so a
+           Data/Struct instance is_a? Data/Struct (#2662). */
+        int bid = builtin_class_id(cn);
+        if (!uni && !sp_streq(name, "instance_of?") && bid < 0) {
+          buf_puts(b, "((void)("); emit_expr(c, recv, b);
+          buf_printf(b, "), sp_class_le(((sp_Class){%d}),((sp_Class){%d})))", cid, bid);
+          return 1;
+        }
         buf_puts(b, "(("); emit_expr(c, recv, b); buf_printf(b, "), %d)", uni);
         return 1;
       }

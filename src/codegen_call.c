@@ -8616,6 +8616,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
     }
+    /* Klass === obj is obj.is_a?(Klass): does the operand's runtime class have
+       the receiver class among its ancestors. Only for a user-class receiver --
+       the primitive type names (Integer === 5, Comparable === 5) have their own
+       tag-based fold elsewhere, which this must not shadow. */
+    if (sp_streq(name, "===") && argc == 1) {
+      const char *rvt2 = nt_type(nt, recv);
+      const char *rcn2 = (rvt2 && (sp_streq(rvt2, "ConstantReadNode") ||
+                                   sp_streq(rvt2, "ConstantPathNode"))) ? nt_str(nt, recv, "name") : NULL;
+      if (rcn2 && comp_class_index(c, rcn2) >= 0) {
+        int o = ++g_tmp;
+        buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_RbVal _t%d = ", o); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; sp_poly_is_a(_t%d, _cl%d); })", o, _clt);
+        return;
+      }
+    }
     /* klass.is_a?/kind_of?(Module|Class|Object|BasicObject) */
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
       int exact = sp_streq(name, "instance_of?");
