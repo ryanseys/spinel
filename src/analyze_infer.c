@@ -942,6 +942,13 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "<=>")) return TY_INT;
   }
   if (rt == TY_RATIONAL) {
+    /* step walks the sequence yielding Rational/Integer values: with a block it
+       returns the receiver (self), without one it materializes a poly array of
+       the boxed values (#2566). */
+    if (sp_streq(name, "step")) {
+      if (nt_ref(nt, id, "block") >= 0) return rt;
+      return TY_POLY_ARRAY;
+    }
     if (sp_streq(name, "numerator") || sp_streq(name, "denominator")) return TY_INT;
     if (sp_streq(name, "to_f") || sp_streq(name, "fdiv")) return TY_FLOAT;
     if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "div")) return TY_INT;

@@ -6033,10 +6033,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
     return;
   }
   /* n.times/upto/downto/step { ... } in expression position: run the loop
-     (lowered to a statement) and evaluate to the receiver (Ruby returns self) */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && comp_ntype(c, recv) == TY_INT &&
-      (sp_streq(name, "times") || sp_streq(name, "upto") ||
-       sp_streq(name, "downto") || sp_streq(name, "step"))) {
+     (lowered to a statement) and evaluate to the receiver (Ruby returns self).
+     A Rational receiver only steps. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
+      ((comp_ntype(c, recv) == TY_INT &&
+        (sp_streq(name, "times") || sp_streq(name, "upto") ||
+         sp_streq(name, "downto") || sp_streq(name, "step"))) ||
+       (comp_ntype(c, recv) == TY_RATIONAL && sp_streq(name, "step")))) {
     buf_puts(b, "({ ");
     emit_iteration_stmt(c, id, b, 0);
     emit_expr(c, recv, b); buf_puts(b, "; })");

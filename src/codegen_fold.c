@@ -2480,10 +2480,29 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
-  if (rt != TY_INT && rt != TY_FLOAT) return 0;
+  if (rt != TY_INT && rt != TY_FLOAT && rt != TY_RATIONAL) return 0;
   int args = nt_ref(nt, id, "arguments");
   int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
   if (sc < 1) return 0;
+  /* Rational receiver: walk the exact sequence through the poly numeric tower
+     and collect the boxed Rational/Integer values into a PolyArray (#2566). */
+  if (rt == TY_RATIONAL) {
+    int trr = ++g_tmp, tcc = ++g_tmp, tll = ++g_tmp, tss = ++g_tmp, tdd = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", trr, trr);
+    buf_printf(b, " sp_RbVal _t%d = sp_box_rational(", tcc); emit_expr(c, recv, b);
+    buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d);", tcc);
+    buf_printf(b, " sp_RbVal _t%d = ", tll); emit_boxed(c, sv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tll);
+    buf_printf(b, " sp_RbVal _t%d = ", tss);
+    if (sc >= 2) emit_boxed(c, sv[1], b); else buf_puts(b, "sp_box_int(1)");
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tss);
+    buf_printf(b, " if (sp_poly_cmp_ck(_t%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", tss);
+    buf_printf(b, " mrb_bool _t%d = sp_poly_cmp_ck(_t%d, sp_box_int(0)) > 0;", tdd, tss);
+    buf_printf(b, " for (; _t%d ? sp_poly_le(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d); _t%d = sp_poly_add(_t%d, _t%d)) sp_PolyArray_push(_t%d, _t%d);",
+               tdd, tcc, tll, tcc, tll, tcc, tcc, tss, trr, tcc);
+    buf_printf(b, " _t%d; })", trr);
+    return 1;
+  }
   int is_float = (rt == TY_FLOAT) || comp_ntype(c, sv[0]) == TY_FLOAT ||
                  (sc >= 2 && comp_ntype(c, sv[1]) == TY_FLOAT);
   int tr = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, ti = ++g_tmp;

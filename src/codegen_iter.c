@@ -1452,6 +1452,39 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
+  /* rational.step(limit[, step]) { |x| ... } -- walk the exact Rational
+     sequence, yielding boxed Rational/Integer values. The bounds compare and
+     the accumulator advances through the poly numeric tower (sp_poly_add keeps
+     a Rational operand rational), so the values stay exact (#2566). */
+  if (sp_streq(name, "step") && rt == TY_RATIONAL) {
+    int args = nt_ref(nt, id, "arguments");
+    int sargc = 0;
+    const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
+    if (sargc < 1) return 0;
+    int tc = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, td = ++g_tmp;
+    emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = sp_box_rational(", tc); emit_expr(c, recv, b);
+    buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d);\n", tc);
+    emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tl); emit_boxed(c, sargv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", tl);
+    emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", ts);
+    if (sargc >= 2) emit_boxed(c, sargv[1], b); else buf_puts(b, "sp_box_int(1)");
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", ts);
+    emit_indent(b, indent);
+    buf_printf(b, "if (sp_poly_cmp_ck(_t%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts);
+    emit_indent(b, indent);
+    buf_printf(b, "mrb_bool _t%d = sp_poly_cmp_ck(_t%d, sp_box_int(0)) > 0;\n", td, ts);
+    emit_indent(b, indent);
+    buf_printf(b, "for (; _t%d ? sp_poly_le(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d); _t%d = sp_poly_add(_t%d, _t%d)) {\n",
+               td, tc, tl, tc, tl, tc, tc, ts);
+    if (p0) { char cs[32]; snprintf(cs, sizeof cs, "_t%d", tc); emit_iter_param_assign(c, block, p0_orig, p0, TY_POLY, cs, b, indent + 1); }
+    { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", tc);
+      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+      emit_iter_bind_rest(c, block, rs_np, TY_POLY, rs_es, b, indent + 1); }
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
   /* num.step(limit[, step]) { [|i|] ... } -- stepping loop. A float receiver
      or a float limit/step makes it a float walk (yielding floats), computed
      by iteration count to avoid floating-point drift (CRuby semantics). */
