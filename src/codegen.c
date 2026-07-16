@@ -4864,6 +4864,10 @@ char *codegen_program(const NodeTable *nt) {
     /* For each user class, collect included module ids (in include order). */
     int **cls_incs = calloc((size_t)c->nclasses, sizeof(int *));
     int  *cls_nincs = calloc((size_t)c->nclasses, sizeof(int));
+    /* `prepend M` puts M BEFORE the class in #ancestors, so it is collected
+       separately from the includes that follow the class (#2702). */
+    int **cls_preps = calloc((size_t)c->nclasses, sizeof(int *));
+    int  *cls_npreps = calloc((size_t)c->nclasses, sizeof(int));
     for (int ci = 0; ci < c->nclasses; ci++) {
       /* scan def_node body and all reopenings */
       for (int id = 0; id < c->nt->count; id++) {
@@ -4879,7 +4883,10 @@ char *codegen_program(const NodeTable *nt) {
           const char *sty2 = nt_type(c->nt, stmts2[k2]);
           if (!sty2 || !sp_streq(sty2, "CallNode")) continue;
           const char *nm2 = nt_str(c->nt, stmts2[k2], "name");
-          if (!nm2 || !sp_streq(nm2, "include")) continue;
+          if (!nm2 || (!sp_streq(nm2, "include") && !sp_streq(nm2, "prepend"))) continue;
+          int is_prep2 = sp_streq(nm2, "prepend");
+          int **tgt_mods = is_prep2 ? cls_preps : cls_incs;
+          int  *tgt_n    = is_prep2 ? cls_npreps : cls_nincs;
           if (nt_ref(c->nt, stmts2[k2], "receiver") >= 0) continue;
           int anode2 = nt_ref(c->nt, stmts2[k2], "arguments");
           int an2 = 0;
@@ -4902,10 +4909,10 @@ char *codegen_program(const NodeTable *nt) {
             if (mid2 < 0 && !is_builtin_mod) continue;
             /* deduplicate */
             int found2 = 0;
-            for (int q = 0; q < cls_nincs[ci]; q++) if (cls_incs[ci][q] == mid2) { found2 = 1; break; }
+            for (int q = 0; q < tgt_n[ci]; q++) if (tgt_mods[ci][q] == mid2) { found2 = 1; break; }
             if (found2) continue;
-            cls_incs[ci] = realloc(cls_incs[ci], sizeof(int) * (size_t)(cls_nincs[ci] + 1));
-            cls_incs[ci][cls_nincs[ci]++] = mid2;
+            tgt_mods[ci] = realloc(tgt_mods[ci], sizeof(int) * (size_t)(tgt_n[ci] + 1));
+            tgt_mods[ci][tgt_n[ci]++] = mid2;
           }
         }
       }
@@ -4939,6 +4946,23 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "        cur=bn;\n");
     buf_puts(&b, "      }\n");
     buf_puts(&b, "      break;\n    }\n");
+    /* prepended modules come BEFORE the class itself (#2702) */
+    {
+      int any_prep = 0;
+      for (int ci = 0; ci < c->nclasses; ci++) if (cls_npreps[ci]) { any_prep = 1; break; }
+      if (any_prep) {
+        buf_puts(&b, "    switch(cur.cls_id){\n");
+        for (int ci = 0; ci < c->nclasses; ci++) {
+          if (cls_npreps[ci] == 0) continue;
+          buf_printf(&b, "    case %d:", ci);
+          /* last prepend wins, so it lands closest to the front */
+          for (int q = cls_npreps[ci] - 1; q >= 0; q--)
+            buf_printf(&b, " sp_PolyArray_push(a,sp_box_class(((sp_Class){%d})));", cls_preps[ci][q]);
+          buf_puts(&b, " break;\n");
+        }
+        buf_puts(&b, "    }\n");
+      }
+    }
     buf_puts(&b, "    sp_PolyArray_push(a,sp_box_class(cur));\n");
     /* inline the includes switch for this class */
     buf_puts(&b, "    switch(cur.cls_id){\n");
@@ -4991,8 +5015,8 @@ char *codegen_program(const NodeTable *nt) {
       "  }\n}\n"
       "static int sp_poly_is_a(sp_RbVal obj,sp_Class klass){\n"
       "  return sp_class_le(sp_poly_get_class(obj),klass);\n}\n");
-    for (int ci = 0; ci < c->nclasses; ci++) free(cls_incs[ci]);
-    free(cls_incs); free(cls_nincs);
+    for (int ci = 0; ci < c->nclasses; ci++) { free(cls_incs[ci]); free(cls_preps[ci]); }
+    free(cls_incs); free(cls_nincs); free(cls_preps); free(cls_npreps);
   }
   /* User exception hierarchy: sp_user_exc_parent(cls) -> parent class name.
      Used by sp_exc_cls_matches (rescue arms) and sp_exc_is_a (is_a?). */
