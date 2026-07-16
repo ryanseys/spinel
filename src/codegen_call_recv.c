@@ -872,7 +872,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       }
     }
     if (rt == TY_POLY_ARRAY && sp_streq(name, "sum") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-      buf_puts(b, "sp_box_int(sp_PolyArray_sum_int("); emit_expr(c, recv, b); buf_puts(b, "))");
+      /* fold via sp_poly_add so a Float (or Rational/Bignum) element promotes
+         the result instead of being dropped by the int-only sum (#2627) */
+      buf_puts(b, "sp_PolyArray_sum_poly("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
     if (rt == TY_POLY_ARRAY && sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
