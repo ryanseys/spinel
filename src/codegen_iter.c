@@ -1458,6 +1458,27 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     int args = nt_ref(nt, id, "arguments");
     int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
+    /* no limit (or an explicit nil limit): Integer#step iterates unboundedly
+       until the block breaks (#2582). Integer receiver + integer step only. */
+    int no_limit = sargc == 0 ||
+                   (nt_type(nt, sargv[0]) && sp_streq(nt_type(nt, sargv[0]), "NilNode"));
+    if (no_limit && rt == TY_INT &&
+        (sargc < 2 || comp_ntype(c, sargv[1]) != TY_FLOAT)) {
+      int t = ++g_tmp, ts = ++g_tmp;
+      emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = ", ts);
+      if (sargc >= 2) emit_int_expr(c, sargv[1], b); else buf_puts(b, "1");
+      buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      buf_printf(b, "for (mrb_int _t%d = ", t); emit_int_expr(c, recv, b);
+      buf_printf(b, "; ; _t%d += _t%d) {\n", t, ts);
+      if (p0) { char ts2[32]; snprintf(ts2, sizeof ts2, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts2, b, indent + 1); }
+      { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", t);
+        int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+        emit_iter_bind_rest(c, block, rs_np, TY_INT, rs_es, b, indent + 1); }
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
     if (sargc < 1) return 0;
     int is_float = (rt == TY_FLOAT) || comp_ntype(c, sargv[0]) == TY_FLOAT ||
                    (sargc >= 2 && comp_ntype(c, sargv[1]) == TY_FLOAT);
