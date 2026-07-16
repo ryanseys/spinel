@@ -8655,6 +8655,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (sp_streq(name, "superclass") && argc == 0) {
+      /* BasicObject is the hierarchy root: its superclass is nil (#2654). */
+      {
+        const char *_rn = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
+                          ? nt_str(nt, recv, "name") : NULL;
+        if (_rn && sp_streq(_rn, "BasicObject")) {
+          buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_INT_NIL)");
+          return;
+        }
+      }
       /* sp_class_superclass only knows the user chain; a builtin class needs
          sp_builtin_superclass (Integer -> Numeric), as sp_class_is_ancestor
          already dispatches. A Module has no #superclass -> NoMethodError. */

@@ -1452,7 +1452,14 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "singleton_class?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "class")) return TY_CLASS;
-    if (argc == 0 && sp_streq(name, "superclass")) return TY_CLASS;
+    if (argc == 0 && sp_streq(name, "superclass")) {
+      /* BasicObject is the root of the hierarchy: its superclass is nil, not a
+         class value (#2654). Recognized for the literal-constant receiver. */
+      const char *_rn = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
+                        ? nt_str(nt, recv, "name") : NULL;
+      if (_rn && sp_streq(_rn, "BasicObject")) return TY_NIL;
+      return TY_CLASS;
+    }
     if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=") ||
                       sp_streq(name, "==="))) return TY_BOOL;
     /* Class ordering is tri-state: true/false when related, nil when the two
