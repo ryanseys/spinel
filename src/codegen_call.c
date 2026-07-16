@@ -5093,6 +5093,17 @@ static void emit_math_arg(Compiler *c, int node, Buf *out) {
     buf_puts(out, "sp_rational_to_f("); emit_expr(c, node, out); buf_puts(out, ")");
     return;
   }
+  /* a Bignum converts to its exact double, not a truncated machine int (#2591) */
+  if (t == TY_BIGINT) {
+    buf_puts(out, "sp_bigint_to_double("); emit_expr(c, node, out); buf_puts(out, ")");
+    return;
+  }
+  /* a Complex has no real conversion for a Math function: RangeError (#2571) */
+  if (t == TY_COMPLEX) {
+    buf_puts(out, "((void)("); emit_expr(c, node, out);
+    buf_puts(out, "), (sp_raise_cls(\"RangeError\", \"can't convert Complex into Float\"), 0.0))");
+    return;
+  }
   buf_puts(out, "sp_num_to_f("); emit_boxed(c, node, out); buf_puts(out, ")");
 }
 
