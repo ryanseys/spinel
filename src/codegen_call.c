@@ -3356,10 +3356,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       int ci = class_var_static_ci(c, recv);
       if (emit_native_ctor(c, id, ci, argc, argv, b)) return 1;
       if (ci >= 0 && !c->classes[ci].is_struct) {
-        buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
+        /* the .new result is typed poly (a class-var receiver dispatches
+           dynamically), so box the concrete constructor result to match (#2653) */
+        int is_val = comp_ty_value_obj(c, ty_object(ci));
+        if (is_val) buf_printf(b, "sp_box_vobj_%s(sp_%s_new(", c->classes[ci].c_name, c->classes[ci].c_name);
+        else buf_printf(b, "sp_box_obj(sp_%s_new(", c->classes[ci].c_name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
-        buf_puts(b, ")");
+        if (is_val) buf_puts(b, "))");
+        else buf_printf(b, "), %d)", ci);
         return 1;
       }
     }
