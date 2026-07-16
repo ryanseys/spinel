@@ -4621,7 +4621,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_re_split_limit("); emit_expr(c, argv[0], b);
         buf_printf(b, ", %s, ", r); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
+      else if (sp_streq(name, "scan") && argc == 1 &&
+               (re_lit_index(c, argv[0]) >= 0 || comp_ntype(c, argv[0]) == TY_STRING) &&
                nt_ref(nt, id, "block") >= 0) {
         /* value-form scan { }: iterate in the prelude; the value is the
            receiver string (CRuby returns self from the block form). With
@@ -4629,7 +4630,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
            binds the group row itself, several destructure it (a group that
            did not participate binds nil). */
         int blk = nt_ref(nt, id, "block");
-        int has_cap = re_has_captures(re_lit_src(c, argv[0]));
+        int re_idx = re_lit_index(c, argv[0]);
+        int has_cap = re_idx >= 0 && re_has_captures(re_lit_src(c, argv[0]));
         int np = 0; while (block_param_name(c, blk, np)) np++;
         int body = nt_ref(nt, blk, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -4639,10 +4641,15 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent);
         if (has_cap)
           buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
-                     tm, re_lit_index(c, argv[0]), tr, tm);
-        else
+                     tm, re_idx, tr, tm);
+        else if (re_idx >= 0)
           buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
-                     tm, re_lit_index(c, argv[0]), tr, tm);
+                     tm, re_idx, tr, tm);
+        else {
+          buf_printf(g_pre, "sp_StrArray *_t%d = sp_str_scan(_t%d, ", tm, tr);
+          emit_expr(c, argv[0], g_pre);
+          buf_printf(g_pre, "); SP_GC_ROOT(_t%d);\n", tm);
+        }
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tm, ti);
         if (has_cap && np >= 2) {
@@ -4677,6 +4684,9 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
                re_has_captures(re_lit_src(c, argv[0]))) {
         buf_printf(b, "sp_re_scan_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+      }
+      else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+        buf_printf(b, "sp_str_scan(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "to_sym") || sp_streq(name, "intern")) buf_printf(b, "sp_sym_intern(%s)", r);
       else if (sp_streq(name, "to_c") && argc == 0) buf_printf(b, "sp_str_to_c(%s)", r);

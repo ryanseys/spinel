@@ -2682,15 +2682,17 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
-  /* str.scan(/re/) { |m| body } -- iterate over regex matches. A pattern
+  /* str.scan(pattern) { |m| body } -- iterate over matches. A regexp pattern
      with capture groups yields group rows, not whole matches: that shape
      is handled by the value-form emitter (which binds/destructures the
      rows), so defer to it. */
   if (sp_streq(name, "scan") && rt == TY_STRING) {
     int args = nt_ref(nt, id, "arguments");
     int sc_argc = 0; const int *sc_argv = args >= 0 ? nt_arr(nt, args, "arguments", &sc_argc) : NULL;
-    if (sc_argc != 1 || re_lit_index(c, sc_argv[0]) < 0) return 0;
-    if (re_has_captures(re_lit_src(c, sc_argv[0]))) return 0;
+    if (sc_argc != 1) return 0;
+    int sc_re = re_lit_index(c, sc_argv[0]);
+    if (sc_re < 0 && comp_ntype(c, sc_argv[0]) != TY_STRING) return 0;
+    if (sc_re >= 0 && re_has_captures(re_lit_src(c, sc_argv[0]))) return 0;
     TyKind et = TY_STRING;
     Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
     LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
@@ -2699,8 +2701,14 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     int tm = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent);
-    buf_printf(b, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, %s);\n",
-               tm, re_lit_index(c, sc_argv[0]), rb.p ? rb.p : ""); free(rb.p);
+    if (sc_re >= 0)
+      buf_printf(b, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, %s);\n",
+                 tm, sc_re, rb.p ? rb.p : "");
+    else {
+      buf_printf(b, "sp_StrArray *_t%d = sp_str_scan(%s, ", tm, rb.p ? rb.p : "");
+      emit_expr(c, sc_argv[0], b); buf_puts(b, ");\n");
+    }
+    free(rb.p);
     emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tm);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n",

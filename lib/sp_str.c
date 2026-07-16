@@ -678,6 +678,23 @@ sp_StrArray*sp_str_split_ws_limit(const char*s,mrb_int n){if(!s)sp_nil_recv("spl
 #undef SP_SPLIT_WS
   return a;
 }
+/* String-pattern String#scan. Regexp scans use sp_re_scan; this path handles
+   a String argument, returning non-overlapping literal matches. The empty
+   pattern matches at every UTF-8 character boundary, including both ends. */
+sp_StrArray*sp_str_scan(const char*s,const char*pat){if(!s)sp_nil_recv("scan");
+  SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);
+  sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);
+  if(!pat)sp_raise_cls("TypeError","wrong argument type nil (expected Regexp)");
+  size_t pl=strlen(pat);
+  if(pl==0){
+    const char*p=s;
+    for(;;){sp_str_split_push(a,p,0);if(!*p)break;p+=sp_utf8_advance(p);}
+    return a;
+  }
+  const char*p=s,*f;
+  while((f=strstr(p,pat))!=NULL){sp_str_split_push(a,f,pl);p=f+pl;}
+  return a;
+}
 /* String#gsub(pat, rep) for literal (non-regex) patterns. Issue #827: the
    result must come from sp_str_alloc, not a raw malloc buffer, because the
    GC's sp_mark_string writes the marker byte at offset -1 and would corrupt
