@@ -216,7 +216,7 @@ sp_Rational sp_str_to_r(const char *s) {
     p++;
     mrb_int d2 = 0; int anyd = 0;
     while (*p >= '0' && *p <= '9') { d2 = d2 * 10 + (*p - '0'); p++; anyd = 1; }
-    if (anyd && d2 != 0) den *= d2;
+    if (anyd) { if (d2 == 0) sp_raise_cls("ZeroDivisionError", "divided by 0"); den *= d2; }
   }
   if (!any) return sp_rational_new(0, 1);
   return sp_rational_new(sign * num, den);

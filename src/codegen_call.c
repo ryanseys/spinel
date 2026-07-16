@@ -3789,6 +3789,19 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
      handlers and fall through here. */
   if (argc == 1 && sp_streq(name, "===")) {
     int fr = eq_family(rt), fa = eq_family(a0);
+    /* Integer#=== a Bignum (either side) compares by value, not the pointer
+       identity a plain `==` on the sp_Bigint* would give (#2584). */
+    if ((rt == TY_INT || rt == TY_BIGINT) && (a0 == TY_INT || a0 == TY_BIGINT) &&
+        (rt == TY_BIGINT || a0 == TY_BIGINT)) {
+      buf_puts(b, "(sp_bigint_cmp(");
+      if (rt == TY_BIGINT) emit_expr(c, recv, b);
+      else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      buf_puts(b, ", ");
+      if (a0 == TY_BIGINT) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_puts(b, ") == 0)");
+      return 1;
+    }
     /* Range/float-range `===` is membership, not value equality; both fall
        through to their dedicated cover handlers. */
     if (fr && fr != 5 && fr != 6 && fa && fa != 5 && fa != 6) {
@@ -3806,6 +3819,13 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     if (fr && fr != 5 && fr != 6 && a0 == TY_POLY) {
       buf_puts(b, "sp_poly_eq("); emit_boxed(c, recv, b); buf_puts(b, ", ");
       emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+    /* a comparable-family receiver === nil is always false; === is value
+       equality, not a method nil must define (#2584: 3 === nil is false). */
+    if (fr && fr != 5 && fr != 6 && a0 == TY_NIL) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
       return 1;
     }
   }
@@ -11462,6 +11482,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "; double _t%d = sp_rational_to_f(", tb); emit_expr(c, argv[0], b);
       buf_printf(b, "); isnan(_t%d) ? SP_INT_NIL : (mrb_int)((_t%d > _t%d) - (_t%d < _t%d)); })",
                  ta, ta, tb, ta, tb);
+      return;
+    }
+    /* Bignum <=> (either side): compare by value, not the pointer identity a
+       raw `>`/`<` on the sp_Bigint* would give (always -1) (#2581) */
+    if ((lrt == TY_BIGINT || lat == TY_BIGINT) &&
+        (lrt == TY_INT || lrt == TY_BIGINT) && (lat == TY_INT || lat == TY_BIGINT)) {
+      int tc = ++g_tmp;
+      buf_printf(b, "({ int _t%d = sp_bigint_cmp(", tc);
+      if (lrt == TY_BIGINT) emit_expr(c, recv, b);
+      else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      buf_puts(b, ", ");
+      if (lat == TY_BIGINT) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_printf(b, "); (mrb_int)((_t%d > 0) - (_t%d < 0)); })", tc, tc);
       return;
     }
     if (ty_is_numeric(lrt) && ty_is_numeric(lat)) {
