@@ -9633,6 +9633,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (sp_streq(name, "ldexp") && argc == 2) {
+      /* a Bignum exponent overflows a C long -> RangeError (CRuby), not a
+         pointer-to-int cast that silently truncates to Infinity (#2616) */
+      if (comp_ntype(c, argv[1]) == TY_BIGINT) {
+        buf_puts(b, "((void)("); emit_math_arg(c, argv[0], b); buf_puts(b, "), (void)(");
+        emit_expr(c, argv[1], b);
+        buf_puts(b, "), (sp_raise_cls(\"RangeError\", \"bignum too big to convert into `long'\"), 0.0))");
+        return;
+      }
       buf_puts(b, "ldexp(");
       emit_math_arg(c, argv[0], b); buf_puts(b, ", (int)");
       /* the exponent may be a poly array element (`Math.ldexp(f[0], f[1])`):
