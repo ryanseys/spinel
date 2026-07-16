@@ -2744,6 +2744,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
            here; the signature exists only to match the inliner's call. */
         for (int i = 0; i < si->nparams; i++) buf_printf(b, "  (void)lv_%s;\n", si->pnames[i]);
       }
+      if (ci->is_data) buf_puts(b, "  sp_gc_freeze(self);\n");
       buf_puts(b, "  return self;\n}\n");
       goto struct_meta;
     }
@@ -2782,6 +2783,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     buf_printf(b, "  self->cls_id = %d;\n", cid);
     for (int i = 0; i < ci->nivars; i++)
       buf_printf(b, "  self->iv_%s = a%d;\n", ci->ivars[i] + 1, i);  /* skip leading '@' */
+    /* Data instances are frozen from construction (CRuby); Struct is mutable. */
+    if (ci->is_data) buf_puts(b, "  sp_gc_freeze(self);\n");
     buf_puts(b, "  return self;\n}\n");
     struct_meta:;
     /* Struct/Data #inspect (== #to_s): `#<struct Name m=v, ...>` (Data uses

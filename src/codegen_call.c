@@ -11334,6 +11334,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (cg_qm) {
       LocalVar *cv = comp_const(c, cg_qm);
       if (cv && cv->type != TY_UNKNOWN) { buf_printf(b, "cst_%s", cg_qm); return; }
+      /* Builtin module constants: Klass.const_get(:C) resolves to the same value
+         as Klass::C. const_get's result is poly, so box it (#2685). */
+      {
+        const char *rvt = nt_type(nt, recv);
+        const char *rnm = (rvt && (sp_streq(rvt, "ConstantReadNode") ||
+                                   sp_streq(rvt, "ConstantPathNode"))) ? nt_str(nt, recv, "name") : NULL;
+        if (rnm && sp_streq(rnm, "Float")) {
+          if (sp_streq(cg_qm, "INFINITY")) { buf_puts(b, "sp_box_float(1.0/0.0)"); return; }
+          if (sp_streq(cg_qm, "NAN"))      { buf_puts(b, "sp_box_float(0.0/0.0)"); return; }
+          if (sp_streq(cg_qm, "MAX"))      { buf_puts(b, "sp_box_float(DBL_MAX)"); return; }
+          if (sp_streq(cg_qm, "MIN"))      { buf_puts(b, "sp_box_float(DBL_MIN)"); return; }
+          if (sp_streq(cg_qm, "EPSILON"))  { buf_puts(b, "sp_box_float(DBL_EPSILON)"); return; }
+          if (sp_streq(cg_qm, "DIG"))      { buf_puts(b, "sp_box_int(DBL_DIG)"); return; }
+          if (sp_streq(cg_qm, "MANT_DIG")) { buf_puts(b, "sp_box_int(DBL_MANT_DIG)"); return; }
+          if (sp_streq(cg_qm, "RADIX"))    { buf_puts(b, "sp_box_int(FLT_RADIX)"); return; }
+        }
+        if (rnm && sp_streq(rnm, "Math")) {
+          if (sp_streq(cg_qm, "PI")) { buf_puts(b, "sp_box_float(M_PI)"); return; }
+          if (sp_streq(cg_qm, "E"))  { buf_puts(b, "sp_box_float(M_E)"); return; }
+        }
+      }
       /* literal but unresolved: evaluate the receiver for side effects, then raise.
          CRuby qualifies "uninitialized constant" by a named module receiver
          (M::Missing) but not by Object/top-level; "wrong constant name" is never
