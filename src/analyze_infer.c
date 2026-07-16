@@ -4262,6 +4262,15 @@ else {
         sp_streq(name, "real?")) return TY_BOOL;
     if (sp_streq(name, "nonzero?")) return TY_POLY;   /* self (Float) or nil */
     if (sp_streq(name, "div") && argc == 1) return TY_INT;  /* integer floor-division */
+    /* Complex-view methods on a real Float */
+    if (sp_streq(name, "abs2") || sp_streq(name, "real") ||
+        sp_streq(name, "conj") || sp_streq(name, "conjugate")) return TY_FLOAT;
+    if (sp_streq(name, "imag") || sp_streq(name, "imaginary")) return TY_INT;
+    if (sp_streq(name, "rect") || sp_streq(name, "rectangular") ||
+        sp_streq(name, "polar")) return TY_POLY_ARRAY;
+    if (sp_streq(name, "i")) return TY_COMPLEX;
+    /* Float <=> Rational: compare via the rational's float value (#2596) */
+    if (sp_streq(name, "<=>") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) return TY_INT;
     if (sp_streq(name, "next_float") || sp_streq(name, "prev_float") ||
         sp_streq(name, "abs") || sp_streq(name, "magnitude") ||
         sp_streq(name, "modulo") || sp_streq(name, "remainder") || sp_streq(name, "to_f") ||

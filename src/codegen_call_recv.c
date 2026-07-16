@@ -5675,6 +5675,27 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "remainder") && argc == 1) {
         buf_printf(b, "fmod(%s, ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
       }
+      /* Complex-view methods: a Float is a real Complex (imaginary part 0). */
+      else if (sp_streq(name, "abs2"))               buf_printf(b, "((%s) * (%s))", r, r);
+      else if (sp_streq(name, "real") || sp_streq(name, "conj") ||
+               sp_streq(name, "conjugate"))          buf_printf(b, "(%s)", r);
+      else if (sp_streq(name, "imag") || sp_streq(name, "imaginary"))
+        buf_printf(b, "((void)(%s), (mrb_int)0)", r);
+      else if (sp_streq(name, "rect") || sp_streq(name, "rectangular")) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_float(%s));"
+                      " sp_PolyArray_push(_t%d, sp_box_int(0)); _t%d; })", t, t, t, r, t, t);
+      }
+      else if (sp_streq(name, "polar")) {
+        /* [magnitude, angle]: angle is Float PI when negative, else Integer 0 */
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_float(fabs(%s)));"
+                      " sp_PolyArray_push(_t%d, (%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0));"
+                      " _t%d; })", t, t, t, r, t, r, t);
+      }
+      else if (sp_streq(name, "i"))  buf_printf(b, "((sp_Complex){0.0, (%s), 2})", r);
       /* Float#clamp with float bounds always yields a float (the returned bound
          is itself a float), so emit only when both bounds are float-typed; the
          mixed-bound case (int bound returned as Integer) is poly and left alone.

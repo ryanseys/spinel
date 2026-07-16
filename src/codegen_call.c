@@ -8510,6 +8510,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int dargs2 = nt_ref(nt, id, "arguments");
       int dn2 = 0; const int *dv2 = dargs2 >= 0 ? nt_arr(nt, dargs2, "arguments", &dn2) : NULL;
       if (dn2 == 1 && nt_type(nt, dv2[0]) && sp_streq(nt_type(nt, dv2[0]), "KeywordHashNode")) {
+        /* clone(freeze: false) on an always-frozen immediate can't produce an
+           unfrozen copy: CRuby raises ArgumentError. freeze: true / nil (and a
+           non-immediate like Range) return the value. (#2597) */
+        int fval = kwh_lookup(nt, dv2[0], "freeze");
+        const char *fvt = fval >= 0 ? nt_type(nt, fval) : NULL;
+        const char *icn = recv_t == TY_FLOAT ? "Float" : recv_t == TY_SYMBOL ? "Symbol"
+                        : recv_t == TY_NIL ? "NilClass"
+                        : (recv_t == TY_INT || recv_t == TY_BIGINT) ? "Integer" : NULL;
+        if (fvt && sp_streq(fvt, "FalseNode") && icn) {
+          buf_puts(b, "((void)("); emit_expr(c, recv, b);
+          buf_printf(b, "), (sp_raise_cls(\"ArgumentError\", \"can't unfreeze %s\"), %s))",
+                     icn, default_value(recv_t));
+          return;
+        }
         emit_expr(c, recv, b); return;
       }
     }
@@ -11282,6 +11296,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
       buf_puts(b, "), (void)("); emit_boxed(c, argv[0], b);
       buf_printf(b, "), %s)", lat == TY_NIL ? "(mrb_int)0" : "SP_INT_NIL");
+      return;
+    }
+    /* Float <=> Rational: compare by float value, agreeing with the operators
+       (<, <=, ...) that already coerce (#2596). The reverse direction works. */
+    if (lrt == TY_FLOAT && lat == TY_RATIONAL) {
+      int ta = ++g_tmp, tb = ++g_tmp;
+      buf_printf(b, "({ double _t%d = ", ta); emit_expr(c, recv, b);
+      buf_printf(b, "; double _t%d = sp_rational_to_f(", tb); emit_expr(c, argv[0], b);
+      buf_printf(b, "); isnan(_t%d) ? SP_INT_NIL : (mrb_int)((_t%d > _t%d) - (_t%d < _t%d)); })",
+                 ta, ta, tb, ta, tb);
       return;
     }
     if (ty_is_numeric(lrt) && ty_is_numeric(lat)) {
