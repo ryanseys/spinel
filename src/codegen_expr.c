@@ -1391,6 +1391,11 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       else buf_printf(b, "cst_%s", nm);
       return;
     }
+    /* `include Math` exposes the module's bare constants (#2600) */
+    if (c->has_include_math && nm && !comp_const(c, nm)) {
+      if (sp_streq(nm, "PI")) { buf_puts(b, "M_PI"); return; }
+      if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return; }
+    }
     if (nm && sp_streq(nm, "RUBY_DESCRIPTION")) { buf_puts(b, "SPL(\"spinel\")"); return; }
     if (nm && sp_streq(nm, "RUBY_VERSION"))     { buf_puts(b, "SPL(\"3.2.0\")"); return; }
     if (nm && sp_streq(nm, "RUBY_ENGINE"))      { buf_puts(b, "SPL(\"ruby\")"); return; }

@@ -3277,6 +3277,66 @@ static int pin_arg_position_hash_new(Compiler *c) {
   return changed;
 }
 
+static int name_is_math_fn(const char *nm) {
+  static const char *const fns[] = {
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh",
+    "tanh", "asinh", "acosh", "atanh", "exp", "log", "log2", "log10", "sqrt",
+    "cbrt", "hypot", "ldexp", "erf", "erfc", "gamma", "lgamma", "frexp", NULL };
+  for (int i = 0; fns[i]; i++) if (sp_streq(nm, fns[i])) return 1;
+  return 0;
+}
+
+/* `include Math` exposes the module's functions as bare calls: rewrite
+   `sqrt(x)` to `Math.sqrt(x)` so the existing Math-receiver machinery serves
+   them (#2600). Only fires when the program includes Math and no user method of
+   the same name shadows it; a bare call needs at least one argument (the Math
+   functions are all n-ary), so a receiverless niladic call is never touched. */
+int desugar_include_math(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int has_include = 0;
+  for (int id = 0; id < n0 && !has_include; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "include")) continue;
+    int anode = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *aa = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+    for (int j = 0; j < an; j++) {
+      const char *at = nt_type(nt, aa[j]);
+      if (at && sp_streq(at, "ConstantReadNode") && nt_str(nt, aa[j], "name") &&
+          sp_streq(nt_str(nt, aa[j], "name"), "Math")) { has_include = 1; break; }
+    }
+  }
+  if (!has_include) return 0;
+  c->has_include_math = 1;
+  int changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !name_is_math_fn(nm)) continue;
+    int anode = nt_ref(nt, id, "arguments");
+    int an = 0;
+    if (anode >= 0) nt_arr(nt, anode, "arguments", &an);
+    if (an < 1) continue;
+    /* a user def of this name (any scope) shadows the Math function */
+    int shadowed = 0;
+    for (int s = 0; s < c->nscopes && !shadowed; s++)
+      if (c->scopes[s].name && sp_streq(c->scopes[s].name, nm)) shadowed = 1;
+    if (shadowed) continue;
+    int mc = nt_new_node(nt, "ConstantReadNode");
+    if (mc < 0) continue;
+    nt_node_set_str(nt, mc, "name", "Math");
+    nt_node_set_ref(nt, id, "receiver", mc);
+    comp_grow_node_arrays(c);
+    c->nscope[mc] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_enum_method_recv(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -5524,6 +5584,7 @@ void analyze_program(Compiler *c) {
     ch |= pin_arg_position_hash_new(c);        /* f(Hash.new(d)) -> PolyPoly variant */
     ch |= pad_unsupplied_params(c);            /* under-supplied call: placeholder param type */
     ch |= desugar_builtin_method_obj(c);       /* builtin recv.method(:sym) -> wrapper def */
+    ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= desugar_for_enumerable(c);           /* for x in obj -> for x in obj.__enum_to_a */
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */

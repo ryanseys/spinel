@@ -4839,6 +4839,9 @@ TyKind infer_uncached(Compiler *c, int id) {
        Struct class assignment) must not shadow the class-table fallbacks
        below -- Pt = Struct.new(:x) reads as the class value, not unknown */
     if (lv && lv->type != TY_UNKNOWN) return lv->type;
+    /* `include Math` exposes bare PI/E as Float constants (#2600) */
+    if (c->has_include_math && !lv && nm && (sp_streq(nm, "PI") || sp_streq(nm, "E")))
+      return TY_FLOAT;
     if (nm && (sp_streq(nm, "RUBY_DESCRIPTION") || sp_streq(nm, "RUBY_VERSION") ||
                sp_streq(nm, "RUBY_PLATFORM") || sp_streq(nm, "RUBY_ENGINE") ||
                sp_streq(nm, "RUBY_ENGINE_VERSION") || sp_streq(nm, "RUBY_RELEASE_DATE") ||
