@@ -314,11 +314,19 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {
     }
     else if (d == 'P') { char b2[16]; strftime(b2, sizeof b2, "%p", &tmv); for (char *q = b2; *q; q++) *q = (char)tolower((unsigned char)*q); strcpy(val, b2); }
     else if (d == 'Z' && t.is_utc) strcpy(val, "UTC");  /* CRuby names a UTC time "UTC", not the C locale's "GMT" */
-    else {
-      /* a standard directive: format the bare `%X` (glibc handles some flags,
-         but we redo width/case ourselves for portability) */
+    else if (strchr("aAbBcCdDeFgGhHIjklmMnprRSTtuUvVwWxXyYzZ", d)) {
+      /* a standard Ruby directive: format the bare `%X` (we redo width/case
+         ourselves for portability) */
       char f2[3] = { '%', d, 0 };
       strftime(val, sizeof val, f2, &tmv);
+    }
+    else {
+      /* not a Ruby Time#strftime directive (e.g. `%+`): emit the token
+         verbatim -- CRuby does, and a platform's C strftime must not interpret
+         it (macOS treats `%+` as date(1), glibc leaves it literal). */
+      size_t tl = (size_t)(p - tok) + 1;
+      if (tl < sizeof val) { memcpy(val, tok, tl); val[tl] = 0; }
+      width = -1; upcase = downcase = 0;
     }
     if (upcase) for (char *q = val; *q; q++) *q = (char)toupper((unsigned char)*q);
     if (downcase) for (char *q = val; *q; q++) *q = (char)(isupper((unsigned char)*q) ? tolower((unsigned char)*q) : toupper((unsigned char)*q));
