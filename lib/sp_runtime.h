@@ -2393,6 +2393,7 @@ static const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
 static sp_Complex sp_str_to_c(const char *s) {
   double re = 0, im = 0;
   int parsed = 0;
+  const char *fin = s;   /* first byte NOT consumed by the parse */
   if (s) {
     const char *p = s;
     while (*p == ' ' || *p == '\t') p++;
@@ -2402,21 +2403,26 @@ static sp_Complex sp_str_to_c(const char *s) {
       parsed = 1;
       /* rational-syntax component "n/d" */
       if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { a /= d; end = de; } }
-      if (*end == 'i') im = a;
+      if (*end == 'i') { im = a; fin = end + 1; }
       else {
         re = a;
         const char *q = end;
         double b2 = strtod(q, &end);
         if (end != q) {
           if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { b2 /= d; end = de; } }
-          if (*end == 'i') im = b2;
+          if (*end == 'i') { im = b2; fin = end + 1; }
+          else fin = q;   /* an imaginary number without the 'i' suffix ("1+2") is invalid */
         }
-        else if ((*q == '+' || *q == '-') && q[1] == 'i') im = (*q == '-') ? -1.0 : 1.0;
+        else if ((*q == '+' || *q == '-') && q[1] == 'i') { im = (*q == '-') ? -1.0 : 1.0; fin = q + 2; }
+        else fin = q;        /* "1+" and other incomplete forms leave the operator unconsumed */
       }
     }
-    else if (*p == 'i') { im = 1; parsed = 1; }
-    else if ((*p == '+' || *p == '-') && p[1] == 'i') { im = (*p == '-') ? -1.0 : 1.0; parsed = 1; }
+    else if (*p == 'i') { im = 1; parsed = 1; fin = p + 1; }
+    else if ((*p == '+' || *p == '-') && p[1] == 'i') { im = (*p == '-') ? -1.0 : 1.0; parsed = 1; fin = p + 2; }
   }
+  /* the whole string must be consumed (only trailing whitespace allowed): an
+     incomplete form like "1+" is invalid, not silently (1+0i) (#2617). */
+  if (parsed) { while (*fin == ' ' || *fin == '\t') fin++; if (*fin != '\0') parsed = 0; }
   /* an unparseable string (or nil) is not a valid Complex value */
   if (!parsed) sp_raise_cls("ArgumentError", "invalid value for convert(): ");
   return (sp_Complex){ (mrb_float)re, (mrb_float)im };
