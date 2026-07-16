@@ -1393,6 +1393,14 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   /* ---- Complex / Rational value types ---- */
   /* Kernel#Complex(re[, im]): a Float argument marks its component
      Float-classed so rendering and abs/abs2 keep CRuby's classes. */
+  /* Complex takes 1..2 arguments: 0 or >2 raises ArgumentError (#2576, #2574) */
+  if (recv < 0 && sp_streq(name, "Complex") && (argc == 0 || argc > 2)) {
+    buf_puts(b, "({ ");
+    for (int a = 0; a < argc; a++) { buf_puts(b, "(void)("); emit_expr(c, argv[a], b); buf_puts(b, "); "); }
+    buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected 1..2)\");"
+                  " (sp_Complex){0, 0, 0}; })", argc);
+    return 1;
+  }
   if (recv < 0 && sp_streq(name, "Complex") && argc >= 1) {
     /* Complex("2+3i"): parse like String#to_c */
     if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {

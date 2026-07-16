@@ -2327,24 +2327,33 @@ static const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
 }
 static sp_Complex sp_str_to_c(const char *s) {
   double re = 0, im = 0;
+  int parsed = 0;
   if (s) {
     const char *p = s;
     while (*p == ' ' || *p == '\t') p++;
     char *end = NULL;
     double a = strtod(p, &end);
     if (end != p) {
+      parsed = 1;
+      /* rational-syntax component "n/d" */
+      if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { a /= d; end = de; } }
       if (*end == 'i') im = a;
       else {
         re = a;
         const char *q = end;
         double b2 = strtod(q, &end);
-        if (end != q && *end == 'i') im = b2;
+        if (end != q) {
+          if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { b2 /= d; end = de; } }
+          if (*end == 'i') im = b2;
+        }
         else if ((*q == '+' || *q == '-') && q[1] == 'i') im = (*q == '-') ? -1.0 : 1.0;
       }
     }
-    else if (*p == 'i') im = 1;
-    else if ((*p == '+' || *p == '-') && p[1] == 'i') im = (*p == '-') ? -1.0 : 1.0;
+    else if (*p == 'i') { im = 1; parsed = 1; }
+    else if ((*p == '+' || *p == '-') && p[1] == 'i') { im = (*p == '-') ? -1.0 : 1.0; parsed = 1; }
   }
+  /* an unparseable string (or nil) is not a valid Complex value */
+  if (!parsed) sp_raise_cls("ArgumentError", "invalid value for convert(): ");
   return (sp_Complex){ (mrb_float)re, (mrb_float)im };
 }
 /* Hash subset/superset comparisons (boxed, any variant pairing): every pair
