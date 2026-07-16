@@ -1950,6 +1950,27 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         }
         return 1;
       }
+      /* divmod / % / modulo / remainder against a Float: compute in floats,
+         [Integer quotient, Float remainder] for divmod (#2595) */
+      if ((sp_streq(name, "%") || sp_streq(name, "modulo") ||
+           sp_streq(name, "remainder") || sp_streq(name, "divmod")) && argc == 1 &&
+          comp_ntype(c, argv[0]) == TY_FLOAT) {
+        if (sp_streq(name, "divmod")) {
+          int tx = ++g_tmp, tf = ++g_tmp, tq = ++g_tmp, tp = ++g_tmp;
+          buf_printf(b, "({ mrb_float _t%d = sp_rational_to_f(", tx); emit_expr(c, recv, b);
+          buf_printf(b, "); mrb_float _t%d = ", tf); emit_float_expr(c, argv[0], b);
+          buf_printf(b, "; mrb_int _t%d = (mrb_int)floor(_t%d / _t%d);"
+                        " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                        " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
+                        " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (mrb_float)_t%d * _t%d));"
+                        " _t%d; })", tq, tx, tf, tp, tp, tp, tq, tp, tx, tq, tf, tp);
+          return 1;
+        }
+        buf_puts(b, name[0] == 'r' ? "fmod(sp_rational_to_f(" : "sp_fmod(sp_rational_to_f(");
+        emit_expr(c, recv, b); buf_puts(b, "), ");
+        emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
       /* Rational ** Rational computes as floats (CRuby; a negative base would
          be Complex, out of the value model -- it yields NaN here) */
       if (sp_streq(name, "**") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
@@ -1977,8 +1998,10 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       /* Non-literal precision: the result class depends on the runtime value
          (Rational for nd > 0, Integer otherwise), so box to poly and choose at
          runtime. Both operands are value types -- nothing to GC-root. */
-      if ((sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1) {
-        const char *fn = name[0] == 'r' ? "round" : "truncate";
+      if ((sp_streq(name, "round") || sp_streq(name, "truncate") ||
+           sp_streq(name, "floor") || sp_streq(name, "ceil")) && argc == 1) {
+        const char *fn = name[0] == 'r' ? "round" : name[0] == 't' ? "truncate"
+                       : name[0] == 'f' ? "floor" : "ceil";
         int tr = ++g_tmp, tn = ++g_tmp;
         buf_printf(b, "({ sp_Rational _t%d = ", tr); emit_expr(c, recv, b);
         buf_printf(b, "; mrb_int _t%d = (mrb_int)(", tn); emit_expr(c, argv[0], b);

@@ -957,7 +957,8 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 2 && sp_streq(name, "clamp") &&
         infer_type(c, argv[0]) == TY_RATIONAL && infer_type(c, argv[1]) == TY_RATIONAL) return TY_RATIONAL;
     if (argc == 1 && (sp_streq(name, "%") || sp_streq(name, "modulo") ||
-                      sp_streq(name, "remainder"))) return TY_RATIONAL;
+                      sp_streq(name, "remainder")))
+      return infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_RATIONAL;
     if (argc == 1 && sp_streq(name, "divmod")) return TY_POLY_ARRAY;
   }
 
