@@ -743,6 +743,18 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") >= 0 &&
       nt_type(nt, nt_ref(nt, id, "block")) &&
       sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode")) {
+    /* `obj.__enum_to_a.<m> { }` (m in each / each_with_index / reverse_each) is
+       the desugared each-family call on a user Enumerable / Struct receiver:
+       Ruby returns the enumerable itself, so type it as the original receiver
+       obj, not the intermediate member array (#2546/#2547). The codegen value
+       form (emit_iter_value_expr) yields obj to match. */
+    if ((sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
+         sp_streq(name, "reverse_each")) &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+      const char *rnm = nt_str(nt, recv, "name");
+      int orecv = rnm && sp_streq(rnm, "__enum_to_a") ? nt_ref(nt, recv, "receiver") : -1;
+      if (orecv >= 0) return infer_type(c, orecv);
+    }
     int enumerable_recv = ty_is_array(rt) || ty_is_hash(rt) ||
                           rt == TY_RANGE || rt == TY_ENUMERATOR;
     if (enumerable_recv &&

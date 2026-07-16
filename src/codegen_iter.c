@@ -1288,6 +1288,16 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   TyKind rt = comp_ntype(c, recv);
   if (rt == TY_UNKNOWN || rt == TY_POLY) return 0;
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  /* When the receiver was rewritten to `obj.__enum_to_a` (a user Enumerable or
+     Struct routed through its synthesized member array, #2546/#2547), the block
+     iterator must still yield the ORIGINAL receiver `obj`, not the intermediate
+     array: Enumerable#reverse_each / #each_with_index return the enumerable.
+     Bind obj once, materialize the array from that binding, iterate, yield obj. */
+  int objn = -1;
+  if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+    const char *rnm = nt_str(nt, recv, "name");
+    if (rnm && sp_streq(rnm, "__enum_to_a")) objn = nt_ref(nt, recv, "receiver");
+  }
   /* run the statement emitter against the temp into a scratch buffer first:
      splice only when it handles the shape, else leave the node to the
      later handlers untouched */
@@ -1307,7 +1317,12 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   if (!is_scalar_ret(rt) && rt != TY_RANGE) buf_printf(b, "SP_GC_ROOT(_t%d); ", ta);
   buf_puts(b, body.p ? body.p : "");
   free(body.p);
-  buf_printf(b, " _t%d; })", ta);
+  /* yield the original Enumerable receiver, not the intermediate member array:
+     `obj` is already materialized inside the `obj.__enum_to_a` emission above
+     (hoisted into a temp for GC when non-trivial, else a plain lvalue), so
+     re-emitting it here references that same value rather than re-evaluating. */
+  if (objn >= 0) { buf_puts(b, " "); emit_expr(c, objn, b); buf_puts(b, "; })"); }
+  else buf_printf(b, " _t%d; })", ta);
   return 1;
 }
 
