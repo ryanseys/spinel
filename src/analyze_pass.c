@@ -3196,6 +3196,23 @@ void check_block_rest_support(Compiler *c) {
    name (`send(meth)`) has no static target and is left alone. Done on the AST,
    not textually, so a `send(:` inside a string or comment can't be mis-matched
    (the bare token has no `.` anchor). #1261. */
+/* `recv.public_method(:sym)` -> `recv.method(:sym)`: the same bound Method,
+   reusing all the `method(:sym)` machinery (reachability, arity, call). The
+   private/protected visibility distinction is not modeled. #2687 */
+int desugar_public_method(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "public_method")) continue;
+    if (!method_sym_arg(c, id)) continue;   /* literal symbol/string arg only */
+    nt_node_set_str(nt, id, "name", "method");
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_implicit_send(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
