@@ -4574,7 +4574,15 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
 int emit_grep_pred(Compiler *c, int pat, const char *ev, TyKind et, Buf *b) {
   const NodeTable *nt = c->nt;
   int re = re_lit_index(c, pat);
-  if (re >= 0) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, %s)", re, ev); return 1; }
+  if (re >= 0) {
+    /* a poly element is a boxed sp_RbVal: only a String tag can match a Regexp
+       (anything else is a false === ), so guard and unbox (#2620) */
+    if (et == TY_POLY)
+      buf_printf(b, "((%s).tag == SP_TAG_STR && (%s).v.s && sp_re_match_p(sp_re_pat_%d, (%s).v.s))", ev, ev, re, ev);
+    else
+      buf_printf(b, "sp_re_match_p(sp_re_pat_%d, %s)", re, ev);
+    return 1;
+  }
   const char *pty = nt_type(nt, pat);
   /* A value-literal pattern uses `pattern === elem` == value equality. The C
      comparison depends on the element representation: a raw scalar for a typed
