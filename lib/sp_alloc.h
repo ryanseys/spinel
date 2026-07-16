@@ -237,7 +237,10 @@ static inline const char*sp_float_to_s(mrb_float f){
   int exp_val=(*s)?atoi(s+1):0;int decpt=exp_val+1;
   char*out=sp_str_alloc_raw(64);int o=0;
   if(neg)out[o++]='-';
-  if(decpt>0&&decpt<=15){
+  /* fixed notation when the point sits within the digits (a fractional part,
+     dlen>decpt) OR the integer part is <= 15 digits; a longer integer-valued
+     value (dlen<=decpt, decpt>15) prints scientific like CRuby (#2593). */
+  if(decpt>0&&(decpt<=15||dlen>decpt)){
     if(decpt<dlen){memcpy(out+o,digits,decpt);o+=decpt;out[o++]='.';memcpy(out+o,digits+decpt,dlen-decpt);o+=(dlen-decpt);}
     else{memcpy(out+o,digits,dlen);o+=dlen;for(int i=dlen;i<decpt;i++)out[o++]='0';out[o++]='.';out[o++]='0';}
   }else if(decpt<=0&&decpt>-4){
