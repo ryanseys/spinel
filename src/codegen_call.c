@@ -1417,6 +1417,16 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       free(sb.p);
       return 1;
     }
+    /* a nil component can't be converted to Complex (CRuby raises TypeError);
+       the general float construction below would silently read it as 0.0 */
+    if (comp_ntype(c, argv[0]) == TY_NIL ||
+        (argc >= 2 && comp_ntype(c, argv[1]) == TY_NIL)) {
+      buf_puts(b, "({ ");
+      for (int a = 0; a < argc; a++) { buf_puts(b, "(void)("); emit_expr(c, argv[a], b); buf_puts(b, "); "); }
+      buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't convert nil into Complex\");"
+                  " (sp_Complex){0, 0, 0}; })");
+      return 1;
+    }
     int re_rat = comp_ntype(c, argv[0]) == TY_RATIONAL;
     int im_rat = argc >= 2 && comp_ntype(c, argv[1]) == TY_RATIONAL;
     int fl = (comp_ntype(c, argv[0]) == TY_FLOAT || re_rat ? 1 : 0) |
