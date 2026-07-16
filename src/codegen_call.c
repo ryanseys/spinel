@@ -432,6 +432,14 @@ static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, Buf *b) {
 }
 
 
+/* Compiler-synthesized instance methods that must stay invisible to
+   reflection (respond_to?, instance_methods): they are implementation detail
+   with no CRuby counterpart. Matched by exact name so a user-defined `__foo`
+   stays visible. */
+static int name_is_synth_method(const char *m) {
+  return m && sp_streq(m, "__enum_to_a");
+}
+
 /* Enumerable's public instance methods, for respond_to? on a user class
    that includes the module (served through the __enum_to_a redirect). */
 static int name_is_enumerable_module_method(const char *m) {
@@ -8366,8 +8374,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             Scope *s = &c->scopes[si];
             if (s->class_id != ci2 || s->is_cmethod) continue;
             if (!s->name || !s->name[0]) continue;
-            /* skip shadow methods */
+            /* skip shadow methods and compiler-synthesized helpers */
             if (strncmp(s->name, "__prep_", 7) == 0) continue;
+            if (name_is_synth_method(s->name)) continue;
             int v = comp_method_vis(ci3, s->name);
             if (!((v == SP_VIS_PUBLIC && im_pub) || (v == SP_VIS_PROTECTED && im_prot) ||
                   (v == SP_VIS_PRIVATE && im_priv))) continue;
@@ -10881,7 +10890,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         "instance_variable_get", "instance_variable_set",
         "instance_variable_defined?", "singleton_class", "extend", NULL };
       int yes = 0, resolved = 0;
-      for (int u = 0; uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
+      /* a compiler-synthesized helper (__enum_to_a) is not a real method: CRuby
+         answers false, so never let the class-chain lookup below report it */
+      if (name_is_synth_method(qm)) { resolved = 1; yes = 0; }
+      for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
       /* value-type receivers: their builtin surface is not in any class
          table; answer the well-known names directly (the probe below only
          reports methods spinel can dispatch, a subset of CRuby's answer) */
