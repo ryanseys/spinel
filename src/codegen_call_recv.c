@@ -5427,6 +5427,10 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         long long pe9 = -(long long)nt_int(nt, argv[0], "value", 0);
         buf_printf(b, "sp_rational_new(1, sp_int_pow(%s, %lldLL))", r, pe9);
       }
+      /* pow with a Float exponent is real exponentiation -> Float (#2604) */
+      else if (sp_streq(name, "pow") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        buf_printf(b, "pow((double)(%s), ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "pred") && argc == 0) buf_printf(b, "((%s) - 1)", r);
       else if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) buf_printf(b, "((%s) + 1)", r);

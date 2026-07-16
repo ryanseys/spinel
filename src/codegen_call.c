@@ -9422,7 +9422,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         Buf a1; memset(&a1, 0, sizeof a1); emit_math_arg(c, argv[1], &a1);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "double _t%d = %s;\n", t1, a1.p ? a1.p : "0"); free(a1.p);
-        buf_printf(b, "(sp_math_log(_t%d) / sp_math_log(_t%d))", t0, t1);
+        /* log base 1 is NaN in CRuby (the division log(x)/log(1) is x/0 = Inf) */
+        buf_printf(b, "(_t%d == 1.0 ? (0.0/0.0) : sp_math_log(_t%d) / sp_math_log(_t%d))", t1, t0, t1);
       }
       return;
     }

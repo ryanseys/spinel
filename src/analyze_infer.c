@@ -4223,6 +4223,7 @@ else {
     if (sp_streq(name, "pow") && argc == 1 && nt_type(nt, argv[0]) &&
         sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
         nt_int(nt, argv[0], "value", 0) < 0) return TY_RATIONAL;
+    if (sp_streq(name, "pow") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
     if ((sp_streq(name, "ceildiv") || sp_streq(name, "pow")) && argc >= 1) return TY_INT;
     if ((sp_streq(name, "pred") || sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) return TY_INT;
     if (sp_streq(name, "nonzero?") && argc == 0) return TY_INT;  /* self or nil (nullable int) */
