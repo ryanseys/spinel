@@ -3147,6 +3147,13 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
                  i, c->classes[uidef].c_name, mc(c->scopes[uimi].name), c->classes[uidef].c_name);
       continue;
     }
+    /* Struct/Data have a generated #inspect (#<struct Name a=1> / #<data ...>);
+       route the contained-element render to it instead of the object default
+       so [d] and {k: d} print like a directly-inspected d (#2698). */
+    if (ci->is_struct || ci->is_data) {
+      buf_printf(b, "    case %d: return sp_%s_inspect((sp_%s *)p);\n", i, ci->c_name, ci->c_name);
+      continue;
+    }
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     buf_printf(b, "      sp_String *_s = sp_String_new(sp_sprintf(\"#<%s:0x%%016llx\", (unsigned long long)(uintptr_t)p));\n",
@@ -3632,6 +3639,17 @@ static int class_is_hashkey(Compiler *c, int k) {
   return 1;
 }
 
+/* 1 if instantiated class k is a pure Struct/Data (no user ==/eql?/hash), so
+   it is a value hash key: hash combines the member hashes and eql? is the
+   field-wise value == (via sp_obj_eq_dispatch). #2660 */
+static int class_is_valuekey(Compiler *c, int k) {
+  ClassInfo *ci = &c->classes[k];
+  return ci->instantiated && (ci->is_struct || ci->is_data) &&
+         comp_method_in_chain(c, k, "==", NULL) < 0 &&
+         comp_method_in_chain(c, k, "eql?", NULL) < 0 &&
+         comp_method_in_chain(c, k, "hash", NULL) < 0;
+}
+
 /* Generate sp_gen_obj_hash / sp_gen_obj_eql: cls_id switches calling each such
    class's user #hash / #eql?, installed as sp_obj_hash_hook / sp_obj_eql_hook so
    the PolyPolyHash key machinery honors value semantics for user objects (two
@@ -3655,6 +3673,20 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "return (mrb_int)sp_%s_%s(%s(sp_%s *)p);\n", dcn, mc(m->name), slf, dcn);
     else
       buf_printf(b, "return sp_rbval_hash_key(sp_%s_%s(%s(sp_%s *)p));\n", dcn, mc(m->name), slf, dcn);
+  }
+  /* Struct/Data value keys: hash is the running combination of member hashes. */
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!class_is_valuekey(c, k)) continue;
+    ClassInfo *ci = &c->classes[k];
+    buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; mrb_int _h = %d;\n",
+               comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->nivars + 1);
+    for (int i = 0; i < ci->nivars; i++) {
+      char fe[128]; snprintf(fe, sizeof fe, "o->iv_%s", ci->ivars[i] + 1);
+      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, ci->ivar_types[i], fe, &bx);
+      buf_printf(b, "      _h = _h * 31 + sp_rbval_hash_key(%s);\n", bx.p ? bx.p : fe);
+      free(bx.p);
+    }
+    buf_puts(b, "      return _h; }\n");
   }
   buf_puts(b, "    default: break;\n  }\n  return (mrb_int)(uintptr_t)p;\n}\n");
 
@@ -3682,6 +3714,13 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
       buf_printf(b, "return sp_%s_%s(%s(sp_%s *)a, %s);\n", dcn, mc(m->name), slf, dcn, argbuf);
     else
       buf_printf(b, "return sp_poly_truthy(sp_%s_%s(%s(sp_%s *)a, %s));\n", dcn, mc(m->name), slf, dcn, argbuf);
+  }
+  /* Struct/Data value keys: eql? is the field-wise value == (sp_obj_eq_dispatch). */
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!class_is_valuekey(c, k)) continue;
+    int cid = comp_class_index(c, c->classes[k].name);
+    buf_printf(b, "    case %d: return sp_obj_eq_dispatch(sp_box_obj(a, %d), sp_box_obj(b_, %d));\n",
+               cid, cid, cid);
   }
   buf_puts(b, "    default: break;\n  }\n  return a == b_;\n}\n");
 }
@@ -5256,7 +5295,7 @@ char *codegen_program(const NodeTable *nt) {
   }
   g_gen_obj_hashkey = 0;
   for (int k = 0; k < c->nclasses; k++)
-    if (class_is_hashkey(c, k)) { g_gen_obj_hashkey = 1; break; }
+    if (class_is_hashkey(c, k) || class_is_valuekey(c, k)) { g_gen_obj_hashkey = 1; break; }
   g_gen_obj_valeq = 0;
   for (int k = 0; k < c->nclasses; k++)
     if (c->classes[k].instantiated && (c->classes[k].is_struct || c->classes[k].is_data) &&
@@ -5284,10 +5323,11 @@ char *codegen_program(const NodeTable *nt) {
   }
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   if (g_has_user_cmp) emit_obj_cmp_dispatch(c, body);
+  /* Struct/Data value-== hook (after the class struct definitions); emitted
+     before the hash-key dispatch, which references sp_obj_eq_dispatch. */
+  if (g_gen_obj_valeq) emit_obj_valeq_dispatch(c, body);
   /* Hash-key hooks (after the user #hash/#eql? definitions they call). */
   if (g_gen_obj_hashkey) emit_obj_hashkey_dispatch(c, body);
-  /* Struct/Data value-== hook (after the class struct definitions). */
-  if (g_gen_obj_valeq) emit_obj_valeq_dispatch(c, body);
 
   /* Emit END block static functions for atexit registration */
   int end_count = 0;
