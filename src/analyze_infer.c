@@ -749,7 +749,7 @@ TyKind infer_call(Compiler *c, int id) {
        obj, not the intermediate member array (#2546/#2547). The codegen value
        form (emit_iter_value_expr) yields obj to match. */
     if ((sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
-         sp_streq(name, "reverse_each")) &&
+         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry")) &&
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
       const char *rnm = nt_str(nt, recv, "name");
       int orecv = rnm && sp_streq(rnm, "__enum_to_a") ? nt_ref(nt, recv, "receiver") : -1;

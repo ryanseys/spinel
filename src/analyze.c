@@ -2466,14 +2466,12 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         }
       }
     }
-    /* each_entry is each for the sequential-yield shapes spinel compiles -- but
-       only the BLOCK form. Blockless #each_entry returns an Enumerator (a user
-       class's blockless #each would instead raise LocalJumpError), so leave it
-       for the Enumerable redirect / struct enumerator path to materialize. */
-    if (sp_streq(nm, "each_entry") && nt_ref(nt, id, "block") >= 0) {
-      nt_node_set_str(nt, id, "name", "each");
-      continue;
-    }
+    /* each_entry (block form) yields each element like #each but must return the
+       RECEIVER (Enumerable#each_entry), unlike a user #each whose own return
+       value leaks through. Leave the name intact so it rides the same
+       receiver-returning redirect as reverse_each (#2621); blockless
+       #each_entry stays for the Enumerable / struct enumerator path to
+       materialize an Enumerator. */
 
     /* max(n) { cmp } / min(n) { cmp }: the n extremes by the comparator --
        sort { cmp } then take from the appropriate end (max descends). */
