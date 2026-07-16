@@ -8726,6 +8726,36 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, " _cl%d.cls_id != _cl%d.cls_id && sp_class_le(_cl%d, _cl%d); })", _clt, m, _clt, m);
       return;
     }
+    /* class-variable reflection with a literal @@name on a constant class
+       receiver: resolve to the cvar's C global (#2694). */
+    if ((sp_streq(name, "class_variable_get") || sp_streq(name, "class_variable_set") ||
+         sp_streq(name, "class_variable_defined?")) && argc >= 1) {
+      const char *aty2 = nt_type(nt, argv[0]);
+      const char *cvn = (aty2 && sp_streq(aty2, "SymbolNode")) ? nt_str(nt, argv[0], "value")
+                      : (aty2 && sp_streq(aty2, "StringNode")) ? nt_str(nt, argv[0], "content") : NULL;
+      const char *rty2 = nt_type(nt, recv);
+      int ccid = (rty2 && sp_streq(rty2, "ConstantReadNode")) ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+      if (cvn && cvn[0] == '@' && cvn[1] == '@' && ccid >= 0) {
+        int cvi = comp_cvar_index(&c->classes[ccid], cvn);
+        if (sp_streq(name, "class_variable_defined?")) { buf_printf(b, "%d", cvi >= 0 ? 1 : 0); return; }
+        char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[ccid].name, cvn + 2);
+        if (cvi >= 0) {
+          TyKind ct = c->classes[ccid].cvar_types[cvi];
+          if (sp_streq(name, "class_variable_get")) { emit_boxed_text(c, ct, ref, b); return; }
+          if (sp_streq(name, "class_variable_set") && argc == 2) {
+            buf_printf(b, "(%s = ", ref);
+            if (ct == TY_POLY) emit_boxed(c, argv[1], b); else emit_expr(c, argv[1], b);
+            buf_puts(b, ", "); emit_boxed_text(c, ct, ref, b); buf_puts(b, ")");
+            return;
+          }
+        }
+        else if (sp_streq(name, "class_variable_get")) {
+          buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized class variable %s in %s\"), sp_box_nil())",
+                     cvn, c->classes[ccid].name);
+          return;
+        }
+      }
+    }
     /* Klass === obj is obj.is_a?(Klass): does the operand's runtime class have
        the receiver class among its ancestors. Only for a user-class receiver --
        the primitive type names (Integer === 5, Comparable === 5) have their own

@@ -1458,6 +1458,8 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 0 && sp_streq(name, "ancestors")) return TY_POLY_ARRAY;
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) return TY_BOOL;
     if (argc == 1 && sp_streq(name, "include?")) return TY_BOOL;
+    if (argc == 1 && sp_streq(name, "class_variable_defined?")) return TY_BOOL;
+    if (sp_streq(name, "class_variable_get") || sp_streq(name, "class_variable_set")) return TY_POLY;
     if (argc <= 1 && (sp_streq(name, "instance_methods") ||
                       sp_streq(name, "public_instance_methods") ||
                       sp_streq(name, "private_instance_methods") ||
