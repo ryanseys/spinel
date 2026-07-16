@@ -552,6 +552,46 @@ static int collect_class_constants(Compiler *c, int ci, int inherit,
    same specific message as `x = eval(s)` rather than a generic argument dump.
    The instance_eval/class_eval/module_eval block forms carry a literal block,
    not a string, and are handled separately -- they never reach here. */
+/* A call to something spinel deliberately does not support (docs/limitations.md).
+   Without this the call falls through to the generic diagnostic, which dumps
+   node ids and argument types rather than naming the feature -- or, for a name
+   the runtime happens to reach, to a NoMethodError that reads like an
+   implementation gap instead of a documented limit. Names a user class defines
+   are left alone: they are that method, not the builtin. Returns 1 if it
+   reported (never returns -- `unsupported` is noreturn). #2652 / #2667 / #2668 */
+int diagnose_unsupported_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nty = nt_type(nt, id);
+  if (!nty || !sp_streq(nty, "CallNode")) return 0;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  static const struct { const char *m; const char *why; } tbl[] = {
+    { "define_singleton_method",
+      "Object#define_singleton_method is not supported by AOT compilation: a per-object "
+      "method table would have to be consulted on every call, but each call site is a "
+      "direct C call to a compiled body. Define the method in the class body instead "
+      "(see docs/limitations.md)" },
+    { "extend",
+      "Object#extend is not supported by AOT compilation: mixing a module into a live "
+      "object needs a per-object method table. Use `include`/`prepend` in the class body "
+      "instead (see docs/limitations.md)" },
+    { "ruby2_keywords",
+      "Proc#ruby2_keywords is not supported: it is a shim for the Ruby 2.x-to-3.0 "
+      "keyword-argument transition, and spinel targets modern keyword semantics, so it "
+      "has nothing to toggle (see docs/limitations.md)" },
+    { NULL, NULL }
+  };
+  int hit = -1;
+  for (int k = 0; tbl[k].m; k++) if (sp_streq(name, tbl[k].m)) { hit = k; break; }
+  if (hit < 0) return 0;
+  /* a user-defined method of the same name is that method, not the builtin */
+  for (int uk = 0; uk < c->nclasses; uk++)
+    if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 0;
+  if (comp_method_index(c, name) >= 0) return 0;   /* a top-level def */
+  unsupported_feature(c, id, tbl[hit].why);
+  return 1;
+}
+
 int diagnose_eval_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nty = nt_type(nt, id);
@@ -5827,6 +5867,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
   /* eval(string) / Kernel.eval(string): a hard AOT boundary (see helper). */
   if (diagnose_eval_call(c, id)) return;
+  /* a deliberately-unsupported call names the feature rather than dumping nodes */
+  if (diagnose_unsupported_call(c, id)) return;
   /* caller_locations: no runtime frame stack in AOT builds (as with `caller`),
      so this is an empty array of locations -- an Array, never nil. The (start,
      length) arguments are still evaluated for their side effects, as CRuby

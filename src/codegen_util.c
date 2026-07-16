@@ -560,6 +560,26 @@ const char *rename_local(const char *nm) {
     if (sp_streq(g_ren_from[i], nm)) return g_ren_to[i];
   return nm;
 }
+/* Report a feature spinel deliberately does not support (docs/limitations.md).
+   Unlike `unsupported`, which describes a codegen gap and dumps the node so the
+   compiler can be debugged, this names the feature and stops: the internals are
+   noise when the answer is "this is a documented limit". #2652 / #2667 / #2668 */
+__attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg) {
+  if (g_unsup_probe) longjmp(g_unsup_recover, 1);
+  int ln = (int)nt_int(c->nt, id, "node_line", 0);
+  char pos[1200]; pos[0] = 0;
+  if (ln > 0) {
+    int fid = (int)nt_int(c->nt, id, "node_file", 0);
+    const char *file = nt_file_path(c->nt, fid);
+    if (!file || !*file) file = c->nt->source_file;
+    if (!file || !*file) file = "source.rb";
+    snprintf(pos, sizeof pos, "%s:%d: ", file, ln);
+  }
+  fprintf(stderr, "spinel: %s%s\n", pos, msg);
+  if (collect_mode() && g_unsup_armed) longjmp(g_unsup_recover, 1);
+  exit(1);
+}
+
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
   /* Silent emittability probe (dynamic-send arm selection): unwind without a
      diagnostic, the caller just drops this arm. */

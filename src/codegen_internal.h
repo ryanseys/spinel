@@ -447,6 +447,7 @@ extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driv
 extern int g_unsup_armed;          /* nonzero while a recovery point is live */
 extern int g_unsup_probe;          /* silent emittability probe (drop a dynamic-send arm) */
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what);
+__attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
 int builtin_class_id(const char *name);
 int is_builtin_class_name(const char *n);
 const char *c_type_name(TyKind t);
@@ -567,6 +568,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b);
 int emit_range_call(Compiler *c, int id, Buf *b);
 int emit_poly_call(Compiler *c, int id, Buf *b);
 int diagnose_eval_call(Compiler *c, int id);
+int diagnose_unsupported_call(Compiler *c, int id);
 int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent);
 void emit_brk_wrapped_call(Compiler *c, int id, Buf *b);
 void emit_array_splice(Compiler *c, int id, int recv, TyKind rt, int start_node, int len_node, int range_node, int rhs_node, Buf *b);
