@@ -3148,6 +3148,28 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
     return 1;
   }
   if (argc < 1 || argc > 7) return 0;
+  /* a fractional seconds field (Rational/Float) for the named class methods:
+     split into whole seconds and a nanosecond remainder (#2638). */
+  if (!is_new && argc == 6) {
+    TyKind sect = comp_ntype(c, argv[5]);
+    if (sect == TY_RATIONAL || sect == TY_FLOAT) {
+      int ts = ++g_tmp;
+      buf_printf(b, "({ double _t%d = ", ts);
+      if (sect == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[5], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[5], b);
+      buf_printf(b, "; sp_Time _t%da = sp_time_new%s(", ts, is_utc ? "_utc" : "");
+      for (int i = 0; i < 5; i++) {
+        if (i) buf_puts(b, ", ");
+        TyKind fit = comp_ntype(c, argv[i]);
+        if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
+        else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_i("); emit_boxed(c, argv[i], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[i], b);
+      }
+      buf_printf(b, ", (int64_t)_t%d); _t%da.tv_nsec = (int32_t)((_t%d - (double)(int64_t)_t%d) * 1e9 + 0.5); _t%da; })",
+                 ts, ts, ts, ts, ts);
+      return 1;
+    }
+  }
   long lit_off = 0;
   int have_lit_off = 0;
   if (argc == 7 && is_new) {
