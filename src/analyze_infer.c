@@ -4262,7 +4262,7 @@ else {
     if (sp_streq(name, "coerce") && argc == 1) {
       TyKind a0 = infer_type(c, argv[0]);
       if (a0 == TY_BIGINT) return TY_POLY_ARRAY;   /* [big, big] boxed pair (#2419) */
-      return (a0 == TY_FLOAT) ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
+      return (a0 == TY_FLOAT || a0 == TY_RATIONAL || a0 == TY_COMPLEX) ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
     }
   }
   /* float receiver methods */

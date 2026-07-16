@@ -5453,6 +5453,19 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                         " sp_FloatArray_push(_t%d, _t%d);"
                         " sp_FloatArray_push(_t%d, (mrb_float)(%s)); _t%d; })", o, o, ta, o, r, o);
         }
+        /* coerce against a Rational computes in floats: [Float(other), Float(self)] (#2606) */
+        else if (a0 == TY_RATIONAL) {
+          int ta = ++g_tmp, o = ++g_tmp;
+          buf_printf(b, "({ mrb_float _t%d = sp_rational_to_f(", ta); emit_expr(c, argv[0], b);
+          buf_printf(b, "); sp_FloatArray *_t%d = sp_FloatArray_new();"
+                        " sp_FloatArray_push(_t%d, _t%d);"
+                        " sp_FloatArray_push(_t%d, (mrb_float)(%s)); _t%d; })", o, o, ta, o, r, o);
+        }
+        /* an Integer can't coerce with a Complex -> RangeError (#2606) */
+        else if (a0 == TY_COMPLEX) {
+          buf_puts(b, "((void)("); emit_expr(c, argv[0], b);
+          buf_puts(b, "), (sp_raise_cls(\"RangeError\", \"can't convert Complex into Integer\"), (sp_FloatArray *)0))");
+        }
         else {
           int ta = ++g_tmp, o = ++g_tmp;
           buf_printf(b, "({ mrb_int _t%d = ", ta); emit_int_expr(c, argv[0], b);

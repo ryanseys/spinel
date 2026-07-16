@@ -9479,7 +9479,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "ldexp") && argc == 2) {
       buf_puts(b, "ldexp(");
       emit_math_arg(c, argv[0], b); buf_puts(b, ", (int)");
-      emit_expr(c, argv[1], b); buf_puts(b, ")");
+      /* the exponent may be a poly array element (`Math.ldexp(f[0], f[1])`):
+         emit_int_expr coerces it to mrb_int instead of casting a struct (#2592) */
+      emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }
   }
