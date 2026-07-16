@@ -6007,6 +6007,20 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       int rlo = nt_ref(nt, rn2, "left"), rhi = nt_ref(nt, rn2, "right");
       if (rlo >= 0 && rhi >= 0 &&
           comp_ntype(c, rlo) == rt && comp_ntype(c, rhi) == rt) {
+        /* an exclusive range (`lo...hi`) cannot clamp -- CRuby raises
+           ArgumentError regardless of whether the end would be applied
+           (#2587). Evaluate the operands in order, then raise. */
+        if ((int)(nt_int(nt, rn2, "flags", 0) & 4)) {
+          const char *ccn = c->classes[ty_object_class(rt)].c_name;
+          buf_puts(b, "({ (void)("); emit_boxed(c, recv, b);
+          buf_puts(b, "); (void)("); emit_boxed(c, rlo, b);
+          buf_puts(b, "); (void)("); emit_boxed(c, rhi, b);
+          buf_puts(b, "); sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\"); ");
+          /* dead default in the receiver's own C type (value vs pointer) */
+          if (comp_ty_value_obj(c, rt)) buf_printf(b, "(sp_%s){0}; })", ccn);
+          else buf_printf(b, "(sp_%s *)NULL; })", ccn);
+          return 1;
+        }
         if (comp_ty_value_obj(c, rt))
           buf_printf(b, "(*(sp_%s *)", c->classes[ty_object_class(rt)].c_name);
         else { buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")"); }
