@@ -1107,6 +1107,22 @@ void register_structs(Compiler *c) {
       cls->is_anon_struct = 1;
       register_struct_members(c, cls, val);
     }
+    /* Inline `Data.define(...).method(...)` / `Struct.new(...).method(...)`: the
+       struct/data call is the receiver of another call, with no name to hold it.
+       Synthesize an anon class keyed to the call node itself so the receiver
+       resolution (.new / .members / .class) can find it. #2682 */
+    else if (sp_streq(ty, "CallNode") && is_struct_call(c, id)) {
+      int is_recv = 0;
+      for (int p = 0; p < nt->count && !is_recv; p++)
+        if (nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == id) is_recv = 1;
+      if (is_recv) {
+        char an[48];
+        snprintf(an, sizeof an, "StructAnon_%d", id);
+        ClassInfo *cls = comp_class_new(c, an, id);
+        cls->is_anon_struct = 1;
+        register_struct_members(c, cls, id);
+      }
+    }
     /* class X < Struct.new(:a, :b); ... end */
     else if (sp_streq(ty, "ClassNode")) {
       int sup = nt_ref(nt, id, "superclass");

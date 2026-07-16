@@ -104,6 +104,10 @@ int is_void_call(const char *name) {
 int class_var_static_ci(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, node);
+  /* an inline `Struct.new(...)` / `Data.define(...)` receiver resolves to the
+     anon class synthesized for that call node (#2682) */
+  if (ty && sp_streq(ty, "CallNode") && is_struct_call(c, node))
+    return anon_struct_ci_for_value(c, node);
   if (!ty || !sp_streq(ty, "LocalVariableReadNode")) return -1;
   const char *vn = nt_str(nt, node, "name");
   if (!vn) return -1;
@@ -171,7 +175,10 @@ int anon_struct_ci_for_value(Compiler *c, int val) {
   for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].is_anon_struct) continue;
     int w = c->classes[k].def_node;
-    if (w >= 0 && nt_ref(nt, w, "value") == val) return k;
+    /* keyed by a write node (k = Struct.new -> def_node's value is the call),
+       or, for an inline `Data.define(...).method(...)` receiver, keyed by the
+       struct/data call node itself (def_node IS that call). #2682 */
+    if (w >= 0 && (nt_ref(nt, w, "value") == val || w == val)) return k;
   }
   return -1;
 }

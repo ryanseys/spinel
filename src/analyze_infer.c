@@ -1291,7 +1291,8 @@ TyKind infer_call(Compiler *c, int id) {
     int mci = -1;
     if (mrty && (sp_streq(mrty, "ConstantReadNode") || sp_streq(mrty, "ConstantPathNode")))
       mci = comp_class_index(c, nt_str(nt, recv, "name"));
-    else if (mrty && sp_streq(mrty, "LocalVariableReadNode"))
+    else if (mrty && (sp_streq(mrty, "LocalVariableReadNode") ||
+                      (sp_streq(mrty, "CallNode") && is_struct_call(c, recv))))
       mci = class_var_static_ci(c, recv);
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) return TY_POLY_ARRAY;
@@ -1736,7 +1737,8 @@ else {
                  sp_streq(cn, "Random") || sp_streq(cn, "IO") || sp_streq(cn, "File") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
     }
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "LocalVariableReadNode"))) {
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "LocalVariableReadNode") ||
+                (sp_streq(rty, "CallNode") && is_struct_call(c, recv)))) {  /* inline Data.define(...).new (#2682) */
       const char *cn = sp_streq(rty, "ConstantReadNode") ? nt_str(nt, recv, "name") : NULL;
       int ci = cn ? comp_class_index(c, cn) : class_var_static_ci(c, recv);
       if (ci >= 0) {

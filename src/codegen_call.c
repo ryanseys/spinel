@@ -3292,7 +3292,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
     int mci = -1;
     if (mrty && (sp_streq(mrty, "ConstantReadNode") || sp_streq(mrty, "ConstantPathNode")))
       mci = comp_class_index(c, nt_str(nt, recv, "name"));
-    else if (mrty && sp_streq(mrty, "LocalVariableReadNode"))
+    else if (mrty && (sp_streq(mrty, "LocalVariableReadNode") ||
+                      (sp_streq(mrty, "CallNode") && is_struct_call(c, recv))))
       mci = class_var_static_ci(c, recv);
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) {
@@ -3383,8 +3384,10 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
     }
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode") ||
-                (sp_streq(rty, "LocalVariableReadNode") && class_var_static_ci(c, recv) >= 0))) {
+                (sp_streq(rty, "LocalVariableReadNode") && class_var_static_ci(c, recv) >= 0) ||
+                (sp_streq(rty, "CallNode") && is_struct_call(c, recv)))) {
       int ci = sp_streq(rty, "LocalVariableReadNode") ? class_var_static_ci(c, recv)
+             : sp_streq(rty, "CallNode") ? anon_struct_ci_for_value(c, recv)
                                                       : comp_class_index(c, nt_str(nt, recv, "name"));
       /* native (C-backed) class: the declared constructor (see emit_native_ctor) */
       if (emit_native_ctor(c, id, ci, argc, argv, b)) return 1;
