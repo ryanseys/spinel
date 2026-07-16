@@ -4762,6 +4762,16 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(&b, "static int sp_class_le(sp_Class a,sp_Class b){return sp_class_is_ancestor(b,a);}\n");
   buf_puts(&b, "static int sp_class_gt(sp_Class a,sp_Class b){return sp_class_lt(b,a);}\n");
   buf_puts(&b, "static int sp_class_ge(sp_Class a,sp_Class b){return sp_class_le(b,a);}\n");
+  /* Tri-state class ordering: CRuby's Class#< / <= / > / >= / <=> answer nil
+     for two classes with no subclass relationship (not false / not raising).
+     Macros so `sp_class_le` resolves at the call site to whichever version is
+     in effect there -- the module-aware sp_class_le_mod when the program mixes
+     in modules (Integer < Comparable), the plain chain walk otherwise. */
+  buf_puts(&b, "#define sp_class_lt3(A,B) ({ sp_Class _cx=(A),_cy=(B); _cx.cls_id==_cy.cls_id?sp_box_bool(0):(sp_class_le(_cx,_cy)?sp_box_bool(1):(sp_class_le(_cy,_cx)?sp_box_bool(0):sp_box_nil())); })\n");
+  buf_puts(&b, "#define sp_class_le3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_le(_cx,_cy)?sp_box_bool(1):(sp_class_le(_cy,_cx)?sp_box_bool(0):sp_box_nil()); })\n");
+  buf_puts(&b, "#define sp_class_gt3(A,B) sp_class_lt3(B,A)\n");
+  buf_puts(&b, "#define sp_class_ge3(A,B) sp_class_le3(B,A)\n");
+  buf_puts(&b, "#define sp_class_cmp3(A,B) ({ sp_Class _cx=(A),_cy=(B); _cx.cls_id==_cy.cls_id?sp_box_int(0):(sp_class_le(_cx,_cy)?sp_box_int(-1):(sp_class_le(_cy,_cx)?sp_box_int(1):sp_box_nil())); })\n");
   /* module-aware versions (replace after sp_class_ancestors is defined) */
   /* sp_class_includes_<i>: static array of included module cls_ids per class */
   /* Also update sp_class_is_ancestor to walk includes. */

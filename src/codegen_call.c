@@ -8577,12 +8577,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
     }
-    if ((sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") || sp_streq(name, ">=")) && argc == 1) {
+    if ((sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") ||
+         sp_streq(name, ">=") || sp_streq(name, "<=>")) && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
       if (at == TY_CLASS) {
-        const char *fn = sp_streq(name, "<") ? "sp_class_lt" :
-                         sp_streq(name, "<=") ? "sp_class_le" :
-                         sp_streq(name, ">") ? "sp_class_gt" : "sp_class_ge";
+        /* CRuby returns nil (not false) when the classes are unrelated, so the
+           tri-state helpers yield a boxed true/false/nil (or -1/0/1/nil for
+           <=>). */
+        const char *fn = sp_streq(name, "<") ? "sp_class_lt3" :
+                         sp_streq(name, "<=") ? "sp_class_le3" :
+                         sp_streq(name, ">") ? "sp_class_gt3" :
+                         sp_streq(name, ">=") ? "sp_class_ge3" : "sp_class_cmp3";
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_Class _cl%da = ", _clt); emit_expr(c, argv[0], b);
         buf_printf(b, "; %s(_cl%d, _cl%da); })", fn, _clt, _clt);
@@ -11097,6 +11102,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           "to_proc", "parameters", "<<", ">>", NULL };
         for (int u = 0; procm[u]; u++) if (sp_streq(qm, procm[u])) { yes = resolved = 1; break; }
       }
+      /* Time: a fixed builtin surface. Unknown names answer false (CRuby),
+         which is what the report needs -- previously an unresolved TY_TIME
+         receiver fell through to a true-ish default. */
+      if (!resolved && recv >= 0 && rt == TY_TIME) {
+        static const char *const timem[] = {
+          "strftime", "year", "month", "mon", "day", "mday", "hour", "min",
+          "sec", "wday", "yday", "to_i", "to_f", "to_r", "usec", "nsec",
+          "tv_sec", "tv_usec", "tv_nsec", "subsec", "utc", "gmtime", "getutc",
+          "localtime", "getlocal", "utc?", "gmt?", "dst?", "isdst", "zone",
+          "asctime", "ctime", "iso8601", "to_a", "to_time",
+          "sunday?", "monday?", "tuesday?", "wednesday?", "thursday?",
+          "friday?", "saturday?", "+", "-", "<=>", "<", ">", "<=", ">=",
+          "between?", "clamp", NULL };
+        for (int u = 0; timem[u]; u++) if (sp_streq(qm, timem[u])) { yes = 1; break; }
+        resolved = 1;
+      }
       if (!resolved) {
         const char *rty = nt_type(nt, recv);
         if (rty && sp_streq(rty, "ConstantReadNode")) {
@@ -11262,6 +11283,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int wr_own = is_setter && comp_is_writer(&c->classes[ci], base) &&
                      (parent < 0 || !comp_writer_in_chain(c, parent, base, NULL));
         found = (mi >= 0 && mc == ci) || rd_own || wr_own;
+      }
+      /* Methods inherited from Object/Kernel are defined on every class. With
+         `inherit` (the default) method_defined? must report the public ones as
+         true even though they have no entry in the user class chain (#2673). */
+      if (!found && inherit && md_pub) {
+        static const char *const objm[] = {
+          "==", "!=", "===", "<=>", "class", "clone", "dup", "display",
+          "enum_for", "eql?", "equal?", "extend", "freeze", "frozen?", "hash",
+          "inspect", "instance_of?", "instance_variable_defined?",
+          "instance_variable_get", "instance_variable_set", "instance_variables",
+          "is_a?", "itself", "kind_of?", "method", "methods", "nil?",
+          "object_id", "private_methods", "protected_methods", "public_method",
+          "public_methods", "public_send", "respond_to?", "send", "__send__",
+          "singleton_class", "singleton_methods", "tap", "then", "to_enum",
+          "yield_self", "to_s", NULL };
+        for (int u = 0; objm[u]; u++) if (sp_streq(qm, objm[u])) { buf_puts(b, "1"); return; }
       }
       int yes = 0;
       if (found) {

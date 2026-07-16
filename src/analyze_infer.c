@@ -1444,7 +1444,10 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 0 && sp_streq(name, "class")) return TY_CLASS;
     if (argc == 0 && sp_streq(name, "superclass")) return TY_CLASS;
     if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!="))) return TY_BOOL;
-    if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">="))) return TY_BOOL;
+    /* Class ordering is tri-state: true/false when related, nil when the two
+       classes have no subclass relationship (CRuby). <=> is -1/0/1 or nil. */
+    if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
+                      sp_streq(name, ">=") || sp_streq(name, "<=>"))) return TY_POLY;
     if (argc == 0 && sp_streq(name, "ancestors")) return TY_POLY_ARRAY;
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) return TY_BOOL;
     if (argc <= 1 && (sp_streq(name, "instance_methods") ||
@@ -4974,7 +4977,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     if (par_nm && sp_streq(par_nm, "Process")) {
       /* clock ids (codegen emits their integer values) */
-      if (nm && (sp_streq(nm, "CLOCK_MONOTONIC") || sp_streq(nm, "CLOCK_REALTIME")))
+      if (nm && (sp_streq(nm, "CLOCK_MONOTONIC") || sp_streq(nm, "CLOCK_REALTIME") ||
+                 sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID") || sp_streq(nm, "CLOCK_THREAD_CPUTIME_ID")))
         return TY_INT;
     }
     if (par_nm && sp_streq(par_nm, "Integer")) {

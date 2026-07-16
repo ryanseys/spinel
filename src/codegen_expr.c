@@ -1512,6 +1512,10 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (par_nmc && sp_streq(par_nmc, "Process") && nm) {
       if (sp_streq(nm, "CLOCK_MONOTONIC")) { buf_puts(b, "((mrb_int)1)"); return; }
       if (sp_streq(nm, "CLOCK_REALTIME"))  { buf_puts(b, "((mrb_int)0)"); return; }
+      /* the CPU-time clocks are POSIX and present on Linux and macOS; emit the
+         C macro so the value is the platform's own clock id, as CRuby's is. */
+      if (sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID")) { buf_puts(b, "((mrb_int)CLOCK_PROCESS_CPUTIME_ID)"); return; }
+      if (sp_streq(nm, "CLOCK_THREAD_CPUTIME_ID"))  { buf_puts(b, "((mrb_int)CLOCK_THREAD_CPUTIME_ID)"); return; }
     }
     if (par_nmc && sp_streq(par_nmc, "Integer") && nm &&
         (sp_streq(nm, "MAX") || sp_streq(nm, "MIN"))) {
