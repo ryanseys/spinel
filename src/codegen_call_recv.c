@@ -6733,6 +6733,92 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) buf_printf(b, "sp_time_iso8601(%s)", r);
     else if (sp_streq(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
     else if (sp_streq(name, "class")) buf_puts(b, "((sp_Class){(mrb_int)-1, \"Time\"})");
+    else if (sp_streq(name, "getgm")) buf_printf(b, "sp_time_utc(%s)", r);  /* alias for getutc */
+    else if (sp_streq(name, "xmlschema") && argc == 0) buf_printf(b, "sp_time_iso8601(%s)", r);
+    else if ((sp_streq(name, "floor") || sp_streq(name, "ceil") || sp_streq(name, "round")) && argc == 0) {
+      /* whole-second rounding of the subsecond part */
+      int tt = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = %s; ", tt, r);
+      if (sp_streq(name, "floor")) buf_printf(b, "_t%d.tv_nsec = 0;", tt);
+      else if (sp_streq(name, "ceil")) buf_printf(b, "if (_t%d.tv_nsec > 0) { _t%d.tv_sec += 1; _t%d.tv_nsec = 0; }", tt, tt, tt);
+      else buf_printf(b, "if (_t%d.tv_nsec >= 500000000) _t%d.tv_sec += 1; _t%d.tv_nsec = 0;", tt, tt, tt);
+      buf_printf(b, " _t%d; })", tt);
+    }
+    else if (sp_streq(name, "sunday?"))    buf_printf(b, "(sp_time_wday(%s) == 0)", r);
+    else if (sp_streq(name, "monday?"))    buf_printf(b, "(sp_time_wday(%s) == 1)", r);
+    else if (sp_streq(name, "tuesday?"))   buf_printf(b, "(sp_time_wday(%s) == 2)", r);
+    else if (sp_streq(name, "wednesday?")) buf_printf(b, "(sp_time_wday(%s) == 3)", r);
+    else if (sp_streq(name, "thursday?"))  buf_printf(b, "(sp_time_wday(%s) == 4)", r);
+    else if (sp_streq(name, "friday?"))    buf_printf(b, "(sp_time_wday(%s) == 5)", r);
+    else if (sp_streq(name, "saturday?"))  buf_printf(b, "(sp_time_wday(%s) == 6)", r);
+    /* asctime/ctime: the fixed C-style stamp, always in the receiver's own broken-down form */
+    else if (sp_streq(name, "asctime") || sp_streq(name, "ctime"))
+      buf_printf(b, "sp_time_strftime(%s, \"%%a %%b %%e %%H:%%M:%%S %%Y\")", r);
+    else if (sp_streq(name, "eql?") && argc == 1) {
+      if (comp_ntype(c, argv[0]) == TY_TIME) {
+        int tt = ++g_tmp, tu = ++g_tmp;
+        buf_printf(b, "({ sp_Time _t%d = %s; sp_Time _t%d = ", tt, r, tu); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_time_cmp(_t%d, _t%d) == 0; })", tt, tu);
+      } else { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+    }
+    else if (sp_streq(name, "to_a") && argc == 0) {
+      /* [sec, min, hour, mday, mon, year, wday, yday, isdst, zone] */
+      int tt = ++g_tmp, ta = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tt, r, ta, ta);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_time_sec(_t%d)));", ta, tt);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_time_min(_t%d)));", ta, tt);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_time_hour(_t%d)));", ta, tt);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_time_mday(_t%d)));", ta, tt);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_time_mon(_t%d)));", ta, tt);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_time_year(_t%d)));", ta, tt);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_time_wday(_t%d)));", ta, tt);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_time_yday(_t%d)));", ta, tt);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_bool(sp_time_isdst(_t%d) != 0));", ta, tt);
+      buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_time_zone(_t%d)));", ta, tt);
+      buf_printf(b, " _t%d; })", ta);
+    }
+    else if (sp_streq(name, "to_r") && argc == 0) {
+      int tt = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = %s; sp_rational_new((mrb_int)_t%d.tv_sec * 1000000000 + _t%d.tv_nsec, 1000000000); })",
+                 tt, r, tt, tt);
+    }
+    else if (sp_streq(name, "deconstruct_keys") && argc == 1) {
+      /* a Hash of the requested keys (or all when the argument is nil). */
+      static const struct { const char *k, *fn; } TK[] = {
+        {"year", "sp_time_year"}, {"month", "sp_time_mon"}, {"mon", "sp_time_mon"},
+        {"day", "sp_time_mday"}, {"mday", "sp_time_mday"}, {"hour", "sp_time_hour"},
+        {"min", "sp_time_min"}, {"sec", "sp_time_sec"}, {"wday", "sp_time_wday"},
+        {"yday", "sp_time_yday"}, {NULL, NULL} };
+      /* which keys: a literal array selects them; nil (or non-literal) is all */
+      int arr = argv[0];
+      int is_arr = nt_type(nt, arr) && sp_streq(nt_type(nt, arr), "ArrayNode");
+      int tt = ++g_tmp, th = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = %s; sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);", tt, r, th, th);
+      if (is_arr) {
+        int en = 0; const int *els = nt_arr(nt, arr, "elements", &en);
+        for (int e = 0; e < en; e++) {
+          const char *ety = nt_type(nt, els[e]);
+          const char *sk = (ety && sp_streq(ety, "SymbolNode")) ? nt_str(nt, els[e], "value") : NULL;
+          if (!sk) continue;
+          for (int t = 0; TK[t].k; t++)
+            if (sp_streq(sk, TK[t].k)) {
+              buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, sp_box_int(%s(_t%d)));",
+                         th, comp_sym_intern(c, sk), TK[t].fn, tt);
+              break;
+            }
+        }
+      } else {
+        static const char *const allk[] = {"year","month","day","yday","wday","hour","min","sec",NULL};
+        for (int a = 0; allk[a]; a++)
+          for (int t = 0; TK[t].k; t++)
+            if (sp_streq(allk[a], TK[t].k)) {
+              buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, sp_box_int(%s(_t%d)));",
+                         th, comp_sym_intern(c, allk[a]), TK[t].fn, tt);
+              break;
+            }
+      }
+      buf_printf(b, " sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH); })", th);
+    }
     else if (sp_streq(name, "strftime") && argc == 1) { buf_printf(b, "sp_time_strftime(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else if (sp_streq(name, "between?") && argc == 2) {
       int tt = ++g_tmp, ta = ++g_tmp, tb2 = ++g_tmp;

@@ -3177,7 +3177,14 @@ else if (argc == 7) buf_printf(b, "sp_time_with_usec(sp_time_new%s(", is_utc ? "
 else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
   for (int i = 0; i < 6; i++) {
     if (i) buf_puts(b, ", ");
-    if (i < argc) emit_expr(c, argv[i], b);
+    if (i < argc) {
+      /* a numeric-string civil field is coerced to its Integer value, as CRuby
+         does (Time.utc("2020", "3", "4")); a poly field unboxes. (#2689) */
+      TyKind fit = comp_ntype(c, argv[i]);
+      if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
+      else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_i("); emit_boxed(c, argv[i], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[i], b);
+    }
     else buf_puts(b, (i == 1 || i == 2) ? "1" : "0");
   }
   if (argc == 7) {

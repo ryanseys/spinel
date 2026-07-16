@@ -2177,9 +2177,15 @@ else {
       if (at == TY_TIME || at == TY_POLY) return TY_FLOAT;
     }
     if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc") ||
+        sp_streq(name, "getgm") ||
         sp_streq(name, "localtime") || sp_streq(name, "getlocal") || sp_streq(name, "+") ||
         sp_streq(name, "-")) return TY_TIME;
     if (sp_streq(name, "clamp") && argc == 2) return TY_TIME;  /* self or a bound */
+    if (sp_streq(name, "to_a") && argc == 0) return TY_POLY_ARRAY;
+    if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
+    if ((sp_streq(name, "floor") || sp_streq(name, "ceil") || sp_streq(name, "round")) && argc == 0) return TY_TIME;
+    if (sp_streq(name, "xmlschema") && argc == 0) return TY_STRING;
+    if (sp_streq(name, "deconstruct_keys") && argc == 1) return TY_POLY;  /* boxed Sym=>Int hash */
     if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) return TY_STRING;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect") || sp_streq(name, "strftime") ||
         sp_streq(name, "zone") || sp_streq(name, "asctime") ||
