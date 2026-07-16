@@ -6328,7 +6328,14 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
           char ivn[256];
           if (kn) snprintf(ivn, sizeof ivn, "@%s", kn);
-          if (!kn || comp_ivar_index(sc, ivn) < 0) { unsupported(c, id, "with on a non-member keyword"); return 0; }
+          /* an unknown member keyword is a runtime ArgumentError in CRuby (not a
+             compile error): evaluate the receiver, then raise. (#2664) */
+          if (!kn || comp_ivar_index(sc, ivn) < 0) {
+            buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+            buf_printf(b, "); sp_raise_cls(\"ArgumentError\", \"unknown keyword: :%s\"); (sp_%s *)NULL; })",
+                       kn ? kn : "?", sc->c_name);
+            return 1;
+          }
         }
       }
       int t = ++g_tmp;

@@ -3365,6 +3365,50 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
         int kwh = (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
+        /* Data.new validates its arguments strictly (unlike Struct, which
+           nil-fills): exact positional count, or a keyword for every member and
+           no extras; a mix of positional and keyword is an error. A `**splat`
+           has non-literal keys, so its check is deferred to run time (#2661). */
+        if (cls->is_data) {
+          int kw_splat = 0;
+          if (kwh >= 0) {
+            int nk0; const int *els0 = nt_arr(nt, kwh, "elements", &nk0);
+            for (int i = 0; i < nk0; i++)
+              if (!(nt_type(nt, els0[i]) && sp_streq(nt_type(nt, els0[i]), "AssocNode"))) kw_splat = 1;
+          }
+          int mixed = 0;
+          for (int a = 0; kwh < 0 && a < argc; a++)
+            if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "KeywordHashNode")) mixed = 1;
+          int bad = 0;
+          if (!kw_splat) {
+            if (kwh < 0) bad = mixed || argc != cls->nivars;
+            else {
+              int present = 0;
+              for (int a = 0; a < cls->nivars; a++)
+                if (struct_kwarg_value(c, kwh, cls->ivars[a] + 1) >= 0) present++;
+              int nk1; nt_arr(nt, kwh, "elements", &nk1);
+              bad = present != cls->nivars || nk1 != cls->nivars;
+            }
+          }
+          if (bad) {
+            buf_puts(b, "({ ");
+            for (int a = 0; a < argc; a++) {
+              if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "KeywordHashNode")) {
+                int nk2; const int *els2 = nt_arr(nt, argv[a], "elements", &nk2);
+                for (int i = 0; i < nk2; i++)
+                  if (nt_type(nt, els2[i]) && sp_streq(nt_type(nt, els2[i]), "AssocNode")) {
+                    int vv = nt_ref(nt, els2[i], "value");
+                    if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
+                  }
+              } else { buf_puts(b, "(void)("); emit_boxed(c, argv[a], b); buf_puts(b, "); "); }
+            }
+            buf_puts(b, "sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"wrong number of arguments\")[1])); ");
+            buf_printf(b, "sp_%s_new(", cls->c_name);
+            for (int a = 0; a < cls->nivars; a++) { if (a) buf_puts(b, ", "); buf_puts(b, default_value(cls->ivar_types[a])); }
+            buf_puts(b, "); })");
+            return 1;
+          }
+        }
         /* more positional args than members is a struct-size ArgumentError
            (fewer are allowed for Struct: nil fill); evaluate args first for
            any side effects, then raise before constructing */
@@ -3380,6 +3424,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, "); })");
           return 1;
         }
+        /* a `**h` keyword splat: pull each member from the splatted hash at run
+           time by its symbol name (variant-agnostic getter). (#2704) */
+        int splat_h = -1;
+        if (kwh >= 0) {
+          int nks; const int *elss = nt_arr(nt, kwh, "elements", &nks);
+          for (int i = 0; i < nks; i++)
+            if (nt_type(nt, elss[i]) && sp_streq(nt_type(nt, elss[i]), "AssocSplatNode"))
+              splat_h = nt_ref(nt, elss[i], "value");
+        }
         buf_printf(b, "sp_%s_new(", cls->c_name);
         for (int a = 0; a < cls->nivars; a++) {
           if (a) buf_puts(b, ", ");
@@ -3389,6 +3442,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           if (vnode >= 0) {
             if (cls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, b);
             else emit_expr(c, vnode, b);
+          }
+          else if (splat_h >= 0) {
+            Buf hv; memset(&hv, 0, sizeof hv); emit_boxed(c, splat_h, &hv);
+            buf_printf(b, "sp_poly_hash_get_pair_val(%s, sp_box_sym(sp_sym_intern(\"%s\")), &(mrb_bool){0})",
+                       hv.p ? hv.p : "sp_box_nil()", cls->ivars[a] + 1);
+            free(hv.p);
           }
           else buf_puts(b, default_value(cls->ivar_types[a]));
         }
@@ -11198,6 +11257,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               name_is_enumerable_module_method(qm)) { resolved = 1; yes = 1; }
           else if (!found && comp_method_in_chain(c, cid, "<=>", NULL) >= 0 &&
                    name_is_comparable_module_method(qm)) { resolved = 1; yes = 1; }
+          /* a Struct/Data instance answers the implicit accessors it always
+             carries even though they have no user method-table entry (#2663). */
+          else if (!found && (c->classes[cid].is_data || c->classes[cid].is_struct) &&
+                   (sp_streq(qm, "members") || sp_streq(qm, "to_h") ||
+                    sp_streq(qm, "deconstruct") || sp_streq(qm, "deconstruct_keys") ||
+                    (c->classes[cid].is_data && sp_streq(qm, "with")) ||
+                    (c->classes[cid].is_struct &&
+                     (sp_streq(qm, "to_a") || sp_streq(qm, "values") || sp_streq(qm, "each") ||
+                      sp_streq(qm, "size") || sp_streq(qm, "length") || sp_streq(qm, "[]") ||
+                      sp_streq(qm, "[]="))))) { resolved = 1; yes = 1; }
           else if (!found) { resolved = 1; yes = 0; }
           else {
             int v = comp_method_vis_in_chain(c, cid, qm);
