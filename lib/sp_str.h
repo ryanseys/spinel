@@ -116,6 +116,7 @@ sp_StrArray*sp_str_split(const char*s,const char*sep);
 sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep);
 sp_StrArray*sp_str_split_limit(const char*s,const char*sep,mrb_int n);
 sp_StrArray*sp_str_split_ws(const char*s);
+sp_StrArray*sp_str_split_ws_limit(const char*s,mrb_int n);
 const char*sp_str_gsub(const char*s,const char*pat,const char*rep);
 mrb_int sp_str_index(const char*s,const char*sub);
 mrb_int sp_str_index_from(const char*s,const char*sub,mrb_int start);
