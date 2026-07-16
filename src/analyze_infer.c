@@ -1459,6 +1459,16 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "singleton_class?")) return TY_BOOL;
     /* Module#constants -> sym array, recovered from the AST (#2674) */
+    /* Class.const_set(:K, v) stores into the existing constant and yields the
+       value; only a literal name whose type matches is emittable (#2675). */
+    if (sp_streq(name, "const_set") && argc == 2) {
+      const char *cs_aty = nt_type(nt, argv[0]);
+      const char *cs_qm = NULL;
+      if (cs_aty && sp_streq(cs_aty, "SymbolNode")) cs_qm = nt_str(nt, argv[0], "value");
+      else if (cs_aty && sp_streq(cs_aty, "StringNode")) cs_qm = nt_str(nt, argv[0], "content");
+      LocalVar *cv = cs_qm ? comp_const(c, cs_qm) : NULL;
+      if (cv && cv->type != TY_UNKNOWN) return cv->type;
+    }
     if (sp_streq(name, "constants") && argc <= 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "included_modules") && argc == 0) return TY_POLY_ARRAY;
     if (argc == 0 && sp_streq(name, "class")) return TY_CLASS;

@@ -11902,6 +11902,42 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
+  /* Class.const_set(:K, v) with a literal name: a constant is a C global
+     (cst_<name>) assigned at its definition site, so re-assigning an EXISTING
+     one is just that store. The constant must already be defined -- a name the
+     program never writes has no global to store into, and its type is what the
+     definition inferred, so a value of another type has nowhere to go; both
+     fall through to the diagnostic. CRuby returns the value (and warns about
+     the reinitialization; spinel does not). #2675 */
+  if (sp_streq(name, "const_set") && recv >= 0 && argc == 2) {
+    const char *cs_aty = nt_type(nt, argv[0]);
+    const char *cs_qm = NULL;
+    if (cs_aty && sp_streq(cs_aty, "SymbolNode")) cs_qm = nt_str(nt, argv[0], "value");
+    else if (cs_aty && sp_streq(cs_aty, "StringNode")) cs_qm = nt_str(nt, argv[0], "content");
+    if (cs_qm) {
+      LocalVar *cv = comp_const(c, cs_qm);
+      if (cv && cv->type != TY_UNKNOWN && comp_ntype(c, argv[1]) == cv->type) {
+        buf_printf(b, "(cst_%s = ", cs_qm);
+        emit_expr(c, argv[1], b);
+        buf_printf(b, ", cst_%s)", cs_qm);
+        return;
+      }
+      static char csbuf[512];
+      if (!cv || cv->type == TY_UNKNOWN)
+        snprintf(csbuf, sizeof csbuf,
+                 "const_set(:%s, ...) can only re-assign a constant the program already "
+                 "defines: a name never written has no storage to set, because constants "
+                 "are compile-time globals. Declare `%s = ...` first "
+                 "(see docs/limitations.md)", cs_qm, cs_qm);
+      else
+        snprintf(csbuf, sizeof csbuf,
+                 "const_set(:%s, ...) cannot change the constant's type: %s was inferred as "
+                 "%s at its definition and is a C global of that type, so a %s value has "
+                 "nowhere to go (see docs/limitations.md)", cs_qm, cs_qm,
+                 ty_name(cv->type), ty_name(comp_ntype(c, argv[1])));
+      unsupported_feature(c, id, csbuf);
+    }
+  }
   /* Class.const_get(:K) with a literal name: constants live in a flat namespace
      (cst_<name>), so resolve it like a ConstantRead. A literal name that does not
      resolve raises NameError at runtime, matching CRuby: "uninitialized constant
