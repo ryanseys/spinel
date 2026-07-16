@@ -12937,6 +12937,38 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "sp_bigint_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       free(rs.p); return;
     }
+    /* Bignum modulo/%/remainder/divmod/#[]/modular-pow (#2594) */
+    if ((sp_streq(name, "modulo") || sp_streq(name, "%")) && argc == 1) {
+      buf_printf(b, "sp_bigint_mod(%s, ", r); emit_bigint_operand(c, argv[0], b); buf_puts(b, ")");
+      free(rs.p); return;
+    }
+    if (sp_streq(name, "remainder") && argc == 1) {
+      buf_printf(b, "sp_bigint_remainder(%s, ", r); emit_bigint_operand(c, argv[0], b); buf_puts(b, ")");
+      free(rs.p); return;
+    }
+    if (sp_streq(name, "divmod") && argc == 1) {
+      int td = ++g_tmp, tb2 = ++g_tmp, to2 = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; sp_Bigint *_t%d = ", td, r, tb2);
+      emit_bigint_operand(c, argv[0], b);
+      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_box_bigint(sp_bigint_div(_t%d, _t%d)));"
+                    " sp_PolyArray_push(_t%d, sp_box_bigint(sp_bigint_mod(_t%d, _t%d))); _t%d; })",
+                 to2, to2, to2, td, tb2, to2, td, tb2, to2);
+      free(rs.p); return;
+    }
+    if (sp_streq(name, "[]") && argc == 1) {
+      int tn = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; _t%d < 0 ? (mrb_int)0"
+                    " : sp_bigint_to_int(sp_bigint_and(sp_bigint_shr(%s, _t%d), sp_bigint_new_int(1))); })",
+                 tn, r, tn);
+      free(rs.p); return;
+    }
+    if (sp_streq(name, "pow") && argc == 2) {
+      buf_printf(b, "sp_bigint_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_bigint_operand(c, argv[1], b); buf_puts(b, ")");
+      free(rs.p); return;
+    }
     if ((sp_streq(name, "div") || sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1) {
       const char *fn = sp_streq(name, "div") ? "div" : name;
       buf_printf(b, "sp_bigint_%s(%s, ", fn, r);

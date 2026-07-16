@@ -4546,6 +4546,13 @@ else {
     if (sp_streq(name, "nonzero?") && argc == 0) return TY_POLY;   /* self or nil */
     if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
     if (sp_streq(name, "pow") && argc == 1) return TY_BIGINT;
+    /* modulo/%/remainder/modular-pow stay Bignum; divmod is a [q, r] pair;
+       #[] is a single bit (0/1) (#2594) */
+    if ((sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder")) &&
+        argc == 1) return TY_BIGINT;
+    if (sp_streq(name, "pow") && argc == 2) return TY_BIGINT;
+    if (sp_streq(name, "divmod") && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "[]") && argc == 1) return TY_INT;
     if ((sp_streq(name, "div") || sp_streq(name, "gcd") || sp_streq(name, "lcm") ||
          sp_streq(name, "ceildiv")) && argc == 1) return TY_BIGINT;
     if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) &&

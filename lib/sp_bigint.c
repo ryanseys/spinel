@@ -5401,6 +5401,27 @@ sp_Bigint *sp_bigint_mod(sp_Bigint *a, sp_Bigint *b) {
   return r;
 }
 
+/* Integer#remainder: truncated (toward zero) remainder, which carries the sign
+   of the dividend -- unlike sp_bigint_mod (floored, sign of the divisor). They
+   agree when the operands share a sign; otherwise remainder = mod - b. */
+sp_Bigint *sp_bigint_remainder(sp_Bigint *a, sp_Bigint *b) {
+  sp_Bigint *r = sp_bigint_mod(a, b);
+  if (sp_bigint_sign(r) != 0 && sp_bigint_sign(a) != sp_bigint_sign(b))
+    r = sp_bigint_sub(r, b);
+  return r;
+}
+
+/* Integer#pow(exp, mod): modular exponentiation (mpz_powm_i handles a large
+   exponent without materializing base**exp). */
+sp_Bigint *sp_bigint_powmod(sp_Bigint *base, mrb_int exp, sp_Bigint *mod) {
+  if (exp < 0) sp_raise_cls("RangeError", "Integer#pow() 1st argument cannot be negative when 2nd argument specified");
+  if (zero_p(&mod->mpz)) sp_bigint_raise_zerodiv("divided by 0");
+  sp_Bigint *r = sp_bigint_alloc();
+  mpz_init(sp_mpz_ctx, &r->mpz);
+  mpz_powm_i(sp_mpz_ctx, &r->mpz, &base->mpz, exp, &mod->mpz);
+  return r;
+}
+
 sp_Bigint *sp_bigint_pow(sp_Bigint *base, int64_t exp) {
   /* No Rational: a negative integer exponent raises RangeError rather than
      truncating to 0 (mirrors sp_int_pow). See docs/limitations.md. */
