@@ -739,6 +739,29 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       buf_printf(b, ", %d)", excl);
       return;
     }
+    /* sp_Range holds mrb_int bounds, so a Range OBJECT over user objects has
+       nowhere to live; emit_int_expr below would hand a pointer to an mrb_int
+       parameter and the C compiler would reject it. Comparable#clamp with such
+       a range still works INLINE (`x.clamp(lo..hi)`, and the one-sided forms):
+       there the bounds are folded straight into the comparison and no Range is
+       ever built. Only materializing one is out. #2558 */
+    {
+      TyKind lt = left >= 0 ? comp_ntype(c, left) : TY_UNKNOWN;
+      TyKind rt2 = right >= 0 ? comp_ntype(c, right) : TY_UNKNOWN;
+      if (ty_is_object(lt) || ty_is_object(rt2)) {
+        const char *ocn = NULL;
+        int oci = ty_is_object(lt) ? ty_object_class(lt) : ty_object_class(rt2);
+        if (oci >= 0 && oci < c->nclasses) ocn = class_ruby_name(c, oci);
+        static char rbuf[400];
+        snprintf(rbuf, sizeof rbuf,
+                 "a Range of %s objects cannot be built: a Range is an unboxed value "
+                 "with mrb_int bounds, so it has nowhere to hold them. Passing the "
+                 "bounds directly (`x.clamp(lo..hi)`, `x.clamp(lo, hi)`, or a one-sided "
+                 "`lo..` / `..hi`) needs no Range and does work (see docs/limitations.md)",
+                 ocn ? ocn : "user");
+        unsupported_feature(c, id, rbuf);
+      }
+    }
     buf_puts(b, "sp_range_new(");
     if (left >= 0) emit_int_expr(c, left, b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
     buf_puts(b, ", ");

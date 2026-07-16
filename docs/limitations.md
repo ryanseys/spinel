@@ -151,6 +151,22 @@ differs. `Integer ** Complex` and a `Complex` exponent generally evaluate to
 the correct `Complex`, and `Integer#fdiv` / `#div` with a `Rational` argument
 are exact.
 
+#### A `Range` object needs `Integer`/`Float`/`String` bounds
+
+A `Range` is an unboxed value with `mrb_int` bounds, so a Range **object** over
+user objects cannot be built (`rng = (Ver.new(1)..Ver.new(9))` is a compile
+error naming the class). Comparing against such a range does not need one:
+`Comparable#clamp` folds the bounds straight into the comparison, so the inline
+and one-sided forms work.
+
+```ruby
+x.clamp(lo..hi)     # works -- no Range is built
+x.clamp(lo, hi)     # works
+x.clamp(..hi)       # works (one-sided)
+x.clamp(lo..)       # works
+rng = (lo..hi)      # compile error: a Range of Ver objects cannot be built
+```
+
 #### Unboxed value types: identity IS the value
 
 `Complex`, `Rational`, and `Range` values are unboxed C structs with no
