@@ -1970,6 +1970,11 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         { buf_puts(b, "sp_rational_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "to_c") && argc == 0)
         { buf_puts(b, "((sp_Complex){sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, "), 0, 1})"); return 1; }
+      /* Rational#i -> Complex(0, self): the imaginary part takes the Rational's
+         float projection (spinel's Complex is float-backed), so it renders
+         "(0+0.75i)" where CRuby prints "(0+(3/4)*i)". #2706 */
+      if (sp_streq(name, "i") && argc == 0)
+        { buf_puts(b, "((sp_Complex){0.0, sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, "), 2})"); return 1; }
       if ((sp_streq(name, "rectangular") || sp_streq(name, "rect")) && argc == 0) {
         int t = ++g_tmp, ta = ++g_tmp;
         buf_printf(b, "({ sp_Rational _t%d = ", t); emit_expr(c, recv, b);

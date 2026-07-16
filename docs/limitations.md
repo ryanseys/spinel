@@ -236,6 +236,7 @@ Complex(1, 2) + Rational(1, 2)          # => (1.5+2i)         (CRuby: ((3/2)+2i)
 Rational(1, 2) + Complex(1, 2)          # => (1.5+2i)         (CRuby: ((3/2)+2i))
 Complex(Rational(1, 2), Rational(1, 3)) # => (0.5+0.3333333333333333i)
                                         #                     (CRuby: ((1/2)+(1/3)*i))
+Rational(3, 4).i                        # => (0+0.75i)        (CRuby: (0+(3/4)*i))
 ```
 
 `Rational` and `Complex` values box into heterogeneous (poly) arrays and hashes

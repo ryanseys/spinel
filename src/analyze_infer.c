@@ -980,6 +980,10 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "nonzero?")) return TY_POLY;
     if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) return TY_POLY;
     if (sp_streq(name, "to_c")) return TY_COMPLEX;
+    /* Rational#i -> Complex(0, self). spinel's Complex holds two floats, so the
+       imaginary part renders as a float where CRuby keeps the exact Rational
+       (see docs/limitations.md). #2706 */
+    if (sp_streq(name, "i") && argc == 0) return TY_COMPLEX;
     if (sp_streq(name, "rectangular") || sp_streq(name, "rect") || sp_streq(name, "polar")) return TY_POLY_ARRAY;
     if (sp_streq(name, "coerce") && argc == 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
