@@ -6907,6 +6907,24 @@ static SP_TLS sp_RbVal _sp_proc_poly_args[16];
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
 static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }
+/* <proc>.call(*arr): spread a runtime array into the mrb_int[16] / boxed
+   side-channel ABI. Each element rides the side-channel (a poly parameter reads
+   it there) and its unboxed projection fills the mrb_int slot (a concrete-typed
+   parameter reads that -- a pointer for a heap value, the int otherwise). The
+   proc publishes its result through _sp_proc_poly_ret. #2691 */
+static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) {
+  if (!p || !p->fn) return;
+  mrb_int n = sp_poly_length(arr);
+  if (n > 16) n = 16;
+  mrb_int slots[16];
+  for (mrb_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(arr, i);
+    _sp_proc_poly_args[i] = e;
+    slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
+             ? (mrb_int)(uintptr_t)e.v.p : sp_poly_to_i(e);
+  }
+  sp_proc_call(p, n, slots);
+}
 /* Enumerator#size (CRuby's ary2sv-independent size protocol): a materialized
    enumerator reports its snapshot length; a generator reports its stored size --
    calling it (no args) when it is a Proc and publishing through the boxed-return

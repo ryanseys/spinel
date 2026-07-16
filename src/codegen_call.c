@@ -6621,6 +6621,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
       (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
        (sp_streq(name, "===") && argc == 1))) {
     TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
+    /* <proc>.call(*arr): a single splat argument spreads a runtime array into
+       the ABI at call time (its length is dynamic, unlike the fixed mrb_int[16]
+       list). #2691 */
+    if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SplatNode")) {
+      int sx = nt_ref(nt, argv[0], "expression");
+      if (sx >= 0) {
+        g_needs_proc_poly_argslot = 1;
+        buf_puts(b, "((void)sp_proc_call_spread(");
+        emit_expr(c, recv, b);
+        buf_puts(b, ", ");
+        emit_boxed(c, sx, b);
+        buf_puts(b, "), ");
+        emit_proc_ret_unbox(c, rty, b);
+        buf_puts(b, ")");
+        return;
+      }
+    }
     /* Universal boxed return: the proc publishes its result in _sp_proc_poly_ret
        (see emit_proc_literal); evaluate the call for effect, then unbox the slot
        to the call's inferred type. */
