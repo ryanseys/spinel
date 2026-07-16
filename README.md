@@ -48,6 +48,11 @@ for the text AST format the parser emits and the analyzer consumes.
 
 ## Quick Start
 
+Spinel is built from source: clone this repository and build with `make`.
+It is not distributed as a RubyGem, and there is no `gem install spinel`.
+(Spinel *compiles* certain gems into your program, but the compiler itself
+ships as source.)
+
 ```bash
 # Fetch libprism sources (from the prism gem on rubygems.org):
 make deps
