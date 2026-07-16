@@ -754,26 +754,8 @@ int reconcile_locals_reading_ivars(Compiler *c) {
   return changed;
 }
 
-/* Element type contributed by a pushed value. A `yield` whose enclosing
-   method's block value type diverges across call sites must widen the
-   accumulator to a poly array: the shared inlined body cannot size the array
-   for both an int- and an object-returning block (#2454). Otherwise the value's
-   own inferred type. */
-static TyKind push_elem_ty(Compiler *c, int node) {
-  const NodeTable *nt = c->nt;
-  int n = node;
-  while (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "ParenthesesNode")) {
-    int body = nt_ref(nt, n, "body"); int bn = 0;
-    const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    n = bn == 1 ? bd[0] : -1;
-  }
-  if (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "YieldNode")) {
-    Scope *sc = comp_scope_of(c, n);
-    int mi = sc ? (int)(sc - c->scopes) : -1;
-    if (mi >= 0 && yield_value_diverges(c, mi)) return TY_POLY;
-  }
-  return infer_type(c, node);
-}
+/* Element type contributed by a pushed value (see yield_aware_elem_ty). */
+static TyKind push_elem_ty(Compiler *c, int node) { return yield_aware_elem_ty(c, node); }
 
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;

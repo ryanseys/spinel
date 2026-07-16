@@ -127,6 +127,7 @@ TyKind scan_break_type(Compiler *c, int id, int depth);
 TyKind scan_throw_type(Compiler *c, const char *tag);
 TyKind yield_value_type(Compiler *c, int mi);
 int yield_value_diverges(Compiler *c, int mi);
+TyKind yield_aware_elem_ty(Compiler *c, int node);
 extern int g_yvt_unify_all;
 TyKind method_call_ret(Compiler *c, int mi, int call_id);
 /* is_proc_constant / is_proc_literal are declared in analyze.h (codegen needs them). */

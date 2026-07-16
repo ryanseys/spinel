@@ -479,6 +479,29 @@ int yield_value_diverges(Compiler *c, int mi) {
   g_yvt_unify_all = sv;
   return t == TY_POLY;
 }
+/* The value type `node` contributes to an accumulator, widened to poly when it
+   is a `yield` whose enclosing method's block value type diverges across call
+   sites. One shared inlined body cannot size the accumulator for both an int-
+   and a String-returning block: whichever site is analyzed first settles the
+   slot, and the other emits into it. Used for an explicit `acc << yield(x)`
+   (#2454) and for the collector an iterator builds from a `yield` block body
+   -- `[x].map { |v| yield v }` inside a wrapper method (#2457). */
+TyKind yield_aware_elem_ty(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  int n = node;
+  while (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "ParenthesesNode")) {
+    int body = nt_ref(nt, n, "body"); int bn = 0;
+    const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    n = bn == 1 ? bd[0] : -1;
+  }
+  if (n >= 0 && nt_type(nt, n) && sp_streq(nt_type(nt, n), "YieldNode")) {
+    Scope *sc = comp_scope_of(c, n);
+    int mi = sc ? (int)(sc - c->scopes) : -1;
+    if (mi >= 0 && yield_value_diverges(c, mi)) return TY_POLY;
+  }
+  return infer_type(c, node);
+}
+
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);
   int is_yield = last >= 0 && nt_type(c->nt, last) && sp_streq(nt_type(c->nt, last), "YieldNode");

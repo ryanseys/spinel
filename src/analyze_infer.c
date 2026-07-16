@@ -2956,7 +2956,7 @@ else {
         if (blk >= 0) {
           int body = nt_ref(nt, blk, "body");
           int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-          return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
+          return ty_array_of(bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN);
         }
       }
       else if (sp_streq(inner, "each") || sp_streq(inner, "select") ||
@@ -3008,10 +3008,10 @@ else {
       int two_param = blk >= 0 && !block_param_is_multi(c, blk, 0) &&
                       block_param_name(c, blk, 0) && block_param_name(c, blk, 1);
       if (two_param && (sp_streq(name, "map") || sp_streq(name, "collect")))
-        return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
+        return ty_array_of(bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN);
       /* filter_map collects the truthy block values (like map, then compact) */
       if (two_param && sp_streq(name, "filter_map"))
-        return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
+        return ty_array_of(bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN);
       if (sp_streq(name, "to_a") || sp_streq(name, "entries") ||
           (two_param && (sp_streq(name, "select") || sp_streq(name, "filter") || sp_streq(name, "reject"))))
         return TY_POLY_ARRAY;   /* an array of [element, index] pairs */
@@ -3083,7 +3083,7 @@ else {
         int body = nt_ref(nt, block, "body");
         int bn = 0;
         const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+        TyKind bt = bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN;
         /* A value-carrying next widens the element type past the tail
            (e.g. `next "s"` string vs trailing `x` int -> poly array), so the
            collected value is boxed rather than assigned to a typed temp. */
@@ -3832,7 +3832,7 @@ else {
       int body = nt_ref(nt, block, "body");
       int bn = 0;
       const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-      return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
+      return ty_array_of(bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN);
     }
   }
 
@@ -4073,7 +4073,7 @@ else {
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+        TyKind bt = bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN;
         /* a value-carrying next widens the element type past the tail */
         TyKind bnt = ie_block_break_next_ty(c, body);
         if (bnt != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
