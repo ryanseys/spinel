@@ -2680,6 +2680,14 @@ else {
       /* rand(literal 0) is a Float in [0,1) like rand(); nonzero -> Integer */
       if (atype && sp_streq(atype, "IntegerNode") && nt_int(nt, argv[0], "value", 0) == 0)
         return TY_FLOAT;
+      /* rand(Float max): CRuby truncates a positive max to an Integer range and
+         returns an Integer, but max 0.0 falls back to a Float in [0,1) -- so a
+         Float argument is a runtime-chosen poly (#2549). */
+      if (infer_type(c, argv[0]) == TY_FLOAT) return TY_POLY;
+      /* a literal nonzero Integer is an Integer; a dynamic Integer could be 0
+         (Float) or nonzero (Integer), so its result is a runtime-chosen poly. */
+      if (atype && sp_streq(atype, "IntegerNode")) return TY_INT;
+      if (infer_type(c, argv[0]) == TY_INT) return TY_POLY;
       return TY_INT;
     }
     if (sp_streq(name, "srand")) return TY_INT;

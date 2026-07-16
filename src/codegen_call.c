@@ -6721,7 +6721,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
       else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
         /* a Float-endpoint range yields a Float (#2521); an int range an Int. */
         const char *atype = nt_type(nt, argv[0]);
-        int lo = atype && sp_streq(atype, "RangeNode") ? nt_ref(nt, argv[0], "left") : -1;
+        int islit = atype && sp_streq(atype, "RangeNode");
+        int lo = islit ? nt_ref(nt, argv[0], "left") : -1;
+        int hi = islit ? nt_ref(nt, argv[0], "right") : -1;
+        /* an endless/beginless range has no finite span -> Errno::EDOM (#2550) */
+        if (islit && (lo < 0 || hi < 0)) {
+          buf_puts(b, "(sp_raise_cls(\"Errno::EDOM\", \"Domain error - rand\"), (mrb_int)0)");
+          return;
+        }
         int is_float = lo >= 0 && comp_ntype(c, lo) == TY_FLOAT;
         if (is_float) {
           int tr = ++g_tmp;
@@ -7333,8 +7340,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
       /* rand(int): 0 behaves like rand() (a Float in [0,1)); a nonzero magnitude
-         gives an Integer in [0, |n|) (#2518). A literal folds to the exact form;
-         a dynamic argument keeps the Integer form with a runtime abs + guard. */
+         gives an Integer in [0, |n|) (#2518). A literal folds to the exact form. */
       if (nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "IntegerNode")) {
         long long v = nt_int(nt, av[0], "value", 0);
         if (v == 0) { buf_puts(b, "(mrb_float)((double)rand() / (RAND_MAX + 1.0))"); return; }
@@ -7342,9 +7348,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "((mrb_int)(rand() %% %lldLL))", m);
         return;
       }
+      /* a dynamic Integer argument may be 0 at run time (a Float [0,1)) or
+         nonzero (an Integer [0,|n|)), so the result is boxed and chosen at
+         run time (#2549). */
       int tn = ++g_tmp;
       buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, av[0], b);
-      buf_printf(b, "; if (_t%d < 0) _t%d = -_t%d; _t%d > 0 ? (mrb_int)(rand() %% (int)_t%d) : (mrb_int)0; })", tn, tn, tn, tn, tn);
+      buf_printf(b, "; if (_t%d < 0) _t%d = -_t%d; _t%d > 0"
+                    " ? sp_box_int((mrb_int)(rand() %% (int)_t%d))"
+                    " : sp_box_float((double)rand() / (RAND_MAX + 1.0)); })",
+                 tn, tn, tn, tn, tn);
       return;
     }
     if (sp_streq(name, "srand")) {
