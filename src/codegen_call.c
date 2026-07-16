@@ -11355,7 +11355,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "(");
       emit_expr(c, recv, b);
       buf_printf(b, " %s ", name);
-      emit_expr(c, argv[0], b);
+      /* a poly or unresolved-call (raise-all token) right operand against a
+         numeric left: coerce it to the comparison's numeric type so the C `>=`
+         does not compare an mrb_int with an sp_RbVal (`len >= x.megabytes`, an
+         unresolved Rails method). */
+      TyKind rht9 = (rt == TY_FLOAT || rt == TY_RATIONAL) ? TY_FLOAT : TY_INT;
+      if (cat == TY_POLY) {
+        buf_printf(b, "%s(", rht9 == TY_FLOAT ? "sp_poly_to_f" : "sp_poly_to_i");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (cat == TY_UNKNOWN || cat == TY_VOID)
+        emit_unresolved_coerced(c, argv[0], rht9, b);
+      else emit_expr(c, argv[0], b);
       buf_puts(b, ")");
       return;
     }
