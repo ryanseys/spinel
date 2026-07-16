@@ -141,7 +141,10 @@ static inline char *sp_str_alloc_raw(size_t total_with_null) {
 static inline size_t sp_str_byte_len(const char *s) {
   if (!s) return 0;
   unsigned char marker = ((const unsigned char *)s)[-1];
-  if (marker == 0xfe || marker == 0xfc || marker == 0xfd) {
+  /* 0xf1 (frozen heap string / frozen literal) also carries a real sp_str_hdr
+     whose len is the true byte length, so an embedded NUL survives freezing
+     (#2462 dedup, .freeze). */
+  if (marker == 0xfe || marker == 0xfc || marker == 0xfd || marker == 0xf1) {
     uint32_t l = (((const sp_str_hdr *)(s - 1)) - 1)->len;
     if (l != SP_STR_LEN_UNSET) return l;
   }
@@ -151,7 +154,7 @@ static inline size_t sp_str_byte_len(const char *s) {
 static inline void sp_str_set_len(char *s, size_t len) {
   if (!s) return;
   unsigned char marker = ((unsigned char *)s)[-1];
-  if (marker == 0xfe || marker == 0xfc || marker == 0xfd) {
+  if (marker == 0xfe || marker == 0xfc || marker == 0xfd || marker == 0xf1) {
     sp_str_hdr *hd = ((sp_str_hdr *)(s - 1)) - 1;
     hd->len = (uint32_t)len;
     hd->hash = 0;  /* length change implies content change: invalidate cached hash */
