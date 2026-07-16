@@ -847,7 +847,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "nonzero?")) return TY_POLY;   /* self (Complex) or nil */
     if (sp_streq(name, "infinite?")) return TY_INT;      /* 1 or nil (sentinel) */
     if (sp_streq(name, "<=>") && argc == 1) return TY_INT;  /* -1/0/1 or nil (sentinel) */
-    if (sp_streq(name, "rationalize") && argc == 0) return TY_RATIONAL;
+    if (sp_streq(name, "rationalize") && (argc == 0 || argc == 1)) return TY_RATIONAL;
     if (sp_streq(name, "fdiv") && argc == 1) return TY_COMPLEX;
     if (sp_streq(name, "coerce") && argc == 1) return TY_POLY_ARRAY;
   }

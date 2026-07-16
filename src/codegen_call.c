@@ -1647,9 +1647,12 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
                    t, u, t, u, t, u);
         return 1;
       }
-      if (sp_streq(name, "rationalize") && argc == 0) {
+      /* rationalize takes an optional eps argument (ignored -- a Complex with a
+         zero imaginary part rationalizes its real part exactly) (#2556) */
+      if (sp_streq(name, "rationalize") && (argc == 0 || argc == 1)) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        if (argc == 1) { buf_puts(b, "; (void)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Rational\"); sp_float_to_rational(_t%d.re); })", t, t);
         return 1;
       }
@@ -1663,7 +1666,14 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ", (mrb_float)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
         return 1;
       }
-      if (sp_streq(name, "coerce") && argc == 1 && (cxa == TY_INT || cxa == TY_FLOAT)) {
+      /* fdiv by a Complex is ordinary complex division in floats (#2555) */
+      if (sp_streq(name, "fdiv") && argc == 1 && cxa == TY_COMPLEX) {
+        buf_puts(b, "sp_complex_div("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "coerce") && argc == 1 &&
+          (cxa == TY_INT || cxa == TY_FLOAT || cxa == TY_COMPLEX || cxa == TY_RATIONAL)) {
         int tp = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                       " sp_PolyArray_push(_t%d, sp_box_complex(", tp, tp, tp);
@@ -1857,6 +1867,17 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_rational(", tp);
         emit_expr(c, recv, b);
         buf_printf(b, ")); _t%d; })", tp);
+        return 1;
+      }
+      /* coerce against a Float converts both operands to Float (#2568) */
+      if (sp_streq(name, "coerce") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        int tp = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_float(", tp, tp, tp);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_float(sp_rational_to_f(", tp);
+        emit_expr(c, recv, b);
+        buf_printf(b, "))); _t%d; })", tp);
         return 1;
       }
       /* % / modulo / remainder / divmod against a Rational or Integer operand */
