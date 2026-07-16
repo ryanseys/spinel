@@ -3688,6 +3688,9 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
   int coll = nt_ref(nt, id, "collection");
   int body = nt_ref(nt, id, "statements");
   const char *vn = idx >= 0 ? nt_str(nt, idx, "name") : NULL;
+  /* Unwrap parenthesized collections so node-kind checks, notably RangeNode,
+     see the underlying expression. */
+  coll = unwrap_parens(c, coll);
   TyKind ct = comp_ntype(c, coll);
 
   if (ct == TY_RANGE && nt_type(nt, coll) && sp_streq(nt_type(nt, coll), "RangeNode")) {
@@ -8534,4 +8537,3 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
 
   unsupported(c, id, is_or ? "index-or-write" : "index-and-write");
 }
-
