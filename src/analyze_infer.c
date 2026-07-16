@@ -1458,6 +1458,9 @@ TyKind infer_call(Compiler *c, int id) {
       return TY_STRING;
     if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "singleton_class?")) return TY_BOOL;
+    /* Module#constants -> sym array, recovered from the AST (#2674) */
+    if (sp_streq(name, "constants") && argc <= 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "included_modules") && argc == 0) return TY_POLY_ARRAY;
     if (argc == 0 && sp_streq(name, "class")) return TY_CLASS;
     /* #superclass is a (nullable) class value: BasicObject's is the nil-class
        sentinel, carried within TY_CLASS (#2654). */

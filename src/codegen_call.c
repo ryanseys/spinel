@@ -467,6 +467,84 @@ static int name_is_comparable_module_method(const char *m) {
   return 0;
 }
 
+/* The constant names a class/module defines in its OWN body, in declaration
+   order, appended to `out` (deduplicated). Scans every ClassNode/ModuleNode
+   that opens `ci`, so reopenings contribute too. #2674 */
+static int class_own_constants(Compiler *c, int ci, const char **out, int max, int n) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count && n < max; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || comp_class_index(c, cn) != ci) continue;
+    int body = nt_ref(nt, id, "body");
+    int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int k = 0; k < bn && n < max; k++) {
+      const char *sty = nt_type(nt, stmts[k]);
+      if (!sty || !sp_streq(sty, "ConstantWriteNode")) continue;
+      const char *nm = nt_str(nt, stmts[k], "name");
+      if (!nm) continue;
+      int dup = 0;
+      for (int q = 0; q < n; q++) if (sp_streq(out[q], nm)) { dup = 1; break; }
+      if (!dup) out[n++] = nm;
+    }
+  }
+  return n;
+}
+
+/* The user-class indices `ci` names in its body via `include` / `prepend`
+   (declaration order). Builtin modules carry no constants, so they are skipped. */
+static int class_module_refs(Compiler *c, int ci, const char *kw, int *out, int max) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  for (int id = 0; id < nt->count && n < max; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || comp_class_index(c, cn) != ci) continue;
+    int body = nt_ref(nt, id, "body");
+    int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int k = 0; k < bn && n < max; k++) {
+      const char *sty = nt_type(nt, stmts[k]);
+      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      const char *nm = nt_str(nt, stmts[k], "name");
+      if (!nm || !sp_streq(nm, kw) || nt_ref(nt, stmts[k], "receiver") >= 0) continue;
+      int an = nt_ref(nt, stmts[k], "arguments");
+      int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+      for (int j = 0; j < ac && n < max; j++) {
+        const char *aty = nt_type(nt, av[j]);
+        const char *mn = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode")))
+                         ? nt_str(nt, av[j], "name") : NULL;
+        int mi = mn ? comp_class_index(c, mn) : -1;
+        if (mi >= 0) out[n++] = mi;
+      }
+    }
+  }
+  return n;
+}
+
+/* Module#constants: the receiver's own constants first, then the remaining
+   ancestors' (prepends, includes, superclass chain) -- CRuby reports own before
+   inherited even when a prepended module precedes the class in #ancestors.
+   `inherit == 0` stops at self. The walk stays inside user classes: Object's
+   constants are the top-level ones, which CRuby does not report here.
+   The order WITHIN one class is its declaration order; CRuby's comes out of an
+   id table and is not specified, so only the grouping is meaningful. #2674 */
+static int collect_class_constants(Compiler *c, int ci, int inherit,
+                                   const char **out, int max, int n, int depth) {
+  if (ci < 0 || ci >= c->nclasses || depth > 32 || n >= max) return n;
+  n = class_own_constants(c, ci, out, max, n);
+  if (!inherit) return n;
+  int mods[32], nm2;
+  nm2 = class_module_refs(c, ci, "prepend", mods, 32);
+  for (int q = nm2 - 1; q >= 0; q--) n = collect_class_constants(c, mods[q], 1, out, max, n, depth + 1);
+  nm2 = class_module_refs(c, ci, "include", mods, 32);
+  for (int q = nm2 - 1; q >= 0; q--) n = collect_class_constants(c, mods[q], 1, out, max, n, depth + 1);
+  return collect_class_constants(c, c->classes[ci].parent, 1, out, max, n, depth + 1);
+}
+
 /* eval(string) / Kernel.eval(string) compiling an arbitrary runtime string is a
    hard AOT boundary, not a missing feature. If node `id` is such a call, emit
    the intentional diagnostic and return 1; otherwise return 0. Shared by
@@ -8702,6 +8780,48 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_class_ancestors(_cl%d); })", _clt);
       return;
+    }
+    /* Module#included_modules: the module ancestors (#2674) */
+    if (sp_streq(name, "included_modules") && argc == 0) {
+      buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_class_included_modules(_cl%d); })", _clt);
+      return;
+    }
+    /* Module#constants: the constant registry is a flat namespace with no class
+       qualifier, so recover the ownership from the AST -- a class/module's own
+       constants are the ConstantWriteNodes in its body (across reopenings).
+       CRuby lists them per ancestor in ancestors order (own, then prepended and
+       included modules, then the superclass chain), stopping before Object,
+       whose constants are the top-level ones. `constants(false)` is own-only.
+       #2674 */
+    if (sp_streq(name, "constants") && argc <= 1) {
+      const char *rcn = nt_type(nt, recv) &&
+                        (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
+                         sp_streq(nt_type(nt, recv), "ConstantPathNode"))
+                        ? nt_str(nt, recv, "name") : NULL;
+      int rci = rcn ? comp_class_index(c, rcn) : -1;
+      int inherit = 1;
+      if (argc == 1) {
+        const char *aty = nt_type(nt, argv[0]);
+        if (aty && sp_streq(aty, "FalseNode")) inherit = 0;
+        else if (!aty || !sp_streq(aty, "TrueNode")) rci = -1;  /* non-literal: leave it */
+      }
+      if (rci >= 0) {
+        const char *names[128];
+        int n = collect_class_constants(c, rci, inherit, names, 128, 0, 0);
+        int ta = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+        /* intern at runtime: a constant name is not otherwise a symbol in the
+           program, so comp_sym_intern here would come too late for the
+           generated name table and the symbol would render empty */
+        for (int k = 0; k < n; k++) {
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", ta);
+          emit_str_literal(b, names[k]);
+          buf_puts(b, ")));");
+        }
+        buf_printf(b, " _t%d; })", ta);
+        return;
+      }
     }
     /* ClassName.{,public_,private_,protected_}instance_methods(false):
        compile-time sym array of own methods, filtered by visibility. CRuby's

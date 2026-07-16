@@ -4297,7 +4297,15 @@ static void scan_prologue_features(Compiler *c) {
     else if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
-      if (sp_streq(nm, "to_sym") || sp_streq(nm, "intern")) g_uses_symbols = 1;
+      /* Reflection that YIELDS symbols the source never spells: without this
+         the program has no SymbolNode, so sp_sym_name_fn stays uninstalled and
+         sp_poly_cmp falls back to comparing symbols by id -- `constants.sort`
+         would come out in intern order rather than by name (#2674). */
+      if (sp_streq(nm, "to_sym") || sp_streq(nm, "intern") ||
+          sp_streq(nm, "constants") || sp_streq(nm, "members") ||
+          sp_streq(nm, "instance_methods") || sp_streq(nm, "public_instance_methods") ||
+          sp_streq(nm, "private_instance_methods") || sp_streq(nm, "protected_instance_methods") ||
+          sp_streq(nm, "methods") || sp_streq(nm, "instance_variables")) g_uses_symbols = 1;
       else if (sp_streq(nm, "rand") || sp_streq(nm, "srand") || sp_streq(nm, "sample") ||
                sp_streq(nm, "shuffle") || sp_streq(nm, "shuffle!")) g_uses_random = 1;
     }
@@ -4981,6 +4989,16 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "    cur=next;\n");
     buf_puts(&b, "  }\n");
     buf_puts(&b, "  return a;\n}\n\n");
+    /* Module#included_modules: the ancestors that are modules (#2674). The
+       ancestors are id-backed boxes (sp_box_class of a name-less sp_Class), so
+       the cls_id rides the int slot. */
+    buf_puts(&b, "static sp_PolyArray *sp_class_included_modules(sp_Class c) __attribute__((unused));\n");
+    buf_puts(&b, "static sp_PolyArray *sp_class_included_modules(sp_Class c){\n");
+    buf_puts(&b, "  sp_PolyArray *a=sp_class_ancestors(c); SP_GC_ROOT(a);\n");
+    buf_puts(&b, "  sp_PolyArray *r=sp_PolyArray_new(); SP_GC_ROOT(r);\n");
+    buf_puts(&b, "  for(mrb_int i=0;a&&i<a->len;i++){ sp_Class m={a->data[i].v.i,NULL};\n");
+    buf_puts(&b, "    if(sp_class_is_module_val(m)) sp_PolyArray_push(r,a->data[i]); }\n");
+    buf_puts(&b, "  return r;\n}\n\n");
     /* Module-aware <= by walking sp_class_ancestors (replaces simpler versions). */
     buf_puts(&b, "static int sp_class_le_mod(sp_Class a,sp_Class b){\n");
     buf_puts(&b, "  /* a<=b: b is an ancestor of a, so b must appear in a's ancestors */\n");
