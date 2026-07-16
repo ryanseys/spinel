@@ -1400,6 +1400,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "arity")) return TY_INT;
     if (sp_streq(name, "lambda?")) return TY_BOOL;
     if (sp_streq(name, "parameters")) return TY_POLY_ARRAY;
+    if (sp_streq(name, "source_location")) return TY_POLY_ARRAY;  /* [file, line] */
     if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
     if (sp_streq(name, "frozen?")) return TY_BOOL;
     if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||

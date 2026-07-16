@@ -6642,6 +6642,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "parameters")) {
     buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
+  /* Proc#source_location: [file, line] of a proc LITERAL receiver (its
+     definition site is the node itself). #2649 */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "source_location") &&
+      nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LambdaNode") || is_proc_create(c, recv))) {
+    int nl = (int)nt_int(nt, recv, "node_line", 0);
+    int nf = (int)nt_int(nt, recv, "node_file", 0);
+    const char *fn = nt_file_path(nt, nf);
+    if (!fn) fn = nt->source_file;
+    if (!fn) fn = "?";
+    int ta = ++g_tmp;
+    buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
+    buf_printf(b, "); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(", ta); emit_str_literal(b, fn); buf_puts(b, "));");
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(%d));", ta, nl);
+    buf_printf(b, " _t%d; })", ta);
+    return;
+  }
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 &&
       (sp_streq(name, "inspect") || sp_streq(name, "to_s"))) {
     buf_puts(b, "sp_proc_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
