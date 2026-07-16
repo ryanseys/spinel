@@ -10060,6 +10060,24 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
+    /* Time.at(sec, in: "+HH:MM"): the epoch instant carried with a fixed UTC
+       offset (is_utc == 2), so #utc_offset returns it. (#2681) */
+    if (sp_streq(name, "at") && argc == 2 &&
+        nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode")) {
+      int inv = struct_kwarg_value(c, argv[1], "in");
+      const char *off = (inv >= 0 && nt_type(nt, inv) && sp_streq(nt_type(nt, inv), "StringNode"))
+                        ? nt_str(nt, inv, "content") : NULL;
+      if (off && strlen(off) == 6 && (off[0] == '+' || off[0] == '-') && off[3] == ':' &&
+          off[1] >= '0' && off[1] <= '9' && off[2] >= '0' && off[2] <= '9' &&
+          off[4] >= '0' && off[4] <= '9' && off[5] >= '0' && off[5] <= '9') {
+        long osec = ((off[1] - '0') * 10 + (off[2] - '0')) * 3600 + ((off[4] - '0') * 10 + (off[5] - '0')) * 60;
+        if (off[0] == '-') osec = -osec;
+        int ts = ++g_tmp;
+        buf_printf(b, "({ sp_Time _t%d = sp_time_at_int(", ts); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "); _t%d.is_utc = 2; _t%d.utc_off = %ld; _t%d; })", ts, ts, osec, ts);
+        return;
+      }
+    }
     /* Time.at(sec, usec): the second positional argument is microseconds
        (no unit keyword). tv_nsec = usec * 1000. (#2646) */
     if (sp_streq(name, "at") && argc == 2 &&
