@@ -261,15 +261,77 @@ sp_Time sp_time_add(sp_Time t, double secs) {
    for long literal text or wide fields). A pathological field width
    (`"%1000000000F"`, which CRuby rejects with ERANGE) does not fit and
    yields "" -- a graceful empty string rather than a crash. */
-const char *sp_time_strftime(sp_Time t, const char *fmt) {
-  char buf[4096];
+/* The UTC offset (seconds) of a Time, mirroring sp_time_iso8601's manual calc. */
+static long sp_time_offset_sec(sp_Time t) {
+  if (t.is_utc) return 0;
   time_t s = (time_t)t.tv_sec;
-  struct tm *lt = t.is_utc ? gmtime(&s) : localtime(&s);
-  if (lt == NULL) return sp_str_empty;
-  size_t n = strftime(buf, sizeof(buf), fmt, lt);
-  if (n == 0) return sp_str_empty;
-  buf[n] = 0;
-  return sp_str_dup_external(buf);
+  struct tm gm = *gmtime(&s);
+  gm.tm_isdst = -1;
+  return (long)(s - mktime(&gm));
+}
+
+/* Ruby-compatible strftime: C strftime handles the standard directives, but
+   Ruby adds %L/%N (subsec), %s (epoch, which C's %s would take through a LOCAL
+   mktime), %P (lowercase am/pm), the %:z/%::z colon offsets, and width/flag
+   modifiers (%3S, %6N, %10Y). Walk the format, compute those directly, and
+   pad; delegate a bare standard directive to strftime. (#2635, #2636) */
+const char *sp_time_strftime(sp_Time t, const char *fmt) {
+  time_t s = (time_t)t.tv_sec;
+  struct tm tmv = t.is_utc ? *gmtime(&s) : *localtime(&s);
+  static char out[8192];
+  size_t oi = 0;
+  for (const char *p = fmt; *p && oi < sizeof(out) - 128; p++) {
+    if (*p != '%') { out[oi++] = *p; continue; }
+    const char *tok = p++;
+    int upcase = 0, downcase = 0, pad0 = 0, padsp = 0, nopad = 0, colon = 0;
+    for (;; p++) {
+      if (*p == '^') upcase = 1; else if (*p == '#') downcase = 1;
+      else if (*p == '0') pad0 = 1; else if (*p == '_') padsp = 1;
+      else if (*p == '-') nopad = 1; else break;
+    }
+    while (*p == ':') { colon++; p++; }
+    int width = -1;
+    if (*p >= '0' && *p <= '9') { width = 0; while (*p >= '0' && *p <= '9') width = width * 10 + (*p++ - '0'); }
+    char d = *p;
+    if (!d) { out[oi++] = '%'; break; }
+    char val[128]; val[0] = 0;
+    if (d == '%') { val[0] = '%'; val[1] = 0; }
+    else if (d == 's') snprintf(val, sizeof val, "%lld", (long long)t.tv_sec);
+    else if (d == 'L') snprintf(val, sizeof val, "%03d", (int)(t.tv_nsec / 1000000));
+    else if (d == 'N') {
+      int w = width > 0 ? width : 9;
+      char nb[16]; snprintf(nb, sizeof nb, "%09ld", (long)t.tv_nsec);
+      if (w <= 9) { memcpy(val, nb, (size_t)w); val[w] = 0; }
+      else { strcpy(val, nb); for (int i = 9; i < w && i < 120; i++) val[i] = '0'; val[w < 120 ? w : 120] = 0; }
+      width = -1;  /* width consumed by the subsecond precision */
+    }
+    else if (d == 'z' && colon) {
+      long off = sp_time_offset_sec(t);
+      char sign = off < 0 ? '-' : '+'; long a = off < 0 ? -off : off;
+      int oh = (int)(a / 3600), om = (int)((a / 60) % 60), os = (int)(a % 60);
+      if (colon >= 2) snprintf(val, sizeof val, "%c%02d:%02d:%02d", sign, oh, om, os);
+      else snprintf(val, sizeof val, "%c%02d:%02d", sign, oh, om);
+    }
+    else if (d == 'P') { char b2[16]; strftime(b2, sizeof b2, "%p", &tmv); for (char *q = b2; *q; q++) *q = (char)tolower((unsigned char)*q); strcpy(val, b2); }
+    else if (d == 'Z' && t.is_utc) strcpy(val, "UTC");  /* CRuby names a UTC time "UTC", not the C locale's "GMT" */
+    else {
+      /* a standard directive: format the bare `%X` (glibc handles some flags,
+         but we redo width/case ourselves for portability) */
+      char f2[3] = { '%', d, 0 };
+      strftime(val, sizeof val, f2, &tmv);
+    }
+    if (upcase) for (char *q = val; *q; q++) *q = (char)toupper((unsigned char)*q);
+    if (downcase) for (char *q = val; *q; q++) *q = (char)(isupper((unsigned char)*q) ? tolower((unsigned char)*q) : toupper((unsigned char)*q));
+    size_t vl = strlen(val);
+    if (width > 0 && !nopad && vl < (size_t)width) {
+      char pc = padsp ? ' ' : '0';
+      for (size_t k = vl; k < (size_t)width && oi < sizeof(out) - 2; k++) out[oi++] = pc;
+    }
+    (void)tok;
+    for (size_t k = 0; k < vl && oi < sizeof(out) - 2; k++) out[oi++] = val[k];
+  }
+  out[oi] = 0;
+  return sp_str_dup_external(out);
 }
 
 /* RFC 3339 / iso8601. Format date+time prefix with strftime, then
