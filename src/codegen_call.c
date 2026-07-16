@@ -13418,7 +13418,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (grt == TY_POLY || grt == TY_NIL || grt == TY_INT || grt == TY_UNKNOWN ||
-        grt == TY_STRING || grt == TY_FLOAT || grt == TY_BOOL) {
+        grt == TY_STRING || grt == TY_FLOAT || grt == TY_BOOL ||
+        grt == TY_COMPLEX || grt == TY_RATIONAL) {
       TyKind ret = comp_ntype(c, id);
       /* An unresolved call raises NoMethodError by default, matching CRuby
          (a dead poly-dispatch arm still emits nothing; a live one raising here
@@ -13451,6 +13452,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else if (grt == TY_INT) snprintf(rdesc, sizeof rdesc, "an instance of Integer");
         else if (grt == TY_STRING) snprintf(rdesc, sizeof rdesc, "an instance of String");
         else if (grt == TY_FLOAT) snprintf(rdesc, sizeof rdesc, "an instance of Float");
+        else if (grt == TY_COMPLEX) snprintf(rdesc, sizeof rdesc, "an instance of Complex");
+        else if (grt == TY_RATIONAL) snprintf(rdesc, sizeof rdesc, "an instance of Rational");
         else snprintf(rdesc, sizeof rdesc, "%s", ty_name(grt));
         if (grt == TY_POLY || grt == TY_BOOL) {
           /* The RESULT slot is sized by the call's own type (ret), not the
