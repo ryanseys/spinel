@@ -3776,7 +3776,13 @@ static int user_cmp_needs_check(Compiler *c, int cid) {
     if (kmi >= 0 && (TyKind)c->scopes[kmi].ret != TY_UNKNOWN)
       ret = ty_unify(ret, (TyKind)c->scopes[kmi].ret);
   }
-  return ret == TY_POLY || ret == TY_NIL;
+  /* POLY/NIL may be nil at runtime; a statically non-numeric result
+     (String/Symbol/Bool) is never a valid `<=>` value -> the checked path
+     raises the Comparable ArgumentError instead of the inline `<op> 0` reading
+     a non-int as an int (#2559). A pure Integer/Float `<=>` keeps the inline
+     path (Float compares as a double correctly). */
+  return ret == TY_POLY || ret == TY_NIL ||
+         ret == TY_STRING || ret == TY_SYMBOL || ret == TY_BOOL;
 }
 
 /* Bind `node`'s boxed value to a fresh rooted sp_RbVal temp in g_pre and
@@ -4129,6 +4135,17 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       }
       /* no direct == : use <=> == 0 when the class supports Comparable */
       if (comp_method_in_chain(c, ecid, "<=>", NULL) >= 0) {
+        /* a `<=>` that statically returns a non-numeric non-nil value
+           (String/Symbol/Bool) is never a valid comparison: Comparable#==
+           raises ArgumentError (unlike a nil result, which is just false).
+           Route through the checked comparator so it raises. */
+        int cmi_eq = comp_method_in_chain(c, ecid, "<=>", NULL);
+        TyKind cmpret = cmi_eq >= 0 ? (TyKind)c->scopes[cmi_eq].ret : TY_UNKNOWN;
+        if (cmpret == TY_STRING || cmpret == TY_SYMBOL || cmpret == TY_BOOL) {
+          int ta = hoist_boxed_rooted(c, recv), tb2 = hoist_boxed_rooted(c, argv[0]);
+          buf_printf(b, "(%ssp_poly_cmp_ck(_t%d, _t%d) == 0)", eq ? "" : "!", ta, tb2);
+          return 1;
+        }
         /* a `<=>` that can return nil: Comparable#== semantics -- identity is
            equal, an incomparable pair is false (never an error) */
         if (user_cmp_needs_check(c, ecid)) {

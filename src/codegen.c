@@ -3546,7 +3546,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     if (mi < 0) continue;
     Scope *m = &c->scopes[mi];
     if (m->nparams < 1 || m->rest_idx >= 0) continue;     /* need exactly the one operand */
-    if (m->ret != TY_INT && m->ret != TY_POLY) continue;  /* unusable return -> not-comparable */
+    if (m->ret != TY_INT && m->ret != TY_POLY && m->ret != TY_FLOAT) continue;  /* unusable return -> not-comparable */
     LocalVar *p = scope_local(m, m->pnames[0]);
     TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
     const char *dcn = c->classes[defcls].c_name;
@@ -3585,11 +3585,19 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     if (m->ret == TY_INT) {
       buf_printf(b, "      *comparable = TRUE; return (mrb_int)sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
                  dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
+    } else if (m->ret == TY_FLOAT) {
+      /* a Float `<=>` result is a valid comparison (CRuby): use its sign */
+      buf_printf(b, "      mrb_float _rf = sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
+                 dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
+      buf_puts(b, "      *comparable = TRUE; return (_rf > 0) - (_rf < 0);\n");
     } else {
+      /* poly `<=>`: an Integer or Float result is comparable (use its sign);
+         nil or any other type (String, ...) is incomparable -> ArgumentError */
       buf_printf(b, "      sp_RbVal _r = sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
                  dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
-      buf_puts(b, "      if (_r.tag == SP_TAG_NIL) { *comparable = FALSE; return 0; }\n");
-      buf_puts(b, "      *comparable = TRUE; return _r.v.i;\n");
+      buf_puts(b, "      if (_r.tag == SP_TAG_INT) { *comparable = TRUE; return _r.v.i; }\n");
+      buf_puts(b, "      if (_r.tag == SP_TAG_FLT) { *comparable = TRUE; return (_r.v.f > 0) - (_r.v.f < 0); }\n");
+      buf_puts(b, "      *comparable = FALSE; return 0;\n");
     }
     buf_puts(b, "    }\n");
   }
