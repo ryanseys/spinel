@@ -2409,6 +2409,29 @@ int infer_string_params(Compiler *c) {
   return changed;
 }
 
+static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn);
+
+/* Widen the required parameters of a proc/lambda operand of Proc#>> / #<< to
+   POLY. Such an operand receives (or produces) the composition's dynamic
+   intermediate value, whose type is only known through the other proc, so an
+   otherwise-untyped param must not default to int (which bakes a wrong-type
+   dispatch into the body). #2650 */
+static int widen_proc_params_poly(Compiler *c, int ref) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int body = -1, pn = -1;
+  if (!fwd_callable_def(c, ref, &body, &pn) || pn < 0 || body < 0) return 0;
+  Scope *sc = comp_scope_of(c, body);
+  if (!sc) return 0;
+  int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+  int changed = 0;
+  for (int k = 0; k < rn && reqs; k++) {
+    const char *pnm = nt_str(nt, reqs[k], "name");
+    LocalVar *lv = pnm ? scope_local(sc, pnm) : NULL;
+    if (lv && !lv->rbs_seeded && lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+  }
+  return changed;
+}
+
 int infer_param_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -2559,6 +2582,18 @@ int infer_param_types(Compiler *c) {
         if (shift) changed |= bind_call_args_shifted(c, id, tmi, shift);
         else changed |= bind_call_params(c, id, tmi);
         continue;
+      }
+    }
+
+    /* proc >> proc / proc << proc: widen both operands' params to POLY so the
+       dynamic intermediate value flows through the boxed side-channel. #2650 */
+    if (recv >= 0 && name && (sp_streq(name, ">>") || sp_streq(name, "<<")) &&
+        infer_type(c, recv) == TY_PROC) {
+      int aargs = nt_ref(nt, id, "arguments");
+      int an = 0; const int *aav = aargs >= 0 ? nt_arr(nt, aargs, "arguments", &an) : NULL;
+      if (an == 1 && aav && infer_type(c, aav[0]) == TY_PROC) {
+        changed |= widen_proc_params_poly(c, recv);
+        changed |= widen_proc_params_poly(c, aav[0]);
       }
     }
 

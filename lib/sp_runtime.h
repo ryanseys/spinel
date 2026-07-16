@@ -6974,7 +6974,11 @@ static mrb_int sp_proc_compose_fn(void *cap, mrb_int argc, mrb_int *args) {
      the side-channel, a concrete one reads the mrb_int slot. */
   sp_RbVal mid = _sp_proc_poly_ret;
   mrb_int outer_args[16] = {0};
-  outer_args[0] = sp_poly_to_i(mid);
+  /* Thread the intermediate on the mrb_int slot too: a concrete-typed outer
+     parameter reads it there, so a heap value (string/array/object) must pass
+     as its pointer, not its truncated int projection (#2650). */
+  outer_args[0] = (mid.tag == SP_TAG_OBJ || mid.tag == SP_TAG_STR)
+                ? (mrb_int)(uintptr_t)mid.v.p : sp_poly_to_i(mid);
   _sp_proc_poly_args[0] = mid;
   /* the outer proc publishes the composed result into the slot; our own raw
      return is unread (the call site reads the slot). */
