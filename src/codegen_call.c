@@ -1759,8 +1759,22 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       }
     }
     /* Proc#curry and curry application. */
-    if (crt == TY_PROC && sp_streq(name, "curry") && argc == 0) {
+    if (crt == TY_PROC && sp_streq(name, "curry") &&
+        (argc == 0 || (argc == 1 && comp_ntype(c, argv[0]) == TY_INT))) {
+      /* curry(n) fixes the arity explicitly; when it matches the proc's own
+         arity (the common case) it behaves like the no-arg form, so the count
+         is accepted and ignored. #2669 */
       buf_puts(b, "sp_curry_new("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
+    /* A curried proc reports as a lambda Proc: #arity -1 (variadic), #lambda?
+       true, #class Proc. #2651 */
+    if (crt == TY_CURRY && argc == 0 && sp_streq(name, "arity")) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)-1)");
+      return 1;
+    }
+    if (crt == TY_CURRY && argc == 0 && sp_streq(name, "lambda?")) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), TRUE)");
       return 1;
     }
     if (crt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()")) && argc >= 1) {
@@ -6642,6 +6656,12 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "parameters")) {
     buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
+  /* Proc#ruby2_keywords: flags the proc for keyword forwarding and returns the
+     proc itself. Spinel does not model the ruby2_keywords hash flag, so this is
+     a no-op that yields the receiver. #2652 */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "ruby2_keywords")) {
+    emit_expr(c, recv, b); return;
+  }
   /* Proc#source_location: [file, line] of a proc LITERAL receiver (its
      definition site is the node itself). #2649 */
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "source_location") &&
@@ -8500,6 +8520,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_MATCHDATA) cn = "MatchData";
     else if (rt == TY_REGEX) cn = "Regexp";
     else if (rt == TY_PROC) cn = "Proc";
+    else if (rt == TY_CURRY) cn = "Proc";  /* a curried proc is a Proc (#2651) */
     else if (rt == TY_COMPLEX) cn = "Complex";
     else if (rt == TY_RATIONAL) cn = "Rational";
     else if (ty_is_array(rt)) cn = "Array";
@@ -11362,7 +11383,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (!resolved && recv >= 0 && rt == TY_PROC) {
         static const char *const procm[] = {
           "call", "()", "[]", "yield", "arity", "lambda?", "curry",
-          "to_proc", "parameters", "<<", ">>", NULL };
+          "to_proc", "parameters", "<<", ">>", "ruby2_keywords", NULL };
         for (int u = 0; procm[u]; u++) if (sp_streq(qm, procm[u])) { yes = resolved = 1; break; }
       }
       /* Time: a fixed builtin surface. Unknown names answer false (CRuby),

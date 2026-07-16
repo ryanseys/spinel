@@ -890,6 +890,9 @@ TyKind infer_call(Compiler *c, int id) {
       return cret == TY_INT ? TY_INT : TY_POLY;   /* boxed realization otherwise */
     return TY_CURRY;
   }
+  /* A curried proc reports as a lambda Proc (#2651). */
+  if (rt == TY_CURRY && argc == 0 && sp_streq(name, "arity")) return TY_INT;
+  if (rt == TY_CURRY && argc == 0 && sp_streq(name, "lambda?")) return TY_BOOL;
 
   /* clamp(lo, hi) with a nil (open) bound returns the receiver or the applied
      bound unchanged, boxed to preserve its class (#2588). */
@@ -1404,7 +1407,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
     if (sp_streq(name, "frozen?")) return TY_BOOL;
     if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
-        sp_streq(name, "itself")) return TY_PROC;
+        sp_streq(name, "itself") || sp_streq(name, "ruby2_keywords")) return TY_PROC;
   }
   /* Proc identity: equal?/eql?/== against another Proc -> bool */
   if (recv >= 0 && rt == TY_PROC && argc == 1 &&
@@ -1542,7 +1545,7 @@ TyKind infer_call(Compiler *c, int id) {
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
         rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
         rt == TY_MATCHDATA || rt == TY_REGEX ||
-        rt == TY_COMPLEX || rt == TY_RATIONAL ||
+        rt == TY_COMPLEX || rt == TY_RATIONAL || rt == TY_CURRY ||
         rt == TY_FIBER || rt == TY_ENUMERATOR || ty_is_array(rt) || ty_is_hash(rt))
       return TY_CLASS;
   }
