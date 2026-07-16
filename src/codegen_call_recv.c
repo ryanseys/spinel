@@ -1082,6 +1082,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     if (rt == TY_POLY_ARRAY && sp_streq(name, "tally") && argc == 0) {
       buf_puts(b, "sp_PolyArray_tally("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
+    /* tally(accumulator_hash): count into the given hash and return it, via the
+       generic boxed helper (works for any hash variant, #2628). */
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "tally") && argc == 1) {
+      buf_puts(b, "sp_array_tally_into_poly("); emit_boxed(c, recv, b); buf_puts(b, ", ");
+      emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
     if (rt == TY_POLY_ARRAY && sp_streq(name, "delete_at") && argc == 1) {
       buf_puts(b, "sp_PolyArray_delete_at("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
