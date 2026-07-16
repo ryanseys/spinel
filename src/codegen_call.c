@@ -5456,7 +5456,16 @@ void emit_call(Compiler *c, int id, Buf *b) {
      first-class class value */
   {
     int aci = anon_struct_ci_for_value(c, id);
-    if (aci >= 0) { buf_printf(b, "((sp_Class){%d})", aci); return; }
+    if (aci >= 0) {
+      /* A duplicate member name is an ArgumentError at definition time in
+         CRuby; raise at runtime so a surrounding rescue can catch it (#2705). */
+      const char *dup = struct_call_dup_member(c, id);
+      if (dup) {
+        buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"duplicate member: %s\"), (sp_Class){%d})", dup, aci);
+        return;
+      }
+      buf_printf(b, "((sp_Class){%d})", aci); return;
+    }
   }
   /* push/append/<< on an empty array literal in value position: the literal
      has no storage to mutate and returns self, so `[].push(1, 2)` is just the

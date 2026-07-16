@@ -169,6 +169,28 @@ const char *sym_static_value(Compiler *c, int node) {
 /* The anonymous struct class synthesized for a `k = Struct.new(:a, :b)`
    VALUE node (the write is the class's def_node), or -1. Lets the value
    type as TY_CLASS and emit as the class object. */
+/* The first member name that appears more than once in a Struct.new(...) /
+   Data.define(...) call's argument list, or NULL. CRuby raises ArgumentError
+   ("duplicate member") for such a definition (#2705). */
+const char *struct_call_dup_member(Compiler *c, int callnode) {
+  const NodeTable *nt = c->nt;
+  if (callnode < 0) return NULL;
+  int args = nt_ref(nt, callnode, "arguments");
+  int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (!argv) return NULL;
+  for (int a = 0; a < an; a++) {
+    if (!nt_type(nt, argv[a]) || !sp_streq(nt_type(nt, argv[a]), "SymbolNode")) continue;
+    const char *m = nt_str(nt, argv[a], "value");
+    if (!m) continue;
+    for (int b = 0; b < a; b++) {
+      if (!nt_type(nt, argv[b]) || !sp_streq(nt_type(nt, argv[b]), "SymbolNode")) continue;
+      const char *m2 = nt_str(nt, argv[b], "value");
+      if (m2 && sp_streq(m2, m)) return m;
+    }
+  }
+  return NULL;
+}
+
 int anon_struct_ci_for_value(Compiler *c, int val) {
   const NodeTable *nt = c->nt;
   if (val < 0) return -1;
