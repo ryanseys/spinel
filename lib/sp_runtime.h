@@ -2390,43 +2390,8 @@ static const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
   r[i] = (char)(v & 0xff);
   return r;
 }
-static sp_Complex sp_str_to_c(const char *s) {
-  double re = 0, im = 0;
-  int parsed = 0;
-  const char *fin = s;   /* first byte NOT consumed by the parse */
-  if (s) {
-    const char *p = s;
-    while (*p == ' ' || *p == '\t') p++;
-    char *end = NULL;
-    double a = strtod(p, &end);
-    if (end != p) {
-      parsed = 1;
-      /* rational-syntax component "n/d" */
-      if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { a /= d; end = de; } }
-      if (*end == 'i') { im = a; fin = end + 1; }
-      else {
-        re = a;
-        const char *q = end;
-        double b2 = strtod(q, &end);
-        if (end != q) {
-          if (*end == '/') { const char *dp = end + 1; char *de = NULL; double d = strtod(dp, &de); if (de != dp) { b2 /= d; end = de; } }
-          if (*end == 'i') { im = b2; fin = end + 1; }
-          else fin = q;   /* an imaginary number without the 'i' suffix ("1+2") is invalid */
-        }
-        else if ((*q == '+' || *q == '-') && q[1] == 'i') { im = (*q == '-') ? -1.0 : 1.0; fin = q + 2; }
-        else fin = q;        /* "1+" and other incomplete forms leave the operator unconsumed */
-      }
-    }
-    else if (*p == 'i') { im = 1; parsed = 1; fin = p + 1; }
-    else if ((*p == '+' || *p == '-') && p[1] == 'i') { im = (*p == '-') ? -1.0 : 1.0; parsed = 1; fin = p + 2; }
-  }
-  /* the whole string must be consumed (only trailing whitespace allowed): an
-     incomplete form like "1+" is invalid, not silently (1+0i) (#2617). */
-  if (parsed) { while (*fin == ' ' || *fin == '\t') fin++; if (*fin != '\0') parsed = 0; }
-  /* an unparseable string (or nil) is not a valid Complex value */
-  if (!parsed) sp_raise_cls("ArgumentError", "invalid value for convert(): ");
-  return (sp_Complex){ (mrb_float)re, (mrb_float)im };
-}
+/* sp_str_to_c: moved to lib/sp_cold.c */
+sp_Complex sp_str_to_c(const char *s);
 /* Hash subset/superset comparisons (boxed, any variant pairing): every pair
    of `a` present in `b` with an equal value; strict adds len <. */
 static void sp_poly_hash_pair(sp_RbVal v, mrb_int i, sp_RbVal *k, sp_RbVal *out);
@@ -6720,25 +6685,8 @@ static const char *sp_dir_home(void) {
 /* Wildcard match for a single path component: `*` (any run, no `/`),
    `?` (one char). Recursive over `*`; adequate for the common
    single-directory glob patterns. */
-static int sp_fnmatch1(const char *pat, const char *str) {
-  while (*pat) {
-    if (*pat == '*') {
-      pat++;
-      if (!*pat) return 1;
-      while (*str) { if (sp_fnmatch1(pat, str)) return 1; str++; }
-      return sp_fnmatch1(pat, str);
-    }
-else if (*pat == '?') {
-      if (!*str) return 0;
-      pat++; str++;
-    }
-else {
-      if (*pat != *str) return 0;
-      pat++; str++;
-    }
-  }
-  return *str == 0;
-}
+/* sp_fnmatch1: moved to lib/sp_cold.c */
+int sp_fnmatch1(const char *pat, const char *str);
 /* Recursive helper for a double-star glob: visit `fsdir` and every descendant,
    and in each match `tail` (a single-component pattern) against the directory's
    entries. `outprefix` is prepended to a match to reproduce the path shape Ruby
@@ -6746,110 +6694,16 @@ else {
    pattern yields bare names). Symlinked directories are not traversed, matching
    CRuby's default and avoiding cycles. Hidden entries are skipped unless `tail`
    starts with a dot; hidden directories are never descended. */
-static void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
-                            const char *tail, sp_StrArray *a) {
-  DIR *d = opendir(fsdir);
-  if (!d) return;
-  struct dirent *e;
-  while ((e = readdir(d)) != NULL) {
-    const char *name = e->d_name;
-    if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
-    char fspath[2048], outpath[2048];
-    snprintf(fspath, sizeof fspath, "%s/%s", fsdir, name);
-    snprintf(outpath, sizeof outpath, "%s%s", outprefix, name);
-    if (!(name[0] == '.' && tail[0] != '.') && sp_fnmatch1(tail, name)) {
-      char *copy = sp_str_alloc(strlen(outpath));
-      strcpy(copy, outpath);
-      sp_StrArray_push(a, copy);
-    }
-    if (name[0] != '.') {
-      struct stat st;
-      if (lstat(fspath, &st) == 0 && S_ISDIR(st.st_mode)) {
-        char subprefix[2048];
-        snprintf(subprefix, sizeof subprefix, "%s%s/", outprefix, name);
-        sp_dir_glob_rec(fspath, subprefix, tail, a);
-      }
-    }
-  }
-  closedir(d);
-}
+/* sp_dir_glob_rec: moved to lib/sp_cold.c */
+void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
+                            const char *tail, sp_StrArray *a);
 /* Dir.glob(pattern): list directory entries matching the last component
    of `pattern` (an optional leading `dir/` selects the directory). A recursive
    double-star component walks that subtree (the tail after it matches per
    directory). Hidden entries match only when the pattern itself begins with
    `.`. Results are sorted, matching Ruby 3.0+ default glob ordering. */
-static sp_StrArray *sp_dir_glob(const char *pattern) {
-  /* the pattern is often a fresh interpolation temp, unrooted at the call
-     site; the per-match sp_str_allocs below can collect it mid-walk */
-  SP_GC_ROOT_STR(pattern);
-  sp_StrArray *a = sp_StrArray_new();
-  /* every matched entry sp_str_allocs inside the walk below, and enough of
-     them trigger a collection mid-build -- root the result like
-     sp_dir_entries_impl or it (and its pushed names) get swept under us */
-  SP_GC_ROOT(a);
-  if (!pattern) return a;
-  /* Recursive double-star form: split at the double-star component. Everything
-     before it is the output prefix (and, minus the trailing slash, the directory
-     to walk); the component after it is the per-directory tail pattern. */
-  const char *ss = strstr(pattern, "**");
-  if (ss) {
-    size_t plen = (size_t)(ss - pattern);
-    if (plen >= 1024) return a;
-    const char *after = ss + 2;
-    if (*after == '/') after++;
-    const char *tail = after;
-    char outprefix[1024];
-    memcpy(outprefix, pattern, plen);
-    outprefix[plen] = 0;
-    char fsdir[1024];
-    if (plen == 0) {
-      strcpy(fsdir, ".");
-    }
-    else {
-      memcpy(fsdir, pattern, plen);
-      fsdir[plen] = 0;
-      if (fsdir[plen - 1] == '/') fsdir[plen - 1] = 0;
-      if (fsdir[0] == 0) strcpy(fsdir, "/");
-    }
-    sp_dir_glob_rec(fsdir, outprefix, tail, a);
-    sp_StrArray_sort_bang(a);
-    return a;
-  }
-  const char *slash = strrchr(pattern, '/');
-  char dirbuf[1024];
-  const char *dirpath;
-  const char *base_pat;
-  if (slash) {
-    size_t dl = (size_t)(slash - pattern);
-    if (dl >= sizeof(dirbuf)) return a;
-    memcpy(dirbuf, pattern, dl);
-    dirbuf[dl] = 0;
-    dirpath = (dl == 0) ? "/" : dirbuf;
-    base_pat = slash + 1;
-  }
-else {
-    dirpath = ".";
-    base_pat = pattern;
-  }
-  DIR *d = opendir(dirpath);
-  if (!d) return a;
-  struct dirent *e;
-  while ((e = readdir(d)) != NULL) {
-    const char *name = e->d_name;
-    if (name[0] == '.' && base_pat[0] != '.') continue;
-    if (sp_fnmatch1(base_pat, name)) {
-      char full[2048];
-      if (slash) snprintf(full, sizeof(full), "%s/%s", dirbuf, name);
-      else snprintf(full, sizeof(full), "%s", name);
-      char *copy = sp_str_alloc(strlen(full));
-      strcpy(copy, full);
-      sp_StrArray_push(a, copy);
-    }
-  }
-  closedir(d);
-  sp_StrArray_sort_bang(a);
-  return a;
-}
+/* sp_dir_glob: moved to lib/sp_cold.c */
+sp_StrArray *sp_dir_glob(const char *pattern);
 /* Dir.entries / Dir.children: every entry of one directory, dotfiles
    included; children drops "." / "..". Sorted for determinism (CRuby
    leaves readdir order unspecified). A missing directory raises like
