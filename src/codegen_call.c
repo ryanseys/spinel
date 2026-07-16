@@ -1847,6 +1847,35 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "), 1), %lldLL)", (long long)nt_int(nt, argv[0], "value", 0));
       return 1;
     }
+    /* Integer ** Complex = the complex power (real base, complex exponent). */
+    if (crt == TY_INT && argc == 1 && sp_streq(name, "**") &&
+        comp_ntype(c, argv[0]) == TY_COMPLEX) {
+      buf_puts(b, "sp_real_pow_complex((mrb_float)("); emit_expr(c, recv, b);
+      buf_puts(b, "), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+    /* Integer ** Rational is a Float in Spinel (an integer-valued exponent
+       would be an exact Rational in CRuby; kept Float by design, matching
+       Rational ** Rational). */
+    if (crt == TY_INT && argc == 1 && sp_streq(name, "**") &&
+        comp_ntype(c, argv[0]) == TY_RATIONAL) {
+      buf_puts(b, "pow((double)("); emit_expr(c, recv, b);
+      buf_puts(b, "), sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      return 1;
+    }
+    /* Integer#fdiv(Rational) is the float quotient; #div(Rational) is the floor. */
+    if (crt == TY_INT && argc == 1 && sp_streq(name, "fdiv") &&
+        comp_ntype(c, argv[0]) == TY_RATIONAL) {
+      buf_puts(b, "((mrb_float)("); emit_expr(c, recv, b);
+      buf_puts(b, ") / sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      return 1;
+    }
+    if (crt == TY_INT && argc == 1 && sp_streq(name, "div") &&
+        comp_ntype(c, argv[0]) == TY_RATIONAL) {
+      buf_puts(b, "sp_rational_floor_i(sp_rational_div(sp_rational_new((mrb_int)(");
+      emit_expr(c, recv, b); buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      return 1;
+    }
     /* An Integer viewed as a Rational: numerator is self, denominator is 1. */
     if (crt == TY_INT && sp_streq(name, "numerator") && argc == 0) {
       buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;

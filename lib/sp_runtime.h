@@ -1997,6 +1997,19 @@ static sp_RbVal sp_complex_abs2_v(sp_Complex a) {
   if (a.fl == 0) return sp_complex_comp_v(v, 0);
   return sp_box_float(v);
 }
+/* real ** complex = exp(e * clog(base)): base>0 uses a real log, base<0 the
+   principal branch (ln|base| + i*pi), base==0 is 0. Both result components are
+   Float-classed (fl = 3). */
+static sp_Complex sp_real_pow_complex(mrb_float base, sp_Complex e) {
+  double lr, li;
+  if (base > 0)      { lr = log(base);  li = 0; }
+  else if (base < 0) { lr = log(-base); li = M_PI; }
+  else               { return (sp_Complex){0, 0, 3}; }
+  double wr = e.re * lr - e.im * li;
+  double wi = e.re * li + e.im * lr;
+  double m = exp(wr);
+  return (sp_Complex){ m * cos(wi), m * sin(wi), 3 };
+}
 /* sp_Range_inspect moved to lib/sp_format.c (cold). */
 /* Same heap-box rationale as sp_Range: sp_Time is 12+ bytes (tv_sec +
    tv_nsec), wider than sp_RbVal's 8-byte union. No internal pointers

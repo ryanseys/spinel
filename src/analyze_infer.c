@@ -787,6 +787,14 @@ TyKind infer_call(Compiler *c, int id) {
     long long exp;
     if (infer_const_int_node(nt, argv[0], &exp) && exp < 0) return TY_RATIONAL;
   }
+  /* Integer with a Rational/Complex operand: ** Complex is Complex; ** Rational
+     is a Float (by design, see codegen); fdiv is Float, div is the Integer floor. */
+  if (recv >= 0 && infer_type(c, recv) == TY_INT && argc == 1) {
+    if (sp_streq(name, "**") && a0 == TY_COMPLEX) return TY_COMPLEX;
+    if (sp_streq(name, "**") && a0 == TY_RATIONAL) return TY_FLOAT;
+    if (sp_streq(name, "fdiv") && a0 == TY_RATIONAL) return TY_FLOAT;
+    if (sp_streq(name, "div") && a0 == TY_RATIONAL) return TY_INT;
+  }
   /* A literal left shift whose result exceeds int64 (`1 << 64`, the 2**64 mask)
      is a Bignum -- type it bigint so codegen emits a bigint shift, not a UB C
      `1LL << 64LL`. */

@@ -130,6 +130,18 @@ through every int-arithmetic consumer, so a negative value there still
 raises `RangeError` rather than silently truncating. `Integer#pow(negative,
 mod)` raises `RangeError` with CRuby's message.
 
+#### `Integer#**` / `Rational#**` with a `Rational` exponent
+
+CRuby returns an exact `Rational` when the exponent is integer-valued
+(`3 ** 2r # => (9/1)`, `Rational(3,4) ** 2r # => (9/16)`) and a `Float`
+otherwise. Spinel returns a `Float` in every case (`3 ** 2r # => 9.0`): the
+exactness depends on the exponent's denominator at run time, so honoring it
+would force the result to a boxed union and cascade through consumers. The
+exponent's magnitude is still correct; only the class (Float vs Rational)
+differs. `Integer ** Complex` and a `Complex` exponent generally evaluate to
+the correct `Complex`, and `Integer#fdiv` / `#div` with a `Rational` argument
+are exact.
+
 #### Unboxed value types: identity IS the value
 
 `Complex`, `Rational`, and `Range` values are unboxed C structs with no
