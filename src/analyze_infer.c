@@ -1875,7 +1875,16 @@ else {
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
       if (sp_streq(name, "pid") || sp_streq(name, "ppid")) return TY_INT;
-      if (sp_streq(name, "clock_gettime")) return TY_FLOAT;
+      if (sp_streq(name, "clock_gettime")) {
+        /* an integer unit (:nanosecond/:microsecond/:millisecond/:second) makes
+           the result an Integer; the default and float units keep it Float. */
+        if (argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode")) {
+          const char *u = nt_str(nt, argv[1], "value");
+          if (u && (sp_streq(u, "nanosecond") || sp_streq(u, "microsecond") ||
+                    sp_streq(u, "millisecond") || sp_streq(u, "second"))) return TY_INT;
+        }
+        return TY_FLOAT;
+      }
     }
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&

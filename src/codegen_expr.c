@@ -1510,8 +1510,8 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       if (sp_streq(nm, "SEEK_END")) { buf_puts(b, "((mrb_int)2)"); return; }
     }
     if (par_nmc && sp_streq(par_nmc, "Process") && nm) {
-      if (sp_streq(nm, "CLOCK_MONOTONIC")) { buf_puts(b, "((mrb_int)1)"); return; }
-      if (sp_streq(nm, "CLOCK_REALTIME"))  { buf_puts(b, "((mrb_int)0)"); return; }
+      if (sp_streq(nm, "CLOCK_MONOTONIC")) { buf_puts(b, "((mrb_int)CLOCK_MONOTONIC)"); return; }
+      if (sp_streq(nm, "CLOCK_REALTIME"))  { buf_puts(b, "((mrb_int)CLOCK_REALTIME)"); return; }
       /* the CPU-time clocks are POSIX and present on Linux and macOS; emit the
          C macro so the value is the platform's own clock id, as CRuby's is. */
       if (sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID")) { buf_puts(b, "((mrb_int)CLOCK_PROCESS_CPUTIME_ID)"); return; }

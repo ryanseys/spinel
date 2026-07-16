@@ -3254,7 +3254,13 @@ int desugar_public_send_recv(Compiler *c) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     if (nt_ref(nt, id, "receiver") < 0) continue;          /* explicit receiver only */
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "public_send")) continue;
+    /* Also handle send/__send__ here, but ONLY when they target another
+       send-family method (the nested `d.send(:send, :greet)` case, #2688):
+       simple `d.send(:m)` is already lowered textually in spinel_parse.c, and
+       the send-of-send it leaves behind unwinds one layer per pass here. */
+    int is_pub = nm && sp_streq(nm, "public_send");
+    int is_snd = nm && (sp_streq(nm, "send") || sp_streq(nm, "__send__"));
+    if (!is_pub && !is_snd) continue;
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
@@ -3264,8 +3270,12 @@ int desugar_public_send_recv(Compiler *c) {
     if (a0ty && sp_streq(a0ty, "SymbolNode")) mname = nt_str(nt, argv[0], "value");
     else if (a0ty && sp_streq(a0ty, "StringNode")) mname = nt_str(nt, argv[0], "content");
     if (!mname || !*mname) continue;                       /* runtime name: dyn_send_arms */
-    if (sp_streq(mname, "send") || sp_streq(mname, "__send__") ||
-        sp_streq(mname, "public_send")) continue;
+    int m_is_send = sp_streq(mname, "send") || sp_streq(mname, "__send__") ||
+                    sp_streq(mname, "public_send");
+    (void)m_is_send;
+    /* send/__send__ that spinel_parse.c already lowered never reach here;
+       the ones it leaves are the send-of-send residue (`d.send(:greet)` after
+       stripping the outer :send), which we finish retargeting. */
     int nrest = argc - 1;
     if (nrest > 64) continue;
     int rest[64];
@@ -3278,7 +3288,7 @@ int desugar_public_send_recv(Compiler *c) {
     nt_node_set_arr(nt, newargs, "arguments", rest, nrest);
     nt_node_set_str(nt, id, "name", namebuf);
     nt_node_set_ref(nt, id, "arguments", newargs);
-    nt_node_set_str(nt, id, "vis_enforce", "1");
+    if (is_pub && !m_is_send) nt_node_set_str(nt, id, "vis_enforce", "1");
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;

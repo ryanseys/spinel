@@ -9665,7 +9665,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "pid") && argc == 0) { buf_puts(b, "((mrb_int)getpid())"); return; }
     if (sp_streq(name, "ppid") && argc == 0) { buf_puts(b, "sp_process_ppid()"); return; }
     if (sp_streq(name, "clock_gettime") && argc >= 1) {
-      buf_puts(b, "sp_process_clock_gettime()"); return;
+      /* honor the clock id, and the unit (default :float_second). An integer
+         unit yields an Integer; the float units and the default yield a Float. */
+      const char *unit = NULL;
+      if (argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode"))
+        unit = nt_str(nt, argv[1], "value");
+      buf_puts(b, "(sp_process_clock_ns("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      if (unit && sp_streq(unit, "nanosecond")) buf_puts(b, ")");
+      else if (unit && sp_streq(unit, "microsecond")) buf_puts(b, " / 1000)");
+      else if (unit && sp_streq(unit, "millisecond")) buf_puts(b, " / 1000000)");
+      else if (unit && sp_streq(unit, "second")) buf_puts(b, " / 1000000000)");
+      else if (unit && sp_streq(unit, "float_microsecond")) buf_puts(b, " / 1e3)");
+      else if (unit && sp_streq(unit, "float_millisecond")) buf_puts(b, " / 1e6)");
+      else buf_puts(b, " / 1e9)");  /* float_second (default) */
+      return;
     }
   }
 
