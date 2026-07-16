@@ -4886,6 +4886,11 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
           emit_unbox_text(c, pt, ub.p ? ub.p : "", out);
           free(ub.p);
         }
+        /* A string param whose argument is context-typed TY_STRING but whose
+           value is really the unresolved-call gate's sp_raise_nomethod(...)
+           token (`html_escape(obj.details)` on an unknown receiver): emit_str_expr
+           passes a real string through and coerces the token to the slot. */
+        else if (pt == TY_STRING) emit_str_expr(c, provided, out);
         else emit_expr(c, provided, out);
       }
     }

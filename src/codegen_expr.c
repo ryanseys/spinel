@@ -807,6 +807,11 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     buf_puts(b, "({ ");
     emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
     if (lv && lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    else if (lv && lv->type != TY_POLY && lv->type != TY_UNKNOWN &&
+             comp_ntype(c, v) == TY_UNKNOWN)
+      /* `if (x = obj.unresolved(...)) ...`: the gate's raise-all token into a
+         typed slot, coerced (mirrors the statement-form emit_assign). */
+      emit_unresolved_coerced(c, v, lv->type, b);
     else emit_expr(c, v, b);
     buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
     return;
