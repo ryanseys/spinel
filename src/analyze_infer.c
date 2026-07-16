@@ -4935,6 +4935,12 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     LocalVar *lv = nm ? comp_const(c, nm) : NULL;
     if (lv) return lv->type;
+    /* A top-level scoped constant `::Name` (no parent) names the same thing as
+       the bare constant `Name`; resolve it as a class when it is one so is_a?,
+       case/when, etc. treat `::Integer` exactly like `Integer` (#2683). */
+    if (nm && nt_ref(nt, id, "parent") < 0 &&
+        (comp_class_index(c, nm) >= 0 || is_builtin_class_name(nm)))
+      return TY_CLASS;
     if (nm && sp_streq(nm, "ARGV")) return TY_STR_ARRAY;
     if (nm && sp_streq(nm, "ARGF")) return TY_ARGF;
     /* well-known module constants */

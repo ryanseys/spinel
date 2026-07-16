@@ -5933,8 +5933,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
       (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?")) &&
       comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
-    const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
-                     ? nt_str(nt, argv[0], "name") : NULL;
+    const char *cn = isa_const_name(nt, argv[0]);
     if (cn) {
       int cid = ty_object_class(rt);
       int target = comp_class_index(c, cn);
@@ -7000,8 +6999,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
                       sp_streq(name, "instance_of?"))) {
       int is_iof = sp_streq(name, "instance_of?");
-      const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
-                       ? nt_str(nt, argv[0], "name") : NULL;
+      const char *cn = isa_const_name(nt, argv[0]);
       buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_boxed(c, recv, b); buf_puts(b, "; ");
       if (cn && is_iof) buf_printf(b, "(mrb_bool)(strcmp(sp_poly_class_name(_t%d), \"%s\") == 0); })", tr, cn);
       else if (cn)      buf_printf(b, "sp_poly_kind_of_builtin(_t%d, \"%s\"); })", tr, cn);

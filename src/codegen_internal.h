@@ -33,6 +33,18 @@ void buf_printf(Buf *b, const char *fmt, ...);
 
 static inline void emit_indent(Buf *b, int n) { for (int i = 0; i < n; i++) buf_puts(b, "  "); }
 
+/* The class argument of is_a?/kind_of?/instance_of?/=== may be a bare constant
+   (`Integer`) or a top-level scoped constant (`::Integer`); both name the same
+   class. Returns the name, or NULL for a nested path or a non-constant. */
+static inline const char *isa_const_name(const NodeTable *nt, int arg) {
+  const char *t = arg >= 0 ? nt_type(nt, arg) : NULL;
+  if (!t) return NULL;
+  if (sp_streq(t, "ConstantReadNode")) return nt_str(nt, arg, "name");
+  if (sp_streq(t, "ConstantPathNode") && nt_ref(nt, arg, "parent") < 0)
+    return nt_str(nt, arg, "name");
+  return NULL;
+}
+
 /* Statement prelude: some expressions (array/hash literals) lower to
    temp-variable construction that must run before the statement that
    uses them. While a statement line is being built, g_pre collects those

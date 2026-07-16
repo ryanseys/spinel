@@ -2333,8 +2333,7 @@ static int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
   int is_iof = argc == 1 && sp_streq(name, "instance_of?");
   if (is_isa || is_iof) {
     int arg = argv[0];
-    const char *cn = nt_type(nt, arg) && sp_streq(nt_type(nt, arg), "ConstantReadNode")
-                     ? nt_str(nt, arg, "name") : NULL;
+    const char *cn = isa_const_name(nt, arg);
     if (cn) {
       if (is_iof) {   /* exact class match by name (builtin or user class) */
         buf_printf(b, "(strcmp(sp_poly_class_name(%s), \"%s\") == 0)", tvref, cn);
@@ -7889,8 +7888,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
-      const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
-                       ? nt_str(nt, argv[0], "name") : NULL;
+      const char *cn = isa_const_name(nt, argv[0]);
       if (cn) {
         buf_puts(b, "sp_exc_is_a("); emit_expr(c, recv, b);
         buf_printf(b, ", \"%s\")", cn);
@@ -11984,7 +11982,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      time (evaluate the receiver for side effects, then yield the constant). */
   if (recv >= 0 && argc == 1 &&
       (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?")) &&
-      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")) {
+      isa_const_name(nt, argv[0])) {
     /* `[]` and a bare `Array.new` are arrays even when their element type (and
        so the inferred type) is still UNKNOWN -- treat them as such for the fold. */
     TyKind eff_rt = rt;
@@ -12033,7 +12031,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
       (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
     const char *cty = nt_type(nt, argv[0]);
-    const char *cn = cty && sp_streq(cty, "ConstantReadNode") ? nt_str(nt, argv[0], "name") : NULL;
+    const char *cn = isa_const_name(nt, argv[0]);
     if (cn) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; ");
@@ -12113,7 +12111,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
-      const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ? nt_str(nt, argv[0], "name") : NULL;
+      const char *cn = isa_const_name(nt, argv[0]);
       int yes = cn ? (sp_streq(cn, "NilClass") || sp_streq(name, "instance_of?") ? sp_streq(cn, "NilClass") : (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) : 0;
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
       return;
@@ -12432,8 +12430,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
-      const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
-                       ? nt_str(nt, argv[0], "name") : NULL;
+      const char *cn = isa_const_name(nt, argv[0]);
       buf_puts(b, cn && sp_streq(cn, "Hash") ? "1" : "0");
       return;
     }
