@@ -5654,6 +5654,27 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "denominator") && argc == 0) buf_printf(b, "sp_float_to_rational(%s).den", r);
       else if (sp_streq(name, "magnitude")) buf_printf(b, "fabs(%s)", r);
       else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      /* Numeric query methods: a Float is never an Integer, is always real */
+      else if (sp_streq(name, "integer?")) buf_printf(b, "((void)(%s), FALSE)", r);
+      else if (sp_streq(name, "real?"))     buf_printf(b, "((void)(%s), TRUE)", r);
+      else if (sp_streq(name, "nonzero?"))  buf_printf(b, "((%s) != 0.0 ? sp_box_float(%s) : sp_box_nil())", r, r);
+      /* Float#div: integer floor-division; a zero divisor raises ZeroDivisionError,
+         an infinite/NaN receiver raises FloatDomainError (Inf/NaN has no floor). */
+      else if (sp_streq(name, "div") && argc == 1) {
+        int tx = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ mrb_float _t%d = (%s); mrb_float _t%d = ", tx, r, tn);
+        emit_float_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                      " if (isinf(_t%d)) sp_raise_cls(\"FloatDomainError\", _t%d > 0 ? \"Infinity\" : \"-Infinity\");"
+                      " if (isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
+                      " (mrb_int)floor(_t%d / _t%d); })",
+                   tn, tx, tx, tx, tx, tn);
+      }
+      /* Float#remainder: truncated remainder, sign following the dividend -- exactly
+         C fmod (distinct from Ruby's floored % / modulo). */
+      else if (sp_streq(name, "remainder") && argc == 1) {
+        buf_printf(b, "fmod(%s, ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       /* Float#clamp with float bounds always yields a float (the returned bound
          is itself a float), so emit only when both bounds are float-typed; the
          mixed-bound case (int bound returned as Integer) is poly and left alone.

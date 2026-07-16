@@ -1454,9 +1454,14 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       if (sp_streq(nm, "EPSILON"))  { buf_puts(b, "DBL_EPSILON"); return; }
       if (sp_streq(nm, "INFINITY")) { buf_puts(b, "(1.0/0.0)"); return; }
       if (sp_streq(nm, "NAN"))      { buf_puts(b, "(0.0/0.0)"); return; }
-      if (sp_streq(nm, "DIG"))      { buf_printf(b, "(double)DBL_DIG"); return; }
-      if (sp_streq(nm, "MANT_DIG")) { buf_printf(b, "(double)DBL_MANT_DIG"); return; }
-      if (sp_streq(nm, "RADIX"))    { buf_printf(b, "(double)FLT_RADIX"); return; }
+      /* DIG/MANT_DIG/RADIX and the exponent limits are Integer constants */
+      if (sp_streq(nm, "DIG"))       { buf_printf(b, "((mrb_int)DBL_DIG)"); return; }
+      if (sp_streq(nm, "MANT_DIG"))  { buf_printf(b, "((mrb_int)DBL_MANT_DIG)"); return; }
+      if (sp_streq(nm, "RADIX"))     { buf_printf(b, "((mrb_int)FLT_RADIX)"); return; }
+      if (sp_streq(nm, "MAX_EXP"))    { buf_printf(b, "((mrb_int)DBL_MAX_EXP)"); return; }
+      if (sp_streq(nm, "MIN_EXP"))    { buf_printf(b, "((mrb_int)DBL_MIN_EXP)"); return; }
+      if (sp_streq(nm, "MAX_10_EXP")) { buf_printf(b, "((mrb_int)DBL_MAX_10_EXP)"); return; }
+      if (sp_streq(nm, "MIN_10_EXP")) { buf_printf(b, "((mrb_int)DBL_MIN_10_EXP)"); return; }
     }
     if (par_nmc && sp_streq(par_nmc, "Math") && nm) {
       if (sp_streq(nm, "PI")) { buf_puts(b, "M_PI"); return; }

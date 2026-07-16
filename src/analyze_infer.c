@@ -4258,10 +4258,13 @@ else {
     if (sp_streq(name, "infinite?")) return TY_INT;   /* nil / 1 / -1 (nullable int) */
     if (sp_streq(name, "nan?") || sp_streq(name, "finite?") ||
         sp_streq(name, "positive?") || sp_streq(name, "negative?") ||
-        sp_streq(name, "zero?")) return TY_BOOL;
+        sp_streq(name, "zero?") || sp_streq(name, "integer?") ||
+        sp_streq(name, "real?")) return TY_BOOL;
+    if (sp_streq(name, "nonzero?")) return TY_POLY;   /* self (Float) or nil */
+    if (sp_streq(name, "div") && argc == 1) return TY_INT;  /* integer floor-division */
     if (sp_streq(name, "next_float") || sp_streq(name, "prev_float") ||
         sp_streq(name, "abs") || sp_streq(name, "magnitude") ||
-        sp_streq(name, "modulo") || sp_streq(name, "to_f") ||
+        sp_streq(name, "modulo") || sp_streq(name, "remainder") || sp_streq(name, "to_f") ||
         (sp_streq(name, "fdiv") && argc == 1)) return TY_FLOAT;
     if ((sp_streq(name, "numerator") || sp_streq(name, "denominator")) && argc == 0) return TY_INT;
     if ((sp_streq(name, "to_r") && argc == 0) ||
@@ -4840,8 +4843,11 @@ TyKind infer_uncached(Compiler *c, int id) {
                          ? nt_str(nt, par_id, "name") : NULL;
     if (par_nm && sp_streq(par_nm, "Float")) {
       if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN") || sp_streq(nm, "EPSILON") ||
-                 sp_streq(nm, "INFINITY") || sp_streq(nm, "NAN") || sp_streq(nm, "DIG") ||
-                 sp_streq(nm, "MANT_DIG") || sp_streq(nm, "RADIX"))) return TY_FLOAT;
+                 sp_streq(nm, "INFINITY") || sp_streq(nm, "NAN"))) return TY_FLOAT;
+      /* DIG/MANT_DIG/RADIX and the exponent limits are Integer constants */
+      if (nm && (sp_streq(nm, "DIG") || sp_streq(nm, "MANT_DIG") || sp_streq(nm, "RADIX") ||
+                 sp_streq(nm, "MAX_EXP") || sp_streq(nm, "MIN_EXP") ||
+                 sp_streq(nm, "MAX_10_EXP") || sp_streq(nm, "MIN_10_EXP"))) return TY_INT;
     }
     if (par_nm && sp_streq(par_nm, "Math")) {
       if (nm && (sp_streq(nm, "PI") || sp_streq(nm, "E"))) return TY_FLOAT;
