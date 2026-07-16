@@ -386,7 +386,6 @@ tools: $(TOOL_BINS) bin/spin
 # the copy it silently lost every .rbs seed (#1845 bounce 6).
 bin/spin: tools/spin.rb tools/spin/toml.rb $(SPINEL) $(SP_RT_LIB) $(RBS_EXTRACT_TARGET)
 	$(SPINEL) tools/spin.rb -o bin/spin
-	@echo "tools/spin.rb -> bin/spin"
 	@if [ -n "$(RBS_EXTRACT_TARGET)" ]; then \
 	  cp -f $(RBS_EXTRACT_BIN) bin/spinel_rbs_extract; \
 	  echo "$(RBS_EXTRACT_BIN) -> bin/spinel_rbs_extract"; \
