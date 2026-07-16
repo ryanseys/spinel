@@ -5356,6 +5356,12 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_gcd(%s, _t%d));"
                       " sp_IntArray_push(_t%d, sp_lcm(%s, _t%d)); _t%d; })", o, o, r, ta, o, r, ta, o);
       }
+      /* a nil bound is an open side: clamp one-sided (or return the receiver),
+         boxed so the chosen operand keeps its class (#2588) */
+      else if (sp_streq(name, "clamp") && argc == 2 &&
+               (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL)) {
+        buf_printf(b, "sp_num_clamp_open(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
+      }
       /* A Float (or runtime-typed poly) bound makes the applied bound or the
          in-range receiver decide the result class at runtime, so box the
          operands and return whichever is chosen unchanged via sp_num_clamp. */
@@ -5713,6 +5719,12 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                       " _t%d; })", t, t, t, r, t, r, t);
       }
       else if (sp_streq(name, "i"))  buf_printf(b, "((sp_Complex){0.0, (%s), 2})", r);
+      /* a nil bound is an open side: clamp one-sided (or return the receiver),
+         boxed so the chosen operand keeps its class (#2588) */
+      else if (sp_streq(name, "clamp") && argc == 2 &&
+               (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL)) {
+        buf_printf(b, "sp_num_clamp_open(sp_box_float(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
+      }
       /* Float#clamp with float bounds always yields a float (the returned bound
          is itself a float), so emit only when both bounds are float-typed; the
          mixed-bound case (int bound returned as Integer) is poly and left alone.

@@ -875,6 +875,11 @@ TyKind infer_call(Compiler *c, int id) {
     return TY_CURRY;
   }
 
+  /* clamp(lo, hi) with a nil (open) bound returns the receiver or the applied
+     bound unchanged, boxed to preserve its class (#2588). */
+  if ((rt == TY_INT || rt == TY_FLOAT) && sp_streq(name, "clamp") && argc == 2 &&
+      (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL))
+    return TY_POLY;
   if (rt == TY_INT && sp_streq(name, "clamp") && argc == 1 &&
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
       ((nt_ref(nt, argv[0], "left") >= 0 && infer_type(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||

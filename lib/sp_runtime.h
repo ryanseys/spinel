@@ -2692,6 +2692,18 @@ static sp_RbVal sp_num_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
   if (dv > dhi) return hi;
   return v;
 }
+/* clamp(lo, hi) where a nil bound is an open (unbounded) side: a nil lo skips
+   the lower comparison, a nil hi the upper. Returns the chosen boxed operand so
+   its Integer/Float class is preserved. Both bounds present falls back to the
+   checked sp_num_clamp (which raises on lo > hi). */
+static sp_RbVal sp_num_clamp_open(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
+  int has_lo = lo.tag != SP_TAG_NIL, has_hi = hi.tag != SP_TAG_NIL;
+  if (has_lo && has_hi) return sp_num_clamp(v, lo, hi);
+  mrb_float dv = sp_poly_to_f(v);
+  if (has_lo) return dv < sp_poly_to_f(lo) ? lo : v;
+  if (has_hi) return dv > sp_poly_to_f(hi) ? hi : v;
+  return v;
+}
 /* clamp on a boxed value: numerics route through sp_num_clamp so the returned
    operand keeps its own Integer/Float class; a user object anywhere in the
    triple routes through sp_obj_clamp (the user `<=>` via the cmp hook) instead
