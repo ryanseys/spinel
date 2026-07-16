@@ -1771,7 +1771,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         ((crt == TY_FLOAT && comp_ntype(c, argv[0]) == TY_RATIONAL) ||
          (crt == TY_RATIONAL && comp_ntype(c, argv[0]) == TY_FLOAT)) &&
         (is_arith_op(name) || is_cmp_op(name) || sp_streq(name, "==") ||
-         sp_streq(name, "quo") || sp_streq(name, "fdiv"))) {
+         sp_streq(name, "!=") || sp_streq(name, "quo") || sp_streq(name, "fdiv"))) {
       const char *cop = (sp_streq(name, "quo") || sp_streq(name, "fdiv")) ? "/" : name;
       int lft_rat = (crt == TY_RATIONAL);
       if (sp_streq(name, "%")) {
@@ -2066,12 +2066,47 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_rational_cmp("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (rat_ok && argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
-        if (rat == TY_FLOAT) {
-          buf_printf(b, "(sp_rational_to_f("); emit_expr(c, recv, b); buf_printf(b, ") %s ", name); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+      /* == / != / === (=== is case equality = value equality for a Numeric,
+         #2564). A numeric argument compares by value; a non-numeric argument is
+         never == a Rational -> false (#2572). */
+      if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "==="))) {
+        int neg = name[0] == '!';
+        if (rat_ok) {
+          if (rat == TY_FLOAT) {
+            buf_puts(b, "(sp_rational_to_f("); emit_expr(c, recv, b);
+            buf_printf(b, ") %s ", neg ? "!=" : "=="); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+            return 1;
+          }
+          buf_printf(b, "(%ssp_rational_eq(", neg ? "!" : ""); emit_expr(c, recv, b);
+          buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, "))");
           return 1;
         }
-        buf_printf(b, "(%ssp_rational_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, "))");
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "), %d)", neg ? 1 : 0);
+        return 1;
+      }
+      /* Comparable#between?/clamp via <=> (#2563). between? is bool; clamp with
+         two Rational bounds returns a Rational (the receiver or a bound). */
+      if (argc == 2 && sp_streq(name, "between?") &&
+          (comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[0]) == TY_INT) &&
+          (comp_ntype(c, argv[1]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_INT)) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Rational _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; (sp_rational_cmp(_t%d, ", t); emit_rat_coerce(c, argv[0], b);
+        buf_printf(b, ") >= 0 && sp_rational_cmp(_t%d, ", t); emit_rat_coerce(c, argv[1], b);
+        buf_puts(b, ") <= 0); })");
+        return 1;
+      }
+      if (argc == 2 && sp_streq(name, "clamp") &&
+          comp_ntype(c, argv[0]) == TY_RATIONAL && comp_ntype(c, argv[1]) == TY_RATIONAL) {
+        int t = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp;
+        buf_printf(b, "({ sp_Rational _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Rational _t%d = ", ta); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_Rational _t%d = ", tb); emit_expr(c, argv[1], b);
+        buf_printf(b, "; sp_rational_cmp(_t%d, _t%d) < 0 ? _t%d"
+                      " : (sp_rational_cmp(_t%d, _t%d) > 0 ? _t%d : _t%d); })",
+                   t, ta, ta, t, tb, tb, t);
         return 1;
       }
       /* eql? / equal? on the unboxed Rational value: component equality for

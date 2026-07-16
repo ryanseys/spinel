@@ -950,8 +950,12 @@ TyKind infer_call(Compiler *c, int id) {
       return a0r == TY_FLOAT ? TY_FLOAT : TY_RATIONAL;
     if (argc == 1 && sp_streq(name, "**")) return a0r == TY_INT ? TY_RATIONAL : TY_FLOAT;
     if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-                      sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!="))) return TY_BOOL;
+                      sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=") ||
+                      sp_streq(name, "==="))) return TY_BOOL;
     if (argc == 1 && sp_streq(name, "<=>")) return TY_INT;
+    if (argc == 2 && sp_streq(name, "between?")) return TY_BOOL;
+    if (argc == 2 && sp_streq(name, "clamp") &&
+        infer_type(c, argv[0]) == TY_RATIONAL && infer_type(c, argv[1]) == TY_RATIONAL) return TY_RATIONAL;
     if (argc == 1 && (sp_streq(name, "%") || sp_streq(name, "modulo") ||
                       sp_streq(name, "remainder"))) return TY_RATIONAL;
     if (argc == 1 && sp_streq(name, "divmod")) return TY_POLY_ARRAY;
