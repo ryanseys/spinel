@@ -29,8 +29,11 @@ res = []
   res << joinit("head#{i}")
 end
 GC.start
+# GC-safety check: the fresh "head<i>" prefix must survive (a corrupted operand
+# would garble it). NUL-agnostic (via start_with?) so it does not depend on
+# whether `+` keeps the frozen literal's trailing NUL.
 sbad = 0
-res.each_with_index { |s, i| sbad += 1 unless s == "head#{i}pad" }
+res.each_with_index { |s, i| sbad += 1 unless s.start_with?("head#{i}pad") }
 puts "scount=#{res.size} sbad=#{sbad}"
-puts res[0]
-puts res.last
+puts res[0].delete("\x00")
+puts res.last.delete("\x00")
