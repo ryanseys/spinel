@@ -7486,6 +7486,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv < 0 && (sp_streq(name, "raise") || sp_streq(name, "fail"))) {
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    /* Resolve a raise target's runtime class name: a ConstantPathNode naming a
+       known builtin namespaced exception (Math::DomainError) raises under its
+       qualified name, so the same-named rescue arm catches it (#2570). */
+    char qexc_buf[160];
+    #define RAISE_EXC_NAME(nd, leaf) ({ \
+        const char *_ln = (leaf); \
+        if (nt_type(nt, nd) && sp_streq(nt_type(nt, nd), "ConstantPathNode")) { \
+          int _par = nt_ref(nt, nd, "parent"); \
+          const char *_pnm = (_par >= 0 && nt_type(nt, _par) && \
+                              sp_streq(nt_type(nt, _par), "ConstantReadNode")) \
+                             ? nt_str(nt, _par, "name") : NULL; \
+          if (_pnm && _ln) { \
+            snprintf(qexc_buf, sizeof qexc_buf, "%s::%s", _pnm, _ln); \
+            if (is_exc_name(qexc_buf)) _ln = qexc_buf; \
+          } \
+        } \
+        _ln; })
     /* trailing `cause: exc` kwarg: strip it from the arg list and stage the
        explicit cause the raise machinery consumes for this one raise */
     int cause_node = -1;
@@ -7530,7 +7547,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         /* a known user class raises under its qualified Ruby name (matching
            the constructor emission and the rescue-arm canonicalization) */
         const char *rn = (xc >= 0) ? class_ruby_name(c, xc) : NULL;
-        buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", rn ? rn : (cn ? cn : ""));
+        buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", rn ? rn : (cn ? RAISE_EXC_NAME(av[0], cn) : ""));
       }
     }
     else if (ac >= 2 && nt_type(nt, av[0]) &&
@@ -7565,7 +7582,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         /* a known user class raises under its qualified Ruby name (matching
            the constructor emission and the rescue-arm canonicalization) */
         const char *rn = (xc >= 0) ? class_ruby_name(c, xc) : NULL;
-        buf_printf(b, "sp_raise_cls(\"%s\", ", rn ? rn : cn);
+        buf_printf(b, "sp_raise_cls(\"%s\", ", rn ? rn : RAISE_EXC_NAME(av[0], cn));
         emit_expr(c, av[1], b); buf_puts(b, ")");
       }
     }
@@ -7601,6 +7618,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
     }
     if (cause_node >= 0) buf_puts(b, ")");
+    #undef RAISE_EXC_NAME
     return;
   }
 
