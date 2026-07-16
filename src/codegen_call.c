@@ -1606,6 +1606,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return 1;
       }
+      /* Complex has no modulo -> NoMethodError, not a compile abort (#2618) */
+      if (argc == 1 && (sp_streq(name, "%") || sp_streq(name, "modulo"))) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for an instance of Complex\"), (sp_Complex){0,0,0}))", name);
+        return 1;
+      }
       /* to_i/to_f/to_r require a zero imaginary part (RangeError otherwise);
          numerator/denominator model the Integer-component case (den 1). */
       if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) {
@@ -1861,6 +1868,22 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         comp_ntype(c, argv[0]) == TY_RATIONAL) {
       buf_puts(b, "pow((double)("); emit_expr(c, recv, b);
       buf_puts(b, "), sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      return 1;
+    }
+    /* fdiv converts its argument to Float, which a Complex can't be (RangeError);
+       Integer#div with a Complex is a NoMethodError (#2619). */
+    if (crt == TY_INT && argc == 1 && sp_streq(name, "fdiv") &&
+        comp_ntype(c, argv[0]) == TY_COMPLEX) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_expr(c, argv[0], b);
+      buf_puts(b, "), (sp_raise_cls(\"RangeError\", \"can't convert Complex into Float\"), 0.0))");
+      return 1;
+    }
+    if (crt == TY_INT && argc == 1 && sp_streq(name, "div") &&
+        comp_ntype(c, argv[0]) == TY_COMPLEX) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_expr(c, argv[0], b);
+      buf_puts(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method 'div' for an instance of Complex\"), 0))");
       return 1;
     }
     /* Integer#fdiv(Rational) is the float quotient; #div(Rational) is the floor. */

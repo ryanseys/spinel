@@ -792,8 +792,8 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && infer_type(c, recv) == TY_INT && argc == 1) {
     if (sp_streq(name, "**") && a0 == TY_COMPLEX) return TY_COMPLEX;
     if (sp_streq(name, "**") && a0 == TY_RATIONAL) return TY_FLOAT;
-    if (sp_streq(name, "fdiv") && a0 == TY_RATIONAL) return TY_FLOAT;
-    if (sp_streq(name, "div") && a0 == TY_RATIONAL) return TY_INT;
+    if (sp_streq(name, "fdiv") && (a0 == TY_RATIONAL || a0 == TY_COMPLEX)) return TY_FLOAT;
+    if (sp_streq(name, "div") && (a0 == TY_RATIONAL || a0 == TY_COMPLEX)) return TY_INT;
   }
   /* A literal left shift whose result exceeds int64 (`1 << 64`, the 2**64 mask)
      is a Bignum -- type it bigint so codegen emits a bigint shift, not a UB C
@@ -854,6 +854,9 @@ TyKind infer_call(Compiler *c, int id) {
         sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
         sp_streq(name, "/") || sp_streq(name, "quo")) return TY_COMPLEX;
     if (sp_streq(name, "**")) return TY_COMPLEX;
+    /* Complex is not Comparable and has no modulo: these raise NoMethodError
+       (typed Complex only so the raise expression has a consistent slot) (#2618) */
+    if (sp_streq(name, "%") || sp_streq(name, "modulo")) return TY_COMPLEX;
     if (sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
     if (sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
