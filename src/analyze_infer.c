@@ -782,14 +782,19 @@ TyKind infer_call(Compiler *c, int id) {
      cascade through every int-arithmetic consumer -- see limitations.md); the
      negative case raises loudly, and the poly-dispatched path (promote-mode
      params) resolves the class at runtime in sp_poly_pow. */
-  if (sp_streq(name, "**") && recv >= 0 && argc == 1 &&
-      infer_type(c, recv) == TY_INT && a0 == TY_INT) {
+  /* The cheap operand-type and name gates come BEFORE infer_type(c, recv): that
+     receiver re-inference recurses through infer_call, so calling it for every
+     1-arg call node makes a wide call graph explode (#2707). */
+  if (a0 == TY_INT && sp_streq(name, "**") && recv >= 0 && argc == 1 &&
+      infer_type(c, recv) == TY_INT) {
     long long exp;
     if (infer_const_int_node(nt, argv[0], &exp) && exp < 0) return TY_RATIONAL;
   }
   /* Integer with a Rational/Complex operand: ** Complex is Complex; ** Rational
      is a Float (by design, see codegen); fdiv is Float, div is the Integer floor. */
-  if (recv >= 0 && infer_type(c, recv) == TY_INT && argc == 1) {
+  if (recv >= 0 && argc == 1 && (a0 == TY_COMPLEX || a0 == TY_RATIONAL) &&
+      (sp_streq(name, "**") || sp_streq(name, "fdiv") || sp_streq(name, "div")) &&
+      infer_type(c, recv) == TY_INT) {
     if (sp_streq(name, "**") && a0 == TY_COMPLEX) return TY_COMPLEX;
     if (sp_streq(name, "**") && a0 == TY_RATIONAL) return TY_FLOAT;
     if (sp_streq(name, "fdiv") && (a0 == TY_RATIONAL || a0 == TY_COMPLEX)) return TY_FLOAT;
