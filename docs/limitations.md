@@ -30,7 +30,8 @@ registry, or stack reification — none of which exist in a flat compiled binary
 | `method_missing` | not dispatched (defining it warns at compile time) | every call site is a direct C call; an undefined-method call can't fall back to a per-receiver hook. The method is still callable explicitly. |
 | `define_method` with a runtime-computed name/body | only literal names work | a runtime-built method has no compiled body |
 | `ObjectSpace` (`each_object`, `count_objects`) | unsupported | no class-keyed allocation registry; the GC tracks bytes, not a live-object index |
-| `TracePoint` / `set_trace_func` / `binding` | unsupported | require an interpreter loop and reified local scopes |
+| `TracePoint` / `set_trace_func` | unsupported | require an interpreter loop to hook |
+| `binding` as an object | unsupported | reifying the local scope needs a runtime name->slot table; locals are C stack slots. `binding.local_variable_get(:x)` with a **literal** name *is* supported -- it resolves to the known slot at compile time |
 | Refinements (`refine` / `using`) | no-op / unresolved | scope-keyed dispatch is incompatible with direct C calls |
 | `callcc` / `Continuation` | unsupported | multi-shot full-stack capture has no flat-C analogue |
 | `Class.new(parent) { ... }` (runtime class) | unsupported | the class graph is baked at compile time |

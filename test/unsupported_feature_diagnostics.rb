@@ -1,14 +1,35 @@
 # A deliberately-unsupported feature (docs/limitations.md) names itself rather
 # than dumping compiler internals. A user-defined method of the same name is
 # that method, not the builtin, so it still works (#2652 / #2667 / #2668).
-class Widget
+class Dsl
   def extend(x); "user-extend:#{x}"; end
   def ruby2_keywords; "user-r2k"; end
   def define_singleton_method(n); "user-dsm:#{n}"; end
+  def refine(x); "user-refine:#{x}"; end
+  def using(x); "user-using:#{x}"; end
+  def include(x); "user-include:#{x}"; end
+  def set_trace_func(x); "user-stf:#{x}"; end
 end
-w = Widget.new
-p w.extend(1)
-p w.ruby2_keywords
-p w.define_singleton_method(:z)
+d = Dsl.new
+p d.extend(1)
+p d.ruby2_keywords
+p d.define_singleton_method(:z)
+p d.refine(1)
+p d.using(2)
+p d.include(3)
+p d.set_trace_func(4)
 def extend(a); "toplevel:#{a}"; end
 p extend(9)
+
+# the compile-time forms these limits point you at keep working
+module Mx; def mm; "mm"; end; end
+class Ok; include Mx; attr_accessor :v; end
+o = Ok.new
+o.v = 7
+p o.v
+p o.mm
+p Ok.new.is_a?(Mx)
+
+# binding is NOT in the unsupported set: local_variable_get works
+x = 42
+p binding.local_variable_get(:x)

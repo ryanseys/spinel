@@ -552,6 +552,22 @@ static int collect_class_constants(Compiler *c, int ci, int inherit,
    same specific message as `x = eval(s)` rather than a generic argument dump.
    The instance_eval/class_eval/module_eval block forms carry a literal block,
    not a string, and are handled separately -- they never reach here. */
+/* Does the program define a method of this name itself? Such a call is that
+   method, not the builtin, so a documented-limit diagnostic must not claim it. */
+int diag_user_defines(Compiler *c, const char *name) {
+  for (int uk = 0; uk < c->nclasses; uk++)
+    if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
+  return comp_method_index(c, name) >= 0;
+}
+
+/* The positional-argument count of a CallNode (0 when it has none). */
+static int argc_of(const NodeTable *nt, int id) {
+  int a = nt_ref(nt, id, "arguments");
+  int n = 0;
+  if (a >= 0) nt_arr(nt, a, "arguments", &n);
+  return n;
+}
+
 /* A call to something spinel deliberately does not support (docs/limitations.md).
    Without this the call falls through to the generic diagnostic, which dumps
    node ids and argument types rather than naming the feature -- or, for a name
@@ -579,16 +595,72 @@ int diagnose_unsupported_call(Compiler *c, int id) {
       "Proc#ruby2_keywords is not supported: it is a shim for the Ruby 2.x-to-3.0 "
       "keyword-argument transition, and spinel targets modern keyword semantics, so it "
       "has nothing to toggle (see docs/limitations.md)" },
+    { "set_trace_func",
+      "set_trace_func is not supported by AOT compilation: it requires an interpreter "
+      "loop to hook, and compiled code has no such loop (see docs/limitations.md)" },
+    { "callcc",
+      "Kernel#callcc is not supported by AOT compilation: multi-shot full-stack capture "
+      "has no flat-C analogue. Fiber covers the single-shot cases (see docs/limitations.md)" },
+    { "refine",
+      "Refinements are not supported by AOT compilation: scope-keyed dispatch is "
+      "incompatible with direct C calls. Reopen the class instead (see docs/limitations.md)" },
+    { "using",
+      "Refinements are not supported by AOT compilation: scope-keyed dispatch is "
+      "incompatible with direct C calls. Reopen the class instead (see docs/limitations.md)" },
     { NULL, NULL }
   };
   int hit = -1;
   for (int k = 0; tbl[k].m; k++) if (sp_streq(name, tbl[k].m)) { hit = k; break; }
-  if (hit < 0) return 0;
-  /* a user-defined method of the same name is that method, not the builtin */
-  for (int uk = 0; uk < c->nclasses; uk++)
-    if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 0;
-  if (comp_method_index(c, name) >= 0) return 0;   /* a top-level def */
-  unsupported_feature(c, id, tbl[hit].why);
+
+  /* The receiver's constant name, for the limits that are keyed on it. */
+  int recv = nt_ref(nt, id, "receiver");
+  const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+  const char *rcn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
+                    ? nt_str(nt, recv, "name") : NULL;
+  const char *why = hit >= 0 ? tbl[hit].why : NULL;
+
+  if (!why && rcn && comp_class_index(c, rcn) < 0) {
+    /* Namespaces that exist only in an interpreter. Keyed on the receiver, so
+       every method on them reports the same way rather than one-by-one. */
+    if (sp_streq(rcn, "ObjectSpace"))
+      why = "ObjectSpace is not supported by AOT compilation: there is no class-keyed "
+            "allocation registry to walk -- the GC tracks bytes, not a live-object index "
+            "(see docs/limitations.md)";
+    else if (sp_streq(rcn, "TracePoint"))
+      why = "TracePoint is not supported by AOT compilation: it requires an interpreter "
+            "loop to hook, and compiled code has no such loop (see docs/limitations.md)";
+    else if (sp_streq(rcn, "Continuation"))
+      why = "Continuation is not supported by AOT compilation: multi-shot full-stack "
+            "capture has no flat-C analogue. Fiber covers the single-shot cases "
+            "(see docs/limitations.md)";
+    /* `Class.new(parent) { ... }`: the class graph is baked at compile time. A
+       bare `Class.new` with no argument and no block is just an Object factory
+       and is left to the normal path. */
+    else if (sp_streq(rcn, "Class") && sp_streq(name, "new") &&
+             (nt_ref(nt, id, "block") >= 0 || argc_of(nt, id) > 0))
+      why = "Class.new(parent) { ... } is not supported by AOT compilation: the class "
+            "graph, ancestor chain, and method/ivar layout are baked at compile time. "
+            "Declare the class with `class ... end` instead (see docs/limitations.md)";
+  }
+
+  /* Structural mutation of a class through an explicit receiver: the same
+     declarations INSIDE a `class` body (where they are receiverless) work. */
+  if (!why && rcn && comp_class_index(c, rcn) >= 0 &&
+      (sp_streq(name, "include") || sp_streq(name, "prepend") ||
+       sp_streq(name, "attr_accessor") || sp_streq(name, "attr_reader") ||
+       sp_streq(name, "attr_writer") || sp_streq(name, "define_method"))) {
+    static char buf[512];
+    snprintf(buf, sizeof buf,
+             "%s.%s(...) is not supported by AOT compilation: the class graph, ancestor "
+             "chain, and method/ivar layout are baked at compile time, so a class cannot be "
+             "restructured through an explicit receiver. Move the `%s` inside `class %s ... "
+             "end` (see docs/limitations.md)", rcn, name, name, rcn);
+    why = buf;
+  }
+
+  if (!why) return 0;
+  if (diag_user_defines(c, name)) return 0;
+  unsupported_feature(c, id, why);
   return 1;
 }
 
@@ -5551,6 +5623,10 @@ static int class_includes_module_named(Compiler *c, int cid, const char *mod_nam
 
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* A documented limit is reported before anything else looks at the call:
+     otherwise an earlier arm reports it as a generic gap (or, for a bare
+     `binding`, as a NameError) and the specific message never runs. */
+  if (diagnose_unsupported_call(c, id)) return;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
   /* a public_send-lowered call (stamped by the desugars): a private or
      protected target raises NoMethodError like CRuby, which enforces
@@ -5867,8 +5943,6 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
   /* eval(string) / Kernel.eval(string): a hard AOT boundary (see helper). */
   if (diagnose_eval_call(c, id)) return;
-  /* a deliberately-unsupported call names the feature rather than dumping nodes */
-  if (diagnose_unsupported_call(c, id)) return;
   /* caller_locations: no runtime frame stack in AOT builds (as with `caller`),
      so this is an empty array of locations -- an Array, never nil. The (start,
      length) arguments are still evaluated for their side effects, as CRuby
