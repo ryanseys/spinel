@@ -2209,9 +2209,13 @@ else if (orecv >= 0 && onm) {
   }
   /* Lambda: strict arity -- requireds + trailing posts mandatory, optionals
      widen the max, a splat rest lifts it entirely. */
-  if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, %d, %s);\n",
+  int has_kwrest = 0;
+  { int pnk = proc_params_node(c, create);
+    if (pnk >= 0 && nt_ref(nt, pnk, "keyword_rest") >= 0) has_kwrest = 1; }
+  if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, %d, %s, %s);\n",
                             arity + nposts + nnumbered, nopts,
-                            proc_has_rest(c, create) ? "TRUE" : "FALSE");
+                            proc_has_rest(c, create) ? "TRUE" : "FALSE",
+                            (nkw > 0 || has_kwrest) ? "TRUE" : "FALSE");
   /* CRuby proc auto-splat: a single Array passed to a non-lambda proc taking
      more than one positional is destructured across the parameters. Rewrite
      the argument view (both the mrb_int[] slots and the boxed side-channel)

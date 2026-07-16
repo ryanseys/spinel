@@ -6922,8 +6922,11 @@ static sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {
 }
 /* Lambda strict-arity check: raise ArgumentError if argc is outside
    [req, req+opt] (no upper bound with a rest param). Procs are lenient. */
-static void sp_proc_lambda_arity_check(mrb_int argc, mrb_int req, mrb_int opt, mrb_bool has_rest) {
-  if (argc < req || (!has_rest && argc > req + opt)) sp_raise_cls("ArgumentError", "wrong number of arguments");
+static void sp_proc_lambda_arity_check(mrb_int argc, mrb_int req, mrb_int opt, mrb_bool has_rest, mrb_bool has_kw) {
+  /* a lambda with keyword parameters accepts one extra trailing argument (the
+     keyword hash) beyond its positional maximum. */
+  mrb_int max = req + opt + (has_kw ? 1 : 0);
+  if (argc < req || (!has_rest && argc > max)) sp_raise_cls("ArgumentError", "wrong number of arguments");
 }
 /* Proc#inspect: CRuby prints "#<Proc:0xADDR file:line (lambda)>"; the
    source location is not tracked, so the address form (+ lambda marker) is
