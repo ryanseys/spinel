@@ -3686,6 +3686,37 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: break;\n  }\n  return a == b_;\n}\n");
 }
 
+/* Generate sp_obj_eq_dispatch: a cls_id switch that compares two same-class
+   Struct/Data instances field by field (each field via sp_poly_eq), so they
+   compare by VALUE inside Array/Hash equality, include?/index/uniq, and as
+   nested members. Installed as sp_obj_eq_hook. */
+static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
+  buf_puts(b, "static mrb_bool sp_obj_eq_dispatch(sp_RbVal a, sp_RbVal b) {\n  switch (a.cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (!ci->instantiated || !(ci->is_struct || ci->is_data)) continue;
+    /* a user-defined == wins; leave those to their own dispatch (they fall
+       through to FALSE here, unchanged) */
+    if (comp_method_in_chain(c, k, "==", NULL) >= 0) continue;
+    buf_printf(b, "    case %d: { sp_%s *_a = (sp_%s *)a.v.p, *_b = (sp_%s *)b.v.p; if (!_a || !_b) return _a == _b; return ",
+               comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->c_name);
+    if (ci->nivars == 0) buf_puts(b, "1");
+    for (int i = 0; i < ci->nivars; i++) {
+      const char *iv = ci->ivars[i] + 1;  /* skip leading '@' */
+      Buf ea; memset(&ea, 0, sizeof ea); Buf eb; memset(&eb, 0, sizeof eb);
+      char fa[128], fb[128];
+      snprintf(fa, sizeof fa, "_a->iv_%s", iv);
+      snprintf(fb, sizeof fb, "_b->iv_%s", iv);
+      emit_boxed_text(c, ci->ivar_types[i], fa, &ea);
+      emit_boxed_text(c, ci->ivar_types[i], fb, &eb);
+      buf_printf(b, "%ssp_poly_eq(%s, %s)", i ? " && " : "", ea.p ? ea.p : fa, eb.p ? eb.p : fb);
+      free(ea.p); free(eb.p);
+    }
+    buf_puts(b, "; }\n");
+  }
+  buf_puts(b, "    default: break;\n  }\n  return FALSE;\n}\n");
+}
+
 /* Emit the static regex-literal globals and, when g_re_init_needed, the
    sp_re_init() that installs the symbol/regex/class/global-mark hooks and
    compiles the literals at startup. */
@@ -3714,6 +3745,8 @@ void emit_regex_section(Buf *b) {
   if (g_gen_obj_hashkey)
     buf_puts(b, "static mrb_int sp_gen_obj_hash(int cls_id, void *p);\n"
                 "static mrb_bool sp_gen_obj_eql(int cls_id, void *a, void *b_);\n");
+  if (g_gen_obj_valeq)
+    buf_puts(b, "static mrb_bool sp_obj_eq_dispatch(sp_RbVal a, sp_RbVal b);\n");
   buf_puts(b, "static void sp_re_init(void) {\n");
   if (g_uses_symbols)
     buf_puts(b, "  sp_sym_name_fn = sp_sym_to_s;\n");
@@ -3721,6 +3754,8 @@ void emit_regex_section(Buf *b) {
     buf_puts(b, "  sp_obj_cmp_hook = sp_obj_cmp_dispatch;\n");
   if (g_gen_obj_hashkey)
     buf_puts(b, "  sp_obj_hash_hook = sp_gen_obj_hash;\n  sp_obj_eql_hook = sp_gen_obj_eql;\n");
+  if (g_gen_obj_valeq)
+    buf_puts(b, "  sp_obj_eq_hook = sp_obj_eq_dispatch;\n");
   if (g_needs_class_machinery)
     buf_puts(b, "  sp_user_exc_parent_fn = sp_user_exc_parent;\n");
   /* Replace the runtime's hook with the superset that also marks this
@@ -5222,10 +5257,15 @@ char *codegen_program(const NodeTable *nt) {
   g_gen_obj_hashkey = 0;
   for (int k = 0; k < c->nclasses; k++)
     if (class_is_hashkey(c, k)) { g_gen_obj_hashkey = 1; break; }
+  g_gen_obj_valeq = 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].instantiated && (c->classes[k].is_struct || c->classes[k].is_data) &&
+        comp_method_in_chain(c, k, "==", NULL) < 0) { g_gen_obj_valeq = 1; break; }
 
   /* sp_re_init is worth emitting only if it would set at least one hook. */
   g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||
-                     g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash || g_gen_obj_hashkey;
+                     g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash || g_gen_obj_hashkey ||
+                     g_gen_obj_valeq;
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any
      proc literals they contain accumulate static functions into g_procs /
@@ -5246,6 +5286,8 @@ char *codegen_program(const NodeTable *nt) {
   if (g_has_user_cmp) emit_obj_cmp_dispatch(c, body);
   /* Hash-key hooks (after the user #hash/#eql? definitions they call). */
   if (g_gen_obj_hashkey) emit_obj_hashkey_dispatch(c, body);
+  /* Struct/Data value-== hook (after the class struct definitions). */
+  if (g_gen_obj_valeq) emit_obj_valeq_dispatch(c, body);
 
   /* Emit END block static functions for atexit registration */
   int end_count = 0;
