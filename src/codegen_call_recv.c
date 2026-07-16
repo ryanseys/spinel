@@ -886,6 +886,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
+      /* a String initial value folds by concatenation ([str].sum("")) */
+      if (init_t == TY_STRING) {
+        buf_puts(b, "sp_PolyArray_sum_str("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
       /* a Float initial value folds to a Float (bare mrb_float, not boxed) */
       if (init_t == TY_FLOAT) {
         buf_puts(b, "("); emit_float_expr(c, argv[0], b);

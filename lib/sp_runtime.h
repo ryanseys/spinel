@@ -4020,6 +4020,9 @@ static mrb_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (!a) return 0; mrb_int
    so the result promotes to the element class (Float for any Float element,
    Rational/Bignum likewise) rather than dropping non-Integer elements. */
 static sp_RbVal sp_PolyArray_sum_poly(sp_PolyArray *a) { sp_RbVal s = sp_box_int(0); if (!a) return s; for (mrb_int i = 0; i < a->len; i++) s = sp_poly_add(s, a->data[i]); return s; }
+/* Array#sum with a String initial value: concatenate the string elements onto
+   the initial (["a","b"].sum("") == "ab"). */
+static const char *sp_PolyArray_sum_str(sp_PolyArray *a, const char *init) { const char *s = init ? init : ""; if (!a) return s; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_STR && a->data[i].v.s) s = sp_str_concat(s, a->data[i].v.s); } return s; }
 /* Array#sum with a Float initial value: numeric fold over Integer and Float
    elements, accumulating as double (the result is a Float). */
 static mrb_float sp_PolyArray_sum_float(sp_PolyArray *a) { if (!a) return 0.0; mrb_float s = 0.0; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_INT) s += (mrb_float)a->data[i].v.i; else if (a->data[i].tag == SP_TAG_FLT) s += a->data[i].v.f; } return s; }
