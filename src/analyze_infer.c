@@ -844,6 +844,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "zero?") || sp_streq(name, "real?") ||
         sp_streq(name, "integer?") || sp_streq(name, "finite?") ||
         sp_streq(name, "eql?")) return TY_BOOL;
+    if (sp_streq(name, "nonzero?")) return TY_POLY;   /* self (Complex) or nil */
     if (sp_streq(name, "infinite?")) return TY_INT;      /* 1 or nil (sentinel) */
     if (sp_streq(name, "<=>") && argc == 1) return TY_INT;  /* -1/0/1 or nil (sentinel) */
     if (sp_streq(name, "rationalize") && argc == 0) return TY_RATIONAL;
@@ -1260,10 +1261,11 @@ TyKind infer_call(Compiler *c, int id) {
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash"))
     return TY_STR_POLY_HASH;
-  /* Array.try_convert(x) -> the array or nil (poly) (#2325) */
+  /* Array/Integer.try_convert(x) -> the value or nil (poly) (#2325, #2585) */
   if (recv >= 0 && name && sp_streq(name, "try_convert") && argc == 1 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array"))
+      nt_str(nt, recv, "name") &&
+      (sp_streq(nt_str(nt, recv, "name"), "Array") || sp_streq(nt_str(nt, recv, "name"), "Integer")))
     return TY_POLY;
   if (recv >= 0 && name && argc == 1 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&

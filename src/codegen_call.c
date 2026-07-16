@@ -1617,6 +1617,12 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; (_t%d.re == 0.0 && _t%d.im == 0.0); })", t, t);
         return 1;
       }
+      if (sp_streq(name, "nonzero?") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; (_t%d.re != 0.0 || _t%d.im != 0.0) ? sp_box_complex(_t%d) : sp_box_nil(); })", t, t, t);
+        return 1;
+      }
       if ((sp_streq(name, "real?") || sp_streq(name, "integer?")) && argc == 0) {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
         return 1;
@@ -1669,6 +1675,14 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       }
       if (cx_ok && argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
         buf_printf(b, "(%ssp_complex_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_complex_coerce(c, argv[0], b); buf_puts(b, "))");
+        return 1;
+      }
+      /* Complex == a non-numeric value is always false (!= true); the argument
+         still evaluates for its side effects (#2557). */
+      if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "), %d)", name[0] == '!' ? 1 : 0);
         return 1;
       }
       /* eql? / equal? on the unboxed Complex value: component equality when
@@ -3033,6 +3047,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
     TyKind at = comp_ntype(c, argv[0]);
     if (ty_is_array(at)) { emit_boxed(c, argv[0], b); return 1; }
+    buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
+    return 1;
+  }
+  /* Integer.try_convert(x): x if it is an Integer, else nil (#2585). */
+  if (recv >= 0 && sp_streq(name, "try_convert") && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer")) {
+    TyKind at = comp_ntype(c, argv[0]);
+    if (at == TY_INT || at == TY_BIGINT) { emit_boxed(c, argv[0], b); return 1; }
+    /* a Float converts via to_int (truncates; Inf/NaN raises FloatDomainError) */
+    if (at == TY_FLOAT) { buf_puts(b, "sp_box_int(sp_float_to_i_checked("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return 1; }
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     return 1;
   }
