@@ -930,11 +930,20 @@ TyKind infer_call(Compiler *c, int id) {
       return TY_INT;
     }
     if (sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
-        sp_streq(name, "negative?")) return TY_BOOL;
+        sp_streq(name, "negative?") || sp_streq(name, "finite?") ||
+        sp_streq(name, "integer?") || sp_streq(name, "real?")) return TY_BOOL;
+    if (sp_streq(name, "infinite?") || sp_streq(name, "imaginary") ||
+        sp_streq(name, "imag")) return TY_INT;
+    if (sp_streq(name, "nonzero?")) return TY_POLY;
+    if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) return TY_POLY;
+    if (sp_streq(name, "to_c")) return TY_COMPLEX;
+    if (sp_streq(name, "rectangular") || sp_streq(name, "rect") || sp_streq(name, "polar")) return TY_POLY_ARRAY;
     if (sp_streq(name, "coerce") && argc == 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
     if (sp_streq(name, "to_r") || sp_streq(name, "rationalize") ||
-        sp_streq(name, "-@") || sp_streq(name, "+@") || sp_streq(name, "abs")) return TY_RATIONAL;
+        sp_streq(name, "-@") || sp_streq(name, "+@") || sp_streq(name, "abs") ||
+        sp_streq(name, "real") || sp_streq(name, "conjugate") || sp_streq(name, "conj") ||
+        sp_streq(name, "abs2") || sp_streq(name, "magnitude")) return TY_RATIONAL;
     TyKind a0r = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
     if (argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
                       sp_streq(name, "/") || sp_streq(name, "quo")))

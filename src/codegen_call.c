@@ -1852,6 +1852,49 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "zero?") && argc == 0)     { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num == 0)"); return 1; }
       if (sp_streq(name, "positive?") && argc == 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num > 0)"); return 1; }
       if (sp_streq(name, "negative?") && argc == 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num < 0)"); return 1; }
+      /* Numeric predicates: a Rational is a finite, non-Integer real (#2562) */
+      if ((sp_streq(name, "finite?") || sp_streq(name, "real?")) && argc == 0)
+        { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), TRUE)"); return 1; }
+      if (sp_streq(name, "integer?") && argc == 0)
+        { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), FALSE)"); return 1; }
+      if (sp_streq(name, "infinite?") && argc == 0)
+        { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_INT_NIL)"); return 1; }
+      if (sp_streq(name, "nonzero?") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Rational _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; _t%d.num != 0 ? sp_box_rational(_t%d) : sp_box_nil(); })", t, t);
+        return 1;
+      }
+      /* Complex/real-projection methods on a real Rational (#2561) */
+      if ((sp_streq(name, "real") || sp_streq(name, "conjugate") || sp_streq(name, "conj")) && argc == 0)
+        { emit_expr(c, recv, b); return 1; }
+      if ((sp_streq(name, "imaginary") || sp_streq(name, "imag")) && argc == 0)
+        { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)0)"); return 1; }
+      if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) && argc == 0)
+        { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0))"); return 1; }
+      if ((sp_streq(name, "abs2")) && argc == 0)
+        { int t = ++g_tmp; buf_printf(b, "({ sp_Rational _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; sp_rational_mul(_t%d, _t%d); })", t, t); return 1; }
+      if (sp_streq(name, "magnitude") && argc == 0)
+        { buf_puts(b, "sp_rational_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      if (sp_streq(name, "to_c") && argc == 0)
+        { buf_puts(b, "((sp_Complex){sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, "), 0, 1})"); return 1; }
+      if ((sp_streq(name, "rectangular") || sp_streq(name, "rect")) && argc == 0) {
+        int t = ++g_tmp, ta = ++g_tmp;
+        buf_printf(b, "({ sp_Rational _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_rational(_t%d));"
+                      " sp_PolyArray_push(_t%d, sp_box_int(0)); _t%d; })", ta, ta, ta, t, ta, ta);
+        return 1;
+      }
+      if (sp_streq(name, "polar") && argc == 0) {
+        int t = ++g_tmp, ta = ++g_tmp;
+        buf_printf(b, "({ sp_Rational _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_rational(sp_rational_abs(_t%d)));"
+                      " sp_PolyArray_push(_t%d, _t%d.num < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0));"
+                      " _t%d; })", ta, ta, ta, t, ta, t, ta);
+        return 1;
+      }
       /* coerce(n): [n as Rational, self] boxed pair */
       if (sp_streq(name, "coerce") && argc == 1 &&
           (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RATIONAL)) {
