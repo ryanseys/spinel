@@ -1284,59 +1284,18 @@ static inline const char *sp_File_read_n(sp_File *f, mrb_int n) {
   return s;
 }
 static inline const char *sp_File_path(sp_File *f) { return f && f->path ? f->path : sp_str_empty; }
-static const char *sp_file_join(const char **parts, int n) {
-  size_t total = 0;
-  for (int i = 0; i < n; i++) {
-    if (parts[i]) total += strlen(parts[i]);
-    if (i < n - 1) total++;
-  }
-  char *r = sp_str_alloc((mrb_int)total);
-  size_t off = 0;
-  for (int i = 0; i < n; i++) {
-    if (parts[i]) { size_t l = strlen(parts[i]); memcpy(r + off, parts[i], l); off += l; }
-    if (i < n - 1) r[off++] = '/';
-  }
-  r[off] = 0;
-  return r;
-}
+/* sp_file_join: moved to lib/sp_cold.c */
+const char *sp_file_join(const char **parts, int n);
 static inline sp_StrArray *sp_File_readlines(sp_File *f) {
   sp_StrArray *a = sp_StrArray_new();
   const char *line;
   while ((line = sp_File_gets(f)) != NULL) sp_StrArray_push(a, line);
   return a;
 }
-static sp_StrArray *sp_file_readlines(const char *path) {
-  sp_StrArray *a = sp_StrArray_new();
-  SP_GC_ROOT(a);
-  FILE *_fp = fopen(path ? path : "", "r");
-  if (!_fp) return a;
-  char _buf[4096];
-  while (fgets(_buf, (int)sizeof(_buf), _fp)) {
-    size_t _l = strlen(_buf);
-    char *_r = sp_str_alloc_raw(_l + 1);
-    memcpy(_r, _buf, _l + 1);
-    sp_StrArray_push(a, _r);
-  }
-  fclose(_fp);
-  return a;
-}
-static sp_StrArray *sp_file_readlines_chomp(const char *path) {
-  sp_StrArray *a = sp_StrArray_new();
-  SP_GC_ROOT(a);
-  FILE *_fp = fopen(path ? path : "", "r");
-  if (!_fp) return a;
-  char _buf[4096];
-  while (fgets(_buf, (int)sizeof(_buf), _fp)) {
-    size_t _l = strlen(_buf);
-    if (_l > 0 && _buf[_l-1] == '\n') { _buf[--_l] = '\0'; }
-    if (_l > 0 && _buf[_l-1] == '\r') { _buf[--_l] = '\0'; }
-    char *_r = sp_str_alloc_raw(_l + 1);
-    memcpy(_r, _buf, _l + 1);
-    sp_StrArray_push(a, _r);
-  }
-  fclose(_fp);
-  return a;
-}
+/* sp_file_readlines: moved to lib/sp_cold.c */
+sp_StrArray *sp_file_readlines(const char *path);
+/* sp_file_readlines_chomp: moved to lib/sp_cold.c */
+sp_StrArray *sp_file_readlines_chomp(const char *path);
 
 /* Array#inspect for each typed array: `[elem1, elem2, ...]` with each
    element rendered via its own primitive inspect. Matches CRuby's
@@ -2869,32 +2828,11 @@ static sp_RbVal sp_PolyArray_pop(sp_PolyArray *a) { if (!a || a->len <= 0) retur
    would make the golden test output machine-specific. The Bernoulli series
    below carries it to ~1e-15. Gamma(1) and Gamma(2) are exactly 1, so their
    logs are returned as an exact 0 rather than a rounding-noise residual. */
-static double sp_lgamma_pos(double x) {  /* x > 0 */
-  if (x == 1.0 || x == 2.0) return 0.0;
-  double corr = 0.0;
-  while (x < 12.0) { corr -= log(x); x += 1.0; }
-  double inv = 1.0 / x, inv2 = inv * inv;
-  /* sum_{k>=1} B_2k / (2k(2k-1) x^(2k-1)) up to the 1/x^11 term */
-  double series = (1.0/12.0) + (inv2 * (-(1.0/360.0) + (inv2 * ((1.0/1260.0)
-                  + (inv2 * (-(1.0/1680.0) + (inv2 * (1.0/1188.0))))))));
-  return corr + ((x - 0.5) * log(x)) - x + (0.5 * log(2.0 * M_PI)) + (series * inv);
-}
+/* sp_lgamma_pos: moved to lib/sp_cold.c */
+double sp_lgamma_pos(double x);
 /* Math.lgamma(x) -> [log(|gamma(x)|), sign of gamma(x)]. */
-static sp_PolyArray *sp_math_lgamma(double x) {
-  int sign = 1; double v;
-  if (x > 0.0) {
-    v = sp_lgamma_pos(x);
-  }
-  else {
-    double s = sin(M_PI * x);
-    if (s == 0.0) v = INFINITY;            /* pole at a non-positive integer */
-    else { if (s < 0.0) sign = -1; v = log(M_PI / fabs(s)) - sp_lgamma_pos(1.0 - x); }
-  }
-  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
-  sp_PolyArray_push(r, sp_box_float(v));
-  sp_PolyArray_push(r, sp_box_int(sign));
-  return r;
-}
+/* sp_math_lgamma: moved to lib/sp_cold.c */
+sp_PolyArray *sp_math_lgamma(double x);
 static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } sp_RbVal v = a->data[0]; memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
 static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); sp_RbVal v = a->data[i]; for (mrb_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
 static void sp_PolyArray_insert(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } mrb_int orig = i; if (i < 0) i += a->len + 1; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld", (long long)orig, (long long)(-(a->len + 1)))); while (i > a->len) sp_PolyArray_push(a, sp_box_nil()); /* CRuby pads with nils past the end */ sp_PolyArray_push(a, sp_box_nil()); for (mrb_int j = a->len - 1; j > i; j--) a->data[j] = a->data[j-1]; a->data[i] = v; }
@@ -6532,29 +6470,8 @@ static void sp_sleep(mrb_float s) {
    and `\r\n` becomes `\r\r\n`. fread's actual byte count drives
    null-termination because text mode shrinks the byte count below
    ftell's raw-file size. */
-static const char *sp_file_read(const char *path) {
-  if (sp_file_directory(path)) {
-    sp_raise_cls("Errno::EISDIR", sp_sprintf("Is a directory @ io_fread - %s", path));
-  }
-  FILE *f = fopen(path, "r");
-  if (!f) {
-    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : errno == EACCES ? "Errno::EACCES" : "RuntimeError",
-                 sp_sprintf("%s @ rb_sysopen - %s", strerror(errno), path));
-    return &("\xff" "")[1];
-  }
-  fseek(f, 0, SEEK_END);
-  long sz = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  char *buf = sp_str_alloc(sz);
-  size_t n = 0;
-  if (sz > 0) {
-    n = fread(buf, 1, sz, f);
-  }
-  buf[n] = 0;
-  sp_str_set_len(buf, n);  /* a short read must not leave the size as length */
-  fclose(f);
-  return buf;
-}
+/* sp_file_read: moved to lib/sp_cold.c */
+const char *sp_file_read(const char *path);
 
 static void sp_file_write(const char *path, const char *data) {
   if (sp_file_directory(path)) {
@@ -6569,47 +6486,13 @@ static void sp_file_write(const char *path, const char *data) {
   fwrite(data, 1, sp_str_byte_len(data), f);
   fclose(f);
 }
-static sp_Time sp_file_mtime(const char *path) {
-  if (!path) {
-    sp_raise_cls("TypeError", "no implicit conversion of nil into String");
-    return (sp_Time){0, 0, 0};
-  }
-  struct stat st;
-  if (stat(path, &st) == -1) {
-    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.mtime - %s", strerror(errno), path));
-    return (sp_Time){0, 0, 0};
-  }
-#if defined(__APPLE__)
-  return (sp_Time){(int64_t)st.st_mtimespec.tv_sec, (int32_t)st.st_mtimespec.tv_nsec, 0};
-#elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
-  return (sp_Time){(int64_t)st.st_mtimespec.tv_sec, (int32_t)st.st_mtimespec.tv_nsec, 0};
-#else
-  /* Linux / others with st_mtim */
-  return (sp_Time){(int64_t)st.st_mtim.tv_sec, (int32_t)st.st_mtim.tv_nsec, 0};
-#endif
-}
+/* sp_file_mtime: moved to lib/sp_cold.c */
+sp_Time sp_file_mtime(const char *path);
 /* File.size(path) -> byte size. Raises Errno::ENOENT on a missing path,
    matching MRI (and sp_file_read / sp_file_mtime, which stat/open the
    same way). */
-static mrb_int sp_file_size(const char *path) {
-  if (!path) {
-    sp_raise_cls("TypeError", "no implicit conversion of nil into String");
-    return 0;
-  }
-  struct stat st;
-  if (stat(path, &st) == -1) {
-    int err = errno;  /* capture once: strerror() may clobber errno */
-    sp_raise_cls(err == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.size - %s", strerror(err), path));
-    return 0;
-  }
-  /* off_t (typically 64-bit) into mrb_int (intptr_t -> 32-bit on a 32-bit
-     build): guard the narrowing, as spinel does for int arithmetic. */
-  if ((off_t)(mrb_int)st.st_size != st.st_size) {
-    sp_raise_cls("RangeError", "file size out of range for Integer");
-    return 0;
-  }
-  return (mrb_int)st.st_size;
-}
+/* sp_file_size: moved to lib/sp_cold.c */
+mrb_int sp_file_size(const char *path);
 static const char *sp_backtick(const char *cmd) {
   FILE *p = popen(cmd, "r");
   if (!p) { sp_last_status = -1; return sp_str_empty; }
@@ -6744,31 +6627,8 @@ const char *sp_file_expand_path(const char *path, const char *base);
    `sp_str_bytes(sp_file_read(path))` because plain sp_str_bytes uses
    null-termination and stops at the first 0x00 byte — wrong for
    binary data (e.g. .nes ROM files). */
-static sp_IntArray *sp_file_binread_bytes(const char *path) {
-  if (sp_file_directory(path)) {
-    sp_raise_cls("Errno::EISDIR", sp_sprintf("Is a directory @ io_fread - %s", path));
-  }
-  FILE *f = fopen(path, "rb");
-  sp_IntArray *a = sp_IntArray_new();
-  if (!f) {
-    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : errno == EACCES ? "Errno::EACCES" : "RuntimeError",
-                 sp_sprintf("%s @ rb_sysopen - %s", strerror(errno), path));
-    return a;
-  }
-  fseek(f, 0, SEEK_END);
-  long sz = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  unsigned char *buf = (unsigned char *)malloc(sz > 0 ? (size_t)sz : 1);
-  if (buf && sz > 0) {
-    /* Use fread's actual byte count, not the raw file size — a
-       partial read otherwise pushes uninitialized memory. */
-    size_t r = fread(buf, 1, (size_t)sz, f);
-    for (size_t i = 0; i < r; i++) sp_IntArray_push(a, (mrb_int)buf[i]);
-  }
-  free(buf);
-  fclose(f);
-  return a;
-}
+/* sp_file_binread_bytes: moved to lib/sp_cold.c */
+sp_IntArray *sp_file_binread_bytes(const char *path);
 
 /* `arr.slice!(from, n)` — returns a fresh array of `n` elements
    starting at `from` and removes them from `a`. IntArray uses its

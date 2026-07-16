@@ -19,6 +19,9 @@
 #include "sp_array.h"   /* sp_StrArray for Dir.glob */
 #include <dirent.h>
 #include <sys/stat.h>
+#include <errno.h>
+#include "sp_time.h"   /* sp_Time for File.mtime */
+#include "sp_io.h"     /* sp_file_directory prototype */
 
 /* Integer#% / Kernel#format "%b"/"%B": binary formatting with Ruby's flag,
    width, precision, and two's-complement-for-negative rules. */
@@ -342,5 +345,174 @@ else {
   }
   closedir(d);
   sp_StrArray_sort_bang(a);
+  return a;
+}
+
+/* ---- File.read/size/mtime/join/readlines + Math.lgamma (cold) ---- */
+
+const char *sp_file_join(const char **parts, int n) {
+  size_t total = 0;
+  for (int i = 0; i < n; i++) {
+    if (parts[i]) total += strlen(parts[i]);
+    if (i < n - 1) total++;
+  }
+  char *r = sp_str_alloc((mrb_int)total);
+  size_t off = 0;
+  for (int i = 0; i < n; i++) {
+    if (parts[i]) { size_t l = strlen(parts[i]); memcpy(r + off, parts[i], l); off += l; }
+    if (i < n - 1) r[off++] = '/';
+  }
+  r[off] = 0;
+  return r;
+}
+
+sp_StrArray *sp_file_readlines(const char *path) {
+  sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
+  FILE *_fp = fopen(path ? path : "", "r");
+  if (!_fp) return a;
+  char _buf[4096];
+  while (fgets(_buf, (int)sizeof(_buf), _fp)) {
+    size_t _l = strlen(_buf);
+    char *_r = sp_str_alloc_raw(_l + 1);
+    memcpy(_r, _buf, _l + 1);
+    sp_StrArray_push(a, _r);
+  }
+  fclose(_fp);
+  return a;
+}
+
+sp_StrArray *sp_file_readlines_chomp(const char *path) {
+  sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
+  FILE *_fp = fopen(path ? path : "", "r");
+  if (!_fp) return a;
+  char _buf[4096];
+  while (fgets(_buf, (int)sizeof(_buf), _fp)) {
+    size_t _l = strlen(_buf);
+    if (_l > 0 && _buf[_l-1] == '\n') { _buf[--_l] = '\0'; }
+    if (_l > 0 && _buf[_l-1] == '\r') { _buf[--_l] = '\0'; }
+    char *_r = sp_str_alloc_raw(_l + 1);
+    memcpy(_r, _buf, _l + 1);
+    sp_StrArray_push(a, _r);
+  }
+  fclose(_fp);
+  return a;
+}
+
+double sp_lgamma_pos(double x) {  /* x > 0 */
+  if (x == 1.0 || x == 2.0) return 0.0;
+  double corr = 0.0;
+  while (x < 12.0) { corr -= log(x); x += 1.0; }
+  double inv = 1.0 / x, inv2 = inv * inv;
+  /* sum_{k>=1} B_2k / (2k(2k-1) x^(2k-1)) up to the 1/x^11 term */
+  double series = (1.0/12.0) + (inv2 * (-(1.0/360.0) + (inv2 * ((1.0/1260.0)
+                  + (inv2 * (-(1.0/1680.0) + (inv2 * (1.0/1188.0))))))));
+  return corr + ((x - 0.5) * log(x)) - x + (0.5 * log(2.0 * M_PI)) + (series * inv);
+}
+
+sp_PolyArray *sp_math_lgamma(double x) {
+  int sign = 1; double v;
+  if (x > 0.0) {
+    v = sp_lgamma_pos(x);
+  }
+  else {
+    double s = sin(M_PI * x);
+    if (s == 0.0) v = INFINITY;            /* pole at a non-positive integer */
+    else { if (s < 0.0) sign = -1; v = log(M_PI / fabs(s)) - sp_lgamma_pos(1.0 - x); }
+  }
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  sp_PolyArray_push(r, sp_box_float(v));
+  sp_PolyArray_push(r, sp_box_int(sign));
+  return r;
+}
+
+const char *sp_file_read(const char *path) {
+  if (sp_file_directory(path)) {
+    sp_raise_cls("Errno::EISDIR", sp_sprintf("Is a directory @ io_fread - %s", path));
+  }
+  FILE *f = fopen(path, "r");
+  if (!f) {
+    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : errno == EACCES ? "Errno::EACCES" : "RuntimeError",
+                 sp_sprintf("%s @ rb_sysopen - %s", strerror(errno), path));
+    return &("\xff" "")[1];
+  }
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  char *buf = sp_str_alloc(sz);
+  size_t n = 0;
+  if (sz > 0) {
+    n = fread(buf, 1, sz, f);
+  }
+  buf[n] = 0;
+  sp_str_set_len(buf, n);  /* a short read must not leave the size as length */
+  fclose(f);
+  return buf;
+}
+
+sp_Time sp_file_mtime(const char *path) {
+  if (!path) {
+    sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+    return (sp_Time){0, 0, 0};
+  }
+  struct stat st;
+  if (stat(path, &st) == -1) {
+    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.mtime - %s", strerror(errno), path));
+    return (sp_Time){0, 0, 0};
+  }
+#if defined(__APPLE__)
+  return (sp_Time){(int64_t)st.st_mtimespec.tv_sec, (int32_t)st.st_mtimespec.tv_nsec, 0};
+#elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+  return (sp_Time){(int64_t)st.st_mtimespec.tv_sec, (int32_t)st.st_mtimespec.tv_nsec, 0};
+#else
+  /* Linux / others with st_mtim */
+  return (sp_Time){(int64_t)st.st_mtim.tv_sec, (int32_t)st.st_mtim.tv_nsec, 0};
+#endif
+}
+
+mrb_int sp_file_size(const char *path) {
+  if (!path) {
+    sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+    return 0;
+  }
+  struct stat st;
+  if (stat(path, &st) == -1) {
+    int err = errno;  /* capture once: strerror() may clobber errno */
+    sp_raise_cls(err == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.size - %s", strerror(err), path));
+    return 0;
+  }
+  /* off_t (typically 64-bit) into mrb_int (intptr_t -> 32-bit on a 32-bit
+     build): guard the narrowing, as spinel does for int arithmetic. */
+  if ((off_t)(mrb_int)st.st_size != st.st_size) {
+    sp_raise_cls("RangeError", "file size out of range for Integer");
+    return 0;
+  }
+  return (mrb_int)st.st_size;
+}
+
+sp_IntArray *sp_file_binread_bytes(const char *path) {
+  if (sp_file_directory(path)) {
+    sp_raise_cls("Errno::EISDIR", sp_sprintf("Is a directory @ io_fread - %s", path));
+  }
+  FILE *f = fopen(path, "rb");
+  sp_IntArray *a = sp_IntArray_new();
+  if (!f) {
+    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : errno == EACCES ? "Errno::EACCES" : "RuntimeError",
+                 sp_sprintf("%s @ rb_sysopen - %s", strerror(errno), path));
+    return a;
+  }
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  unsigned char *buf = (unsigned char *)malloc(sz > 0 ? (size_t)sz : 1);
+  if (buf && sz > 0) {
+    /* Use fread's actual byte count, not the raw file size — a
+       partial read otherwise pushes uninitialized memory. */
+    size_t r = fread(buf, 1, (size_t)sz, f);
+    for (size_t i = 0; i < r; i++) sp_IntArray_push(a, (mrb_int)buf[i]);
+  }
+  free(buf);
+  fclose(f);
   return a;
 }
