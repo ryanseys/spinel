@@ -8697,9 +8697,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      allocation, so both stay on the identity path. */
   if (recv >= 0 && (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
     int dargs = nt_ref(nt, id, "arguments");
-    int dargc = 0; if (dargs >= 0) nt_arr(nt, dargs, "arguments", &dargc);
+    int dargc = 0; const int *dargv = dargs >= 0 ? nt_arr(nt, dargs, "arguments", &dargc) : NULL;
     TyKind drt = comp_ntype(c, recv);
-    if (dargc == 0 && ty_is_object(drt) && !comp_ty_value_obj(c, drt)) {
+    /* clone(freeze: true/false): -1 = not given (copy the receiver's state),
+       0 = false, 1 = true. Only a single `freeze:` keyword arg is accepted. */
+    int freeze_mode = -1, dkw_ok = (dargc == 0);
+    if (dargc == 1 && dargv && sp_streq(name, "clone") &&
+        nt_type(nt, dargv[0]) && sp_streq(nt_type(nt, dargv[0]), "KeywordHashNode")) {
+      int kn = 0; const int *kel = nt_arr(nt, dargv[0], "elements", &kn);
+      if (kn == 1 && nt_type(nt, kel[0]) && sp_streq(nt_type(nt, kel[0]), "AssocNode")) {
+        int kk = nt_ref(nt, kel[0], "key"), kv = nt_ref(nt, kel[0], "value");
+        if (kk >= 0 && nt_type(nt, kk) && sp_streq(nt_type(nt, kk), "SymbolNode") &&
+            nt_str(nt, kk, "value") && sp_streq(nt_str(nt, kk, "value"), "freeze") && kv >= 0) {
+          const char *kvt = nt_type(nt, kv);
+          if (kvt && sp_streq(kvt, "TrueNode"))  { freeze_mode = 1; dkw_ok = 1; }
+          else if (kvt && sp_streq(kvt, "FalseNode")) { freeze_mode = 0; dkw_ok = 1; }
+        }
+      }
+    }
+    if (dkw_ok && ty_is_object(drt) && !comp_ty_value_obj(c, drt)) {
       int cid = ty_object_class(drt);
       /* native-bound classes have no generated pool/struct copy; their dup
          dispatches to a declared native_method instead */
@@ -8732,6 +8748,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (icid != cid) buf_printf(b, "(sp_%s *)", c->classes[icid].c_name);
             buf_printf(b, "_t%d); ", to);
           }
+        }
+        /* clone copies the receiver's frozen state (dup never does); an
+           explicit `freeze:` overrides (#2625, #2626). */
+        if (sp_streq(name, "clone")) {
+          if (freeze_mode == 1) buf_printf(b, "sp_gc_freeze(_t%d); ", td);
+          else if (freeze_mode < 0) buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_gc_freeze(_t%d); ", to, td);
         }
         buf_printf(b, "_t%d; })", td);
         return;
