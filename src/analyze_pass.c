@@ -3569,6 +3569,31 @@ int desugar_instance_eval_builtin(Compiler *c) {
   return changed;
 }
 
+/* A method call on a local statically holding one BUILTIN class constant
+   dispatches like the constant itself: retarget the receiver at the AST so
+   `k = Array; k.new(3, 0)` rides every Array.new arm (#2715). User classes
+   already resolve through class_var_static_ci at the dispatch sites. */
+int desugar_builtin_class_var_recv(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
+    const char *cn = builtin_class_var_static_name(c, recv);
+    if (!cn) continue;
+    int cr = nt_new_node(nt, "ConstantReadNode");
+    if (cr < 0) continue;
+    nt_node_set_str(nt, cr, "name", cn);
+    comp_grow_node_arrays(c);
+    c->nscope[cr] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", cr);
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_public_method(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
