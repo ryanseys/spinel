@@ -2455,10 +2455,22 @@ static mrb_float sp_num_to_f(sp_RbVal v) {
   sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Float", w));
   return 0.0;
 }
+/* Exception introspection staging: the runtime raisers stage the receiver /
+   key / carried value here just before raising, and sp_raise_cls materializes
+   a carried exception exposing them via #receiver / #key / #tag / #reason /
+   #exit_value / #value / #args (#2753-#2756, #2770). Cleared on every raise.
+   The bridges are extern so the cold lib TUs (frozen-string, nil-receiver
+   raisers) can stage too. */
+static SP_TLS sp_RbVal sp_pending_exc_recv, sp_pending_exc_key, sp_pending_exc_val;
+static SP_TLS unsigned char sp_pending_exc_flags = 0;
+SP_COLD void sp_exc_stage_recv(sp_RbVal v) { sp_pending_exc_recv = v; sp_pending_exc_flags |= 1; }
+SP_COLD void sp_exc_stage_key(sp_RbVal v)  { sp_pending_exc_key = v;  sp_pending_exc_flags |= 2; }
+SP_COLD void sp_exc_stage_val(sp_RbVal v)  { sp_pending_exc_val = v;  sp_pending_exc_flags |= 4; }
 /* Numeric queries / rounding on a poly value: dispatch on the runtime tag the
    way CRuby dispatches on the class. A tag whose class does not define the
    method raises CRuby's NoMethodError (e.g. `1.nan?`, `"x".abs`). */
 SP_NORETURN SP_COLD static void sp_raise_poly_nomethod(const char *m, sp_RbVal v) {
+  sp_exc_stage_recv(v);
   sp_raise_cls("NoMethodError",
                sp_sprintf("undefined method '%s' for an instance of %s", m, sp_poly_class_name(v)));
 }
@@ -2467,6 +2479,7 @@ SP_NORETURN SP_COLD static void sp_raise_poly_nomethod(const char *m, sp_RbVal v
    <Class>". Only builds the message -- the caller keeps the recognizable
    sp_raise_nomethod(...) form the coercion paths key on. */
 SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
+  sp_exc_stage_recv(v);
   const char *d = (v.tag == SP_TAG_NIL) ? "nil"
                 : (v.tag == SP_TAG_BOOL) ? (v.v.i ? "true" : "false")
                 : sp_sprintf("an instance of %s", sp_poly_class_name(v));
@@ -4120,6 +4133,7 @@ static void __attribute__((noinline,cold)) sp_raise_frozen_obj(sp_RbVal v, const
    Boxing the key lets one helper serve every key type (symbol, string, int,
    ...) via sp_poly_inspect. */
 SP_NORETURN static void sp_raise_key_not_found(sp_RbVal key) {
+  sp_exc_stage_key(key);
   sp_raise_cls("KeyError", sp_sprintf("key not found: %s", sp_poly_inspect(key)));
 }
 /* Array#inspect for heterogeneous poly arrays. Each element dispatches
@@ -5598,6 +5612,9 @@ static SP_TLS struct sp_proc_home *sp_unwind_home = NULL;  /* PROCRET target (TH
    result is stored as a void* in sp_exc_obj[]. */
 struct sp_Exception_s;
 static struct sp_Exception_s *sp_exc_new_for_catch(const char *cls, const char *msg);
+static void *sp_exc_recover_named(const char *cls, const char *msg);
+static void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj);
+static int sp_exc_exit_status(void *obj);
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
 #if SP_BT_AVAILABLE
   if (sp_bt_enabled) sp_bt_n = backtrace(sp_bt_buf, 256);
@@ -5606,7 +5623,22 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      inside an `ensure` running during a proc-return / throw): clear the unwind so
      an outer handler treats this as an exception, not a continued unwind. */
   sp_unwind_kind = SP_UNWIND_NONE;
+  /* NameError/NoMethodError#name: the runtime raisers' messages carry the
+     offending name as the first quoted token ("undefined method 'foo' for
+     ..."); materialize the carried object with #name set so a rescue binding
+     reads it (#2758). Keyed on the exact runtime message shapes. */
+  if (!sp_pending_exc_obj && msg && cls && sp_exc_top > 0 &&
+      (strcmp(cls, "NoMethodError") == 0 || strcmp(cls, "NameError") == 0) &&
+      (strncmp(msg, "undefined method '", 18) == 0 ||
+       strncmp(msg, "undefined local variable or method '", 37) == 0))
+    sp_pending_exc_obj = sp_exc_recover_named(cls, msg);
+  /* the introspection staging (receiver/key/value) rides the carried object */
+  if (sp_pending_exc_flags && msg && cls && sp_exc_top > 0)
+    sp_pending_exc_obj = sp_exc_apply_staged(cls, msg, sp_pending_exc_obj);
+  sp_pending_exc_flags = 0;
   if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_explicit_cause ? sp_explicit_cause : sp_cur_handled(); sp_explicit_cause = NULL; sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); }
+  /* Uncaught SystemExit terminates silently with its status (Kernel#exit). */
+  if (strcmp(cls, "SystemExit") == 0) exit(sp_exc_exit_status(sp_pending_exc_obj));
   /* Uncaught: CRuby's tail format "<message> (<ClassName>)". The source
      location CRuby prefixes is not carried through the raise machinery. */
   fprintf(stderr, "%s (%s)\n", (msg && *msg) ? msg : cls, cls); exit(1); }
@@ -5665,6 +5697,9 @@ typedef struct sp_Exception_s {
   struct sp_Exception_s *cause; /* the exception being handled when this was raised, or NULL */
   sp_RbVal result;             /* StopIteration#result (the iteration's return value); nil otherwise */
   sp_RbVal xname;              /* NameError/NoMethodError#name (the missing name); nil otherwise */
+  sp_RbVal xkey;               /* KeyError#key / UncaughtThrowError#tag / LocalJumpError#reason /
+                                  NoMethodError#args; nil otherwise */
+  sp_RbVal xrecv;              /* KeyError/NameError/NoMethodError/FrozenError#receiver; nil otherwise */
 } sp_Exception;
 /* Registered by the generated program to provide user exception hierarchy. */
 static const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
@@ -5674,6 +5709,8 @@ static void sp_exc_gc_scan(void *p) {
   if (e->cause) sp_gc_mark(e->cause);
   sp_mark_rbval(e->result);
   sp_mark_rbval(e->xname);
+  sp_mark_rbval(e->xkey);
+  sp_mark_rbval(e->xrecv);
   /* cls_name/parent_cls_name point into rodata -- not GC-managed strings */
 }
 static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
@@ -5684,6 +5721,8 @@ static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
   e->cause = NULL;  /* set all fields explicitly; sp_exc_gc_scan reads cause */
   e->result = sp_box_nil();
   e->xname = sp_box_nil();
+  e->xkey = sp_box_nil();
+  e->xrecv = sp_box_nil();
   /* Launder the message into a GC-heap string: sp_exc_gc_scan marks it via
      the tag byte at msg[-1], which only heap strings carry -- keeping a
      raise site's rodata literal would under-read one byte before it. */
@@ -5704,6 +5743,65 @@ static sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls
   e->parent_cls_name = parent_cls;
   return e;
 }
+/* Exception#dup / #clone: a fresh allocation of the receiver's full
+   (subclass-sized) payload -- the GC header carries the size, so subclass
+   ivar fields copy along (as references, matching Object#dup). */
+static sp_Exception *sp_exc_dup(sp_Exception *e) {
+  if (!e) return e;
+  sp_gc_hdr *h = (sp_gc_hdr *)((char *)e - sizeof(sp_gc_hdr));
+  size_t payload = h->size - sizeof(sp_gc_hdr);
+  SP_GC_ROOT(e);
+  sp_Exception *n = (sp_Exception *)sp_gc_alloc(payload, h->finalize, h->scan);
+  memcpy(n, e, payload);
+  return n;
+}
+/* Build the carried NameError/NoMethodError with #name recovered from the
+   message's first quoted token (see sp_raise_cls, #2758). */
+static void *sp_exc_recover_named(const char *cls, const char *msg) {
+  const char *q1 = strchr(msg, '\'');
+  const char *q2 = q1 ? strchr(q1 + 1, '\'') : NULL;
+  if (!q2 || q2 <= q1 + 1 || (size_t)(q2 - q1) > 128) return NULL;
+  char nb[128]; size_t n = (size_t)(q2 - q1 - 1);
+  memcpy(nb, q1 + 1, n); nb[n] = 0;
+  sp_Exception *e = sp_exc_new(cls, msg);   /* launders msg into the GC heap */
+  SP_GC_ROOT(e);
+  e->xname = sp_box_sym(sp_sym_intern(nb));
+  return e;
+}
+/* Write the staged introspection values (receiver/key/value) into the carried
+   exception, creating one when the raise had none (see sp_raise_cls). */
+static void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {
+  sp_Exception *e = (sp_Exception *)obj;
+  if (!e) e = sp_exc_new(cls, msg);
+  if (sp_pending_exc_flags & 1) e->xrecv = sp_pending_exc_recv;
+  if (sp_pending_exc_flags & 2) e->xkey = sp_pending_exc_key;
+  if (sp_pending_exc_flags & 4) e->result = sp_pending_exc_val;
+  return e;
+}
+/* SystemExit#status carried in the result slot; 0 when unset. */
+static int sp_exc_exit_status(void *obj) {
+  sp_Exception *e = (sp_Exception *)obj;
+  return (e && e->result.tag == SP_TAG_INT) ? (int)e->result.v.i : 0;
+}
+/* Kernel#exit: raises a rescuable SystemExit carrying the status; with no
+   handler in scope it terminates directly (#2761). exit! stays direct. */
+static void sp_raise_exc(volatile sp_Exception *ve);   /* defined below */
+SP_NORETURN SP_COLD static void sp_exit_raise(int status) {
+  if (sp_exc_top > 0) {
+    sp_Exception *e = sp_exc_new("SystemExit", "exit");
+    SP_GC_ROOT(e);
+    e->result = sp_box_int((mrb_int)status);
+    sp_raise_exc((volatile sp_Exception *)e);
+  }
+  exit(status);
+}
+/* Exception#exception(msg): a copy of the receiver carrying the new message. */
+static sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {
+  sp_Exception *n = sp_exc_dup(e);
+  SP_GC_ROOT(n);
+  n->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : (n->cls_name ? n->cls_name : "RuntimeError"));
+  return n;
+}
 /* Allocate a zeroed exception-subclass struct of `sz` bytes with the base
    {cls_name, parent_cls_name, msg} prefix set, for the degenerate catch path
    where a user subclass with ivars was raised without a carried object
@@ -5715,6 +5813,8 @@ static void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *m
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->result = sp_box_nil();   /* memset left tag 0 (int 0); StopIteration#result wants nil */
   e->xname = sp_box_nil();
+  e->xkey = sp_box_nil();
+  e->xrecv = sp_box_nil();
   if (sp_user_exc_parent_fn) e->parent_cls_name = sp_user_exc_parent_fn(e->cls_name);
   /* heap-launder the message (see sp_exc_new); memset left msg NULL, so a GC
      during the copy scans a consistent struct */
@@ -5817,6 +5917,13 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
     {"SyntaxError",           "ScriptError"},
     {"ScriptError",           "Exception"},
     {"StandardError",         "Exception"},
+    {"SecurityError",         "Exception"},
+    {"SignalException",       "Exception"},
+    {"Interrupt",             "SignalException"},
+    {"ThreadError",           "StandardError"},
+    {"ClosedQueueError",      "StopIteration"},
+    {"NoMatchingPatternError", "StandardError"},
+    {"NoMatchingPatternKeyError", "NoMatchingPatternError"},
     {NULL, NULL}
   };
   /* find the exception's class chain and check if cn appears in it */
@@ -5907,6 +6014,63 @@ static sp_RbVal sp_exc_name_acc(sp_Exception *e) {
   sp_raise_cls("NoMethodError",
                sp_sprintf("undefined method 'name' for an instance of %s", e->cls_name));
 }
+/* Class-gated introspection accessors (#2753-#2756, #2770): each answers only
+   on its CRuby-defining class (walking the name-carried hierarchy) and raises
+   NoMethodError elsewhere, matching per-class method definitions. */
+SP_COLD static void sp_exc_acc_gate(sp_Exception *e, const char *cls, const char *acc) {
+  if (e && sp_exc_cls_matches(e->cls_name, cls)) return;
+  sp_raise_cls("NoMethodError",
+               sp_sprintf("undefined method '%s' for %s", acc,
+                          e ? sp_sprintf("an instance of %s", e->cls_name) : "nil"));
+}
+/* a reason/tag staged as a plain string interns back to the Symbol it names */
+static sp_RbVal sp_exc_sym_slot(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s) return sp_box_sym(sp_sym_intern(v.v.s));
+  return v;
+}
+static sp_RbVal sp_exc_key_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "KeyError", "key");
+  return e->xkey;
+}
+static sp_RbVal sp_exc_receiver_acc(sp_Exception *e) {
+  if (!(e && (sp_exc_cls_matches(e->cls_name, "NameError") ||
+              sp_exc_cls_matches(e->cls_name, "KeyError") ||
+              sp_exc_cls_matches(e->cls_name, "FrozenError"))))
+    sp_exc_acc_gate(e, "NameError", "receiver");
+  return e->xrecv;
+}
+static sp_RbVal sp_exc_args_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "NoMethodError", "args");
+  return e->xkey;
+}
+static mrb_bool sp_exc_private_call_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "NoMethodError", "private_call?");
+  return 0;   /* the runtime raisers never model a private call */
+}
+static sp_RbVal sp_exc_reason_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "LocalJumpError", "reason");
+  return sp_exc_sym_slot(e->xkey);
+}
+static sp_RbVal sp_exc_exit_value_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "LocalJumpError", "exit_value");
+  return e->result;
+}
+static sp_RbVal sp_exc_tag_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "UncaughtThrowError", "tag");
+  return sp_exc_sym_slot(e->xkey);
+}
+static sp_RbVal sp_exc_throw_value_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "UncaughtThrowError", "value");
+  return e->result;
+}
+static mrb_int sp_exc_status_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "SystemExit", "status");
+  return (mrb_int)sp_exc_exit_status(e);
+}
+static mrb_bool sp_exc_success_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "SystemExit", "success?");
+  return sp_exc_exit_status(e) == 0;
+}
 
 /* Does `raised` descend from StandardError? Used by a bare `rescue` (no class),
    which catches StandardError and its subclasses only. CRuby's non-StandardError
@@ -5980,7 +6144,9 @@ static void sp_throw(const char *tag, int kind, sp_RbVal val) {
     }
     i--;
   }
+  sp_exc_stage_val(val);
   if (kind) sp_raise_cls("UncaughtThrowError", "uncaught throw");
+  sp_exc_stage_key(sp_box_str(tag));   /* #tag; the accessor interns it back to a symbol */
   sp_raise_cls("UncaughtThrowError", sp_sprintf("uncaught throw :%s", tag));
 }
 
@@ -6054,6 +6220,7 @@ static void __attribute__((noreturn)) sp_brk_throw(mrb_int serial, sp_RbVal v) {
   }
   /* no live scope carries the serial: an escaped/foreign proc's break. An
      inlined block's serial is always live, so this is unreachable for those. */
+  sp_exc_stage_key(sp_box_str((&("\xff" "break")[1])));
   sp_raise_cls("LocalJumpError", "break from proc-closure");
 }
 /* GC: the in-flight break values -- ensures between the throw and the landing
@@ -6066,6 +6233,10 @@ static void sp_mark_brk_vals(void) {
   /* cause chain in flight between a raise and its handler */
   if (sp_pending_cause) sp_gc_mark(sp_pending_cause);
   if (sp_explicit_cause) sp_gc_mark(sp_explicit_cause);
+  /* introspection values staged between a raise and its handler */
+  if (sp_pending_exc_flags & 1) sp_mark_rbval(sp_pending_exc_recv);
+  if (sp_pending_exc_flags & 2) sp_mark_rbval(sp_pending_exc_key);
+  if (sp_pending_exc_flags & 4) sp_mark_rbval(sp_pending_exc_val);
 }
 
 /* ---- non-lambda proc `return` (non-local return to the home method) -------
@@ -6120,6 +6291,7 @@ static void sp_proc_return(mrb_int id, sp_RbVal v) {
       longjmp(h->jb, 1);
     }
   }
+  sp_exc_stage_key(sp_box_str((&("\xff" "return")[1])));
   sp_raise_cls("LocalJumpError", "unexpected return");
 }
 /* Pop home nodes whose method an exception has unwound past (recorded exc_top now

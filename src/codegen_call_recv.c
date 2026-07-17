@@ -3732,10 +3732,14 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
             buf_puts(b, " }");
           }
           else if (is_fetch) {
-            char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
-            buf_puts(b, " else sp_raise_key_not_found(");
+            char keytmp[32], htmp[32];
+            snprintf(keytmp, sizeof keytmp, "_t%d", tk);
+            snprintf(htmp, sizeof htmp, "_t%d", th);
+            buf_puts(b, " else { sp_exc_stage_recv(");
+            emit_boxed_text(c, rt, htmp, b);
+            buf_puts(b, "); sp_raise_key_not_found(");
             emit_boxed_text(c, kt, keytmp, b);
-            buf_puts(b, ");");
+            buf_puts(b, "); }");
           }
           else buf_printf(b, " else sp_PolyArray_push(_t%d, sp_box_nil());", tr);
         }
@@ -3785,8 +3789,12 @@ else {
         buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
         buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : (",
                    hn, th, tk, hn, th, tk);
-        char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
-        buf_puts(b, "sp_raise_key_not_found(");
+        char keytmp[32], htmp[32];
+        snprintf(keytmp, sizeof keytmp, "_t%d", tk);
+        snprintf(htmp, sizeof htmp, "_t%d", th);
+        buf_puts(b, "sp_exc_stage_recv(");
+        emit_boxed_text(c, rt, htmp, b);
+        buf_puts(b, "), sp_raise_key_not_found(");
         emit_boxed_text(c, ty_hash_key(rt), keytmp, b);
         buf_printf(b, "), %s); })", vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
         return 1;

@@ -3953,13 +3953,22 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             buf_puts(b, ")");
           }
           else {
-            /* no user initialize: create directly with first arg as message */
+            /* no user initialize: create directly with first arg as message.
+               An ivar-bearing subclass needs its dedicated struct size --
+               sp_exc_new_sub would only allocate the base (#2772). */
             const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
             const char *par = exc_builtin_parent(c, ci);
-            buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
-            if (argc >= 1) emit_expr(c, argv[0], b);
+            if (c->classes[ci].nivars > 0)
+              buf_printf(b, "((sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", ",
+                         c->classes[ci].c_name, c->classes[ci].c_name, cn2);
+            else
+              buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
+            if (argc >= 1) {
+              if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+              else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+            }
             else buf_puts(b, "(&(\"\\xff\")[1])");
-            buf_puts(b, ")");
+            buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
           }
           return 1;
         }
@@ -4019,6 +4028,66 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
       const char *cn = nt_str(nt, recv, "name");
       if (cn && is_exc_name(cn)) {
+        /* SystemExit.new(status = true, msg = "exit"): a leading Integer or
+           boolean is the status; a String is the message (#2761) */
+        if (sp_streq(cn, "SystemExit")) {
+          int te4 = ++g_tmp;
+          TyKind s0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+          int has_status = argc >= 1 && (s0 == TY_INT || s0 == TY_BOOL);
+          int msg_i = has_status ? 1 : 0;
+          buf_printf(b, "({ sp_Exception *_t%d = sp_exc_new(\"SystemExit\", ", te4);
+          if (argc > msg_i) {
+            if (comp_ntype(c, argv[msg_i]) == TY_STRING) emit_expr(c, argv[msg_i], b);
+            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[msg_i], b); buf_puts(b, ")"); }
+          }
+          else buf_puts(b, "(&(\"\\xff\")[1])");   /* default message = class name */
+          buf_printf(b, "); SP_GC_ROOT(_t%d); _t%d->result = sp_box_int(", te4, te4);
+          if (has_status) {
+            if (s0 == TY_BOOL) { buf_puts(b, "("); emit_expr(c, argv[0], b); buf_puts(b, ") ? 0 : 1"); }
+            else emit_expr(c, argv[0], b);
+          }
+          else buf_puts(b, "0");
+          buf_printf(b, "); _t%d; })", te4);
+          return 1;
+        }
+        /* trailing `key:`/`receiver:` keywords (KeyError.new(msg, key:,
+           receiver:), NameError.new(msg, receiver:)): carry them for the
+           introspection accessors (#2753, #2754) */
+        if (argc >= 1 && nt_type(nt, argv[argc - 1]) &&
+            sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+          int kn2 = 0;
+          const int *kel2 = nt_arr(nt, argv[argc - 1], "elements", &kn2);
+          int key_v = -1, recv_v = -1, other = 0;
+          for (int ke = 0; ke < kn2; ke++) {
+            const char *kty = nt_type(nt, kel2[ke]);
+            int kk2 = (kty && sp_streq(kty, "AssocNode")) ? nt_ref(nt, kel2[ke], "key") : -1;
+            const char *knm = (kk2 >= 0 && nt_type(nt, kk2) && sp_streq(nt_type(nt, kk2), "SymbolNode"))
+                                ? nt_str(nt, kk2, "value") : NULL;
+            if (knm && sp_streq(knm, "key")) key_v = nt_ref(nt, kel2[ke], "value");
+            else if (knm && sp_streq(knm, "receiver")) recv_v = nt_ref(nt, kel2[ke], "value");
+            else other = 1;
+          }
+          if (!other && (key_v >= 0 || recv_v >= 0)) {
+            int te3 = ++g_tmp;
+            buf_printf(b, "({ sp_Exception *_t%d = sp_exc_new(\"%s\", ", te3, cn);
+            if (argc >= 2) {
+              if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+              else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+            }
+            else buf_puts(b, "(&(\"\\xff\")[1])");
+            buf_printf(b, "); SP_GC_ROOT(_t%d);", te3);
+            if (key_v >= 0) {
+              buf_printf(b, " _t%d->xkey = ", te3);
+              emit_boxed(c, key_v, b); buf_puts(b, ";");
+            }
+            if (recv_v >= 0) {
+              buf_printf(b, " _t%d->xrecv = ", te3);
+              emit_boxed(c, recv_v, b); buf_puts(b, ";");
+            }
+            buf_printf(b, " _t%d; })", te3);
+            return 1;
+          }
+        }
         /* NameError.new(msg, name) / NoMethodError.new(msg, name): carry the
            missing name for the #name accessor (rooted across the alloc). */
         if (argc >= 2 && (sp_streq(cn, "NameError") || sp_streq(cn, "NoMethodError"))) {
@@ -4030,9 +4099,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "); _t%d->xname = _t%d; _t%d; })", te2, tn2, te2);
           return 1;
         }
-        /* builtin exception class .new(msg) */
+        /* builtin exception class .new(msg): any object can be the message,
+           a non-String coerces via to_s (#2741) */
         buf_printf(b, "sp_exc_new(\"%s\", ", cn);
-        if (argc >= 1) emit_expr(c, argv[0], b);
+        if (argc >= 1) {
+          if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+          else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+        }
         else buf_puts(b, "(&(\"\\xff\")[1])");
         buf_puts(b, ")");
         return 1;
@@ -4955,6 +5028,20 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "((void *)("); emit_expr(c, recv, b);
       buf_printf(b, ") %s (void *)(", eq ? "==" : "!=");
       emit_expr(c, argv[0], b); buf_puts(b, "))");
+      return 1;
+    }
+    /* Exception#== / #!=: same class + same message; any non-exception
+       operand is simply unequal (#2748). */
+    if (recv >= 0 && rt == TY_EXCEPTION) {
+      if (a0 == TY_EXCEPTION) {
+        buf_printf(b, "(%ssp_exc_eq((sp_Exception *)(", eq ? "" : "!");
+        emit_expr(c, recv, b);
+        buf_puts(b, "), (sp_Exception *)(");
+        emit_expr(c, argv[0], b); buf_puts(b, ")))");
+      } else {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+        emit_boxed(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
+      }
       return 1;
     }
     /* MatchData#== : structural equality with another MatchData, else false (#2529) */
@@ -8542,12 +8629,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
   if (recv < 0 && (sp_streq(name, "exit") || sp_streq(name, "exit!"))) {
-    if (argc == 0) { buf_puts(b, "({ exit(0); (mrb_int)0; })"); return; }
+    /* exit raises a rescuable SystemExit (#2761); exit! terminates directly.
+       A boolean status maps true -> 0, false -> 1, as in CRuby. */
+    const char *xfn = sp_streq(name, "exit!") ? "exit" : "sp_exit_raise";
+    if (argc == 0) { buf_printf(b, "({ %s(0); (mrb_int)0; })", xfn); return; }
     /* a poly status (e.g. a widened attr read or poly-hash get) must be
        unboxed -- (int)(sp_RbVal) is a struct cast, a cc error. */
     TyKind xt = comp_ntype(c, argv[0]);
-    if (xt == TY_POLY) { buf_puts(b, "({ exit((int)sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")); (mrb_int)0; })"); }
-    else { buf_puts(b, "({ exit((int)("); emit_expr(c, argv[0], b); buf_puts(b, ")); (mrb_int)0; })"); }
+    if (xt == TY_POLY) { buf_printf(b, "({ %s((int)sp_poly_to_i(", xfn); emit_expr(c, argv[0], b); buf_puts(b, ")); (mrb_int)0; })"); }
+    else if (xt == TY_BOOL) { buf_printf(b, "({ %s((", xfn); emit_expr(c, argv[0], b); buf_puts(b, ") ? 0 : 1); (mrb_int)0; })"); }
+    else { buf_printf(b, "({ %s((int)(", xfn); emit_expr(c, argv[0], b); buf_puts(b, ")); (mrb_int)0; })"); }
     return;
   }
   if (recv < 0 && sp_streq(name, "abort")) {
@@ -8683,6 +8774,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_args_filled(c, ic, -1, "", b);
         buf_puts(b, "))");
       }
+      else if ((xc >= 0 && !class_is_exc_subclass(c, xc)) ||
+               (xc < 0 && cn && is_builtin_class_name(cn) && !is_exc_name(cn) &&
+                !is_exc_name(RAISE_EXC_NAME(av[0], cn)))) {
+        /* raising a non-Exception class is CRuby's TypeError (#2771) */
+        buf_puts(b, "sp_raise_cls(\"TypeError\", \"exception class/object expected\")");
+      }
       else {
         /* a known user class raises under its qualified Ruby name (matching
            the constructor emission and the rescue-arm canonicalization) */
@@ -8718,12 +8815,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
         buf_puts(b, "))");
       }
+      else if ((xc >= 0 && !class_is_exc_subclass(c, xc)) ||
+               (xc < 0 && cn && is_builtin_class_name(cn) && !is_exc_name(cn) &&
+                !is_exc_name(RAISE_EXC_NAME(av[0], cn)))) {
+        /* raising a non-Exception class is CRuby's TypeError (#2771) */
+        buf_puts(b, "((void)(");
+        emit_boxed(c, av[1], b);
+        buf_puts(b, "), sp_raise_cls(\"TypeError\", \"exception class/object expected\"))");
+      }
       else {
         /* a known user class raises under its qualified Ruby name (matching
-           the constructor emission and the rescue-arm canonicalization) */
+           the constructor emission and the rescue-arm canonicalization);
+           any object can be the message -- non-String coerces via to_s (#2741) */
         const char *rn = (xc >= 0) ? class_ruby_name(c, xc) : NULL;
         buf_printf(b, "sp_raise_cls(\"%s\", ", rn ? rn : RAISE_EXC_NAME(av[0], cn));
-        emit_expr(c, av[1], b); buf_puts(b, ")");
+        if (comp_ntype(c, av[1]) == TY_STRING) emit_expr(c, av[1], b);
+        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, av[1], b); buf_puts(b, ")"); }
+        buf_puts(b, ")");
       }
     }
     else {
@@ -8769,6 +8877,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      through to normal object dispatch below. */
   if (recv >= 0 && ty_is_object(comp_ntype(c, recv)) &&
       class_is_exc_subclass(c, ty_object_class(comp_ntype(c, recv)))) {
+    /* dup/clone copy the whole subclass struct via the GC header size, so
+       mutating the copy's ivars leaves the original alone (#2772) */
+    if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0 &&
+        comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) < 0) {
+      int xc2 = ty_object_class(comp_ntype(c, recv));
+      buf_printf(b, "((sp_%s *)sp_exc_dup((sp_Exception *)(", c->classes[xc2].c_name);
+      emit_expr(c, recv, b);
+      buf_puts(b, ")))");
+      return;
+    }
     if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
       const char *fn = exc_has_user_msg_override(c)
         ? (sp_streq(name, "message") ? "sp_user_exc_message" : "sp_user_exc_to_s")
@@ -8798,13 +8916,67 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
       return;
     }
+    /* eql? is Object#eql? -- identity, not Exception#== (#2769) */
+    if (sp_streq(name, "eql?") && argc == 1) {
+      if (comp_ntype(c, argv[0]) == TY_EXCEPTION) {
+        buf_puts(b, "(((sp_Exception *)("); emit_expr(c, recv, b);
+        buf_puts(b, ")) == ((sp_Exception *)("); emit_expr(c, argv[0], b); buf_puts(b, ")))");
+      } else {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+        emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
+      }
+      return;
+    }
+    /* dup/clone copy the whole (subclass-sized) struct so mutating the copy
+       leaves the original alone (#2772) */
+    if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
+      buf_puts(b, "sp_exc_dup((sp_Exception *)(");
+      emit_expr(c, recv, b); buf_puts(b, "))");
+      return;
+    }
+    /* Exception#exception: no-arg returns the receiver; with a message it is
+       a copy carrying the new message (#2740) */
+    if (sp_streq(name, "exception")) {
+      if (argc == 0) { emit_expr(c, recv, b); return; }
+      if (argc == 1) {
+        buf_puts(b, "sp_exc_exception((sp_Exception *)(");
+        emit_expr(c, recv, b); buf_puts(b, "), ");
+        if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+        buf_puts(b, ")");
+        return;
+      }
+    }
     /* NameError/NoMethodError#name: the carried missing name; any other
        exception class raises NoMethodError at runtime, per CRuby */
     if (sp_streq(name, "name") && argc == 0) {
+      g_uses_symbols = 1;  /* the accessor interns a runtime-recovered name (#2758) */
       buf_puts(b, "sp_exc_name_acc((sp_Exception *)(");
       emit_expr(c, recv, b);
       buf_puts(b, "))");
       return;
+    }
+    /* class-gated introspection accessors (#2753-#2756, #2770) */
+    if (argc == 0) {
+      const char *accfn = NULL;
+      if (sp_streq(name, "key")) accfn = "sp_exc_key_acc";
+      else if (sp_streq(name, "receiver")) accfn = "sp_exc_receiver_acc";
+      else if (sp_streq(name, "args")) accfn = "sp_exc_args_acc";
+      else if (sp_streq(name, "reason")) accfn = "sp_exc_reason_acc";
+      else if (sp_streq(name, "exit_value")) accfn = "sp_exc_exit_value_acc";
+      else if (sp_streq(name, "tag")) accfn = "sp_exc_tag_acc";
+      else if (sp_streq(name, "value")) accfn = "sp_exc_throw_value_acc";
+      else if (sp_streq(name, "private_call?")) accfn = "sp_exc_private_call_acc";
+      else if (sp_streq(name, "status")) accfn = "sp_exc_status_acc";
+      else if (sp_streq(name, "success?")) accfn = "sp_exc_success_acc";
+      if (accfn) {
+        if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key"))
+          g_uses_symbols = 1;  /* staged names intern back to symbols */
+        buf_printf(b, "%s((sp_Exception *)(", accfn);
+        emit_expr(c, recv, b);
+        buf_puts(b, "))");
+        return;
+      }
     }
     if (sp_streq(name, "inspect") && argc == 0) {
       int ei = ++g_tmp;
@@ -10637,13 +10809,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_puts(b, ")");
         }
         else {
-          /* no user initialize: create directly with first arg as message */
+          /* no user initialize: create directly with first arg as message.
+             An ivar-bearing subclass needs its dedicated struct size (#2772). */
           const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
           const char *par = exc_builtin_parent(c, ci);
-          buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
-          if (argc >= 1) emit_expr(c, argv[0], b);
+          if (c->classes[ci].nivars > 0)
+            buf_printf(b, "((sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", ",
+                       c->classes[ci].c_name, c->classes[ci].c_name, cn2);
+          else
+            buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
+          if (argc >= 1) {
+            if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+          }
           else buf_puts(b, "(&(\"\\xff\")[1])");
-          buf_puts(b, ")");
+          buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
         }
         return;
       }
@@ -10666,7 +10846,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (cn && is_exc_name(cn)) {
       buf_printf(b, "sp_exc_new(\"%s\", ", cn);
-      if (argc >= 1) emit_expr(c, argv[0], b);
+      if (argc >= 1) {
+        if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+      }
       else buf_puts(b, "(&(\"\\xff\")[1])");
       buf_puts(b, ")");
       return;
@@ -10677,6 +10860,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      constant). Handled before the Class.new dispatch since they are not `new`. */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
     const char *tcn = nt_str(nt, recv, "name");
+    /* Exception class-level: Cls.exception(msg) is Cls.new (#2740);
+       Exception.to_tty? reports whether stderr is a terminal (#2757). */
+    if (tcn && is_exc_name(tcn)) {
+      if (sp_streq(name, "exception")) {
+        buf_printf(b, "sp_exc_new(\"%s\", ", tcn);
+        if (argc >= 1) {
+          if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+          else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+        }
+        else buf_puts(b, "(&(\"\\xff\")[1])");
+        buf_puts(b, ")");
+        return;
+      }
+      if (sp_streq(name, "to_tty?") && argc == 0) {
+        buf_puts(b, "(isatty(2) != 0)"); return;
+      }
+    }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "current") && argc == 0) {
       buf_puts(b, "sp_Thread_current()"); return;
     }
@@ -13855,6 +14055,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else
           yn = (aty && sp_streq(aty, "FalseNode")) ? 1 : (aty && sp_streq(aty, "TrueNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
         if (yn >= 0) { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yn); return; }
+      }
+      /* an exception instance matches by name up its class chain (#2759) */
+      if (at2 == TY_EXCEPTION && (is_exc_name(cn) || is_builtin_class_name(cn))) {
+        buf_puts(b, "sp_exc_is_a("); emit_expr(c, argv[0], b);
+        buf_printf(b, ", \"%s\")", cn);
+        return;
       }
       int yes = ty_matches_class(at2, cn, 0);
       if (yes >= 0) {

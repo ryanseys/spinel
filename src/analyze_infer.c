@@ -3531,6 +3531,16 @@ else {
     }
   }
 
+  /* Exception class-level methods: Cls.exception(msg) is Cls.new (#2740);
+     Exception.to_tty? answers whether stderr is a terminal (#2757). */
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
+    const char *ecn = nt_str(nt, recv, "name");
+    if (ecn && is_builtin_exception_name(ecn)) {
+      if (sp_streq(name, "exception")) return TY_EXCEPTION;
+      if (sp_streq(name, "to_tty?")) return TY_BOOL;
+    }
+  }
+
   /* exception receiver methods */
   /* A specialized rescue var is typed as the exception subclass object, but
      its exception-shaped queries still answer as on a base exception, unless
@@ -3548,6 +3558,18 @@ else {
     if (sp_streq(name, "cause")) return TY_EXCEPTION;      /* the threaded cause, nil if none */
     if (sp_streq(name, "result")) return TY_POLY;          /* StopIteration#result, nil otherwise */
     if (sp_streq(name, "name")) return TY_POLY;            /* NameError#name, nil otherwise */
+    if (sp_streq(name, "dup") || sp_streq(name, "clone")) return rt;  /* a copy keeps the (subclass) type */
+    if (sp_streq(name, "key") || sp_streq(name, "receiver") || sp_streq(name, "args") ||
+        sp_streq(name, "reason") || sp_streq(name, "exit_value") ||
+        sp_streq(name, "tag") || sp_streq(name, "value"))
+      return TY_POLY;   /* class-gated introspection accessors (#2753-#2756, #2770) */
+    if (sp_streq(name, "private_call?")) return TY_BOOL;
+    if (sp_streq(name, "status")) return TY_INT;       /* SystemExit#status */
+    if (sp_streq(name, "success?")) return TY_BOOL;    /* SystemExit#success? */
+    if (rt == TY_EXCEPTION && sp_streq(name, "exception")) return TY_EXCEPTION;  /* self, or a copy carrying a new message */
+    if (sp_streq(name, "eql?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
+        sp_streq(name, "equal?"))
+      return TY_BOOL;
   }
 
   /* poly receiver / poly operand: result type of operations on sp_RbVal */
@@ -5401,11 +5423,28 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* value = body value unified with each rescue handler's value */
     int body = nt_ref(nt, id, "statements");
     TyKind r = body >= 0 ? infer_type(c, body) : TY_NIL;
+    TyKind body_t = r;
+    /* a body whose last statement is a bare raise diverges: the begin's value
+       comes from the rescue arms alone, so their type must not widen (#2739) */
+    if (body >= 0 && nt_ref(nt, id, "rescue_clause") >= 0) {
+      int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
+      if (bn > 0 && bs) {
+        const char *lt = nt_type(nt, bs[bn - 1]);
+        const char *lnm = (lt && sp_streq(lt, "CallNode")) ? nt_str(nt, bs[bn - 1], "name") : NULL;
+        if (lnm && (sp_streq(lnm, "raise") || sp_streq(lnm, "fail")) &&
+            nt_ref(nt, bs[bn - 1], "receiver") < 0)
+          r = TY_VOID;
+      }
+    }
+    int have = !(r == TY_UNKNOWN || r == TY_VOID);
     for (int rs = nt_ref(nt, id, "rescue_clause"); rs >= 0; rs = nt_ref(nt, rs, "subsequent")) {
       int st = nt_ref(nt, rs, "statements");
-      r = ty_unify(r, st >= 0 ? infer_type(c, st) : TY_NIL);
+      TyKind at = st >= 0 ? infer_type(c, st) : TY_NIL;
+      if (at == TY_UNKNOWN || at == TY_VOID) continue;  /* this arm diverges too */
+      r = have ? ty_unify(r, at) : at;
+      have = 1;
     }
-    return r;
+    return have ? r : body_t;
   }
   if (nk == NK_CallNode) return infer_call(c, id);
 

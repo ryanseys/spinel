@@ -88,7 +88,8 @@ const char*sp_str_plus(const char*a,const char*b){
 }
 /* FrozenError naming the receiver, matching CRuby's
    "can't modify frozen String: \"abc\"" message shape. */
-void sp_raise_frozen_str(const char*s){const char*ins=sp_str_inspect(s);SP_GC_ROOT_STR(ins);const char*msg=sp_str_concat(&("\xff" "can't modify frozen String: ")[1],ins);SP_GC_ROOT_STR(msg);sp_raise_cls("FrozenError",msg);}
+void sp_exc_stage_recv(sp_RbVal v);   /* generated TU: stages FrozenError#receiver */
+void sp_raise_frozen_str(const char*s){const char*ins=sp_str_inspect(s);SP_GC_ROOT_STR(ins);const char*msg=sp_str_concat(&("\xff" "can't modify frozen String: ")[1],ins);SP_GC_ROOT_STR(msg);sp_exc_stage_recv(sp_box_str(s));sp_raise_cls("FrozenError",msg);}
 /* String#inspect: wrap in double quotes and escape \, ", \n, \t, \r,
    plus any non-printable byte as \xNN. Output is always ASCII-safe. */
 const char*sp_str_inspect(const char*s){SP_GC_ROOT_STR(s);if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=sp_str_byte_len(s);size_t cap=(sl*6)+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}else if(c=='\a'){r[o++]='\\';r[o++]='a';}else if(c=='\b'){r[o++]='\\';r[o++]='b';}else if(c=='\t'){r[o++]='\\';r[o++]='t';}else if(c=='\n'){r[o++]='\\';r[o++]='n';}else if(c=='\v'){r[o++]='\\';r[o++]='v';}else if(c=='\f'){r[o++]='\\';r[o++]='f';}else if(c=='\r'){r[o++]='\\';r[o++]='r';}else if(c==0x1b){r[o++]='\\';r[o++]='e';}else if(c<0x20||c==0x7f){/* other control bytes render as \uNNNN (UTF-8 default, matching CRuby source-literal strings) */snprintf(r+o,7,"\\u%04X",c);o+=6;}else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}

@@ -295,7 +295,8 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
        folds its guard to a compile-time false and sits inside an `if (0)`, so
        the raise never executes there; the boxed nil keeps the comma expression
        well-typed for the value position. */
-    buf_puts(b, "(sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\"), sp_box_nil())");
+    buf_puts(b, "(sp_exc_stage_key(sp_box_str((&(\"\\xff\" \"noreason\")[1]))), "
+                "sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\"), sp_box_nil())");
     return;
   }
   if (g_block_id >= 0 && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode")) {
@@ -2681,12 +2682,12 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
     /* An ivar-less exception subclass is forward-declared as
        `typedef sp_Exception` and needs no struct of its own. One with
        ivars gets a dedicated struct whose leading members mirror
-       sp_Exception (cls_name/parent_cls_name/msg/cause/result) -- a common
-       initial sequence -- so every `(sp_Exception *)` cast in the raise/rescue
-       and message machinery stays valid, with the ivar fields after (#1415).
-       cause and result must be mirrored too: the rescue machinery and the GC
-       scan / constructor write them through the base cast, so omitting one
-       would alias (and overrun into) the first ivar. */
+       sp_Exception (cls_name/parent_cls_name/msg/cause/result/xname/xkey/
+       xrecv) -- a common initial sequence -- so every `(sp_Exception *)` cast
+       in the raise/rescue and message machinery stays valid, with the ivar
+       fields after (#1415). Every base member must be mirrored: the rescue
+       machinery and the GC scan / constructor write them through the base
+       cast, so omitting one would alias (and overrun into) the first ivar. */
     if (ci->nivars == 0) return;
     buf_printf(b, "struct sp_%s_s {\n", ci->c_name);
     buf_puts(b, "  const char *cls_name;\n");
@@ -2694,6 +2695,9 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
     buf_puts(b, "  const char *msg;\n");
     buf_puts(b, "  struct sp_Exception_s *cause;\n");
     buf_puts(b, "  sp_RbVal result;\n");
+    buf_puts(b, "  sp_RbVal xname;\n");
+    buf_puts(b, "  sp_RbVal xkey;\n");
+    buf_puts(b, "  sp_RbVal xrecv;\n");
     for (int i = 0; i < ci->nivars; i++) {
       TyKind t = ci->ivar_types[i];
       /* belt and suspenders: analyze widens void/nil ivar slots to poly
@@ -2746,7 +2750,14 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   if (!class_needs_scan(ci) && !is_exc_iv) return;
   buf_printf(b, "static void sp_%s_scan(void *p) {\n", ci->c_name);
   buf_printf(b, "  sp_%s *o = (sp_%s *)p;\n", ci->c_name, ci->c_name);
-  if (is_exc_iv) buf_puts(b, "  sp_mark_string(o->msg);\n");
+  if (is_exc_iv) {
+    buf_puts(b, "  sp_mark_string(o->msg);\n");
+    buf_puts(b, "  if (o->cause) sp_gc_mark(o->cause);\n");
+    buf_puts(b, "  sp_mark_rbval(o->result);\n");
+    buf_puts(b, "  sp_mark_rbval(o->xname);\n");
+    buf_puts(b, "  sp_mark_rbval(o->xkey);\n");
+    buf_puts(b, "  sp_mark_rbval(o->xrecv);\n");
+  }
   for (int i = 0; i < ci->nivars; i++) {
     TyKind t = ci->ivar_types[i];
     const char *iv = ci->ivars[i] + 1;
@@ -3024,6 +3035,9 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_printf(b, "  self->parent_cls_name = \"%s\";\n", par);
       buf_puts(b, "  self->msg = (&(\"\\xff\")[1]);\n");
       buf_puts(b, "  self->result = sp_box_nil();\n");  /* memset left tag 0 (int 0); #result wants nil */
+      buf_puts(b, "  self->xname = sp_box_nil();\n");
+      buf_puts(b, "  self->xkey = sp_box_nil();\n");
+      buf_puts(b, "  self->xrecv = sp_box_nil();\n");
       buf_printf(b, "  SP_GC_ROOT(self);\n");
       emit_ivar_nil_inits(b, ci, "self->", "  ", ";\n");
     }

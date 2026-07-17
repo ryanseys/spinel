@@ -619,14 +619,18 @@ else {
   /* trap(...) stmt: no-op (Spinel has no signal-handler runtime) */
   if (sp_streq(name, "trap") && argc >= 1) return 1;
   if (sp_streq(name, "exit") || sp_streq(name, "exit!")) {
+    /* exit raises a rescuable SystemExit (#2761); exit! terminates directly.
+       A boolean status maps true -> 0, false -> 1, as in CRuby. */
+    const char *xfn = sp_streq(name, "exit!") ? "exit" : "sp_exit_raise";
     emit_indent(b, indent);
-    if (argc == 0) buf_puts(b, "exit(0);\n");
+    if (argc == 0) buf_printf(b, "%s(0);\n", xfn);
     else {
       /* a poly status (e.g. a widened attr read or poly-hash get) must be
          unboxed -- (int)(sp_RbVal) is a struct cast, a cc error. */
       TyKind xt = comp_ntype(c, argv[0]);
-      if (xt == TY_POLY) { buf_puts(b, "exit((int)sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
-      else { buf_puts(b, "exit((int)("); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
+      if (xt == TY_POLY) { buf_printf(b, "%s((int)sp_poly_to_i(", xfn); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
+      else if (xt == TY_BOOL) { buf_printf(b, "%s((", xfn); emit_expr(c, argv[0], b); buf_puts(b, ") ? 0 : 1);\n"); }
+      else { buf_printf(b, "%s((int)(", xfn); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
     }
     return 1;
   }
@@ -1663,6 +1667,11 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     if (pt == TY_POLY) {
       char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
       if (!emit_poly_class_when(c, pat, tmp, b)) buf_puts(b, "0");
+      return 1;
+    }
+    if (pt == TY_EXCEPTION) {
+      /* an exception scrutinee matches by name up its class chain (#2759) */
+      buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, cn2);
       return 1;
     }
     int yes = ty_matches_class(pt, cn2, 0);
@@ -3226,6 +3235,10 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
                of Class/Module, never of the named class itself. */
             buf_printf(b, "%d", (sp_streq(cn2, "Class") || sp_streq(cn2, "Module")) ? 1 : 0);
           }
+          else if (cn2 && pt == TY_EXCEPTION) {
+            /* an exception scrutinee matches by name up its class chain (#2759) */
+            buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, cn2);
+          }
           else if (cn2) {
             int yes = ty_matches_class(pt, cn2, 0);
             buf_printf(b, "%d", yes > 0 ? 1 : 0);
@@ -3465,6 +3478,10 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           /* a Class VALUE is an instance only of Class/Module (see the
              statement chain's arm) */
           buf_printf(b, "%d", (sp_streq(cn2, "Class") || sp_streq(cn2, "Module")) ? 1 : 0);
+        }
+        else if (cn2 && pt == TY_EXCEPTION) {
+          /* an exception scrutinee matches by name up its class chain (#2759) */
+          buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, cn2);
         }
         else if (cn2) { int yes = ty_matches_class(pt, cn2, 0); buf_printf(b, "%d", yes > 0 ? 1 : 0); }
         else {
@@ -3999,7 +4016,8 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
      (e.g. ((sp_Class){-1})) need not match the slot: the raise longjmps first.
      Evaluate it for the raise and yield the slot's default instead of letting
      the mismatched C type flow into the return. */
-  else if (strncmp(txt, "(sp_raise_cls(", 14) == 0 &&
+  else if ((strncmp(txt, "(sp_raise_cls(", 14) == 0 ||
+            strncmp(txt, "(sp_exc_stage_key(", 18) == 0) &&
            g_ret_type != TY_POLY && g_ret_type != TY_UNKNOWN)
     buf_printf(b, "({ (void)%s; %s; })", txt, default_value(g_ret_type));
   else buf_puts(b, txt);
@@ -4500,6 +4518,10 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
     buf_puts(b, "else {\n");
     if (sub >= 0) emit_rescue(c, sub, b, indent + 1, fr, resultvar);
     else {
+      /* re-stage the carried object so a pass-through keeps ivars and the
+         SystemExit status (#1415, #2761) */
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_pending_exc_obj = sp_exc_obj[sp_exc_top];\n");
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_raise_cls(_rcls_%d, _rmsg_%d);\n", rc, rc);
     }
@@ -4542,6 +4564,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent); buf_printf(b, "int _excf%d = 0;\n", eid);
     emit_indent(b, indent); buf_printf(b, "const char *_excmsg%d = NULL;\n", eid);
     emit_indent(b, indent); buf_printf(b, "const char *_exccls%d = NULL;\n", eid);
+    emit_indent(b, indent); buf_printf(b, "void *_excobj%d = NULL;\n", eid);
     if (has_retval) {
       emit_indent(b, indent); emit_ctype(c, g_ret_type, b);
       buf_printf(b, " _retv%d = %s;\n", eid, default_value(g_ret_type));
@@ -4607,8 +4630,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       /* No rescue: save exception info for re-raise after ensure runs.
          sp_exc_top has just been decremented so sp_exc_top is the right index. */
       emit_indent(b, indent + 2);
-      buf_printf(b, "_excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top];\n",
-                 eid, eid, eid);
+      buf_printf(b, "_excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; _excobj%d = sp_exc_obj[sp_exc_top];\n",
+                 eid, eid, eid, eid);
     }
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -4661,8 +4684,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       }
       /* Unhandled exception: propagate info to outer ensure context. */
       emit_indent(b, indent);
-      buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; sp_exc_top--; goto _ensure%d; }\n",
-                 eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid);
+      buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; }\n",
+                 eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid, eid, outer->lid);
     }
     else {
       /* the deferred return leaves through every enclosing live begin frame:
@@ -4684,7 +4707,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       else buf_printf(b, "if (_retf%d) return;\n", eid);
       /* Unhandled exception: re-raise using the saved class/message. */
       emit_indent(b, indent);
-      buf_printf(b, "if (_excf%d) sp_raise_cls(_exccls%d, _excmsg%d);\n", eid, eid, eid);
+      buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
     }
     g_retry_label = ens_saved_retry;
     return;
@@ -4953,6 +4976,8 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
          is never emitted here. An unguarded yield with no block raises
          LocalJumpError (a guarded one that still reaches codegen sits inside an
          `if (0)` and never executes the raise). */
+      emit_indent(b, indent);
+      buf_puts(b, "sp_exc_stage_key(sp_box_str((&(\"\\xff\" \"noreason\")[1])));\n");
       emit_indent(b, indent);
       buf_puts(b, "sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\");\n");
       return;

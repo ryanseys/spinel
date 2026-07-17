@@ -127,6 +127,11 @@ TyKind ty_unify(TyKind a, TyKind b) {
      (which would strip every array method from the result). */
   if (a == TY_NIL && b == TY_POLY_ARRAY) return b;
   if (b == TY_NIL && a == TY_POLY_ARRAY) return a;
+  /* An exception reference that also sees nil stays TY_EXCEPTION: the
+     sp_Exception* NULL encodes nil ($! outside a rescue is already nil), and
+     the exception method arms NULL-guard (#2739). */
+  if (a == TY_NIL && b == TY_EXCEPTION) return b;
+  if (b == TY_NIL && a == TY_EXCEPTION) return a;
   return TY_POLY;
 }
 
