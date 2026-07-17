@@ -467,6 +467,156 @@ static int name_is_comparable_module_method(const char *m) {
   return 0;
 }
 
+/* Builtin Method#arity: (class, method) -> CRuby's arity, dumped from ruby
+   4.0.4 over each class's OWN public instance methods (#2700). A miss falls
+   through to the pre-existing path. */
+static const struct { const char *cls; const char *m; int a; } sp_builtin_arity_tbl[] = {
+  {"String","%",1},{"String","*",1},{"String","+",1},{"String","+@",0},
+  {"String","-@",0},{"String","<<",1},{"String","<=>",1},{"String","==",1},
+  {"String","===",1},{"String","=~",1},{"String","[]",-1},{"String","[]=",-1},
+  {"String","append_as_bytes",-1},{"String","ascii_only?",0},{"String","b",0},{"String","byteindex",-1},
+  {"String","byterindex",-1},{"String","bytes",0},{"String","bytesize",0},{"String","byteslice",-1},
+  {"String","bytesplice",-1},{"String","capitalize",-1},{"String","capitalize!",-1},{"String","casecmp",1},
+  {"String","casecmp?",1},{"String","center",-1},{"String","chars",0},{"String","chomp",-1},
+  {"String","chomp!",-1},{"String","chop",0},{"String","chop!",0},{"String","chr",0},
+  {"String","clear",0},{"String","codepoints",0},{"String","concat",-1},{"String","count",-1},
+  {"String","crypt",1},{"String","dedup",0},{"String","delete",-1},{"String","delete!",-1},
+  {"String","delete_prefix",1},{"String","delete_prefix!",1},{"String","delete_suffix",1},{"String","delete_suffix!",1},
+  {"String","downcase",-1},{"String","downcase!",-1},{"String","dump",0},{"String","dup",0},
+  {"String","each_byte",0},{"String","each_char",0},{"String","each_codepoint",0},{"String","each_grapheme_cluster",0},
+  {"String","each_line",-1},{"String","empty?",0},{"String","encode",-1},{"String","encode!",-1},
+  {"String","encoding",0},{"String","end_with?",-1},{"String","eql?",1},{"String","force_encoding",1},
+  {"String","freeze",0},{"String","getbyte",1},{"String","grapheme_clusters",0},{"String","gsub",-1},
+  {"String","gsub!",-1},{"String","hash",0},{"String","hex",0},{"String","include?",1},
+  {"String","index",-1},{"String","insert",2},{"String","inspect",0},{"String","intern",0},
+  {"String","length",0},{"String","lines",-1},{"String","ljust",-1},{"String","lstrip",-1},
+  {"String","lstrip!",-1},{"String","match",-1},{"String","match?",-1},{"String","next",0},
+  {"String","next!",0},{"String","oct",0},{"String","ord",0},{"String","partition",1},
+  {"String","prepend",-1},{"String","replace",1},{"String","reverse",0},{"String","reverse!",0},
+  {"String","rindex",-1},{"String","rjust",-1},{"String","rpartition",1},{"String","rstrip",-1},
+  {"String","rstrip!",-1},{"String","scan",1},{"String","scrub",-1},{"String","scrub!",-1},
+  {"String","setbyte",2},{"String","size",0},{"String","slice",-1},{"String","slice!",-1},
+  {"String","split",-1},{"String","squeeze",-1},{"String","squeeze!",-1},{"String","start_with?",-1},
+  {"String","strip",-1},{"String","strip!",-1},{"String","sub",-1},{"String","sub!",-1},
+  {"String","succ",0},{"String","succ!",0},{"String","sum",-1},{"String","swapcase",-1},
+  {"String","swapcase!",-1},{"String","to_c",0},{"String","to_f",0},{"String","to_i",-1},
+  {"String","to_r",0},{"String","to_s",0},{"String","to_str",0},{"String","to_sym",0},
+  {"String","tr",2},{"String","tr!",2},{"String","tr_s",2},{"String","tr_s!",2},
+  {"String","undump",0},{"String","unicode_normalize",-1},{"String","unicode_normalize!",-1},{"String","unicode_normalized?",-1},
+  {"String","unpack",-2},{"String","unpack1",-2},{"String","upcase",-1},{"String","upcase!",-1},
+  {"String","upto",-1},{"String","valid_encoding?",0},{"Integer","%",1},{"Integer","&",1},
+  {"Integer","*",1},{"Integer","**",1},{"Integer","+",1},{"Integer","-",1},
+  {"Integer","-@",0},{"Integer","/",1},{"Integer","<",1},{"Integer","<<",1},
+  {"Integer","<=",1},{"Integer","<=>",1},{"Integer","==",1},{"Integer","===",1},
+  {"Integer",">",1},{"Integer",">=",1},{"Integer",">>",1},{"Integer","[]",-1},
+  {"Integer","^",1},{"Integer","abs",0},{"Integer","allbits?",1},{"Integer","anybits?",1},
+  {"Integer","bit_length",0},{"Integer","ceil",-1},{"Integer","ceildiv",1},{"Integer","chr",-1},
+  {"Integer","coerce",1},{"Integer","denominator",0},{"Integer","digits",-1},{"Integer","div",1},
+  {"Integer","divmod",1},{"Integer","downto",1},{"Integer","even?",0},{"Integer","fdiv",1},
+  {"Integer","floor",-1},{"Integer","gcd",1},{"Integer","gcdlcm",1},{"Integer","inspect",-1},
+  {"Integer","integer?",0},{"Integer","lcm",1},{"Integer","magnitude",0},{"Integer","modulo",1},
+  {"Integer","next",0},{"Integer","nobits?",1},{"Integer","numerator",0},{"Integer","odd?",0},
+  {"Integer","ord",0},{"Integer","pow",-1},{"Integer","pred",0},{"Integer","rationalize",-1},
+  {"Integer","remainder",1},{"Integer","round",-1},{"Integer","size",0},{"Integer","succ",0},
+  {"Integer","times",0},{"Integer","to_f",0},{"Integer","to_i",0},{"Integer","to_int",0},
+  {"Integer","to_r",0},{"Integer","to_s",-1},{"Integer","truncate",-1},{"Integer","upto",1},
+  {"Integer","zero?",0},{"Integer","|",1},{"Integer","~",0},{"Float","%",1},
+  {"Float","*",1},{"Float","**",1},{"Float","+",1},{"Float","-",1},
+  {"Float","-@",0},{"Float","/",1},{"Float","<",1},{"Float","<=",1},
+  {"Float","<=>",1},{"Float","==",1},{"Float","===",1},{"Float",">",1},
+  {"Float",">=",1},{"Float","abs",0},{"Float","angle",0},{"Float","arg",0},
+  {"Float","ceil",-1},{"Float","coerce",1},{"Float","denominator",0},{"Float","divmod",1},
+  {"Float","eql?",1},{"Float","fdiv",1},{"Float","finite?",0},{"Float","floor",-1},
+  {"Float","hash",0},{"Float","infinite?",0},{"Float","inspect",0},{"Float","magnitude",0},
+  {"Float","modulo",1},{"Float","nan?",0},{"Float","negative?",0},{"Float","next_float",0},
+  {"Float","numerator",0},{"Float","phase",0},{"Float","positive?",0},{"Float","prev_float",0},
+  {"Float","quo",1},{"Float","rationalize",-1},{"Float","round",-1},{"Float","to_f",0},
+  {"Float","to_i",0},{"Float","to_int",0},{"Float","to_r",0},{"Float","to_s",0},
+  {"Float","truncate",-1},{"Float","zero?",0},{"Array","&",1},{"Array","*",1},
+  {"Array","+",1},{"Array","-",1},{"Array","<<",1},{"Array","<=>",1},
+  {"Array","==",1},{"Array","[]",-1},{"Array","[]=",-1},{"Array","all?",-1},
+  {"Array","any?",-1},{"Array","append",-1},{"Array","assoc",1},{"Array","at",1},
+  {"Array","bsearch",0},{"Array","bsearch_index",0},{"Array","clear",0},{"Array","collect",0},
+  {"Array","collect!",0},{"Array","combination",1},{"Array","compact",0},{"Array","compact!",0},
+  {"Array","concat",-1},{"Array","count",-1},{"Array","cycle",-1},{"Array","deconstruct",0},
+  {"Array","delete",1},{"Array","delete_at",1},{"Array","delete_if",0},{"Array","detect",-1},
+  {"Array","difference",-1},{"Array","dig",-1},{"Array","drop",1},{"Array","drop_while",0},
+  {"Array","each",0},{"Array","each_index",0},{"Array","empty?",0},{"Array","eql?",1},
+  {"Array","fetch",-1},{"Array","fetch_values",-1},{"Array","fill",-1},{"Array","filter",0},
+  {"Array","filter!",0},{"Array","find",-1},{"Array","find_index",-1},{"Array","first",-1},
+  {"Array","flatten",-1},{"Array","flatten!",-1},{"Array","freeze",0},{"Array","hash",0},
+  {"Array","include?",1},{"Array","index",-1},{"Array","insert",-1},{"Array","inspect",0},
+  {"Array","intersect?",1},{"Array","intersection",-1},{"Array","join",-1},{"Array","keep_if",0},
+  {"Array","last",-1},{"Array","length",0},{"Array","map",0},{"Array","map!",0},
+  {"Array","max",-1},{"Array","min",-1},{"Array","minmax",0},{"Array","none?",-1},
+  {"Array","one?",-1},{"Array","pack",-2},{"Array","permutation",-1},{"Array","pop",-1},
+  {"Array","prepend",-1},{"Array","product",-1},{"Array","push",-1},{"Array","rassoc",1},
+  {"Array","reject",0},{"Array","reject!",0},{"Array","repeated_combination",1},{"Array","repeated_permutation",1},
+  {"Array","replace",1},{"Array","reverse",0},{"Array","reverse!",0},{"Array","reverse_each",0},
+  {"Array","rfind",-1},{"Array","rindex",-1},{"Array","rotate",-1},{"Array","rotate!",-1},
+  {"Array","sample",-1},{"Array","select",0},{"Array","select!",0},{"Array","shift",-1},
+  {"Array","shuffle",-1},{"Array","shuffle!",-1},{"Array","size",0},{"Array","slice",-1},
+  {"Array","slice!",-1},{"Array","sort",0},{"Array","sort!",0},{"Array","sort_by!",0},
+  {"Array","sum",-1},{"Array","take",1},{"Array","take_while",0},{"Array","to_a",0},
+  {"Array","to_ary",0},{"Array","to_h",0},{"Array","to_s",0},{"Array","transpose",0},
+  {"Array","union",-1},{"Array","uniq",0},{"Array","uniq!",0},{"Array","unshift",-1},
+  {"Array","values_at",-1},{"Array","zip",-1},{"Array","|",1},{"Hash","<",1},
+  {"Hash","<=",1},{"Hash","==",1},{"Hash",">",1},{"Hash",">=",1},
+  {"Hash","[]",1},{"Hash","[]=",2},{"Hash","any?",-1},{"Hash","assoc",1},
+  {"Hash","clear",0},{"Hash","compact",0},{"Hash","compact!",0},{"Hash","compare_by_identity",0},
+  {"Hash","compare_by_identity?",0},{"Hash","deconstruct_keys",1},{"Hash","default",-1},{"Hash","default=",1},
+  {"Hash","default_proc",0},{"Hash","default_proc=",1},{"Hash","delete",1},{"Hash","delete_if",0},
+  {"Hash","dig",-1},{"Hash","each",0},{"Hash","each_key",0},{"Hash","each_pair",0},
+  {"Hash","each_value",0},{"Hash","empty?",0},{"Hash","eql?",1},{"Hash","except",-1},
+  {"Hash","fetch",-1},{"Hash","fetch_values",-1},{"Hash","filter",0},{"Hash","filter!",0},
+  {"Hash","flatten",-1},{"Hash","freeze",0},{"Hash","has_key?",1},{"Hash","has_value?",1},
+  {"Hash","hash",0},{"Hash","include?",1},{"Hash","inspect",0},{"Hash","invert",0},
+  {"Hash","keep_if",0},{"Hash","key",1},{"Hash","key?",1},{"Hash","keys",0},
+  {"Hash","length",0},{"Hash","member?",1},{"Hash","merge",-1},{"Hash","merge!",-1},
+  {"Hash","rassoc",1},{"Hash","rehash",0},{"Hash","reject",0},{"Hash","reject!",0},
+  {"Hash","replace",1},{"Hash","select",0},{"Hash","select!",0},{"Hash","shift",0},
+  {"Hash","size",0},{"Hash","slice",-1},{"Hash","store",2},{"Hash","to_a",0},
+  {"Hash","to_h",0},{"Hash","to_hash",0},{"Hash","to_proc",0},{"Hash","to_s",0},
+  {"Hash","transform_keys",-1},{"Hash","transform_keys!",-1},{"Hash","transform_values",0},{"Hash","transform_values!",0},
+  {"Hash","update",-1},{"Hash","value?",1},{"Hash","values",0},{"Hash","values_at",-1},
+  {"Symbol","<=>",1},{"Symbol","==",1},{"Symbol","===",1},{"Symbol","=~",1},
+  {"Symbol","[]",-1},{"Symbol","capitalize",-1},{"Symbol","casecmp",1},{"Symbol","casecmp?",1},
+  {"Symbol","downcase",-1},{"Symbol","empty?",0},{"Symbol","encoding",0},{"Symbol","end_with?",-1},
+  {"Symbol","id2name",0},{"Symbol","inspect",0},{"Symbol","intern",0},{"Symbol","length",0},
+  {"Symbol","match",-1},{"Symbol","match?",-1},{"Symbol","name",0},{"Symbol","next",0},
+  {"Symbol","size",0},{"Symbol","slice",-1},{"Symbol","start_with?",-1},{"Symbol","succ",0},
+  {"Symbol","swapcase",-1},{"Symbol","to_proc",0},{"Symbol","to_s",0},{"Symbol","to_sym",0},
+  {"Symbol","upcase",-1},{"Range","%",1},{"Range","==",1},{"Range","===",1},
+  {"Range","begin",0},{"Range","bsearch",0},{"Range","count",-1},{"Range","cover?",1},
+  {"Range","each",0},{"Range","end",0},{"Range","entries",0},{"Range","eql?",1},
+  {"Range","exclude_end?",0},{"Range","first",-1},{"Range","hash",0},{"Range","include?",1},
+  {"Range","inspect",0},{"Range","last",-1},{"Range","max",-1},{"Range","member?",1},
+  {"Range","min",-1},{"Range","minmax",0},{"Range","overlap?",1},{"Range","reverse_each",0},
+  {"Range","size",0},{"Range","step",-1},{"Range","to_a",0},{"Range","to_s",0},
+  {"Range","to_set",-1},{"Time","+",1},{"Time","-",1},{"Time","<=>",1},
+  {"Time","asctime",0},{"Time","ceil",-1},{"Time","ctime",0},{"Time","day",0},
+  {"Time","deconstruct_keys",1},{"Time","dst?",0},{"Time","eql?",1},{"Time","floor",-1},
+  {"Time","friday?",0},{"Time","getgm",0},{"Time","getlocal",-1},{"Time","getutc",0},
+  {"Time","gmt?",0},{"Time","gmt_offset",0},{"Time","gmtime",0},{"Time","gmtoff",0},
+  {"Time","hash",0},{"Time","hour",0},{"Time","inspect",0},{"Time","isdst",0},
+  {"Time","iso8601",-1},{"Time","localtime",-1},{"Time","mday",0},{"Time","min",0},
+  {"Time","mon",0},{"Time","monday?",0},{"Time","month",0},{"Time","nsec",0},
+  {"Time","round",-1},{"Time","saturday?",0},{"Time","sec",0},{"Time","strftime",1},
+  {"Time","subsec",0},{"Time","sunday?",0},{"Time","thursday?",0},{"Time","to_a",0},
+  {"Time","to_f",0},{"Time","to_i",0},{"Time","to_r",0},{"Time","to_s",0},
+  {"Time","tuesday?",0},{"Time","tv_nsec",0},{"Time","tv_sec",0},{"Time","tv_usec",0},
+  {"Time","usec",0},{"Time","utc",0},{"Time","utc?",0},{"Time","utc_offset",0},
+  {"Time","wday",0},{"Time","wednesday?",0},{"Time","xmlschema",-1},{"Time","yday",0},
+  {"Time","year",0},{"Time","zone",0},
+  {NULL, NULL, 0}
+};
+static int builtin_method_arity(const char *cls, const char *m, int *out) {
+  for (int i = 0; sp_builtin_arity_tbl[i].cls; i++)
+    if (sp_streq(sp_builtin_arity_tbl[i].cls, cls) && sp_streq(sp_builtin_arity_tbl[i].m, m))
+      { *out = sp_builtin_arity_tbl[i].a; return 1; }
+  return 0;
+}
+
 /* The constant names a class/module defines in its OWN body, in declaration
    order, appended to `out` (deduplicated). Scans every ClassNode/ModuleNode
    that opens `ci`, so reopenings contribute too. #2674 */
@@ -6761,6 +6911,39 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && sp_streq(name, "arity")) {
     int mn = method_recv_node(c, recv);
     int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    /* a builtin-receiver method object: the arity comes from the CRuby table
+       keyed on the receiver's class and the literal method name (#2700). Such
+       a method() was retargeted at a synthesized __bam_* wrapper, whose params
+       are ABI plumbing, not the builtin's signature -- recover the original
+       name from the wrapper body's tail call. */
+    int is_bam = target >= 0 && c->scopes[target].name &&
+                 strncmp(c->scopes[target].name, "__bam_", 6) == 0;
+    if ((target < 0 || is_bam) && mn >= 0) {
+      const char *msym = method_sym_arg(c, mn);
+      if (is_bam) {
+        int wb = c->scopes[target].body;
+        int wn2 = 0; const int *wbb = wb >= 0 ? nt_arr(nt, wb, "body", &wn2) : NULL;
+        int tail = wn2 > 0 ? wbb[wn2 - 1] : -1;
+        msym = (tail >= 0 && nt_type(nt, tail) && sp_streq(nt_type(nt, tail), "CallNode"))
+               ? nt_str(nt, tail, "name") : NULL;
+      }
+      int mrecv = nt_ref(nt, mn, "receiver");
+      TyKind mrt = mrecv >= 0 ? comp_ntype(c, mrecv) : TY_UNKNOWN;
+      const char *mcls = mrt == TY_STRING ? "String" : mrt == TY_INT ? "Integer"
+                       : mrt == TY_FLOAT ? "Float" : mrt == TY_SYMBOL ? "Symbol"
+                       : ty_is_array(mrt) ? "Array" : ty_is_hash(mrt) ? "Hash"
+                       : mrt == TY_RANGE ? "Range" : mrt == TY_TIME ? "Time" : NULL;
+      int ba;
+      if (msym && mcls && builtin_method_arity(mcls, msym, &ba)) {
+        /* evaluate for effect: the method()'s own receiver when the chain is
+           inline (creating the bound method emits a non-void-castable
+           expression), or the local read when the method object is var-held */
+        buf_printf(b, "((void)(");
+        if (mn == recv) emit_expr(c, mrecv, b); else emit_expr(c, recv, b);
+        buf_printf(b, "), (mrb_int)%d)", ba);
+        return;
+      }
+    }
     if (target >= 0 && c->scopes[target].def_node >= 0) {
       int pn = nt_ref(c->nt, c->scopes[target].def_node, "parameters");
       int ok = 1;
