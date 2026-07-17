@@ -9416,8 +9416,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           }
         }
         /* clone copies the receiver's frozen state (dup never does); an
-           explicit `freeze:` overrides (#2625, #2626). */
-        if (sp_streq(name, "clone")) {
+           explicit `freeze:` overrides (#2625, #2626). A Data instance is
+           frozen by construction and stays so through EVERY copy -- CRuby's
+           Data#dup and clone(freeze: false) both return a frozen value
+           (#2716). */
+        if (dci->is_data) buf_printf(b, "sp_gc_freeze(_t%d); ", td);
+        else if (sp_streq(name, "clone")) {
           if (freeze_mode == 1) buf_printf(b, "sp_gc_freeze(_t%d); ", td);
           else if (freeze_mode < 0) buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_gc_freeze(_t%d); ", to, td);
         }
@@ -10505,6 +10509,38 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int ts = ++g_tmp;
         buf_printf(b, "({ sp_Time _t%d = sp_time_at_int(", ts); emit_int_expr(c, argv[0], b);
         buf_printf(b, "); _t%d.is_utc = 2; _t%d.utc_off = %ld; _t%d; })", ts, ts, osec, ts);
+        return;
+      }
+    }
+    /* Time.at(sec, num, :unit): the third argument names the second one's
+       unit -- :millisecond / :usec / :microsecond / :nanosecond (and their
+       plurals/aliases), scaled to tv_nsec. Only a literal symbol resolves the
+       scale at compile time; anything else falls through. (#2714) */
+    if (sp_streq(name, "at") && argc == 3 &&
+        nt_type(nt, argv[2]) && sp_streq(nt_type(nt, argv[2]), "SymbolNode")) {
+      const char *un = nt_str(nt, argv[2], "value");
+      long mult = 0;
+      /* CRuby's exact unit set -- no plurals; an unknown symbol is its
+         runtime ArgumentError */
+      if (un && sp_streq(un, "millisecond")) mult = 1000000;
+      else if (un && (sp_streq(un, "usec") || sp_streq(un, "microsecond"))) mult = 1000;
+      else if (un && (sp_streq(un, "nsec") || sp_streq(un, "nanosecond"))) mult = 1;
+      else if (un) {
+        buf_printf(b, "({ sp_raise_cls(\"ArgumentError\", \"unexpected unit: %s\"); (sp_Time){0}; })", un);
+        return;
+      }
+      if (mult > 0) {
+        TyKind st = comp_ntype(c, argv[0]);
+        int ts = ++g_tmp;
+        buf_printf(b, "({ sp_Time _t%d = ", ts);
+        if (st == TY_FLOAT) { buf_puts(b, "sp_time_at_float("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else { buf_puts(b, "sp_time_at_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+        buf_printf(b, "; _t%d.tv_nsec += (int32_t)(", ts);
+        TyKind ut = comp_ntype(c, argv[1]);
+        if (ut == TY_FLOAT) { buf_puts(b, "("); emit_expr(c, argv[1], b); buf_printf(b, ") * %ld.0", mult); }
+        else if (ut == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[1], b); buf_printf(b, ") * %ld.0", mult); }
+        else { buf_puts(b, "("); emit_int_expr(c, argv[1], b); buf_printf(b, ") * %ld", mult); }
+        buf_printf(b, "); _t%d; })", ts);
         return;
       }
     }
