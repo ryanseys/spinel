@@ -3344,10 +3344,14 @@ int desugar_class_eval_value(Compiler *c) {
       for (int k = 0; k < bn; k++) items[ni++] = bb[k];
     }
     int stmts = nt_new_node(nt, "StatementsNode");
-    int beg = nt_new_node(nt, "BeginNode");
+    /* a ParenthesesNode, not a BeginNode: begin carries its own exception
+       region, which swallows a raise out of the spliced body before the
+       enclosing handler sees it -- parens are the plain multi-statement
+       expression (#2723) */
+    int beg = nt_new_node(nt, "ParenthesesNode");
     if (stmts < 0 || beg < 0) continue;
     nt_node_set_arr(nt, stmts, "body", items, ni);
-    nt_node_set_ref(nt, beg, "statements", stmts);
+    nt_node_set_ref(nt, beg, "body", stmts);
     /* the call becomes a transparent alias of the begin's value */
     nt_node_set_str(nt, id, "name", "itself");
     nt_node_set_ref(nt, id, "receiver", beg);
@@ -3547,10 +3551,14 @@ int desugar_instance_eval_builtin(Compiler *c) {
       for (int k = 0; k < bn; k++) items[ni++] = bb[k];
     }
     int stmts = nt_new_node(nt, "StatementsNode");
-    int beg = nt_new_node(nt, "BeginNode");
+    /* a ParenthesesNode, not a BeginNode: begin carries its own exception
+       region, which swallows a raise out of the spliced body before the
+       enclosing handler sees it -- parens are the plain multi-statement
+       expression (#2723) */
+    int beg = nt_new_node(nt, "ParenthesesNode");
     if (stmts < 0 || beg < 0) continue;
     nt_node_set_arr(nt, stmts, "body", items, ni);
-    nt_node_set_ref(nt, beg, "statements", stmts);
+    nt_node_set_ref(nt, beg, "body", stmts);
     nt_node_set_str(nt, id, "name", "itself");
     nt_node_set_ref(nt, id, "receiver", beg);
     nt_node_set_ref(nt, id, "block", -1);
