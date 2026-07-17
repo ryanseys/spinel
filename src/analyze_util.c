@@ -790,6 +790,34 @@ int method_obj_target_mi(Compiler *c, int node) {
   return -1;
 }
 
+/* Is this Method-typed expression an UNBOUND method (Klass.instance_method
+   with no #bind crossed)? Resolves the same way method_recv_node does, but a
+   bind on the path means the value is bound (#2724). */
+int method_expr_is_unbound(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return 0;
+  if (nt_kind(nt, recv) == NK_CallNode) {
+    const char *nm = nt_str(nt, recv, "name");
+    if (nm && sp_streq(nm, "bind")) return 0;
+    if (nm && sp_streq(nm, "instance_method") && method_sym_arg(c, recv) != NULL) return 1;
+    return 0;
+  }
+  if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, recv, "name");
+    Scope *sc = vn ? comp_scope_of(c, recv) : NULL;
+    int found = 0, n = 0;
+    for (int w = 0; vn && w < nt->count; w++) {
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+      n++;
+      if (method_expr_is_unbound(c, nt_ref(nt, w, "value"))) found = 1;
+    }
+    return n == 1 && found;   /* a re-written local is dynamic: stay bound-ish */
+  }
+  return 0;
+}
+
 /* The `method(:sym)` node a Method-typed expression resolves to: either the
    call itself (inline) or, for a local variable, its assignment in scope. */
 int method_recv_node(Compiler *c, int recv) {

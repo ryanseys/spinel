@@ -6769,6 +6769,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* An UNBOUND method is not callable: CRuby's NoMethodError (#2724). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) &&
+      method_expr_is_unbound(c, recv)) {
+    buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+    buf_printf(b, "); sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method '%s' for an instance of UnboundMethod\")[1])); %s; })",
+               name, default_value(comp_ntype(c, id)));
+    return;
+  }
   /* UnboundMethod#bind(obj): the same target with obj as self. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 1 && sp_streq(name, "bind")) {
     int mn2 = method_recv_node(c, recv);
@@ -9207,7 +9216,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_IO) cn = "IO";
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
     else if (rt == TY_NIL) cn = "NilClass";
-    else if (rt == TY_METHOD) cn = "Method";
+    else if (rt == TY_METHOD) cn = method_expr_is_unbound(c, recv) ? "UnboundMethod" : "Method";
     else if (rt == TY_MATCHDATA) cn = "MatchData";
     else if (rt == TY_REGEX) cn = "Regexp";
     else if (rt == TY_PROC) cn = "Proc";
@@ -10566,6 +10575,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       const char *unit = NULL;
       if (argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode"))
         unit = nt_str(nt, argv[1], "value");
+      /* an unknown literal unit is CRuby's ArgumentError, not a silent
+         float_second (#2727) */
+      if (unit && !sp_streq(unit, "nanosecond") && !sp_streq(unit, "microsecond") &&
+          !sp_streq(unit, "millisecond") && !sp_streq(unit, "second") &&
+          !sp_streq(unit, "float_microsecond") && !sp_streq(unit, "float_millisecond") &&
+          !sp_streq(unit, "float_second")) {
+        buf_printf(b, "({ sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"unexpected unit: %s\")[1])); 0.0; })", unit);
+        return;
+      }
       buf_puts(b, "(sp_process_clock_ns("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       if (unit && sp_streq(unit, "nanosecond")) buf_puts(b, ")");
       else if (unit && sp_streq(unit, "microsecond")) buf_puts(b, " / 1000)");
