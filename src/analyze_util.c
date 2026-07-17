@@ -153,7 +153,11 @@ const char *builtin_class_var_static_name(Compiler *c, int node) {
     int val = nt_ref(nt, w, "value");
     const char *cn = (val >= 0 && nt_kind(nt, val) == NK_ConstantReadNode)
                      ? nt_str(nt, val, "name") : NULL;
-    if (!cn || !is_builtin_class_name(cn) || comp_class_index(c, cn) >= 0) return NULL;
+    /* a USER class constant qualifies too: the retargeted receiver then rides
+       every ConstantReadNode dispatch arm (method_defined?, subclasses,
+       class_eval, ...), not just the sites class_var_static_ci was wired into
+       (#2717, #2721) */
+    if (!cn || !(is_builtin_class_name(cn) || comp_class_index(c, cn) >= 0)) return NULL;
     if (found && !sp_streq(found, cn)) return NULL;   /* two classes: dynamic */
     found = cn;
   }
