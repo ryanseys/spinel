@@ -462,9 +462,15 @@ $(PCH_NOPOLY): $(SP_LIB_HDRS)
 ifeq ($(CC_KIND),clang)
 PCH_USE_PLAIN  = -include-pch $(PCH_PLAIN)
 PCH_USE_NOPOLY = -include-pch $(PCH_NOPOLY)
+# clang tests compile+link in ONE driver invocation: sccache declines to
+# cache -include-pch compiles, so the split buys nothing there, and the
+# extra ~2000 driver spawns are expensive on macOS (process launch cost).
+# gcc keeps the split: its separate compile step is sccache-cacheable.
+TEST_SINGLE_INVOKE := 1
 else
 PCH_USE_PLAIN  = -I$(PCH_ROOT)/plain
 PCH_USE_NOPOLY = -I$(PCH_ROOT)/nopoly
+TEST_SINGLE_INVOKE :=
 endif
 
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
@@ -639,8 +645,12 @@ $(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
 { pchuse="$(PCH_USE_PLAIN)"; pchf="$(PCH_PLAIN)"; \
   if head -2 "$$cfile" | grep -q SP_TU_NO_POLY_RENDER; then pchuse="$(PCH_USE_NOPOLY)"; pchf="$(PCH_NOPOLY)"; fi; \
   [ -f "$$pchf" ] || pchuse=""; \
-  $(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib -c "$$cfile" -o "$$cfile.o" 2>/dev/null; } && \
-$(CC) $(CFLAGS) "$$cfile.o" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
+  if [ -n "$(TEST_SINGLE_INVOKE)" ]; then \
+    $(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib "$$cfile" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
+  else \
+    $(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib -c "$$cfile" -o "$$cfile.o" 2>/dev/null && \
+    $(CC) $(CFLAGS) "$$cfile.o" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
+  fi; }; \
 if [ $$? -eq 0 ]; then \
   if [ -f "$<.expected" ]; then \
     LC_ALL=C sed 's/\r$$//' "$<.expected" >"$$exp.n"; \
