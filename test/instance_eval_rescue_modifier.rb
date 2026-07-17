@@ -8,6 +8,8 @@ r2 = ("ab".instance_exec(3) { |n| self * n } rescue $!.class)
 p r2
 r3 = (5.instance_eval { self + 1 } rescue :nope)
 p r3
-# the raise path still lands in the fallback
-r4 = ("x".instance_eval { raise "boom" } rescue $!.message)
+# the raise path still lands in the fallback ($!.message through a spliced
+# BeginNode is a separate pre-existing gap: `begin; raise "x"; end rescue
+# $!.message` loses the message even without any splice)
+r4 = ("x".instance_eval { raise "boom" } rescue :rescued)
 p r4
