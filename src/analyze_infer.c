@@ -5418,6 +5418,10 @@ TyKind infer_uncached(Compiler *c, int id) {
          the STR_POLY hash (mirrors the empty-array-receiver mark) (#2336). */
       if (c->empty_hash_recv && id < c->node_cap && c->empty_hash_recv[id])
         return TY_STR_POLY_HASH;
+      /* a bare `{}` passed as a user-method arg (an accumulator seed) is the
+         widest hash, so the callee may write any key/value type (#2860). */
+      if (c->empty_hash_arg && id < c->node_cap && c->empty_hash_arg[id])
+        return TY_POLY_POLY_HASH;
       return TY_UNKNOWN;
     }
     TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;

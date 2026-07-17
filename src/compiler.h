@@ -272,6 +272,7 @@ typedef struct {
   int *node_cbody;  /* [node_cap] node id -> enclosing class/module-body class id, or -1 */
   char *empty_arr_recv; /* [node_cap] empty `[]` used as a safe-iterator receiver -> TY_POLY_ARRAY */
   char *empty_hash_recv; /* [node_cap] empty `{}` used as a hash block-method receiver -> TY_STR_POLY_HASH */
+  char *empty_hash_arg;  /* [node_cap] empty `{}` passed as a user-method arg -> TY_POLY_POLY_HASH */
   int node_cap;     /* allocated length of ntype/nscope (>= nt->count) */
 
   Scope *scopes;    /* scope[0] = top level */

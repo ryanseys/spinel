@@ -5165,6 +5165,49 @@ static void mark_empty_literal_tails(Compiler *c) {
   }
   free(has_ret);
 }
+/* An empty `{}` passed as an argument to a USER method (`m({})`) is an
+   accumulator seed: the callee builds it up (a yield-wrapper's inject /
+   each_with_object), so the param and the method's return settle from it. An
+   unmarked empty {} stays UNKNOWN, and if the callee returns it (`acc`) the
+   whole call is UNKNOWN -> a void method (#2860). Type it as the widest hash
+   (POLY_POLY, so any key/value the callee writes is sound). Only user methods
+   (a builtin has its own arg handling). Empty `[]` args are deliberately NOT
+   marked: POLY_ARRAY would pessimize the common typed-array-seed case, and the
+   observed void-return bug is hash-specific. */
+static void mark_empty_literal_args(Compiler *c) {
+  if (!c->empty_hash_arg) return;
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    /* Resolve to a user method that YIELDS: a yield-wrapper builds the seed
+       through its block (`acc = yield(acc, x)`), so the accumulator's key/value
+       types come from the caller's block, not the wrapper body -- the precise
+       body-index-write widening (#397) can't reach them and the param stays
+       UNKNOWN. A wrapper that directly indexes the param (store["k"]=v, no
+       yield) is left to that precise mechanism; only yield-wrappers fall back
+       to the widest hash here. */
+    int mi = comp_method_index(c, nm);
+    if (mi < 0)
+      for (int k = 0; k < c->nclasses && mi < 0; k++) {
+        mi = comp_method_in_class(c, k, nm);
+        if (mi < 0) mi = comp_cmethod_in_class(c, k, nm);
+      }
+    if (mi < 0 || !c->scopes[mi].yields) continue;
+    int anode = nt_ref(nt, id, "arguments");
+    int an = 0; const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+    for (int j = 0; j < an; j++) {
+      int a = args[j];
+      if (a < 0 || a >= c->node_cap) continue;
+      NodeKind ak = nt_kind(nt, a);
+      if (ak == NK_HashNode || ak == NK_KeywordHashNode) {
+        int en = 0; nt_arr(nt, a, "elements", &en);
+        if (en == 0) c->empty_hash_arg[a] = 1;
+      }
+    }
+  }
+}
 static void mark_empty_hash_receivers(Compiler *c) {
   if (!c->empty_hash_recv) return;
   const NodeTable *nt = c->nt;
@@ -5502,6 +5545,7 @@ void analyze_program(Compiler *c) {
      hash so infer_block_params declares its |k, v| params (#2336). */
   mark_empty_hash_receivers(c);
   mark_empty_literal_tails(c);
+  mark_empty_literal_args(c);
 
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
