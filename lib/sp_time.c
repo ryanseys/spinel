@@ -306,18 +306,29 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {
       else { strcpy(val, nb); for (int i = 9; i < w && i < 120; i++) val[i] = '0'; val[w < 120 ? w : 120] = 0; }
       width = -1;  /* width consumed by the subsecond precision */
     }
-    else if (d == 'z' && colon) {
-      long off = sp_time_offset_sec(t);
-      char sign = off < 0 ? '-' : '+'; long a = off < 0 ? -off : off;
-      int oh = (int)(a / 3600), om = (int)((a / 60) % 60), os = (int)(a % 60);
-      /* %:::z collapses to the minimal precision that loses nothing */
-      if (colon >= 3) {
-        if (os) snprintf(val, sizeof val, "%c%02d:%02d:%02d", sign, oh, om, os);
-        else if (om) snprintf(val, sizeof val, "%c%02d:%02d", sign, oh, om);
-        else snprintf(val, sizeof val, "%c%02d", sign, oh);
+    else if (d == 'z') {
+      /* bare %z computed from the receiver's own offset, never C strftime's
+         tm_gmtoff -- that field is filled from the tm's construction path and
+         varies by platform, and a fixed-offset time (is_utc == 2) has no tm
+         representation at all (#2635) */
+      if (!colon) {
+        long off0 = sp_time_offset_sec(t);
+        char sign0 = off0 < 0 ? '-' : '+'; long a0 = off0 < 0 ? -off0 : off0;
+        snprintf(val, sizeof val, "%c%02d%02d", sign0, (int)(a0 / 3600), (int)((a0 / 60) % 60));
       }
-      else if (colon == 2) snprintf(val, sizeof val, "%c%02d:%02d:%02d", sign, oh, om, os);
-      else snprintf(val, sizeof val, "%c%02d:%02d", sign, oh, om);
+      else {
+        long off = sp_time_offset_sec(t);
+        char sign = off < 0 ? '-' : '+'; long a = off < 0 ? -off : off;
+        int oh = (int)(a / 3600), om = (int)((a / 60) % 60), os = (int)(a % 60);
+        /* %:::z collapses to the minimal precision that loses nothing */
+        if (colon >= 3) {
+          if (os) snprintf(val, sizeof val, "%c%02d:%02d:%02d", sign, oh, om, os);
+          else if (om) snprintf(val, sizeof val, "%c%02d:%02d", sign, oh, om);
+          else snprintf(val, sizeof val, "%c%02d", sign, oh);
+        }
+        else if (colon == 2) snprintf(val, sizeof val, "%c%02d:%02d:%02d", sign, oh, om, os);
+        else snprintf(val, sizeof val, "%c%02d:%02d", sign, oh, om);
+      }
     }
     else if (d == 'P') { char b2[16]; strftime(b2, sizeof b2, "%p", &tmv); for (char *q = b2; *q; q++) *q = (char)tolower((unsigned char)*q); strcpy(val, b2); }
     else if (d == 'Z' && t.is_utc) strcpy(val, "UTC");  /* CRuby names a UTC time "UTC", not the C locale's "GMT" */

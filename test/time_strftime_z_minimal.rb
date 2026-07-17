@@ -7,3 +7,8 @@ p t.strftime("%:::z")
 p Time.at(0, in: "+05:30").strftime("%:::z")
 p Time.at(0, in: "+05:00").strftime("%:::z")
 p Time.at(0, in: "-08:00").strftime("%:::z")
+# bare %z comes from the receiver's own offset, never C strftime's tm_gmtoff
+# (platform-varying; macOS reported the machine-local zone for a UTC receiver)
+p t.strftime("%z")
+p Time.at(0, in: "+05:30").strftime("%z")
+p Time.at(0, in: "-08:00").strftime("%z")
