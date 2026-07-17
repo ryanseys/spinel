@@ -6941,6 +6941,10 @@ static SP_TLS sp_RbVal _sp_proc_poly_ret;
    mrb_int[] slot. Declared here so the compose/curry/to_proc trampolines
    below can publish through it like every generated call site does. */
 static SP_TLS sp_RbVal _sp_proc_poly_args[16];
+/* The block passed to a first-class proc's .call { }: the caller publishes it
+   here just before sp_proc_call, and the callee's &block-param prologue
+   consumes (and clears) it. Same discipline as _sp_proc_poly_args (#2648). */
+static SP_TLS sp_Proc *_sp_proc_blk;
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
 static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }

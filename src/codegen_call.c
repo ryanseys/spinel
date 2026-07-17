@@ -7232,6 +7232,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
       (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
        (sp_streq(name, "===") && argc == 1))) {
     TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
+    /* `.call { |x| ... }`: the literal block rides the _sp_proc_blk
+       side-channel to the callee's &block param (#2648) */
+    {
+      int cblk = nt_ref(nt, id, "block");
+      if (cblk >= 0 && nt_type(nt, cblk) && sp_streq(nt_type(nt, cblk), "BlockNode")) {
+        int tb = ++g_tmp;
+        /* render the proc value first: a capturing block's emission writes its
+           own prelude (capture struct fill) to g_pre, which must land as whole
+           statements before this line */
+        Buf pv; memset(&pv, 0, sizeof pv);
+        emit_proc_literal(c, cblk, &pv);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); _sp_proc_blk = _t%d;%c",
+                   tb, pv.p ? pv.p : "NULL", tb, tb, 10);
+        free(pv.p);
+      }
+    }
     /* <proc>.call(*arr): a single splat argument spreads a runtime array into
        the ABI at call time (its length is dynamic, unlike the fixed mrb_int[16]
        list). #2691 */

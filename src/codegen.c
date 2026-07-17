@@ -1813,6 +1813,15 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
       const char *kn = nt_str(nt, kws[j], "name");
       if (kn) nameset_add(&params, kn);
     }
+    /* `&b` binds from the block side-channel in the prologue below */
+    {
+      int bpar0 = pn0 >= 0 ? nt_ref(nt, pn0, "block") : -1;
+      const char *bpty0 = bpar0 >= 0 ? nt_type(nt, bpar0) : NULL;
+      if (bpty0 && sp_streq(bpty0, "BlockParameterNode")) {
+        const char *bpn0 = nt_str(nt, bpar0, "name");
+        if (bpn0) nameset_add(&params, bpn0);
+      }
+    }
     /* `**kw` binds the whole trailing kwargs hash in the prologue below --
        only the collect-all form; alongside named keywords the remainder split
        is not implemented, so that mix keeps the old diagnostic (#2648) */
@@ -2407,6 +2416,19 @@ else if (orecv >= 0 && onm) {
       else buf_printf(pb, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", kn);
       buf_puts(pb, ";\n");
       buf_printf(pb, "    (void)lv_%s;\n", kn);
+    }
+  }
+  /* `&b`: the block the caller attached to .call, delivered on the
+     _sp_proc_blk side-channel; nil (NULL) when none was given (#2648). */
+  {
+    int pnb = proc_params_node(c, create);
+    int bpar = pnb >= 0 ? nt_ref(nt, pnb, "block") : -1;
+    const char *bpty = bpar >= 0 ? nt_type(nt, bpar) : NULL;
+    const char *bpn = (bpty && sp_streq(bpty, "BlockParameterNode")) ? nt_str(nt, bpar, "name") : NULL;
+    if (bpn) {
+      g_needs_proc_poly_argslot = 1;
+      buf_printf(pb, "    sp_Proc *lv_%s = _sp_proc_blk; _sp_proc_blk = NULL; (void)lv_%s;%c",
+                 bpn, bpn, 10);
     }
   }
   /* `**kw` (no named keywords alongside): the whole trailing kwargs hash, or

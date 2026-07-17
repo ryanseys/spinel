@@ -415,6 +415,11 @@ int a_block_is_lifted(Compiler *c, int id) {
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   int recv = nt_ref(nt, id, "receiver");
+  /* a literal block on a first-class proc's .call is lifted onto the
+     _sp_proc_blk side-channel as a real proc (#2648), so its captures need
+     cells exactly like any other escaping block */
+  if ((sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) &&
+      recv >= 0 && infer_type(c, recv) == TY_PROC) return 1;
   int mi = -1;
   if (recv < 0) {
     mi = comp_method_index(c, name);
@@ -511,6 +516,19 @@ void mark_proc_captures(Compiler *c) {
     int encl = c->nscope[id];
     ANameSet params = {0}, used = {0};
     int pn = a_proc_params_node(c, id);
+    /* a named &block param binds an sp_Proc* from the block side-channel:
+       type it so `b.call(...)` rides the TY_PROC dispatch (#2648) */
+    {
+      int bpar = pn >= 0 ? nt_ref(nt, pn, "block") : -1;
+      const char *bpty = bpar >= 0 ? nt_type(nt, bpar) : NULL;
+      if (bpty && sp_streq(bpty, "BlockParameterNode")) {
+        const char *bpn = nt_str(nt, bpar, "name");
+        Scope *pbs = comp_scope_of(c, id);
+        LocalVar *blv = (bpn && pbs) ? scope_local_intern(pbs, bpn) : NULL;
+        if (blv && blv->type == TY_UNKNOWN) { blv->type = TY_PROC; blv->is_block_param = 1; }
+        if (bpn) aname_add(&params, bpn);
+      }
+    }
     if (pn >= 0) { int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn); for (int k = 0; k < rn; k++) aname_add(&params, nt_str(nt, reqs[k], "name")); }
     a_collect_used(c, body, &used);
     Scope *es = &c->scopes[encl];
