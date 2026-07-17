@@ -28,6 +28,7 @@ typedef struct { uint64_t state; mrb_int seed; } sp_Random;
 extern SP_TLS sp_Random sp_random_default;
 uint64_t sp_random_next(sp_Random *r);
 sp_Random *sp_Random_new(mrb_int seed);
+sp_Random *sp_Random_new_float(mrb_float f);
 sp_Random *sp_Random_new_auto(void);
 mrb_int sp_Random_seed(sp_Random *r);
 mrb_bool sp_Random_eq(sp_Random *a, sp_Random *b);

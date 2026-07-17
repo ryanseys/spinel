@@ -1,6 +1,7 @@
 /* sp_random.c -- the shared Kernel-level PRNG stream and the Random
    instance methods (see sp_random.h). */
 #include <time.h>
+#include <string.h>
 #include "sp_random.h"
 #include "sp_alloc.h"   /* sp_str_alloc / sp_str_set_len / sp_float_to_s / sp_raise_cls / sp_gc_alloc */
 #include "sp_format.h"  /* sp_Range_inspect */
@@ -80,6 +81,24 @@ sp_Random *sp_Random_new(mrb_int seed) {
   sp_Random *r = (sp_Random *)sp_gc_alloc(sizeof(sp_Random), NULL, NULL);
   sp_pcg_seed(&r->state, (uint64_t)seed);
   r->seed = seed;
+  return r;
+}
+/* Random.new(Float): CRuby truncates the float to an integer seed. A plain
+   (mrb_int) cast is UB when the truncated value is out of range, so seed from
+   the in-range truncation when it fits and from the raw float bits otherwise
+   -- always deterministic (same float -> same stream), which is the actual
+   contract (the exact sequence is not MT19937 anyway). */
+sp_Random *sp_Random_new_float(mrb_float f) {
+  uint64_t s;
+  if (f >= -9.2233720368547758e18 && f < 9.2233720368547758e18) {
+    s = (uint64_t)(int64_t)f;
+  } else {
+    uint64_t bits; memcpy(&bits, &f, sizeof bits);
+    s = bits;
+  }
+  sp_Random *r = (sp_Random *)sp_gc_alloc(sizeof(sp_Random), NULL, NULL);
+  sp_pcg_seed(&r->state, s);
+  r->seed = (mrb_int)s;
   return r;
 }
 /* Random#seed: the seed the instance was constructed from. */
