@@ -3406,6 +3406,46 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
       return 1;
     }
   }
+  /* Time.new(y[, mo[, d[, h[, mi[, s]]]]], in: <off>): the `in:` keyword is
+     the utc_offset, same as the 7th positional (#2718). A "+HH:MM" literal
+     resolves at compile time; an Integer expression passes through. */
+  if (is_new && argc >= 2 && argc <= 7 &&
+      nt_type(nt, argv[argc - 1]) && sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+    int inv = struct_kwarg_value(c, argv[argc - 1], "in");
+    if (inv >= 0) {
+      int npos = argc - 1;
+      long koff = 0; int khave = 0;
+      const char *ity = nt_type(nt, inv);
+      if (ity && sp_streq(ity, "StringNode")) {
+        const char *sv = nt_str(nt, inv, "content");
+        if (!sv || strlen(sv) != 6 || (sv[0] != '+' && sv[0] != '-') || sv[3] != ':' ||
+            sv[1] < '0' || sv[1] > '9' || sv[2] < '0' || sv[2] > '9' ||
+            sv[4] < '0' || sv[4] > '9' || sv[5] < '0' || sv[5] > '9')
+          return 0;
+        koff = ((sv[1] - '0') * 10 + (sv[2] - '0')) * 3600 +
+               ((sv[4] - '0') * 10 + (sv[5] - '0')) * 60;
+        if (sv[0] == '-') koff = -koff;
+        khave = 1;
+      }
+      else if (comp_ntype(c, inv) != TY_INT) return 0;
+      buf_puts(b, "sp_time_new_off(");
+      for (int i = 0; i < 6; i++) {
+        if (i) buf_puts(b, ", ");
+        if (i < npos) {
+          TyKind fit = comp_ntype(c, argv[i]);
+          if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
+          else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_i("); emit_boxed(c, argv[i], b); buf_puts(b, ")"); }
+          else emit_int_expr(c, argv[i], b);
+        }
+        else buf_puts(b, i == 1 || i == 2 ? "1" : "0");   /* mo/d default 1; h/mi/s 0 */
+      }
+      buf_puts(b, ", ");
+      if (khave) buf_printf(b, "%ld", koff);
+      else emit_int_expr(c, inv, b);
+      buf_puts(b, ")");
+      return 1;
+    }
+  }
   long lit_off = 0;
   int have_lit_off = 0;
   if (argc == 7 && is_new) {
@@ -6949,12 +6989,30 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
-  /* Proc#source_location: [file, line] of a proc LITERAL receiver (its
-     definition site is the node itself). #2649 */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "source_location") &&
-      nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LambdaNode") || is_proc_create(c, recv))) {
-    int nl = (int)nt_int(nt, recv, "node_line", 0);
-    int nf = (int)nt_int(nt, recv, "node_file", 0);
+  /* Proc#source_location: [file, line] of the proc's literal. The receiver is
+     the literal itself, or a local whose every same-scope write is one proc
+     literal -- then that literal's definition site answers (#2649, #2720). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "source_location")) {
+    int lit = -1;
+    if (nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LambdaNode") || is_proc_create(c, recv)))
+      lit = recv;
+    else if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) {
+      const char *vn = nt_str(nt, recv, "name");
+      Scope *sc = vn ? comp_scope_of(c, recv) : NULL;
+      for (int w = 0; vn && w < nt->count; w++) {
+        if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+        int val = nt_ref(nt, w, "value");
+        int is_lit = val >= 0 && nt_type(nt, val) &&
+                     (sp_streq(nt_type(nt, val), "LambdaNode") || is_proc_create(c, val));
+        if (!is_lit || lit >= 0) { lit = -1; break; }   /* non-literal or second write */
+        lit = val;
+      }
+    }
+    if (lit >= 0) {
+    int nl = (int)nt_int(nt, lit, "node_line", 0);
+    int nf = (int)nt_int(nt, lit, "node_file", 0);
     const char *fn = nt_file_path(nt, nf);
     if (!fn) fn = nt->source_file;
     if (!fn) fn = "?";
@@ -6965,6 +7023,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(%d));", ta, nl);
     buf_printf(b, " _t%d; })", ta);
     return;
+    }
   }
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 &&
       (sp_streq(name, "inspect") || sp_streq(name, "to_s"))) {
@@ -9125,6 +9184,24 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                     "\"wrong argument type Class (expected Module)\");", m);
       buf_printf(b, " _cl%d.cls_id != _cl%d.cls_id && sp_class_le(_cl%d, _cl%d); })", _clt, m, _clt, m);
       return;
+    }
+    /* Module#class_variables: the registered cvars, own + ancestors (#2719) */
+    if (sp_streq(name, "class_variables") && argc == 0) {
+      const char *rcn9 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
+                         ? nt_str(nt, recv, "name") : NULL;
+      int rci9 = rcn9 ? comp_class_index(c, rcn9) : -1;
+      if (rci9 >= 0) {
+        int ta = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+        for (int k9 = rci9; k9 >= 0; k9 = c->classes[k9].parent)
+          for (int q9 = 0; q9 < c->classes[k9].ncvars; q9++) {
+            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", ta);
+            emit_str_literal(b, c->classes[k9].cvars[q9]);
+            buf_puts(b, ")));");
+          }
+        buf_printf(b, " _t%d; })", ta);
+        return;
+      }
     }
     /* class-variable reflection with a literal @@name on a constant class
        receiver: resolve to the cvar's C global (#2694). */

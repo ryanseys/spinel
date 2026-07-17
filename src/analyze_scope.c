@@ -547,7 +547,8 @@ int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
   const char *ty = nt_type(nt, id);
   if (!ty || !sp_streq(ty, "CallNode")) return -1;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || (!sp_streq(nm, "class_eval") && !sp_streq(nm, "module_eval"))) return -1;
+  if (!nm || (!sp_streq(nm, "class_eval") && !sp_streq(nm, "module_eval") &&
+              !sp_streq(nm, "class_exec") && !sp_streq(nm, "module_exec"))) return -1;
   int blk = nt_ref(nt, id, "block");
   if (blk < 0) return -1;
   int recv = nt_ref(nt, id, "receiver");
@@ -3097,6 +3098,29 @@ int infer_cvar_types(Compiler *c) {
     if (vt == TY_NIL) continue;
     TyKind merged = ty_unify(ci->cvar_types[idx], vt);
     if (merged != ci->cvar_types[idx]) { ci->cvar_types[idx] = merged; changed = 1; }
+  }
+  /* Pass 2.5: `Klass.class_variable_set(:@@name, v)` with a literal name
+     DECLARES the cvar when the class has no such write -- CRuby creates it on
+     the fly, and the codegen store needs a registered global to hit (#2719). */
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "class_variable_set")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
+    int cci = comp_class_index(c, nt_str(nt, recv, "name"));
+    if (cci < 0) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an != 2 || !av) continue;
+    const char *aty = nt_type(nt, av[0]);
+    const char *cvn = (aty && sp_streq(aty, "SymbolNode")) ? nt_str(nt, av[0], "value")
+                    : (aty && sp_streq(aty, "StringNode")) ? nt_str(nt, av[0], "content") : NULL;
+    if (!cvn || cvn[0] != '@' || cvn[1] != '@') continue;
+    int idx = comp_cvar_intern(&c->classes[cci], cvn);
+    TyKind vt = infer_type(c, av[1]);
+    if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
+    TyKind merged = ty_unify(c->classes[cci].cvar_types[idx], vt);
+    if (merged != c->classes[cci].cvar_types[idx]) { c->classes[cci].cvar_types[idx] = merged; changed = 1; }
   }
   /* Pass 3: top-level writes (class_id == -1 in scope 0) -- use Toplevel pseudo-class. */
   NT_FOREACH_KIND(nt, NK_ClassVariableWriteNode, id) {

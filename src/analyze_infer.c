@@ -1485,6 +1485,7 @@ TyKind infer_call(Compiler *c, int id) {
       if (cv && cv->type != TY_UNKNOWN) return cv->type;
     }
     if (sp_streq(name, "constants") && argc <= 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "class_variables") && argc == 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "included_modules") && argc == 0) return TY_POLY_ARRAY;
     if (argc == 0 && sp_streq(name, "class")) return TY_CLASS;
     /* #superclass is a (nullable) class value: BasicObject's is the nil-class

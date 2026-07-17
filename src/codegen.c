@@ -4323,7 +4323,8 @@ static void scan_prologue_features(Compiler *c) {
           sp_streq(nm, "constants") || sp_streq(nm, "members") ||
           sp_streq(nm, "instance_methods") || sp_streq(nm, "public_instance_methods") ||
           sp_streq(nm, "private_instance_methods") || sp_streq(nm, "protected_instance_methods") ||
-          sp_streq(nm, "methods") || sp_streq(nm, "instance_variables")) g_uses_symbols = 1;
+          sp_streq(nm, "methods") || sp_streq(nm, "instance_variables") ||
+          sp_streq(nm, "class_variables")) g_uses_symbols = 1;
       else if (sp_streq(nm, "rand") || sp_streq(nm, "srand") || sp_streq(nm, "sample") ||
                sp_streq(nm, "shuffle") || sp_streq(nm, "shuffle!")) g_uses_random = 1;
     }
