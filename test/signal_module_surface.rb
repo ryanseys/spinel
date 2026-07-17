@@ -9,7 +9,7 @@ p Signal.list.class
 p Signal.signame(2)
 p Signal.signame(999)
 p Signal.signame(0)
-p Signal.signame(17)
+p Signal.signame(Signal.list["CHLD"])   # the CHLD number differs per platform
 p Signal.trap("USR1", "IGNORE")
 p Signal.trap("USR1", "DEFAULT")
 p((Signal.trap("NOPE", "IGNORE") rescue $!.class))
@@ -32,7 +32,7 @@ begin; raise Interrupt; rescue SignalException => se; p se.class; end
 p Interrupt.superclass
 p Process.kill(0, Process.pid)
 p((Process.kill(0, 99999999) rescue $!.class))
-Signal.trap("USR1") { |n| puts "handler #{n}" }
+Signal.trap("USR1") { |n| puts "handler #{n == Signal.list["USR1"]}" }   # the USR1 number differs per platform
 Process.kill("USR1", Process.pid)
 sleep 0.05
 Signal.trap("EXIT") { puts "exit-handler-ran" }

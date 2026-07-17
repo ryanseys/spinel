@@ -29,6 +29,6 @@ Interrupt
 SignalException
 1
 Errno::ESRCH
-handler 10
+handler true
 main
 exit-handler-ran
