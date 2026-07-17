@@ -2362,7 +2362,7 @@ else {
     int fold_ci = comp_sg_reader_const(c, recv);
     if (fold_ci >= 0) {
       int mi = comp_cmethod_in_chain(c, fold_ci, name, NULL);
-      if (mi >= 0) return c->scopes[mi].ret;
+      if (mi >= 0) return method_call_ret(c, mi, id);
     }
     /* Stage-2: accessor holds one of several constants; unify their cmethod returns. */
     int cand[32];
@@ -2371,20 +2371,24 @@ else {
       TyKind r = TY_UNKNOWN;
       for (int k = 0; k < ncand; k++) {
         int mi = comp_cmethod_in_chain(c, cand[k], name, NULL);
-        if (mi >= 0) r = ty_unify(r, c->scopes[mi].ret);
+        if (mi >= 0) r = ty_unify(r, method_call_ret(c, mi, id));
       }
       if (r != TY_UNKNOWN) return r;
     }
   }
 
-  /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type */
+  /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type.
+     method_call_ret, not the raw scope ret: a tail-yield class method carries
+     THIS call site's block value (the instance/implicit-self arms already
+     route through it; the raw ret is the first site's type and a diverging
+     second site miscompiled through it). */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       if (ci >= 0) {
         int mi = comp_cmethod_in_chain(c, ci, name, NULL);
-        if (mi >= 0) return c->scopes[mi].ret;
+        if (mi >= 0) return method_call_ret(c, mi, id);
       }
     }
     /* obj.class.cmeth(...) -> unify class method return types across hierarchy */
