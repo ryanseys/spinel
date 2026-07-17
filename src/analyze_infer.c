@@ -5501,8 +5501,25 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     return TY_NIL;
   }
-  if (nk == NK_YieldNode)
-    return yield_value_type(c, (int)(comp_scope_of(c, id) - c->scopes));
+  if (nk == NK_YieldNode) {
+    int ymi = (int)(comp_scope_of(c, id) - c->scopes);
+    /* When the block value diverges across call sites (string block at one,
+       int at another) AND this yield is the value of an assignment (its result
+       flows into a LOCAL), the local settles its type from the first site and
+       the other site miscompiles into that slot. Type the yield poly so the
+       local is a boxed carrier and each inlined site boxes its own value. A
+       bare-yield tail is handled per-site by emit_block_invoke_coerced /
+       method_call_ret and must keep its concrete first-site type. */
+    if (yield_value_diverges(c, ymi)) {
+      for (int w = 0; w < nt->count; w++) {
+        NodeKind wk = nt_kind(nt, w);
+        if ((wk == NK_LocalVariableWriteNode || wk == NK_LocalVariableOperatorWriteNode ||
+             wk == NK_LocalVariableOrWriteNode || wk == NK_LocalVariableAndWriteNode) &&
+            nt_ref(nt, w, "value") == id) return TY_POLY;
+      }
+    }
+    return yield_value_type(c, ymi);
+  }
   if (nk == NK_SuperNode || nk == NK_ForwardingSuperNode) {
     Scope *s = comp_scope_of(c, id);
     if (s->class_id < 0 || !s->name) return TY_UNKNOWN;

@@ -1148,7 +1148,7 @@ static int sg_get_or_make(Compiler *c, SgMap *m, int wnode, int parent_ci) {
      binding's type becomes ty_object(newci) and .new builds it. */
   int wval = nt_ref(nt, wnode, "value");
   int wrecv = nt_ref(nt, wval, "receiver");
-  nt_node_set_str(nt, wrecv, "name", snm);
+  nt_node_set_str((NodeTable *)nt, wrecv, "name", snm);
   if (m->n >= m->cap) { m->cap = m->cap ? m->cap * 2 : 8; m->wkey = realloc(m->wkey, sizeof(int) * (size_t)m->cap); m->wci = realloc(m->wci, sizeof(int) * (size_t)m->cap); }
   m->wkey[m->n] = wnode; m->wci[m->n] = newci; m->n++;
   return newci;
