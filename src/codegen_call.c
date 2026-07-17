@@ -10085,6 +10085,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_obj_alloc_expr(c, acid, b);
       return;
     }
+    /* builtin allocables: the empty value of the class (#2655). CRuby's
+       un-allocatable builtins (Integer, Symbol, ...) keep their TypeError
+       path by falling through. */
+    if (acid < 0) {
+      const char *bcn = nt_str(nt, recv, "name");
+      if (bcn && sp_streq(bcn, "String")) { buf_puts(b, "sp_str_dup_external((&(\"\\xff\")[1]))"); return; }
+      if (bcn && sp_streq(bcn, "Array"))  { buf_puts(b, "sp_PolyArray_new()"); return; }
+      if (bcn && sp_streq(bcn, "Hash"))   { buf_puts(b, "sp_PolyPolyHash_new()"); return; }
+      if (bcn && sp_streq(bcn, "Object")) { buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT)"); return; }
+    }
   }
 
   if (recv >= 0 && sp_streq(name, "new") && nt_type(nt, recv) &&

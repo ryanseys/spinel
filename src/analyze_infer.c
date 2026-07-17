@@ -1733,6 +1733,11 @@ else {
       /* Use the same exception-subclass predicate as codegen (class_is_exc_subclass)
          so inference and emission agree on which classes take the allocate path. */
       if (ci >= 0 && !class_is_exc_subclass(c, ci)) return ty_object(ci);
+      const char *bcn = nt_str(nt, recv, "name");
+      if (bcn && sp_streq(bcn, "String")) return TY_STRING;
+      if (bcn && sp_streq(bcn, "Array"))  return TY_POLY_ARRAY;
+      if (bcn && sp_streq(bcn, "Hash"))   return TY_POLY_POLY_HASH;
+      if (bcn && sp_streq(bcn, "Object")) return TY_POLY;
     }
   }
 
