@@ -770,7 +770,11 @@ int infer_write_types(Compiler *c) {
       LocalVar *lv = &c->scopes[s].locals[i];
       /* stash old type in gc_root (unused by codegen) so we can detect
          change; block params are typed elsewhere, so leave them alone */
-      if (!lv->is_param && !lv->is_block_param) { lv->gc_root = (int)lv->type; lv->type = TY_UNKNOWN; }
+      /* rbs_seeded: pinned externally (an RBS signature, a desugar-synthesized
+         temp whose type IS its receiver's); the per-iteration reset must not
+         wipe it -- users of such a temp can precede its own (late, synthesized)
+         write in node order and would re-derive from UNKNOWN forever (#2723) */
+      if (!lv->is_param && !lv->is_block_param && !lv->rbs_seeded) { lv->gc_root = (int)lv->type; lv->type = TY_UNKNOWN; }
     }
   /* Re-seed loop-growth bigint locals inside the recompute frame (the
      reset above would otherwise wipe the promotion each iteration). */
@@ -3500,6 +3504,11 @@ int desugar_instance_eval_builtin(Compiler *c) {
       LocalVar *lv = es ? scope_local_intern(es, tmp) : NULL;
       if (!lv) continue;
       lv->type = rt;
+      /* seeded: the temp's type IS the receiver's static type, and the write
+         pass's per-run reset must not wipe it -- node order processes users of
+         the temp before its own (late, synthesized) write, so an unseeded temp
+         would strand every user at UNKNOWN forever (#2723) */
+      lv->rbs_seeded = 1;
     }
     ie_subtree_retarget(c, body, tmp, 0);
 

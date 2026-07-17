@@ -2323,15 +2323,33 @@ else {
     TyKind et = e >= 0 ? comp_ntype(c, e) : TY_UNKNOWN;
     int e_diverges = (et == TY_UNKNOWN || et == TY_VOID);
     buf_puts(b, "  ");
+    /* the expression arm's own preludes (an inline-spliced body, a rooted
+       temp) must land INSIDE the protected region -- with the enclosing
+       statement's g_pre they would run before the setjmp, unprotected
+       (#2723). Same swap the rescue arm below has always done. */
     if (e >= 0 && !e_diverges) {
-      buf_printf(b, "_t%d = ", t);
-      if (rt == TY_POLY && et != TY_POLY) emit_boxed(c, e, b);
-      else emit_expr(c, e, b);
-      buf_puts(b, ";");
+      Buf epre; memset(&epre, 0, sizeof epre);
+      Buf *sv_pre0 = g_pre; int sv_ind0 = g_indent;
+      g_pre = &epre; g_indent = 1;
+      Buf ev; memset(&ev, 0, sizeof ev);
+      if (rt == TY_POLY && et != TY_POLY) emit_boxed(c, e, &ev);
+      else emit_expr(c, e, &ev);
+      g_pre = sv_pre0; g_indent = sv_ind0;
+      if (epre.p) buf_puts(b, epre.p);
+      buf_printf(b, "_t%d = %s;", t, ev.p ? ev.p : "");
+      free(epre.p); free(ev.p);
     }
     else if (e >= 0) {
       /* diverging expression like raise: emit as stmt (no assignment) */
-      emit_expr(c, e, b); buf_puts(b, ";");
+      Buf epre; memset(&epre, 0, sizeof epre);
+      Buf *sv_pre0 = g_pre; int sv_ind0 = g_indent;
+      g_pre = &epre; g_indent = 1;
+      Buf ev; memset(&ev, 0, sizeof ev);
+      emit_expr(c, e, &ev);
+      g_pre = sv_pre0; g_indent = sv_ind0;
+      if (epre.p) buf_puts(b, epre.p);
+      buf_printf(b, "%s;", ev.p ? ev.p : "");
+      free(epre.p); free(ev.p);
     }
     buf_puts(b, " sp_exc_top--;\n}\nelse {\n  sp_exc_top--;\n  sp_gc_nroots = sp_exc_rootmark[sp_exc_top];\n  "
                 "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n  "
