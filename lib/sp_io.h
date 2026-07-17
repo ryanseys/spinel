@@ -50,4 +50,8 @@ mrb_bool sp_file_symlink(const char *path);
 void sp_file_delete(const char *path);
 void sp_file_rename(const char *from, const char *to);
 
+#include <dirent.h>
+/* Dir handle (Dir.open / Dir.each_child ...): ops live in lib/sp_cold.c. */
+typedef struct { DIR *dp; const char *path; } sp_Dir;
+
 #endif

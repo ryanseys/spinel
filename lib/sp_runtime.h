@@ -1236,135 +1236,26 @@ static inline const char *sp_File_gets_into(sp_File *f, char *s, int cap) {
 }
 /* IO#gets with separator / limit / chomp (#2809, #2810, #2820). sep NULL
    reads to EOF; limit <= 0 means unlimited. NULL at EOF. */
-static const char *sp_File_gets_sep(sp_File *f, const char *sep, mrb_int limit, mrb_bool chomp) {
-  if (!f || !f->fp) return NULL;
-  size_t sl = sep ? strlen(sep) : 0;
-  /* fast path: the default "\n" separator with no limit reads via fgets
-     (the byte-wise loop below costs a call per character) */
-  if (sl == 1 && sep[0] == '\n' && limit <= 0) {
-    char buf[65536];
-    if (!fgets(buf, (int)sizeof buf, f->fp)) return NULL;
-    size_t n = strlen(buf);
-    if (chomp && n && buf[n - 1] == '\n') n--;
-    char *r = sp_str_alloc(n);
-    memcpy(r, buf, n); r[n] = 0;
-    sp_str_set_len(r, n);
-    f->lineno++;
-    return r;
-  }
-  size_t cap = 256, len = 0;
-  char *buf = (char *)malloc(cap);
-  if (!buf) return NULL;
-  int ch;
-  while ((ch = fgetc(f->fp)) != EOF) {
-    if (len + 2 > cap) { cap *= 2; char *nb = (char *)realloc(buf, cap); if (!nb) { free(buf); return NULL; } buf = nb; }
-    buf[len++] = (char)ch;
-    if (sl && len >= sl && memcmp(buf + len - sl, sep, sl) == 0) break;
-    if (limit > 0 && (mrb_int)len >= limit) break;
-  }
-  if (len == 0) { free(buf); return NULL; }
-  if (chomp && sl && len >= sl && memcmp(buf + len - sl, sep, sl) == 0) len -= sl;
-  char *r = sp_str_alloc(len);
-  memcpy(r, buf, len); r[len] = 0;
-  sp_str_set_len(r, len);
-  free(buf);
-  f->lineno++;
-  return r;
-}
+const char *sp_File_gets_sep(sp_File *f, const char *sep, mrb_int limit, mrb_bool chomp);
 /* IO#readlines with separator / chomp (#2820) */
-static sp_StrArray *sp_File_readlines_sep(sp_File *f, const char *sep, mrb_bool chomp) {
-  sp_StrArray *a = sp_StrArray_new();
-  SP_GC_ROOT(a);
-  const char *l;
-  while ((l = sp_File_gets_sep(f, sep, 0, chomp)) != NULL) sp_StrArray_push(a, l);
-  return a;
-}
-static sp_StrArray *sp_file_readlines_sep(const char *path, const char *sep, mrb_bool chomp) {
-  sp_File *f = sp_File_open(path, "r");
-  SP_GC_ROOT(f);
-  sp_StrArray *a = sp_File_readlines_sep(f, sep, chomp);
-  sp_File_close(f);
-  return a;
-}
+sp_StrArray *sp_File_readlines_sep(sp_File *f, const char *sep, mrb_bool chomp);
+sp_StrArray *sp_file_readlines_sep(const char *path, const char *sep, mrb_bool chomp);
 /* IO#readline: gets or EOFError (#2817) */
-static const char *sp_File_readline_sep(sp_File *f, const char *sep, mrb_int limit, mrb_bool chomp) {
-  const char *r = sp_File_gets_sep(f, sep, limit, chomp);
-  if (!r) sp_raise_cls("EOFError", "end of file reached");
-  return r;
-}
+const char *sp_File_readline_sep(sp_File *f, const char *sep, mrb_int limit, mrb_bool chomp);
 /* IO#getc: one (UTF-8) character, nil (NULL) at EOF */
-static const char *sp_File_getc(sp_File *f) {
-  if (!f || !f->fp) return NULL;
-  int ch = fgetc(f->fp);
-  if (ch == EOF) return NULL;
-  int extra = ((ch & 0xE0) == 0xC0) ? 1 : ((ch & 0xF0) == 0xE0) ? 2 : ((ch & 0xF8) == 0xF0) ? 3 : 0;
-  char *r = sp_str_alloc((size_t)(1 + extra));
-  size_t n = 0;
-  r[n++] = (char)ch;
-  for (int i = 0; i < extra; i++) {
-    int c2 = fgetc(f->fp);
-    if (c2 == EOF) break;
-    r[n++] = (char)c2;
-  }
-  r[n] = 0;
-  sp_str_set_len(r, n);
-  return r;
-}
-static const char *sp_File_readchar(sp_File *f) {
-  const char *r = sp_File_getc(f);
-  if (!r) sp_raise_cls("EOFError", "end of file reached");
-  return r;
-}
-static mrb_int sp_File_getbyte(sp_File *f) {
-  if (!f || !f->fp) return SP_INT_NIL;
-  int ch = fgetc(f->fp);
-  return ch == EOF ? SP_INT_NIL : (mrb_int)ch;
-}
+const char *sp_File_getc(sp_File *f);
+const char *sp_File_readchar(sp_File *f);
+mrb_int sp_File_getbyte(sp_File *f);
 /* IO#ungetc: push back the (first byte of the) argument */
-static sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v) {
-  if (f && f->fp) {
-    if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) {
-      size_t n = sp_str_byte_len(v.v.s);
-      for (size_t i = n; i > 0; i--) ungetc((unsigned char)v.v.s[i - 1], f->fp);
-    }
-    else if (v.tag == SP_TAG_INT) ungetc((int)v.v.i, f->fp);
-  }
-  return sp_box_nil();
-}
+sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v);
 /* IO#readpartial / #sysread: up to n bytes, EOFError at EOF (#2812) */
-static const char *sp_File_readpartial(sp_File *f, mrb_int n) {
-  if (!f || !f->fp || n < 0) sp_raise_cls("EOFError", "end of file reached");
-  char *r = sp_str_alloc((size_t)n);
-  size_t got = fread(r, 1, (size_t)n, f->fp);
-  if (got == 0 && n > 0) sp_raise_cls("EOFError", "end of file reached");
-  r[got] = 0;
-  sp_str_set_len(r, got);
-  return r;
-}
-static mrb_int sp_File_sysseek(sp_File *f, mrb_int off, mrb_int whence) {
-  if (!f || !f->fp) return 0;
-  fseek(f->fp, (long)off, whence == 1 ? SEEK_CUR : whence == 2 ? SEEK_END : SEEK_SET);
-  return (mrb_int)ftell(f->fp);
-}
-static mrb_int sp_File_flock(sp_File *f, mrb_int op) {
-  if (!f || !f->fp) return 0;
-  return flock(fileno(f->fp), (int)op) == 0 ? 0 : 1;
-}
-static mrb_int sp_File_fsync(sp_File *f) {
-  if (!f || !f->fp) return 0;
-  fflush(f->fp);
-  fsync(fileno(f->fp));
-  return 0;
-}
+const char *sp_File_readpartial(sp_File *f, mrb_int n);
+mrb_int sp_File_sysseek(sp_File *f, mrb_int off, mrb_int whence);
+mrb_int sp_File_flock(sp_File *f, mrb_int op);
+mrb_int sp_File_fsync(sp_File *f);
 /* IO#putc: write one character (Integer byte or a String's first char),
    returning the argument */
-static sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v) {
-  if (f && f->fp) {
-    if (v.tag == SP_TAG_INT) fputc((int)(v.v.i & 0xff), f->fp);
-    else if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) fputc(v.v.s[0], f->fp);
-  }
-  return v;
-}
+sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v);
 /* IO.copy_stream(src, dst): both path strings (#2815); returns bytes copied */
 static mrb_int sp_io_copy_stream(const char *src, const char *dst) {
   FILE *in = fopen(src ? src : "", "rb");
@@ -6651,128 +6542,27 @@ sp_Time sp_file_mtime(const char *path);
 sp_Time sp_file_atime(const char *path);
 sp_Time sp_file_ctime(const char *path);
 /* ---- the File stat/predicate and IO-op surface (#2774-#2778, #2782) ---- */
-static const char *sp_file_ftype(const char *path) {
-  struct stat st;
-  if (lstat(path ? path : "", &st) != 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_file_s_ftype - %s", path ? path : ""));
-  if (S_ISREG(st.st_mode)) return (&("\xff" "file")[1]);
-  if (S_ISDIR(st.st_mode)) return (&("\xff" "directory")[1]);
-  if (S_ISLNK(st.st_mode)) return (&("\xff" "link")[1]);
-  if (S_ISFIFO(st.st_mode)) return (&("\xff" "fifo")[1]);
-  if (S_ISCHR(st.st_mode)) return (&("\xff" "characterSpecial")[1]);
-  if (S_ISBLK(st.st_mode)) return (&("\xff" "blockSpecial")[1]);
-#ifdef S_ISSOCK
-  if (S_ISSOCK(st.st_mode)) return (&("\xff" "socket")[1]);
-#endif
-  return (&("\xff" "unknown")[1]);
-}
-static mrb_bool sp_file_writable(const char *path) { return access(path ? path : "", W_OK) == 0; }
-static mrb_bool sp_file_executable(const char *path) { return access(path ? path : "", X_OK) == 0; }
-static mrb_int sp_file_size_q(const char *path) {   /* Integer size, or nil for missing/empty */
-  struct stat st;
-  if (stat(path ? path : "", &st) != 0 || st.st_size == 0) return SP_INT_NIL;
-  return (mrb_int)st.st_size;
-}
-static mrb_bool sp_file_pipe(const char *path) {
-  struct stat st;
-  return stat(path ? path : "", &st) == 0 && S_ISFIFO(st.st_mode);
-}
-static mrb_bool sp_file_identical(const char *a, const char *b) {
-  struct stat sa, sb;
-  if (stat(a ? a : "", &sa) != 0 || stat(b ? b : "", &sb) != 0) return 0;
-  return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
-}
-static const char *sp_file_realpath(const char *path) {
-  char buf[4096];
-  if (!realpath(path ? path : "", buf))
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ realpath_rec - %s", path ? path : ""));
-  return sp_sprintf("%s", buf);
-}
-static const char *sp_file_read_len(const char *path, mrb_int n) {
-  FILE *fp = fopen(path ? path : "", "rb");
-  if (!fp)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
-  if (n < 0) n = 0;
-  char *r = sp_str_alloc(n);
-  size_t got = fread(r, 1, (size_t)n, fp);
-  fclose(fp);
-  r[got] = 0;
-  sp_str_set_len(r, got);
-  return r;
-}
-static mrb_int sp_file_chmod(mrb_int mode, const char *path) {
-  if (chmod(path ? path : "", (mode_t)mode) != 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ apply2files - %s", path ? path : ""));
-  return 1;
-}
-static mrb_int sp_file_truncate(const char *path, mrb_int n) {
-  if (truncate(path ? path : "", (off_t)n) != 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_file_s_truncate - %s", path ? path : ""));
-  return 0;
-}
-static mrb_int sp_file_write_at(const char *path, const char *data, mrb_int off) {
-  int fd = open(path ? path : "", O_WRONLY | O_CREAT, 0666);
-  if (fd < 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
-  size_t n = sp_str_byte_len(data ? data : "");
-  ssize_t w = pwrite(fd, data ? data : "", n, (off_t)off);
-  close(fd);
-  return w < 0 ? 0 : (mrb_int)w;
-}
-static mrb_int sp_file_write_mode(const char *path, const char *data, const char *mode) {
-  FILE *fp = fopen(path ? path : "", mode && mode[0] ? mode : "w");
-  if (!fp)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
-  size_t n = sp_str_byte_len(data ? data : "");
-  fwrite(data ? data : "", 1, n, fp);
-  fclose(fp);
-  return (mrb_int)n;
-}
+const char *sp_file_ftype(const char *path);
+mrb_bool sp_file_writable(const char *path);
+mrb_bool sp_file_executable(const char *path);
+mrb_int sp_file_size_q(const char *path);
+mrb_bool sp_file_pipe(const char *path);
+mrb_bool sp_file_identical(const char *a, const char *b);
+const char *sp_file_realpath(const char *path);
+const char *sp_file_read_len(const char *path, mrb_int n);
+mrb_int sp_file_chmod(mrb_int mode, const char *path);
+mrb_int sp_file_truncate(const char *path, mrb_int n);
+mrb_int sp_file_write_at(const char *path, const char *data, mrb_int off);
+mrb_int sp_file_write_mode(const char *path, const char *data, const char *mode);
 /* File.open with integer open(2) flags: open the fd, then wrap it in the
    stdio handle the sp_File surface expects (#2788). */
-static sp_File *sp_File_open_flags(const char *path, mrb_int fl) {
-  int fd = open(path ? path : "", (int)fl, 0666);
-  if (fd < 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
-  int acc = (int)fl & O_ACCMODE;
-  const char *m = (acc == O_RDONLY) ? "r"
-                : (acc == O_WRONLY) ? (((int)fl & O_APPEND) ? "a" : "w")
-                : (((int)fl & O_APPEND) ? "a+" : "r+");
-  return sp_io_fdopen(fd, m);
-}
+sp_File *sp_File_open_flags(const char *path, mrb_int fl);
 /* File.stat(path) / File#stat: a path-carrying handle whose metadata methods
    (size/mtime/atime/ctime/ftype/mode) stat the path -- the pragmatic subset of
    File::Stat this backend models (#2775, #2790). */
-static void sp_file_stat_scan(void *p) {
-  sp_File *f = (sp_File *)p;
-  if (f->path) sp_mark_string(f->path);
-  if (f->mode) sp_mark_string(f->mode);
-}
-static sp_File *sp_file_stat_handle(const char *path) {
-  struct stat st;
-  if (stat(path ? path : "", &st) != 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_file_s_stat - %s", path ? path : ""));
-  sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), NULL, sp_file_stat_scan);
-  f->fp = NULL;
-  f->path = sp_sprintf("%s", path ? path : "");
-  f->mode = (&("\xff" "stat")[1]);
-  f->lineno = 0;
-  return f;
-}
-static mrb_int sp_file_stat_mode(const char *path) {
-  struct stat st;
-  if (stat(path ? path : "", &st) != 0) return 0;
-  return (mrb_int)st.st_mode;
-}
+void sp_file_stat_scan(void *p);
+sp_File *sp_file_stat_handle(const char *path);
+mrb_int sp_file_stat_mode(const char *path);
 /* IO#puts with an Array argument: one element per line, recursively (#2813) */
 static void sp_File_puts_val(sp_File *f, sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
@@ -6811,19 +6601,11 @@ static mrb_int sp_io_sysopen(const char *path) {
   return (mrb_int)fd;
 }
 /* File.fnmatch: shell-glob match with CRuby's pathname/dot-file defaults */
-static mrb_bool sp_file_fnmatch(const char *pat, const char *path) {
-  return fnmatch(pat ? pat : "", path ? path : "", FNM_PATHNAME | FNM_PERIOD) == 0;
-}
-static const char *sp_file_dirname(const char *path);
+mrb_bool sp_file_fnmatch(const char *pat, const char *path);
+const char *sp_file_dirname(const char *path);
 const char *sp_file_basename(const char *path);
 /* File.split(path) -> [dirname, basename] */
-static sp_StrArray *sp_file_split(const char *path) {
-  sp_StrArray *a = sp_StrArray_new();
-  SP_GC_ROOT(a);
-  sp_StrArray_push(a, sp_file_dirname(path));
-  sp_StrArray_push(a, sp_file_basename(path));
-  return a;
-}
+sp_StrArray *sp_file_split(const char *path);
 /* File.size(path) -> byte size. Raises Errno::ENOENT on a missing path,
    matching MRI (and sp_file_read / sp_file_mtime, which stat/open the
    same way). */
@@ -6831,12 +6613,7 @@ static sp_StrArray *sp_file_split(const char *path) {
 mrb_int sp_file_size(const char *path);
 /* File.zero?/empty?: a zero-length non-directory (regular file, /dev/null,
    ...); false when the path is missing (#2783). */
-static mrb_bool sp_file_zero(const char *path) {
-  struct stat st;
-  if (stat(path ? path : "", &st) != 0) return 0;
-  if (S_ISDIR(st.st_mode)) return 0;
-  return st.st_size == 0;
-}
+mrb_bool sp_file_zero(const char *path);
 /* sp_backtick: moved to lib/sp_cold.c */
 const char *sp_backtick(const char *cmd);
 /* sp_file_basename: moved to lib/sp_cold.c */
@@ -6862,42 +6639,17 @@ static const char *sp_file_join_vals(sp_RbVal *vals, int n) {
   return sp_file_join(parts, np);
 }
 /* Issue #892: File.dirname / File.extname / Dir.pwd. */
-static const char *sp_file_dirname(const char *path) {
-  const char *s = strrchr(path, '/');
-  if (!s) { char *r = sp_str_alloc(1); r[0] = '.'; r[1] = 0; return r; }
-  if (s == path) { char *r = sp_str_alloc(1); r[0] = '/'; r[1] = 0; return r; }
-  size_t n = (size_t)(s - path);
-  char *buf = sp_str_alloc(n);
-  memcpy(buf, path, n); buf[n] = 0;
-  return buf;
-}
+const char *sp_file_dirname(const char *path);
 /* sp_file_extname: moved to lib/sp_cold.c */
 const char *sp_file_extname(const char *path);
-static const char *sp_dir_pwd(void) {
-  char tmp[4096];
-  if (!getcwd(tmp, sizeof(tmp))) { return sp_str_empty; }
-  size_t n = strlen(tmp);
-  char *buf = sp_str_alloc(n);
-  memcpy(buf, tmp, n + 1);
-  return buf;
-}
+const char *sp_dir_pwd(void);
 /* Dir singleton methods. mkdir/rmdir/chdir use the platform call (the
    Windows _-prefixed variants take a single path argument); each returns
    0 on success, matching CRuby's `Dir.mkdir` etc. */
-static mrb_int sp_dir_mkdir(const char *path) {
-  return (mrb_int)mkdir(path, 0777);
-}
-static mrb_int sp_dir_rmdir(const char *path) {
-  return (mrb_int)rmdir(path);
-}
-static mrb_int sp_dir_chdir(const char *path) {
-  return (mrb_int)chdir(path);
-}
-static const char *sp_dir_home(void) {
-  const char *h = getenv("HOME");
-  if (!h) return sp_str_empty;
-  return sp_str_dup_external(h);
-}
+mrb_int sp_dir_mkdir(const char *path);
+mrb_int sp_dir_rmdir(const char *path);
+mrb_int sp_dir_chdir(const char *path);
+const char *sp_dir_home(void);
 /* Wildcard match for a single path component: `*` (any run, no `/`),
    `?` (one char). Recursive over `*`; adequate for the common
    single-directory glob patterns. */
@@ -6928,59 +6680,23 @@ sp_StrArray *sp_dir_glob_dot(const char *pattern);
 /* sp_dir_entries_impl: moved to lib/sp_cold.c */
 sp_StrArray *sp_dir_entries_impl(const char *path, int children);
 /* ---- Dir handles (#2821): an open directory stream with its path ---- */
-typedef struct { DIR *dp; const char *path; } sp_Dir;
-static void sp_Dir_fin(void *p) { sp_Dir *d = (sp_Dir *)p; if (d->dp) { closedir(d->dp); d->dp = NULL; } }
-static void sp_Dir_scan(void *p) { sp_Dir *d = (sp_Dir *)p; if (d->path) sp_mark_string(d->path); }
-static sp_Dir *sp_Dir_new(const char *path) {
-  DIR *dp = opendir(path ? path : "");
-  if (!dp)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ dir_initialize - %s", path ? path : ""));
-  sp_Dir *d = (sp_Dir *)sp_gc_alloc(sizeof(sp_Dir), sp_Dir_fin, sp_Dir_scan);
-  d->dp = dp;
-  d->path = NULL;   /* set below: the sprintf may GC, and the scan reads path */
-  SP_GC_ROOT(d);
-  d->path = sp_sprintf("%s", path ? path : "");
-  return d;
-}
-static const char *sp_Dir_read(sp_Dir *d) {
-  if (!d || !d->dp) return NULL;
-  struct dirent *e = readdir(d->dp);
-  return e ? sp_sprintf("%s", e->d_name) : NULL;
-}
-static const char *sp_Dir_path(sp_Dir *d) { return d && d->path ? d->path : sp_str_empty; }
-static sp_RbVal sp_Dir_close(sp_Dir *d) { if (d && d->dp) { closedir(d->dp); d->dp = NULL; } return sp_box_nil(); }
-static sp_Dir *sp_Dir_rewind(sp_Dir *d) { if (d && d->dp) rewinddir(d->dp); return d; }
-static mrb_int sp_Dir_tell(sp_Dir *d) { return d && d->dp ? (mrb_int)telldir(d->dp) : 0; }
-static sp_StrArray *sp_dir_entries(const char *path) { return sp_dir_entries_impl(path, 0); }
+/* sp_Dir moved to sp_io.h (used by the Dir ops in lib/sp_cold.c). */
+void sp_Dir_fin(void *p);
+void sp_Dir_scan(void *p);
+sp_Dir *sp_Dir_new(const char *path);
+const char *sp_Dir_read(sp_Dir *d);
+const char *sp_Dir_path(sp_Dir *d);
+sp_RbVal sp_Dir_close(sp_Dir *d);
+sp_Dir *sp_Dir_rewind(sp_Dir *d);
+mrb_int sp_Dir_tell(sp_Dir *d);
+sp_StrArray *sp_dir_entries(const char *path);
 /* Dir.empty?(path): a directory with no non-dot entries; a non-directory is
    false, a missing path CRuby's Errno::ENOENT (#2823). */
-static mrb_bool sp_dir_empty(const char *path) __attribute__((unused));
-static mrb_bool sp_dir_empty(const char *path) {
-  struct stat st;
-  if (!path || stat(path, &st) != 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_dir_s_empty_p - %s", path ? path : ""));
-  if (!S_ISDIR(st.st_mode)) return FALSE;
-  DIR *d = opendir(path);
-  if (!d) return FALSE;
-  struct dirent *e; mrb_bool empty = TRUE;
-  while ((e = readdir(d))) {
-    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
-    empty = FALSE; break;
-  }
-  closedir(d);
-  return empty;
-}
+mrb_bool sp_dir_empty(const char *path);
+mrb_bool sp_dir_empty(const char *path);
 /* Dir.home(user): the named user's home from the passwd db (#2830). */
-static const char *sp_dir_home_user(const char *user) __attribute__((unused));
-static const char *sp_dir_home_user(const char *user) {
-  if (!user || !*user) return sp_dir_home();
-  struct passwd *pw = getpwnam(user);
-  if (!pw || !pw->pw_dir)
-    sp_raise_cls("ArgumentError", sp_sprintf("user %s doesn't exist", user));
-  return sp_str_dup_external(pw->pw_dir);
-}
+const char *sp_dir_home_user(const char *user);
+const char *sp_dir_home_user(const char *user);
 /* Dir.glob([pat, ...]): each pattern globbed in order, results concatenated
    (#2828). */
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v);   /* defined below */
@@ -7000,7 +6716,7 @@ static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) {
   }
   return out;
 }
-static sp_StrArray *sp_dir_children(const char *path) { return sp_dir_entries_impl(path, 1); }
+sp_StrArray *sp_dir_children(const char *path);
 
 /* File.expand_path(path[, base]) -- CRuby-compatible pure-string
    expansion (does NOT require the path to exist). A leading `~` / `~/`
