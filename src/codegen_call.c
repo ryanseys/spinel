@@ -6899,6 +6899,53 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_sym_intern((const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name)");
     return;
   }
+  /* Method#owner / #receiver (#2701). The creation site knows both: a user
+     target's owner is its defining class; a builtin target's owner is the
+     receiver's class, and the receiver re-emits when doing so cannot repeat a
+     side effect (a literal or a local read). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      (sp_streq(name, "owner") || sp_streq(name, "receiver"))) {
+    int mn = method_recv_node(c, recv);
+    int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    int is_bam = target >= 0 && c->scopes[target].name &&
+                 strncmp(c->scopes[target].name, "__bam_", 6) == 0;
+    int mrecv = mn >= 0 ? nt_ref(nt, mn, "receiver") : -1;
+    if (sp_streq(name, "owner")) {
+      if (target >= 0 && !is_bam) {
+        int ocid = c->scopes[target].class_id;
+        const char *ocn = ocid >= 0 ? (class_ruby_name(c, ocid) ? class_ruby_name(c, ocid)
+                                                                : c->classes[ocid].name) : "Object";
+        buf_printf(b, "((void)("); emit_expr(c, recv, b);
+        buf_printf(b, "), ((sp_Class){(mrb_int)-1, \"%s\"}))", ocn);
+        return;
+      }
+      if (mrecv >= 0) {
+        TyKind mrt = comp_ntype(c, mrecv);
+        const char *mcls = mrt == TY_STRING ? "String" : mrt == TY_INT ? "Integer"
+                         : mrt == TY_FLOAT ? "Float" : mrt == TY_SYMBOL ? "Symbol"
+                         : ty_is_array(mrt) ? "Array" : ty_is_hash(mrt) ? "Hash"
+                         : mrt == TY_RANGE ? "Range" : mrt == TY_TIME ? "Time" : NULL;
+        if (mcls) {
+          buf_printf(b, "((void)("); emit_expr(c, recv, b);
+          buf_printf(b, "), ((sp_Class){(mrb_int)-1, \"%s\"}))", mcls);
+          return;
+        }
+      }
+    }
+    else if (mrecv >= 0) {   /* receiver */
+      const char *mrty = nt_type(nt, mrecv);
+      int pure = mrty && (sp_streq(mrty, "LocalVariableReadNode") ||
+                          sp_streq(mrty, "IntegerNode") || sp_streq(mrty, "FloatNode") ||
+                          sp_streq(mrty, "StringNode") || sp_streq(mrty, "SymbolNode") ||
+                          sp_streq(mrty, "ArrayNode") || sp_streq(mrty, "SelfNode") ||
+                          sp_streq(mrty, "InstanceVariableReadNode"));
+      if (pure) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ");
+        emit_expr(c, mrecv, b); buf_puts(b, ")");
+        return;
+      }
+    }
+  }
   /* <method>.arity -> a compile-time constant from the target method's param
      shape, read straight off the DefNode's parameters node (the Scope counts
      fold keyword and post-rest params into nparams/nrequired, so they cannot

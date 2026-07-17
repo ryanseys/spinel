@@ -1365,6 +1365,13 @@ TyKind infer_call(Compiler *c, int id) {
     return g_promote_mode ? TY_POLY : TY_INT;
   }
   if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "to_proc")) return TY_PROC;
+  /* Method#owner is a class value; #receiver is the bound receiver (#2701) */
+  if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "owner")) return TY_CLASS;
+  if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "receiver")) {
+    int mn = method_recv_node(c, recv);
+    int mrecv = mn >= 0 ? nt_ref(nt, mn, "receiver") : -1;
+    if (mrecv >= 0) return infer_type(c, mrecv);
+  }
   /* <method>.name -> the method name as a Symbol; .arity -> int */
   if (recv >= 0 && rt == TY_METHOD && argc == 0) {
     if (sp_streq(name, "name")) return TY_SYMBOL;
