@@ -12,7 +12,9 @@ p Dir.empty?(dir)
 File.delete("#{dir}/x")
 p Dir.empty?(dir)
 r0 = (Dir.empty?("/tmp/sp_no_such_dir_xyz") rescue $!.class); p r0
-p Dir.empty?("/etc/hostname") rescue p :file_missing
+File.write("/tmp/sp_t_dir1_file", "x")
+p Dir.empty?("/tmp/sp_t_dir1_file") rescue p :file_missing
+File.delete("/tmp/sp_t_dir1_file")
 g = []; File.write("#{dir}/a1", ""); File.write("#{dir}/a2", "")
 Dir.glob("#{dir}/*") { |e| g << e.sub("#{dir}/", "") }; p g.sort
 p Dir.glob(["#{dir}/a1", "#{dir}/a2"]).sort.map { |x| x.sub("#{dir}/", "") }

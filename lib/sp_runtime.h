@@ -7607,23 +7607,27 @@ static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p ||
    per-signal slots; a proc handler installs a real C handler that invokes the
    stored proc with the signal number. The EXIT pseudo-signal (0) registers an
    atexit dispatcher so the handler runs on normal termination too. */
+/* Marker-framed names: they land in sp_StrIntHash keys (Signal.list) and
+   boxed-string slots (Signal.signame, the trap return), whose runtimes read
+   the [-1] marker byte -- a bare literal is an out-of-bounds read. */
+#define SP_SIGN(n) (&("\xff" n)[1])
 static const struct { const char *name; int no; } sp_sig_table[] = {
-  {"EXIT", 0}, {"HUP", SIGHUP}, {"INT", SIGINT}, {"QUIT", SIGQUIT},
-  {"ILL", SIGILL}, {"TRAP", SIGTRAP}, {"ABRT", SIGABRT}, {"IOT", SIGABRT},
-  {"BUS", SIGBUS}, {"FPE", SIGFPE}, {"KILL", SIGKILL}, {"USR1", SIGUSR1},
-  {"SEGV", SIGSEGV}, {"USR2", SIGUSR2}, {"PIPE", SIGPIPE}, {"ALRM", SIGALRM},
-  {"TERM", SIGTERM}, {"CHLD", SIGCHLD}, {"CLD", SIGCHLD}, {"CONT", SIGCONT},
-  {"STOP", SIGSTOP}, {"TSTP", SIGTSTP}, {"TTIN", SIGTTIN}, {"TTOU", SIGTTOU},
-  {"URG", SIGURG}, {"XCPU", SIGXCPU}, {"XFSZ", SIGXFSZ}, {"VTALRM", SIGVTALRM},
-  {"PROF", SIGPROF}, {"WINCH", SIGWINCH}, {"IO", SIGIO}, {"SYS", SIGSYS},
+  {SP_SIGN("EXIT"), 0}, {SP_SIGN("HUP"), SIGHUP}, {SP_SIGN("INT"), SIGINT}, {SP_SIGN("QUIT"), SIGQUIT},
+  {SP_SIGN("ILL"), SIGILL}, {SP_SIGN("TRAP"), SIGTRAP}, {SP_SIGN("ABRT"), SIGABRT}, {SP_SIGN("IOT"), SIGABRT},
+  {SP_SIGN("BUS"), SIGBUS}, {SP_SIGN("FPE"), SIGFPE}, {SP_SIGN("KILL"), SIGKILL}, {SP_SIGN("USR1"), SIGUSR1},
+  {SP_SIGN("SEGV"), SIGSEGV}, {SP_SIGN("USR2"), SIGUSR2}, {SP_SIGN("PIPE"), SIGPIPE}, {SP_SIGN("ALRM"), SIGALRM},
+  {SP_SIGN("TERM"), SIGTERM}, {SP_SIGN("CHLD"), SIGCHLD}, {SP_SIGN("CLD"), SIGCHLD}, {SP_SIGN("CONT"), SIGCONT},
+  {SP_SIGN("STOP"), SIGSTOP}, {SP_SIGN("TSTP"), SIGTSTP}, {SP_SIGN("TTIN"), SIGTTIN}, {SP_SIGN("TTOU"), SIGTTOU},
+  {SP_SIGN("URG"), SIGURG}, {SP_SIGN("XCPU"), SIGXCPU}, {SP_SIGN("XFSZ"), SIGXFSZ}, {SP_SIGN("VTALRM"), SIGVTALRM},
+  {SP_SIGN("PROF"), SIGPROF}, {SP_SIGN("WINCH"), SIGWINCH}, {SP_SIGN("IO"), SIGIO}, {SP_SIGN("SYS"), SIGSYS},
 #ifdef SIGPWR
-  {"PWR", SIGPWR},
+  {SP_SIGN("PWR"), SIGPWR},
 #endif
 #ifdef SIGSTKFLT
-  {"STKFLT", SIGSTKFLT},
+  {SP_SIGN("STKFLT"), SIGSTKFLT},
 #endif
 #ifdef SIGPOLL
-  {"POLL", SIGPOLL},
+  {SP_SIGN("POLL"), SIGPOLL},
 #endif
   {NULL, 0}
 };
@@ -7676,7 +7680,7 @@ static sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {
     sp_raise_cls("Errno::EINVAL",
                  sp_sprintf("Invalid argument - SIG%s", sp_signal_signame(no)));
   sp_RbVal prev = sp_trap_proc[no] ? sp_box_proc((sp_Proc *)sp_trap_proc[no])
-                : sp_box_str(sp_trap_state[no] ? sp_trap_state[no] : "DEFAULT");
+                : sp_box_str(sp_trap_state[no] ? sp_trap_state[no] : (&("\xff" "DEFAULT")[1]));
   if (handler.tag == SP_TAG_OBJ && handler.cls_id == SP_BUILTIN_PROC && handler.v.p) {
     sp_trap_proc[no] = (sp_Proc *)handler.v.p;
     sp_trap_state[no] = NULL;
@@ -7687,7 +7691,7 @@ static sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {
     const char *hs = (handler.tag == SP_TAG_STR && handler.v.s) ? handler.v.s : "DEFAULT";
     int ignore = strcmp(hs, "IGNORE") == 0 || strcmp(hs, "SIG_IGN") == 0;
     sp_trap_proc[no] = NULL;
-    sp_trap_state[no] = ignore ? "IGNORE" : "DEFAULT";
+    sp_trap_state[no] = ignore ? (&("\xff" "IGNORE")[1]) : (&("\xff" "DEFAULT")[1]);
     if (no != 0) signal(no, ignore ? SIG_IGN : SIG_DFL);
   }
   return prev;

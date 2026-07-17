@@ -8177,7 +8177,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_Dir *_t%d = %s; const char *_t%d; ", tdh, dr, tdn);
       buf_printf(b, "while ((_t%d = sp_Dir_read(_t%d)) != NULL) {", tdn, tdh);
       if (skip_dots)
-        buf_printf(b, " if (sp_str_eq(_t%d, \".\") || sp_str_eq(_t%d, \"..\")) continue;", tdn, tdn);
+        buf_printf(b, " if (sp_str_eq(_t%d, (&(\"\\xff\" \".\")[1])) ||"
+                      " sp_str_eq(_t%d, (&(\"\\xff\" \"..\")[1]))) continue;", tdn, tdn);
       if (dbpn) buf_printf(b, " const char *lv_%s = _t%d;", dbpn, tdn);
       for (int k = 0; k < dbbn; k++) emit_stmt(c, dbbb[k], b, 0);
       buf_printf(b, " } (sp_Dir *)_t%d; })", tdh);
