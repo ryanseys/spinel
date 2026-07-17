@@ -146,6 +146,12 @@ typedef struct {
                           that additionally supports the `#with` copy-update. */
   int is_anon_struct;  /* k = Struct.new(:a, :b): synthesized for a local-held
                           anonymous struct class; #inspect omits the name. */
+  int is_singleton_of; /* +1-based parent class index (0 = not one): a
+                          synthesized anonymous subclass carrying a constant's
+                          / local's singleton methods (def obj.m). It must
+                          masquerade as its parent everywhere Ruby-visible
+                          (#class, inspect, name), like CRuby's hidden
+                          singleton class. See singleton_visible_ci. */
   int kw_init;         /* Struct#keyword_init?: 0 unspecified (nil), 1 true,
                           -1 explicit false. */
   /* Native-bound class (Path B typed object): C-backed, declared by a package
@@ -412,6 +418,12 @@ int comp_defined_guard_true(Compiler *c, int pred);
 /* Classes. */
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
 int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
+/* The class Ruby sees for `ci`: a synthesized singleton subclass reports its
+   parent (CRuby hides the singleton class), every other class reports itself. */
+static inline int singleton_visible_ci(Compiler *c, int ci) {
+  if (ci < 0 || ci >= c->nclasses) return ci;
+  return c->classes[ci].is_singleton_of ? c->classes[ci].is_singleton_of - 1 : ci;
+}
 int        class_var_static_ci(Compiler *c, int node);  /* local holding one class const */
 int        anon_struct_ci_for_value(Compiler *c, int val);  /* k = Struct.new(...) value node */
 const char *struct_call_dup_member(Compiler *c, int callnode);  /* first duplicate member sym name, or NULL */

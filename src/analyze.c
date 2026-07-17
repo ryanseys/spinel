@@ -5380,6 +5380,7 @@ void analyze_program(Compiler *c) {
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
   walk_scope(c, c->nt->root_id, 0, -1);
+  register_singleton_defs(c);   /* def CONST.m / def x.m -> synthesized subclass */
   register_structs(c);
   desugar_struct_index_ctor(c);
   fix_struct_block_scopes(c);

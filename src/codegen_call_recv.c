@@ -5978,8 +5978,10 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
       if (target >= 0) {
         if (sp_streq(name, "instance_of?")) {
+          /* a synthesized singleton subclass is instance_of? its parent
+             (CRuby hides the singleton class) */
           buf_puts(b, "((void)("); emit_expr(c, recv, b);
-          buf_printf(b, "), %d)", cid == target);
+          buf_printf(b, "), %d)", singleton_visible_ci(c, cid) == target);
         }
         else {
           /* use sp_class_le_mod (via macro) so includes chain is checked */

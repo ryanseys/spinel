@@ -2637,6 +2637,9 @@ int class_is_exc_subclass(Compiler *c, int ci) {
    class index ci by walking enclosing_class up to the top level. */
 const char *class_ruby_name(Compiler *c, int ci) {
   if (ci < 0 || ci >= c->nclasses) return NULL;
+  /* a synthesized singleton subclass answers with its parent's name (CRuby's
+     singleton class is invisible to #class / inspect / #name). */
+  ci = singleton_visible_ci(c, ci);
   /* collect ancestry: max 16 levels deep */
   int chain[16]; int depth = 0;
   for (int k = ci; k >= 0 && depth < 16; ) {

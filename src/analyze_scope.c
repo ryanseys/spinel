@@ -752,7 +752,7 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
        a class constant receiver, `self` in a class body, or no receiver (the
        enclosing class). An arbitrary-instance singleton has no compile-time
        class, so it is not registered (the later call rejects). */
-    int dm_cmethod = 0, dm_cls = class_id, dm_ok = dm_is_dm;
+    int dm_cmethod = 0, dm_cls = class_id, dm_ok = dm_is_dm, dm_defer = 0;
     if (dm_is_dsm) {
       dm_cmethod = 1;
       const char *dsm_rty = dm_recv >= 0 ? nt_type(c->nt, dm_recv) : NULL;
@@ -762,6 +762,14 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
       else if (dsm_rty && sp_streq(dsm_rty, "SelfNode")) dm_cls = class_id;
       else dm_cls = -1;
       dm_ok = dm_cls >= 0;
+      /* A const/local receiver that is NOT a class is an object singleton
+         method: still create the scope (as an instance method, class_id
+         deferred to -1), so register_singleton_defs can reattach it to the
+         synthesized subclass. */
+      if (!dm_ok && dm_recv >= 0 && dsm_rty &&
+          (sp_streq(dsm_rty, "ConstantReadNode") || sp_streq(dsm_rty, "LocalVariableReadNode"))) {
+        dm_ok = 1; dm_defer = 1; dm_cmethod = 0; dm_cls = -1;
+      }
     }
     if (dm_ok) {
       int dm_args = nt_ref(c->nt, id, "arguments");
@@ -1068,6 +1076,129 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
     comp_add_reader(cls, m);
     comp_add_writer(cls, m);
   }
+}
+
+/* Singleton methods on a constant/local that statically holds one user
+   object (def CONST.m / def x.m). CRuby gives the object a hidden singleton
+   class; the AOT analogue is a synthesized anonymous subclass carrying those
+   methods, with the binding's type retargeted to it. The subclass masquerades
+   as its parent everywhere Ruby-visible (see singleton_visible_ci). Only a
+   statically-traceable receiver qualifies: a constant or local with exactly
+   one `= <UserClass>.new(...)` write. Others keep today's behavior (the def is
+   left unattached and the later call rejects).
+
+   Resolve `Recv.new`'s constant name to a user-class index (no builtins). */
+static int sg_new_class_ci(Compiler *c, int val) {
+  const NodeTable *nt = c->nt;
+  if (val < 0 || nt_kind(nt, val) != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, val, "name");
+  if (!nm || !sp_streq(nm, "new")) return -1;
+  int recv = nt_ref(nt, val, "receiver");
+  if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) return -1;
+  int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+  if (ci < 0) return -1;
+  /* Only a plain user class can be subclassed here: Object/BasicObject use an
+     opaque base struct with no cls_id field, and native/exception/struct
+     classes have special layouts a synthesized subclass cannot carry. */
+  const char *cn = c->classes[ci].name;
+  if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) return -1;
+  if (c->classes[ci].is_native_class || c->classes[ci].is_struct ||
+      c->classes[ci].is_data || class_is_exc_subclass(c, ci)) return -1;
+  return ci;
+}
+
+/* The single defining write of a constant/local `name` (in scope `owner_scope`
+   for locals; -1 = a constant). Returns the write node if there is exactly one
+   and its value is `<UserClass>.new(...)`, else -1; *out_ci gets the class. */
+static int sg_single_new_write(Compiler *c, const char *name, int is_const,
+                               Scope *owner_scope, int *out_ci) {
+  const NodeTable *nt = c->nt;
+  int write = -1, ci = -1, count = 0;
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind k = nt_kind(nt, w);
+    if (is_const) { if (k != NK_ConstantWriteNode) continue; }
+    else if (k != NK_LocalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, name)) continue;
+    if (!is_const && comp_scope_of(c, w) != owner_scope) continue;
+    count++;
+    write = w;
+  }
+  if (count != 1) return -1;
+  ci = sg_new_class_ci(c, nt_ref(nt, write, "value"));
+  if (ci < 0) return -1;
+  *out_ci = ci;
+  return write;
+}
+
+void register_singleton_defs(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  /* wnode -> synthesized class index, so a second def on the same binding
+     reuses the first's subclass. comp_class_index cannot be trusted mid-pass
+     (its index does not include classes added during this pass). */
+  int *wkey = NULL; int *wci = NULL; int wn = 0, wcap = 0;
+  /* Pass 1: find `def <recv>.m` and `<recv>.define_singleton_method(:m){}`
+     whose receiver is a constant or local that is NOT a class name (a class
+     receiver is a normal class method). Group by the binding so all singleton
+     defs on one object share one synthesized class. */
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind idk = nt_kind(nt, id);
+    int recv, def_key = id;
+    if (idk == NK_DefNode) {
+      recv = nt_ref(nt, id, "receiver");
+    }
+    else if (idk == NK_CallNode) {
+      const char *cn = nt_str(nt, id, "name");
+      if (!cn || !sp_streq(cn, "define_singleton_method")) continue;
+      recv = nt_ref(nt, id, "receiver");
+    }
+    else continue;
+    if (recv < 0) continue;
+    NodeKind rk = nt_kind(nt, recv);
+    int is_const = (rk == NK_ConstantReadNode);
+    int is_local = (rk == NK_LocalVariableReadNode);
+    if (!is_const && !is_local) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn) continue;
+    if (is_const && comp_class_index(c, rn) >= 0) continue;  /* class method */
+
+    /* The local's binding scope is the DefNode's ENCLOSING scope (the receiver
+       read node is walked under the method scope, so its own nscope is wrong
+       for matching the write). */
+    Scope *owner = is_local ? comp_scope_of(c, id) : NULL;
+    int parent_ci = -1;
+    int wnode = sg_single_new_write(c, rn, is_const, owner, &parent_ci);
+    if (wnode < 0) continue;   /* not statically traceable: leave as today */
+
+    /* One synthesized subclass per binding, keyed on the write node. */
+    int newci = -1;
+    for (int i = 0; i < wn; i++) if (wkey[i] == wnode) { newci = wci[i]; break; }
+    if (newci < 0) {
+      char snm[96];
+      snprintf(snm, sizeof snm, "%s__sg_%d", c->classes[parent_ci].name ? c->classes[parent_ci].name : "Obj", wnode);
+      ClassInfo *sc = comp_class_new(c, snm, wnode);
+      newci = (int)(sc - c->classes);
+      sc->parent = parent_ci;
+      sc->is_singleton_of = parent_ci + 1;
+      /* retarget the `= Parent.new(...)` receiver to the synthesized class so
+         the binding's type becomes ty_object(newci) and .new builds it. */
+      int wval = nt_ref(nt, wnode, "value");
+      int wrecv = nt_ref(nt, wval, "receiver");
+      nt_node_set_str(nt, wrecv, "name", snm);
+      if (wn >= wcap) { wcap = wcap ? wcap * 2 : 8; wkey = realloc(wkey, sizeof(int) * (size_t)wcap); wci = realloc(wci, sizeof(int) * (size_t)wcap); }
+      wkey[wn] = wnode; wci[wn] = newci; wn++;
+    }
+    /* Reattach this def (the scope whose def_node == the def/dsm node) as an
+       instance method of the synthesized subclass. */
+    for (int ds = 1; ds < c->nscopes; ds++) {
+      if (c->scopes[ds].def_node == def_key) {
+        c->scopes[ds].class_id = newci;
+        c->scopes[ds].is_cmethod = 0;
+        break;
+      }
+    }
+  }
+  free(wkey); free(wci);
 }
 
 void register_structs(Compiler *c) {
