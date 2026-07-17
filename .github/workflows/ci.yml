@@ -25,9 +25,15 @@ jobs:
       # underlying compiler when its cache misses, so this stays
       # transparent. `SCCACHE_GHA_ENABLED=true` tells sccache to
       # use the GitHub Actions cache as its storage backend (set
-      # up by the sccache-action step below). PR #230 split the
-      # test/bench rules into separate compile and link steps so
-      # the compile step is in sccache's cacheable pattern.
+      # up by the sccache-action step below). The test/bench rules
+      # use separate compile and link steps so the compile step is
+      # in sccache's cacheable pattern; the test compile also loads
+      # a precompiled sp_runtime.h (see PCH_ROOT in the Makefile),
+      # which cuts the compile even when sccache misses. sccache
+      # hashes the preprocessed source, so the gcc-implicit .gch
+      # never leaks into the cache key; for clang's -include-pch
+      # sccache declines to cache and forwards, which still gets
+      # the PCH speedup.
       CC: sccache ${{ matrix.cc }}
       SCCACHE_GHA_ENABLED: "true"
       # Room for the slow GHA-backed server startup (default ~10s); keep it
@@ -73,11 +79,13 @@ jobs:
       # fixtures, so they exercise object-graph shapes (cons cells, tree
       # nodes, linked structures) that `make test` misses -- a holder
       # specialization regression once slipped past test + optcarrot
-      # precisely because bench wasn't gated. Linux/clang only: the output
-      # is deterministic across compilers/OS, and clang carries this while
-      # gcc carries optcarrot, balancing the two ubuntu jobs.
+      # precisely because bench wasn't gated. Linux/gcc only: the output
+      # is deterministic across compilers/OS, and the gcc job's test step
+      # runs well under the clang jobs' (sccache covers more of its
+      # compiles), so it carries both bench and optcarrot to keep the
+      # slowest job -- which sets the CI wall time -- the clang test run.
       - name: Run benchmark integration test
-        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'clang'
+        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc'
         run: make bench
 
       # End-to-end optcarrot integration test.  Linux only — no
