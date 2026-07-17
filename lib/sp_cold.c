@@ -230,6 +230,10 @@ sp_Complex sp_str_to_c(const char *s) {
   return (sp_Complex){ (mrb_float)re, (mrb_float)im };
 }
 
+/* FNM_DOTMATCH mode for the walk below: hidden entries (and ".") match a
+   non-dot pattern; ".." never does, as CRuby's glob. Set by the _dot wrapper. */
+static int sp_glob_dotmatch = 0;
+
 int sp_fnmatch1(const char *pat, const char *str) {
   while (*pat) {
     if (*pat == '*') {
@@ -257,11 +261,12 @@ void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
   struct dirent *e;
   while ((e = readdir(d)) != NULL) {
     const char *name = e->d_name;
-    if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
+    if (name[0] == '.' && name[1] == '.' && name[2] == 0) continue;
+    if (!sp_glob_dotmatch && name[0] == '.' && name[1] == 0) continue;
     char fspath[2048], outpath[2048];
     snprintf(fspath, sizeof fspath, "%s/%s", fsdir, name);
     snprintf(outpath, sizeof outpath, "%s%s", outprefix, name);
-    if (!(name[0] == '.' && tail[0] != '.') && sp_fnmatch1(tail, name)) {
+    if ((sp_glob_dotmatch || !(name[0] == '.' && tail[0] != '.')) && sp_fnmatch1(tail, name)) {
       char *copy = sp_str_alloc(strlen(outpath));
       strcpy(copy, outpath);
       sp_StrArray_push(a, copy);
@@ -278,6 +283,14 @@ void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
   closedir(d);
 }
 
+sp_StrArray *sp_dir_glob(const char *pattern);
+/* Dir.glob(pat, File::FNM_DOTMATCH) (#2828) */
+sp_StrArray *sp_dir_glob_dot(const char *pattern) {
+  sp_glob_dotmatch = 1;
+  sp_StrArray *a = sp_dir_glob(pattern);
+  sp_glob_dotmatch = 0;
+  return a;
+}
 sp_StrArray *sp_dir_glob(const char *pattern) {
   /* the pattern is often a fresh interpolation temp, unrooted at the call
      site; the per-match sp_str_allocs below can collect it mid-walk */
@@ -336,7 +349,8 @@ else {
   struct dirent *e;
   while ((e = readdir(d)) != NULL) {
     const char *name = e->d_name;
-    if (name[0] == '.' && base_pat[0] != '.') continue;
+    if (name[0] == '.' && name[1] == '.' && name[2] == 0) continue;
+    if (!sp_glob_dotmatch && name[0] == '.' && base_pat[0] != '.') continue;
     if (sp_fnmatch1(base_pat, name)) {
       char full[2048];
       if (slash) snprintf(full, sizeof(full), "%s/%s", dirbuf, name);

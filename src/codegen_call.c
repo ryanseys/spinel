@@ -11056,6 +11056,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
     if (sp_streq(name, "pwd") && argc == 0) { buf_puts(b, "sp_dir_pwd()"); return; }
     if (sp_streq(name, "home") && argc == 0) { buf_puts(b, "sp_dir_home()"); return; }
+    if (sp_streq(name, "empty?") && argc == 1) {
+      buf_puts(b, "sp_dir_empty("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "home") && argc == 1) {
+      buf_puts(b, "sp_dir_home_user("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "glob") && argc == 2 && nt_type(nt, argv[1]) &&
+        sp_streq(nt_type(nt, argv[1]), "ConstantPathNode") &&
+        nt_str(nt, argv[1], "name") && sp_streq(nt_str(nt, argv[1], "name"), "FNM_DOTMATCH")) {
+      buf_puts(b, "sp_dir_glob_dot("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "glob") && argc == 1 && ty_is_array(comp_ntype(c, argv[0]))) {
+      buf_puts(b, "sp_dir_glob_multi("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); return;
+    }
     if (sp_streq(name, "glob") && argc == 1) {
       buf_puts(b, "sp_dir_glob("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }

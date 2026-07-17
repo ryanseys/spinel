@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <pwd.h>
 
 /* Opt-in native backtrace (spinel --debug). In a -g, non-inlined build the
    sp_<method> symbols are present, so sp_raise_cls can snapshot the live C
@@ -6396,6 +6397,7 @@ void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
    `.`. Results are sorted, matching Ruby 3.0+ default glob ordering. */
 /* sp_dir_glob: moved to lib/sp_cold.c */
 sp_StrArray *sp_dir_glob(const char *pattern);
+sp_StrArray *sp_dir_glob_dot(const char *pattern);
 /* Dir.entries / Dir.children: every entry of one directory, dotfiles
    included; children drops "." / "..". Sorted for determinism (CRuby
    leaves readdir order unspecified). A missing directory raises like
@@ -6403,6 +6405,53 @@ sp_StrArray *sp_dir_glob(const char *pattern);
 /* sp_dir_entries_impl: moved to lib/sp_cold.c */
 sp_StrArray *sp_dir_entries_impl(const char *path, int children);
 static sp_StrArray *sp_dir_entries(const char *path) { return sp_dir_entries_impl(path, 0); }
+/* Dir.empty?(path): a directory with no non-dot entries; a non-directory is
+   false, a missing path CRuby's Errno::ENOENT (#2823). */
+static mrb_bool sp_dir_empty(const char *path) __attribute__((unused));
+static mrb_bool sp_dir_empty(const char *path) {
+  struct stat st;
+  if (!path || stat(path, &st) != 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_dir_s_empty_p - %s", path ? path : ""));
+  if (!S_ISDIR(st.st_mode)) return FALSE;
+  DIR *d = opendir(path);
+  if (!d) return FALSE;
+  struct dirent *e; mrb_bool empty = TRUE;
+  while ((e = readdir(d))) {
+    if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+    empty = FALSE; break;
+  }
+  closedir(d);
+  return empty;
+}
+/* Dir.home(user): the named user's home from the passwd db (#2830). */
+static const char *sp_dir_home_user(const char *user) __attribute__((unused));
+static const char *sp_dir_home_user(const char *user) {
+  if (!user || !*user) return sp_dir_home();
+  struct passwd *pw = getpwnam(user);
+  if (!pw || !pw->pw_dir)
+    sp_raise_cls("ArgumentError", sp_sprintf("user %s doesn't exist", user));
+  return sp_str_dup_external(pw->pw_dir);
+}
+/* Dir.glob([pat, ...]): each pattern globbed in order, results concatenated
+   (#2828). */
+static sp_PolyArray *sp_enum_items_from(sp_RbVal v);   /* defined below */
+static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) __attribute__((unused));
+static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) {
+  sp_StrArray *out = sp_StrArray_new();
+  SP_GC_ROOT(out);
+  sp_PolyArray *ps = sp_enum_items_from(pats);
+  SP_GC_ROOT(ps);
+  for (mrb_int i = 0; ps && i < ps->len; i++) {
+    sp_RbVal pv = ps->data[i];
+    if (pv.tag != SP_TAG_STR || !pv.v.s) continue;
+    sp_StrArray *one = sp_dir_glob(pv.v.s);
+    SP_GC_ROOT(one);
+    for (mrb_int j = 0; one && j < one->len; j++)
+      sp_StrArray_push(out, sp_StrArray_get(one, j));
+  }
+  return out;
+}
 static sp_StrArray *sp_dir_children(const char *path) { return sp_dir_entries_impl(path, 1); }
 
 /* File.expand_path(path[, base]) -- CRuby-compatible pure-string

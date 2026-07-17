@@ -843,6 +843,13 @@ TyKind infer_call(Compiler *c, int id) {
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
   /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+ (#2545) */
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
+  /* Dir surface (#2823, #2828, #2830) */
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
+    if (sp_streq(name, "empty?") && argc == 1) return TY_BOOL;
+    if (sp_streq(name, "home") && argc == 1) return TY_STRING;
+    if (sp_streq(name, "glob") && (argc == 1 || argc == 2)) return TY_STR_ARRAY;
+  }
   /* the desugared ENV snapshot (#2742) */
   if (recv < 0 && sp_streq(name, "__env_to_h") && argc == 0) return TY_STR_STR_HASH;
   if (recv < 0 && sp_streq(name, "Complex")) return TY_COMPLEX;

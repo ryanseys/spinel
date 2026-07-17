@@ -3871,6 +3871,174 @@ static int env_enum_method(const char *n) {
   for (int i = 0; M[i]; i++) if (sp_streq(n, M[i])) return 1;
   return 0;
 }
+/* Dir surface renames and re-shapes (#2822, #2824, #2825, #2826, #2827,
+   #2829): aliases retarget in place; foreach/each_child/glob-with-block become
+   entries/children/glob followed by .each; a chdir block splices with a
+   save/restore; a bare chdir gains Dir.home as its argument. */
+int desugar_dir_surface(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (!nm || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || !sp_streq(rn, "Dir")) continue;
+    int blk = nt_ref(nt, id, "block");
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; nt_arr(nt, args >= 0 ? args : -1, "arguments", &an);
+
+    /* plain aliases */
+    if (sp_streq(nm, "getwd")) { nt_node_set_str(nt, id, "name", "pwd"); changed = 1; continue; }
+    if (sp_streq(nm, "delete") || sp_streq(nm, "unlink")) {
+      nt_node_set_str(nt, id, "name", "rmdir"); changed = 1; continue;
+    }
+    if (sp_streq(nm, "[]")) { nt_node_set_str(nt, id, "name", "glob"); changed = 1; continue; }
+
+    /* bare chdir goes home */
+    if (sp_streq(nm, "chdir") && an == 0 && blk < 0) {
+      int hc = nt_new_node(nt, "CallNode");
+      int hr = nt_new_node(nt, "ConstantReadNode");
+      int na = nt_new_node(nt, "ArgumentsNode");
+      if (hc < 0 || hr < 0 || na < 0) continue;
+      nt_node_set_str(nt, hr, "name", "Dir");
+      nt_node_set_str(nt, hc, "name", "home");
+      nt_node_set_ref(nt, hc, "receiver", hr);
+      nt_node_set_ref(nt, hc, "arguments", -1);
+      nt_node_set_ref(nt, hc, "block", -1);
+      nt_node_set_arr(nt, na, "arguments", &hc, 1);
+      nt_node_set_ref(nt, id, "arguments", na);
+      comp_grow_node_arrays(c);
+      int encl0 = c->nscope[id];
+      c->nscope[hc] = encl0; c->nscope[hr] = encl0; c->nscope[na] = encl0;
+      changed = 1; continue;
+    }
+
+    /* block forms: X(args) { } -> X'(args).each { } */
+    const char *inner = NULL;
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
+      if (sp_streq(nm, "foreach")) inner = "entries";
+      else if (sp_streq(nm, "each_child")) inner = "children";
+      else if (sp_streq(nm, "glob")) inner = "glob";
+    }
+    if (inner) {
+      int ic = nt_new_node(nt, "CallNode");
+      if (ic < 0) continue;
+      nt_node_set_str(nt, ic, "name", inner);
+      nt_node_set_ref(nt, ic, "receiver", recv);
+      nt_node_set_ref(nt, ic, "arguments", args);
+      nt_node_set_ref(nt, ic, "block", -1);
+      nt_node_set_str(nt, id, "name", "each");
+      nt_node_set_ref(nt, id, "receiver", ic);
+      nt_node_set_ref(nt, id, "arguments", -1);
+      comp_grow_node_arrays(c);
+      c->nscope[ic] = c->nscope[id];
+      changed = 1; continue;
+    }
+    /* blockless foreach/each_child still enumerate */
+    if (sp_streq(nm, "foreach")) { nt_node_set_str(nt, id, "name", "entries"); changed = 1; continue; }
+    if (sp_streq(nm, "each_child")) { nt_node_set_str(nt, id, "name", "children"); changed = 1; continue; }
+
+    /* chdir(d) { body }: save, switch, run, restore -- the paren splice */
+    if (sp_streq(nm, "chdir") && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && an >= 1) {
+      int body = nt_ref(nt, blk, "body");
+      if (body < 0) continue;
+      if (subtree_has_kind(nt, body, NK_DefNode, 0)) continue;
+      int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+      if (bn > 60) continue;
+      char sav[32], valn[32];
+      snprintf(sav, sizeof sav, "__cd_sav_%d", id);
+      snprintf(valn, sizeof valn, "__cd_val_%d", id);
+      Scope *es = comp_scope_of(c, id);
+      LocalVar *slv = es ? scope_local_intern(es, sav) : NULL;
+      LocalVar *vlv = es ? scope_local_intern(es, valn) : NULL;
+      if (!slv || !vlv) continue;
+      slv->type = TY_STRING; slv->rbs_seeded = 1;
+      int aan = 0; const int *aav = nt_arr(nt, args, "arguments", &aan);
+      if (aan < 1) continue;
+      int base = nt->count;
+      /* __sav = Dir.pwd */
+      int pwdc = nt_new_node(nt, "CallNode");
+      int pwdr = nt_new_node(nt, "ConstantReadNode");
+      int wsav = nt_new_node(nt, "LocalVariableWriteNode");
+      /* Dir.chdir(<arg>) */
+      int cd1 = nt_new_node(nt, "CallNode");
+      int cd1r = nt_new_node(nt, "ConstantReadNode");
+      int cd1a = nt_new_node(nt, "ArgumentsNode");
+      /* __val = (body...) */
+      int pstmts = nt_new_node(nt, "StatementsNode");
+      int paren = nt_new_node(nt, "ParenthesesNode");
+      int wval = nt_new_node(nt, "LocalVariableWriteNode");
+      /* Dir.chdir(__sav) */
+      int cd2 = nt_new_node(nt, "CallNode");
+      int cd2r = nt_new_node(nt, "ConstantReadNode");
+      int cd2a = nt_new_node(nt, "ArgumentsNode");
+      int rsav = nt_new_node(nt, "LocalVariableReadNode");
+      int rval = nt_new_node(nt, "LocalVariableReadNode");
+      int ostmts = nt_new_node(nt, "StatementsNode");
+      int oparen = nt_new_node(nt, "ParenthesesNode");
+      if (pwdc<0||pwdr<0||wsav<0||cd1<0||cd1r<0||cd1a<0||pstmts<0||paren<0||wval<0||
+          cd2<0||cd2r<0||cd2a<0||rsav<0||rval<0||ostmts<0||oparen<0) continue;
+      nt_node_set_str(nt, pwdr, "name", "Dir");
+      nt_node_set_str(nt, pwdc, "name", "pwd");
+      nt_node_set_ref(nt, pwdc, "receiver", pwdr);
+      nt_node_set_ref(nt, pwdc, "arguments", -1);
+      nt_node_set_ref(nt, pwdc, "block", -1);
+      nt_node_set_str(nt, wsav, "name", sav);
+      nt_node_set_ref(nt, wsav, "value", pwdc);
+      nt_node_set_str(nt, cd1r, "name", "Dir");
+      nt_node_set_str(nt, cd1, "name", "chdir");
+      nt_node_set_ref(nt, cd1, "receiver", cd1r);
+      { int a0 = aav[0]; nt_node_set_arr(nt, cd1a, "arguments", &a0, 1); }
+      nt_node_set_ref(nt, cd1, "arguments", cd1a);
+      nt_node_set_ref(nt, cd1, "block", -1);
+      { int items[60]; for (int k = 0; k < bn; k++) items[k] = bb[k];
+        nt_node_set_arr(nt, pstmts, "body", items, bn); }
+      nt_node_set_ref(nt, paren, "body", pstmts);
+      nt_node_set_str(nt, wval, "name", valn);
+      nt_node_set_ref(nt, wval, "value", paren);
+      nt_node_set_str(nt, cd2r, "name", "Dir");
+      nt_node_set_str(nt, cd2, "name", "chdir");
+      nt_node_set_ref(nt, cd2, "receiver", cd2r);
+      nt_node_set_str(nt, rsav, "name", sav);
+      { int rs = rsav; nt_node_set_arr(nt, cd2a, "arguments", &rs, 1); }
+      nt_node_set_ref(nt, cd2, "arguments", cd2a);
+      nt_node_set_ref(nt, cd2, "block", -1);
+      nt_node_set_str(nt, rval, "name", valn);
+      { int items[4] = { wsav, cd1, wval, cd2 };
+        int all[5]; for (int k = 0; k < 4; k++) all[k] = items[k]; all[4] = rval;
+        nt_node_set_arr(nt, ostmts, "body", all, 5); }
+      nt_node_set_ref(nt, oparen, "body", ostmts);
+      nt_node_set_str(nt, id, "name", "itself");
+      nt_node_set_ref(nt, id, "receiver", oparen);
+      nt_node_set_ref(nt, id, "arguments", -1);
+      nt_node_set_ref(nt, id, "block", -1);
+      comp_grow_node_arrays(c);
+      int encl = c->nscope[id];
+      for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+      /* re-home the block body into the enclosing scope */
+      {
+        Scope *bs = comp_scope_of(c, body);
+        int bsi = bs ? (int)(bs - c->scopes) : -1;
+        int stack[256]; int sp = 0; stack[sp++] = body;
+        while (sp > 0 && bsi >= 0) {
+          int nid = stack[--sp];
+          if (nid < 0 || nid >= nt->count) continue;
+          if (c->nscope[nid] == bsi) c->nscope[nid] = encl;
+          const SpNode *nd = &nt->nodes[nid];
+          for (int i2 = 0; i2 < nd->nr && sp < 250; i2++) stack[sp++] = nd->r[i2].ref;
+          for (int i2 = 0; i2 < nd->na; i2++)
+            for (int j2 = 0; j2 < nd->a[i2].n && sp < 250; j2++) stack[sp++] = nd->a[i2].ids[j2];
+        }
+      }
+      changed = 1; continue;
+    }
+  }
+  return changed;
+}
+
 int desugar_env_enum(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
