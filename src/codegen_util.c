@@ -433,7 +433,6 @@ int g_uses_program_name = 0;
 int g_gen_obj_hash = 0;
 int g_uses_regex = 0;
 int g_uses_argv = 0;
-int g_uses_random = 0;
 int g_uses_threads = 0;
 int g_has_user_cmp = 0;
 int g_gen_obj_hashkey = 0;

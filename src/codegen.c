@@ -4380,7 +4380,7 @@ static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
   g_uses_marshal = 0;
-  g_uses_regex = 0; g_uses_argv = 0; g_uses_random = 0; g_uses_threads = 0;
+  g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0;
   g_uses_program_name = 0;
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
@@ -4396,7 +4396,6 @@ static void scan_prologue_features(Compiler *c) {
       else if (sp_streq(nm, "Thread") || sp_streq(nm, "Queue") || sp_streq(nm, "SizedQueue") ||
                sp_streq(nm, "Mutex") || sp_streq(nm, "Monitor") ||
                sp_streq(nm, "ConditionVariable")) g_uses_threads = 1;
-      else if (sp_streq(nm, "Random")) g_uses_random = 1;
       else if (sp_streq(nm, "ARGV") || sp_streq(nm, "ARGF")) g_uses_argv = 1;
       else if (sp_streq(nm, "Symbol")) g_uses_symbols = 1;
       /* Marshal.load reconstructs symbols at runtime, so it needs the symbol
@@ -4431,8 +4430,6 @@ static void scan_prologue_features(Compiler *c) {
           sp_streq(nm, "private_instance_methods") || sp_streq(nm, "protected_instance_methods") ||
           sp_streq(nm, "methods") || sp_streq(nm, "instance_variables") ||
           sp_streq(nm, "class_variables")) g_uses_symbols = 1;
-      else if (sp_streq(nm, "rand") || sp_streq(nm, "srand") || sp_streq(nm, "sample") ||
-               sp_streq(nm, "shuffle") || sp_streq(nm, "shuffle!")) g_uses_random = 1;
     }
   }
   /* Generic object reflection: when a native package declared it consumes
@@ -5574,11 +5571,9 @@ char *codegen_program(const NodeTable *nt) {
     emit_str_literal(body, c->nt->source_file ? c->nt->source_file : "source.rb");
     buf_puts(body, ";\n");
   }
-  /* Ruby auto-seeds its PRNG at startup, so rand/shuffle/sample vary per
-     run. Seed once here; an explicit srand(seed) in user code runs later
-     and overrides this for reproducible sequences. Skipped when the program
-     consumes no randomness (no time() / srand call at all). */
-  if (g_uses_random) buf_puts(body, "    srand((unsigned)time(NULL));\n");
+  /* No PRNG seeding here: the shared Kernel stream (lib/sp_random.c)
+     self-seeds lazily on its first draw, so a program that consumes no
+     randomness pays nothing and one that does still varies per run. */
   /* Register END blocks (atexit runs LIFO, so they execute in reverse registration order) */
   for (int e = 1; e <= end_count; e++)
     buf_printf(body, "    atexit(sp_end_fn_%d);\n", e);

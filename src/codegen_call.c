@@ -8977,7 +8977,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (sp_streq(name, "rand")) {
-      if (ac == 0) { buf_puts(b, "(mrb_float)((double)rand() / (RAND_MAX + 1.0))"); return; }
+      if (ac == 0) { buf_puts(b, "sp_krand_float()"); return; }
       TyKind a0t = comp_ntype(c, av[0]);
       if (a0t == TY_FLOAT_RANGE) {   /* rand(1.0..10.0) -> a Float in [first, last) */
         int tr = ++g_tmp;
@@ -9017,9 +9017,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          gives an Integer in [0, |n|) (#2518). A literal folds to the exact form. */
       if (nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "IntegerNode")) {
         long long v = nt_int(nt, av[0], "value", 0);
-        if (v == 0) { buf_puts(b, "(mrb_float)((double)rand() / (RAND_MAX + 1.0))"); return; }
+        if (v == 0) { buf_puts(b, "sp_krand_float()"); return; }
         long long m = v < 0 ? -v : v;
-        buf_printf(b, "((mrb_int)(rand() %% %lldLL))", m);
+        buf_printf(b, "sp_krand_below(%lldLL)", m);
         return;
       }
       /* a dynamic Integer argument may be 0 at run time (a Float [0,1)) or
@@ -9028,8 +9028,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int tn = ++g_tmp;
       buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, av[0], b);
       buf_printf(b, "; if (_t%d < 0) _t%d = -_t%d; _t%d > 0"
-                    " ? sp_box_int((mrb_int)(rand() %% (int)_t%d))"
-                    " : sp_box_float((double)rand() / (RAND_MAX + 1.0)); })",
+                    " ? sp_box_int(sp_krand_below(_t%d))"
+                    " : sp_box_float(sp_krand_float()); })",
                  tn, tn, tn, tn, tn);
       return;
     }

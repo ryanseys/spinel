@@ -14,6 +14,7 @@
 #include "sp_array.h"   /* typed arrays: hot core inline + cold ops in lib/sp_array.c */
 #include "sp_re.h"      /* regexp wrappers + MatchData (lib/sp_re.c); engine = build/regexp/*.o */
 #include "sp_str.h"     /* cold string transforms (lib/sp_str.c); hot/utf8 core stays here */
+#include "sp_random.h"  /* shared Kernel-level PRNG stream (lib/sp_random.c) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -4028,7 +4029,7 @@ static sp_StrArray *sp_StrArray_from_poly_array(sp_PolyArray *a) { sp_StrArray *
 static sp_IntArray *sp_IntArray_from_poly_array(sp_PolyArray *a) { sp_IntArray *r = sp_IntArray_new(); if (!a) return r; SP_GC_ROOT(a); SP_GC_ROOT(r); for (mrb_int i = 0; i < a->len; i++) sp_IntArray_push(r, sp_poly_to_i(a->data[i])); return r; }
 static sp_FloatArray *sp_FloatArray_from_poly_array(sp_PolyArray *a) { sp_FloatArray *r = sp_FloatArray_new(); if (!a) return r; SP_GC_ROOT(a); SP_GC_ROOT(r); for (mrb_int i = 0; i < a->len; i++) sp_FloatArray_push(r, sp_poly_to_f(a->data[i])); return r; }
 static void sp_PolyArray_reverse_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; } for (mrb_int i = 0, j = a->len - 1; i < j; i++, j--) { sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
-static void sp_PolyArray_shuffle_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; } for (mrb_int i = a->len - 1; i > 0; i--) { mrb_int j = (mrb_int)(rand() % (i + 1)); sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
+static void sp_PolyArray_shuffle_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; } for (mrb_int i = a->len - 1; i > 0; i--) { mrb_int j = sp_krand_below(i + 1); sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
 static void sp_PolyArray_rotate_bang(sp_PolyArray*a,mrb_int n){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}if(a->len<=0)return;n=((n%a->len)+a->len)%a->len;if(n==0)return;sp_RbVal*d=a->data;mrb_int lo=0,hi=n-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=n;hi=a->len-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=0;hi=a->len-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}}
 static sp_PolyArray *sp_PolyArray_shuffle(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_shuffle_bang(b); return b; }
 /* When sort hits an incomparable pair the result is discarded and we raise
@@ -4278,7 +4279,7 @@ static sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {
 /* uniq dedups with eql? (class-strict: 1 and 1.0 both survive), as CRuby. */
 static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
 static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array();return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eql(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
-static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[(mrb_int)(rand()%a->len)]; }
+static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[sp_krand_below(a->len)]; }
 
 /* Forward decl: sp_poly_inspect dispatches into sp_PolyArray_inspect
    for nested poly arrays (under promote, an `each_cons` chain's outer
@@ -5416,7 +5417,7 @@ static sp_RbVal sp_poly_last(sp_RbVal v) {
 }
 static sp_RbVal sp_poly_sample(sp_RbVal v) {
   mrb_int n = sp_poly_length(v);
-  return n > 0 ? sp_poly_arr_get(v, (mrb_int)(rand() % n)) : sp_box_nil();
+  return n > 0 ? sp_poly_arr_get(v, sp_krand_below(n)) : sp_box_nil();
 }
 /* Thread#value / #join through a poly slot. A Thread is modelled as a Fiber run
    to completion (single-threaded); when one is carried in a poly value -- e.g.
@@ -8020,20 +8021,22 @@ static sp_RbVal sp_curry_realize_poly(sp_Curry *c) {
    alongside the hash type it closes over. */
 static void sp_hashproc_cap_scan(void *p) { sp_gc_mark(p); }
 
-/* Random — per-instance PRNG. CRuby uses MT19937; spinel uses a
-   portable xorshift64 (rand_r is POSIX-only, absent on MinGW), so
-   the *sequence* differs from MRI but each Random object keeps its
-   own reproducible stream from its seed. Issue #898. */
+/* Random — per-instance PRNG. CRuby uses MT19937; spinel uses PCG-XSH-RR
+   (the generator mruby-random uses; see lib/sp_random.c), so the *sequence*
+   differs from MRI -- MT19937 is not part of the Ruby spec -- but each
+   Random object keeps its own reproducible stream from its seed. The
+   default instance is a window onto the shared Kernel stream, so srand()
+   governs it too. */
 typedef struct { uint64_t state; mrb_int seed; } sp_Random;
+static SP_TLS sp_Random sp_random_default;
 static uint64_t sp_random_next(sp_Random *r) {
-  uint64_t x = r->state ? r->state : 0x9E3779B97F4A7C15ULL;
-  x ^= x << 13; x ^= x >> 7; x ^= x << 17;
-  r->state = x;
-  return x;
+  if (r == &sp_random_default) return sp_krand_next();
+  uint64_t hi = sp_pcg32_adv(&r->state);
+  return (hi << 32) | sp_pcg32_adv(&r->state);
 }
 static sp_Random *sp_Random_new(mrb_int seed) {
   sp_Random *r = (sp_Random *)sp_gc_alloc(sizeof(sp_Random), NULL, NULL);
-  r->state = (uint64_t)seed ^ 0x9E3779B97F4A7C15ULL;
+  sp_pcg_seed(&r->state, (uint64_t)seed);
   r->seed = seed;
   return r;
 }
@@ -8052,10 +8055,10 @@ static mrb_bool sp_Random_eq(sp_Random *a, sp_Random *b) {
 static sp_Random *sp_Random_new_auto(void) {
   static SP_TLS uint64_t sp_random_auto_ctr = 0;
   sp_Random *r = (sp_Random *)sp_gc_alloc(sizeof(sp_Random), NULL, NULL);
-  r->state = (((uint64_t)time(NULL)) << 20) ^ (++sp_random_auto_ctr * 0x9E3779B97F4A7C15ULL) ^
-             (uint64_t)(uintptr_t)r;
-  if (!r->state) r->state = 0x9E3779B97F4A7C15ULL;
-  r->seed = (mrb_int)(r->state >> 1);
+  uint64_t e = (((uint64_t)time(NULL)) << 20) ^ (++sp_random_auto_ctr * 0x9E3779B97F4A7C15ULL) ^
+               (uint64_t)(uintptr_t)r;
+  sp_pcg_seed(&r->state, e);
+  r->seed = (mrb_int)(e >> 1);
   return r;
 }
 /* Random#rand(Range): an integer in the (int-endpoint) range, empty raises. */
@@ -8080,22 +8083,11 @@ static mrb_float sp_Random_rand_float_bound(sp_Random *r, mrb_float bound) {
   if (bound <= 0) sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %s", sp_float_to_s(bound)));
   return sp_Random_rand_float(r) * bound;
 }
-/* Class-method forms (`Random.rand` / `Random.bytes`) share one
-   lazily-seeded default instance, mirroring CRuby's Random::DEFAULT. */
-/* Per-worker (SP_TLS) in the threaded build: the default xorshift PRNG has no
-   internal lock, so a shared copy would race across workers (libc rand(), used
-   by the bare rand()/rand(int)/shuffle/sample paths, is glibc-thread-safe and so
-   needs no such treatment). Each worker seeds its own from time + its TLS address
-   so the sequences differ. Byte-identical (single static, unchanged seed) in the
-   single-threaded build. */
-static SP_TLS sp_Random sp_random_default = { 0 };
+/* Class-method forms (`Random.rand` / `Random.bytes`) share the default
+   instance, mirroring CRuby's Random::DEFAULT. Its draws redirect to the
+   shared Kernel stream (see sp_random_next), which lazily self-seeds and
+   is per-worker in the threaded build. */
 static sp_Random *sp_random_default_get(void) {
-  if (sp_random_default.state == 0) {
-    sp_random_default.state = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ULL;
-#ifdef SP_THREADS
-    sp_random_default.state ^= (uint64_t)(uintptr_t)&sp_random_default;  /* distinct per worker */
-#endif
-  }
   return &sp_random_default;
 }
 /* Random#bytes(n) — n random bytes as a String. Uses sp_str_set_len
@@ -8122,20 +8114,24 @@ static mrb_int sp_Random_new_seed(void) {
    source wired up, so this draws from a freshly time-seeded stream). */
 static const char *sp_Random_urandom(mrb_int n) {
   if (n < 0) sp_raise_cls("ArgumentError", "negative string size");
-  sp_Random tmp; tmp.state = ((uint64_t)time(NULL) << 20) ^ (uint64_t)(uintptr_t)&tmp ^ 0x9E3779B97F4A7C15ULL; tmp.seed = 0;
+  sp_Random tmp; tmp.seed = 0;
+  sp_pcg_seed(&tmp.state, ((uint64_t)time(NULL) << 20) ^ (uint64_t)(uintptr_t)&tmp ^ 0x9E3779B97F4A7C15ULL);
   char *b = sp_str_alloc((size_t)n);
   for (mrb_int i = 0; i < n; i++) b[i] = (char)(sp_random_next(&tmp) & 0xff);
   b[n] = 0;
   sp_str_set_len(b, (size_t)n);
   return b;
 }
-/* Kernel#srand: seed libc rand() and remember the previous seed, which srand
-   returns (CRuby returns the prior seed, not the new one). */
+/* Kernel#srand: seed the shared Kernel stream and remember the previous
+   seed, which srand returns (CRuby returns the prior seed, not the new
+   one). Every rand form -- bare/int/range, shuffle, sample, the Random
+   default instance -- draws from that one stream, so a single srand makes
+   them all reproducible. */
 static SP_TLS mrb_int sp_kernel_seed = 0;
 static mrb_int sp_kernel_srand(mrb_int seed) {
   mrb_int prev = sp_kernel_seed;
   sp_kernel_seed = seed;
-  srand((unsigned)seed);
+  sp_krand_srand((uint64_t)seed);
   return prev;
 }
 
