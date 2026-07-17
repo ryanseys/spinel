@@ -54,11 +54,13 @@ def canonicalize(path)
 end
 
 # Resolve a require_relative target against the requiring file's directory,
-# adding ".rb" when absent.
+# adding ".rb" when absent. Canonicalize before appending the extension so a
+# bare ".." (the dir-as-file convention the compiler accepts) resolves to
+# "<parent>.rb", not "<dir>/...rb".
 def resolve(from_file, target)
-  base = dir_name(from_file) + "/" + target
+  base = canonicalize(dir_name(from_file) + "/" + target)
   base = base + ".rb" if !base.end_with?(".rb")
-  canonicalize(base)
+  base
 end
 
 # Count of require_relative targets that did not resolve to a file. Reported
