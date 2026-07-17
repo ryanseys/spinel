@@ -263,6 +263,7 @@ sp_Time sp_time_add(sp_Time t, double secs) {
    yields "" -- a graceful empty string rather than a crash. */
 /* The UTC offset (seconds) of a Time, mirroring sp_time_iso8601's manual calc. */
 static long sp_time_offset_sec(sp_Time t) {
+  if (t.is_utc == 2) return t.utc_off;   /* fixed offset (Time.at in:) */
   if (t.is_utc) return 0;
   time_t s = (time_t)t.tv_sec;
   struct tm gm = *gmtime(&s);
@@ -309,7 +310,13 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {
       long off = sp_time_offset_sec(t);
       char sign = off < 0 ? '-' : '+'; long a = off < 0 ? -off : off;
       int oh = (int)(a / 3600), om = (int)((a / 60) % 60), os = (int)(a % 60);
-      if (colon >= 2) snprintf(val, sizeof val, "%c%02d:%02d:%02d", sign, oh, om, os);
+      /* %:::z collapses to the minimal precision that loses nothing */
+      if (colon >= 3) {
+        if (os) snprintf(val, sizeof val, "%c%02d:%02d:%02d", sign, oh, om, os);
+        else if (om) snprintf(val, sizeof val, "%c%02d:%02d", sign, oh, om);
+        else snprintf(val, sizeof val, "%c%02d", sign, oh);
+      }
+      else if (colon == 2) snprintf(val, sizeof val, "%c%02d:%02d:%02d", sign, oh, om, os);
       else snprintf(val, sizeof val, "%c%02d:%02d", sign, oh, om);
     }
     else if (d == 'P') { char b2[16]; strftime(b2, sizeof b2, "%p", &tmv); for (char *q = b2; *q; q++) *q = (char)tolower((unsigned char)*q); strcpy(val, b2); }
