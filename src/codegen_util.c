@@ -712,6 +712,7 @@ int builtin_class_id(const char *name) {
   if (sp_streq(name, "EOFError"))    return -159;
   if (sp_streq(name, "Math::DomainError")) return -160;
   if (sp_streq(name, "SystemExit"))  return -161;
+  if (sp_streq(name, "Signal"))      return -162;
   return 0;
 }
 const char *c_type_name(TyKind t) {

@@ -4028,6 +4028,29 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
       const char *cn = nt_str(nt, recv, "name");
       if (cn && is_exc_name(cn)) {
+        /* SignalException.new(sig) / Interrupt.new(msg?): the message is the
+           SIG-name and #signo is carried (#2762) */
+        if (sp_streq(cn, "SignalException")) {
+          if (argc == 0) {
+            buf_puts(b, "((sp_Exception *)(sp_raise_cls(\"ArgumentError\","
+                        " \"wrong number of arguments (given 0, expected 1..2)\"), NULL))");
+            return 1;
+          }
+          buf_puts(b, "sp_signal_exc_new(");
+          emit_boxed(c, argv[0], b);
+          buf_puts(b, ")");
+          return 1;
+        }
+        if (sp_streq(cn, "Interrupt")) {
+          buf_puts(b, "sp_interrupt_new(");
+          if (argc >= 1) {
+            if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+          }
+          else buf_puts(b, "(&(\"\\xff\")[1])");
+          buf_puts(b, ")");
+          return 1;
+        }
         /* SystemExit.new(status = true, msg = "exit"): a leading Integer or
            boolean is the status; a String is the message (#2761) */
         if (sp_streq(cn, "SystemExit")) {
@@ -6553,7 +6576,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, ", NULL }; (mrb_bool)sp_system_args(%d, _sys_%d); })", argc, ts);
     return;
   }
-  /* trap(...) / Signal.trap(...) expr: return "DEFAULT" */
+  /* trap(...) / Signal.trap(...): install the handler (a string command or a
+     proc/block), validate the designator, and return the previous handler
+     (#2736, #2737, #2749). */
   {
     int is_trap = (recv < 0 && sp_streq(name, "trap"));
     if (!is_trap && recv >= 0 && sp_streq(name, "trap") && argc >= 1) {
@@ -6563,7 +6588,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
         if (rn && sp_streq(rn, "Signal")) is_trap = 1;
       }
     }
-    if (is_trap && argc >= 1) { emit_str_literal(b, "DEFAULT"); return; }
+    if (is_trap && argc >= 1) {
+      g_uses_symbols = 1;   /* :INT designators resolve through the sym table */
+      buf_puts(b, "sp_signal_trap(");
+      emit_boxed(c, argv[0], b);
+      buf_puts(b, ", ");
+      if (nt_ref(nt, id, "block") >= 0) {
+        buf_puts(b, "sp_box_proc(");
+        emit_proc_literal(c, id, b);
+        buf_puts(b, ")");
+      }
+      else if (argc >= 2) emit_boxed(c, argv[1], b);
+      else buf_puts(b, "sp_box_str(\"DEFAULT\")");
+      buf_puts(b, ")");
+      return;
+    }
   }
 
   /* Fiber[:k] / Fiber.current[:k] -> sp_Fiber_storage_get */
@@ -8969,6 +9008,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else if (sp_streq(name, "private_call?")) accfn = "sp_exc_private_call_acc";
       else if (sp_streq(name, "status")) accfn = "sp_exc_status_acc";
       else if (sp_streq(name, "success?")) accfn = "sp_exc_success_acc";
+      else if (sp_streq(name, "signo")) accfn = "sp_exc_signo_acc";
+      else if (sp_streq(name, "signm")) accfn = "sp_exc_signm_acc";
       if (accfn) {
         if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key"))
           g_uses_symbols = 1;  /* staged names intern back to symbols */
@@ -10876,6 +10917,31 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (sp_streq(name, "to_tty?") && argc == 0) {
         buf_puts(b, "(isatty(2) != 0)"); return;
       }
+    }
+    /* Signal module queries (#2735) */
+    if (tcn && sp_streq(tcn, "Signal") && sp_streq(name, "list") && argc == 0) {
+      buf_puts(b, "sp_signal_list()"); return;
+    }
+    if (tcn && sp_streq(tcn, "Signal") && sp_streq(name, "signame") && argc == 1) {
+      buf_puts(b, "sp_signal_signame(");
+      emit_int_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      return;
+    }
+    /* Process.kill(sig, *pids): per-pid sends, counting successes (#2750) */
+    if (tcn && sp_streq(tcn, "Process") && sp_streq(name, "kill") && argc >= 2) {
+      g_uses_symbols = 1;   /* :USR1 designators resolve through the sym table */
+      int tk5 = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = 0;", tk5);
+      for (int k = 1; k < argc; k++) {
+        buf_printf(b, " _t%d += sp_process_kill1(", tk5);
+        emit_boxed(c, argv[0], b);
+        buf_puts(b, ", ");
+        emit_int_expr(c, argv[k], b);
+        buf_puts(b, ");");
+      }
+      buf_printf(b, " _t%d; })", tk5);
+      return;
     }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "current") && argc == 0) {
       buf_puts(b, "sp_Thread_current()"); return;

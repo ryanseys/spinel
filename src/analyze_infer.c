@@ -2822,7 +2822,7 @@ else {
     }
     if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && argc >= 1) return TY_STRING;
     if (sp_streq(name, "system") && argc >= 1) return TY_BOOL;
-    if (sp_streq(name, "trap") && argc >= 1) return TY_STRING;
+    if (sp_streq(name, "trap") && argc >= 1) return TY_POLY;  /* the previous handler: a command string or a Proc */
     if (sp_streq(name, "rand")) {
       if (argc == 0) return TY_FLOAT;
       if (infer_type(c, argv[0]) == TY_FLOAT_RANGE) return TY_FLOAT;   /* rand(float range) */
@@ -2866,13 +2866,17 @@ else {
       if (rname && sp_streq(rname, "Kernel")) return TY_INT;
     }
   }
-  /* Signal.trap / ::Signal.trap */
-  if (recv >= 0 && sp_streq(name, "trap") && argc >= 1) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
-      const char *rname = nt_str(nt, recv, "name");
-      if (rname && sp_streq(rname, "Signal")) return TY_STRING;
+  /* Signal.trap / Signal.list / Signal.signame; Process.kill (#2735, #2750) */
+  if (recv >= 0 && nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
+    const char *rname = nt_str(nt, recv, "name");
+    if (rname && sp_streq(rname, "Signal")) {
+      if (sp_streq(name, "trap") && argc >= 1) return TY_POLY;
+      if (sp_streq(name, "list") && argc == 0) return TY_STR_INT_HASH;
+      if (sp_streq(name, "signame") && argc == 1) return TY_STRING;
     }
+    if (rname && sp_streq(rname, "Process") && sp_streq(name, "kill") && argc >= 2)
+      return TY_INT;
   }
 
   /* Fiber storage: Fiber[:k] and Fiber.current[:k] -> poly */
@@ -3566,6 +3570,8 @@ else {
     if (sp_streq(name, "private_call?")) return TY_BOOL;
     if (sp_streq(name, "status")) return TY_INT;       /* SystemExit#status */
     if (sp_streq(name, "success?")) return TY_BOOL;    /* SystemExit#success? */
+    if (sp_streq(name, "signo")) return TY_INT;        /* SignalException#signo */
+    if (sp_streq(name, "signm")) return TY_STRING;     /* SignalException#signm */
     if (rt == TY_EXCEPTION && sp_streq(name, "exception")) return TY_EXCEPTION;  /* self, or a copy carrying a new message */
     if (sp_streq(name, "eql?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
         sp_streq(name, "equal?"))

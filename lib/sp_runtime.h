@@ -45,6 +45,7 @@ static void *sp_bt_buf[256];       /* frames captured at the last raise */
 static int sp_bt_n = 0;
 #endif
 #include <unistd.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #if !defined(__APPLE__) && !defined(__FreeBSD__)
@@ -2195,6 +2196,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_REGEX: return SPL("Regexp");
         case SP_BUILTIN_OBJECT: return SPL("Object");   /* a bare Object.new instance */
         case SP_BUILTIN_BASIC_OBJECT: return SPL("BasicObject");
+        case SP_BUILTIN_PROC: return SPL("Proc");
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
         default: { sp_Class c = {v.cls_id}; return sp_class_to_s(c); }
       }
@@ -2463,6 +2465,12 @@ static mrb_float sp_num_to_f(sp_RbVal v) {
    raisers) can stage too. */
 static SP_TLS sp_RbVal sp_pending_exc_recv, sp_pending_exc_key, sp_pending_exc_val;
 static SP_TLS unsigned char sp_pending_exc_flags = 0;
+/* Signal.trap state (defined with the Signal machinery below; declared here
+   so the GC mark hook can keep installed proc handlers live). */
+#define SP_SIG_MAX 65
+struct sp_Proc;
+static const char *sp_trap_state[SP_SIG_MAX];
+static struct sp_Proc *sp_trap_proc[SP_SIG_MAX];
 SP_COLD void sp_exc_stage_recv(sp_RbVal v) { sp_pending_exc_recv = v; sp_pending_exc_flags |= 1; }
 SP_COLD void sp_exc_stage_key(sp_RbVal v)  { sp_pending_exc_key = v;  sp_pending_exc_flags |= 2; }
 SP_COLD void sp_exc_stage_val(sp_RbVal v)  { sp_pending_exc_val = v;  sp_pending_exc_flags |= 4; }
@@ -5984,6 +5992,13 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
     {"SyntaxError",          "ScriptError"},
     {"ScriptError",          "Exception"},
     {"StandardError",        "Exception"},
+    {"SecurityError",        "Exception"},
+    {"SignalException",      "Exception"},
+    {"Interrupt",            "SignalException"},
+    {"ThreadError",          "StandardError"},
+    {"ClosedQueueError",     "StopIteration"},
+    {"NoMatchingPatternError", "StandardError"},
+    {"NoMatchingPatternKeyError", "NoMatchingPatternError"},
     {NULL, NULL}
   };
   const char *cls = raised;
@@ -6237,6 +6252,9 @@ static void sp_mark_brk_vals(void) {
   if (sp_pending_exc_flags & 1) sp_mark_rbval(sp_pending_exc_recv);
   if (sp_pending_exc_flags & 2) sp_mark_rbval(sp_pending_exc_key);
   if (sp_pending_exc_flags & 4) sp_mark_rbval(sp_pending_exc_val);
+  /* installed Signal.trap proc handlers stay live */
+  for (int si = 0; si < SP_SIG_MAX; si++)
+    if (sp_trap_proc[si]) sp_gc_mark(sp_trap_proc[si]);
 }
 
 /* ---- non-lambda proc `return` (non-local return to the home method) -------
@@ -7193,6 +7211,133 @@ static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p ||
    it there) and its unboxed projection fills the mrb_int slot (a concrete-typed
    parameter reads that -- a pointer for a heap value, the int otherwise). The
    proc publishes its result through _sp_proc_poly_ret. #2691 */
+/* ---- Signal (#2735-#2738, #2749, #2750) --------------------------------
+   The name<->number table mirrors CRuby's Signal.list (canonical name first
+   where numbers alias, so signame answers CHLD/ABRT). Trap state lives in
+   per-signal slots; a proc handler installs a real C handler that invokes the
+   stored proc with the signal number. The EXIT pseudo-signal (0) registers an
+   atexit dispatcher so the handler runs on normal termination too. */
+static const struct { const char *name; int no; } sp_sig_table[] = {
+  {"EXIT", 0}, {"HUP", SIGHUP}, {"INT", SIGINT}, {"QUIT", SIGQUIT},
+  {"ILL", SIGILL}, {"TRAP", SIGTRAP}, {"ABRT", SIGABRT}, {"IOT", SIGABRT},
+  {"BUS", SIGBUS}, {"FPE", SIGFPE}, {"KILL", SIGKILL}, {"USR1", SIGUSR1},
+  {"SEGV", SIGSEGV}, {"USR2", SIGUSR2}, {"PIPE", SIGPIPE}, {"ALRM", SIGALRM},
+  {"TERM", SIGTERM}, {"CHLD", SIGCHLD}, {"CLD", SIGCHLD}, {"CONT", SIGCONT},
+  {"STOP", SIGSTOP}, {"TSTP", SIGTSTP}, {"TTIN", SIGTTIN}, {"TTOU", SIGTTOU},
+  {"URG", SIGURG}, {"XCPU", SIGXCPU}, {"XFSZ", SIGXFSZ}, {"VTALRM", SIGVTALRM},
+  {"PROF", SIGPROF}, {"WINCH", SIGWINCH}, {"IO", SIGIO}, {"SYS", SIGSYS},
+#ifdef SIGPWR
+  {"PWR", SIGPWR},
+#endif
+#ifdef SIGSTKFLT
+  {"STKFLT", SIGSTKFLT},
+#endif
+#ifdef SIGPOLL
+  {"POLL", SIGPOLL},
+#endif
+  {NULL, 0}
+};
+static sp_StrIntHash *sp_signal_list(void) {
+  sp_StrIntHash *h = sp_StrIntHash_new();
+  SP_GC_ROOT(h);
+  for (int i = 0; sp_sig_table[i].name; i++)
+    sp_StrIntHash_set(h, sp_sig_table[i].name, (mrb_int)sp_sig_table[i].no);
+  return h;
+}
+static const char *sp_signal_signame(mrb_int no) {
+  for (int i = 0; sp_sig_table[i].name; i++)
+    if (sp_sig_table[i].no == (int)no) return sp_sig_table[i].name;
+  return NULL;   /* nil for an unknown number, as in CRuby 3.4+ */
+}
+/* Resolve a signal designator (String/Symbol name with optional SIG prefix,
+   or Integer) to its number; CRuby's errors for the invalid forms. */
+SP_COLD static int sp_signal_resolve(sp_RbVal sig) {
+  const char *nm = NULL;
+  if (sig.tag == SP_TAG_STR) nm = sig.v.s;
+  else if (sig.tag == SP_TAG_SYM) nm = sp_sym_to_s((sp_sym)sig.v.i);
+  else if (sig.tag == SP_TAG_INT) {
+    if (sp_signal_signame(sig.v.i)) return (int)sig.v.i;
+    sp_raise_cls("ArgumentError",
+                 sp_sprintf("invalid signal number (%lld)", (long long)sig.v.i));
+  }
+  if (!nm)
+    sp_raise_cls("ArgumentError", "bad signal type");
+  if (strncmp(nm, "SIG", 3) == 0) nm += 3;
+  for (int i = 0; sp_sig_table[i].name; i++)
+    if (strcmp(sp_sig_table[i].name, nm) == 0) return sp_sig_table[i].no;
+  sp_raise_cls("ArgumentError", sp_sprintf("unsupported signal 'SIG%s'", nm));
+}
+static void sp_sig_c_handler(int no) {
+  sp_Proc *p = (no >= 0 && no < SP_SIG_MAX) ? (sp_Proc *)sp_trap_proc[no] : NULL;
+  if (p) {
+    mrb_int slot = (mrb_int)no;
+    _sp_proc_poly_args[0] = sp_box_int((mrb_int)no);
+    sp_proc_call(p, 1, &slot);
+  }
+}
+static void sp_sig_exit_dispatch(void) {
+  sp_Proc *p = (sp_Proc *)sp_trap_proc[0];
+  sp_trap_proc[0] = NULL;   /* run once */
+  if (p) { mrb_int slot = 0; _sp_proc_poly_args[0] = sp_box_int(0); sp_proc_call(p, 1, &slot); }
+}
+static sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {
+  int no = sp_signal_resolve(sig);
+  if (no == SIGKILL || no == SIGSTOP)
+    sp_raise_cls("Errno::EINVAL",
+                 sp_sprintf("Invalid argument - SIG%s", sp_signal_signame(no)));
+  sp_RbVal prev = sp_trap_proc[no] ? sp_box_proc((sp_Proc *)sp_trap_proc[no])
+                : sp_box_str(sp_trap_state[no] ? sp_trap_state[no] : "DEFAULT");
+  if (handler.tag == SP_TAG_OBJ && handler.cls_id == SP_BUILTIN_PROC && handler.v.p) {
+    sp_trap_proc[no] = (sp_Proc *)handler.v.p;
+    sp_trap_state[no] = NULL;
+    if (no == 0) { static int armed = 0; if (!armed) { armed = 1; atexit(sp_sig_exit_dispatch); } }
+    else signal(no, sp_sig_c_handler);
+  }
+  else {
+    const char *hs = (handler.tag == SP_TAG_STR && handler.v.s) ? handler.v.s : "DEFAULT";
+    int ignore = strcmp(hs, "IGNORE") == 0 || strcmp(hs, "SIG_IGN") == 0;
+    sp_trap_proc[no] = NULL;
+    sp_trap_state[no] = ignore ? "IGNORE" : "DEFAULT";
+    if (no != 0) signal(no, ignore ? SIG_IGN : SIG_DFL);
+  }
+  return prev;
+}
+/* Process.kill: send `sig` to one pid; raises the errno family on failure and
+   counts 1 on success (the emitter sums per-pid calls). Signal 0 probes. */
+static mrb_int sp_process_kill1(sp_RbVal sig, mrb_int pid) {
+  int no = sp_signal_resolve(sig);
+  if (kill((pid_t)pid, no) != 0) {
+    if (errno == ESRCH) sp_raise_cls("Errno::ESRCH", sp_sprintf("No such process - %lld", (long long)pid));
+    if (errno == EPERM) sp_raise_cls("Errno::EPERM", sp_sprintf("Operation not permitted - %lld", (long long)pid));
+    sp_raise_cls("Errno::EINVAL", "Invalid argument");
+  }
+  return 1;
+}
+/* SignalException.new(sig) / Interrupt.new(msg?): the message is the SIG-name
+   and #signo rides the xkey slot (#2762, #2763). */
+static sp_Exception *sp_signal_exc_new(sp_RbVal sig) {
+  int no = sp_signal_resolve(sig);
+  const char *nm = sp_signal_signame(no);
+  sp_Exception *e = sp_exc_new("SignalException", sp_sprintf("SIG%s", nm ? nm : "?"));
+  SP_GC_ROOT(e);
+  e->xkey = sp_box_int((mrb_int)no);
+  return e;
+}
+static sp_Exception *sp_interrupt_new(const char *msg) {
+  sp_Exception *e = sp_exc_new("Interrupt", (msg && msg[0]) ? msg : "Interrupt");
+  SP_GC_ROOT(e);
+  e->xkey = sp_box_int((mrb_int)SIGINT);
+  return e;
+}
+static mrb_int sp_exc_signo_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "SignalException", "signo");
+  return (e->xkey.tag == SP_TAG_INT) ? e->xkey.v.i : 0;
+}
+static const char *sp_exc_signm_acc(sp_Exception *e) {
+  sp_exc_acc_gate(e, "SignalException", "signm");
+  return sp_exc_message(e);
+}
+
 static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) {
   if (!p || !p->fn) return;
   mrb_int n = sp_poly_length(arr);

@@ -4864,7 +4864,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "case -155:return SPL(\"ClosedQueueError\");case -156:return SPL(\"UncaughtThrowError\");");
     buf_puts(&b, "case -157:return SPL(\"NoMatchingPatternError\");case -158:return SPL(\"NoMatchingPatternKeyError\");");
     buf_puts(&b, "case -159:return SPL(\"EOFError\");case -160:return SPL(\"Math::DomainError\");");
-    buf_puts(&b, "case -161:return SPL(\"SystemExit\");");
+    buf_puts(&b, "case -161:return SPL(\"SystemExit\");case -162:return SPL(\"Signal\");");
     buf_puts(&b, "default:return \"\";} }\n\n");
   }
   /* Threaded-runtime marker: the driver greps for this and links the
@@ -4888,7 +4888,7 @@ char *codegen_program(const NodeTable *nt) {
   if (c->nclasses > 0)
     buf_printf(&b, "  if(c.cls_id>=0&&c.cls_id<%d)return sp_cls_is_module[c.cls_id];\n", c->nclasses);
   /* builtin modules: Comparable(-114), Enumerable(-115), Kernel(-119) */
-  buf_puts(&b, "  return(c.cls_id==-114||c.cls_id==-115||c.cls_id==-119);\n}\n");
+  buf_puts(&b, "  return(c.cls_id==-114||c.cls_id==-115||c.cls_id==-119||c.cls_id==-162);\n}\n");
 
   /* sp_class_superclass: parent class for user classes (negative ids map to
      Object builtin). Returns ((sp_Class){-116}) for unknown/root. */

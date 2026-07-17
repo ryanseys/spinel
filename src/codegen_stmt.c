@@ -616,8 +616,7 @@ else {
     buf_puts(b, ");\n");
     return 1;
   }
-  /* trap(...) stmt: no-op (Spinel has no signal-handler runtime) */
-  if (sp_streq(name, "trap") && argc >= 1) return 1;
+
   if (sp_streq(name, "exit") || sp_streq(name, "exit!")) {
     /* exit raises a rescuable SystemExit (#2761); exit! terminates directly.
        A boolean status maps true -> 0, false -> 1, as in CRuby. */
@@ -5053,20 +5052,6 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       return;
     }
     if (emit_output_call(c, id, b, indent)) return;
-    /* Signal.trap / ::Signal.trap stmt: no-op */
-    {
-      const char *snm = nt_str(nt, id, "name");
-      int srecv = nt_ref(nt, id, "receiver");
-      int sargs = nt_ref(nt, id, "arguments");
-      int sargc = 0; if (sargs >= 0) nt_arr(nt, sargs, "arguments", &sargc);
-      if (srecv >= 0 && snm && sp_streq(snm, "trap") && sargc >= 1) {
-        const char *rty2 = nt_type(nt, srecv);
-        if (rty2 && (sp_streq(rty2, "ConstantReadNode") || sp_streq(rty2, "ConstantPathNode"))) {
-          const char *rn = nt_str(nt, srecv, "name");
-          if (rn && sp_streq(rn, "Signal")) return;  /* no-op */
-        }
-      }
-    }
     if (emit_inline_call(c, id, b, indent)) return;
     if (emit_poly_recv_block_dispatch(c, id, b, indent)) return;
     if (emit_iteration_stmt(c, id, b, indent)) return;
