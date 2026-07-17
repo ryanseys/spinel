@@ -36,6 +36,7 @@ registry, or stack reification — none of which exist in a flat compiled binary
 | `callcc` / `Continuation` | unsupported | multi-shot full-stack capture has no flat-C analogue |
 | `Class.new(parent) { ... }` (runtime class) | unsupported | the class graph is baked at compile time |
 | `Object#define_singleton_method` | unsupported | a per-object (singleton) method table would have to be consulted on every call; dispatch is a direct C call to a compiled body |
+| `Object#singleton_class` / `class << obj` (and `Class#attached_object`) | unsupported | the singleton class is the gateway to that same per-object method table; there is no runtime class object to hand back |
 | `Object#extend(mod)` | unsupported | mixing a module into a *live* object at run time needs a per-object method table; `include`/`prepend` in a class body (compile time) do work |
 | Runtime structural mutation of a class through an explicit receiver (`Klass.include(M)`, `Klass.attr_accessor(...)`, `Klass.define_method(...)` outside the class body) | unsupported | the class graph, ancestor chain, and method/ivar layout are baked at compile time; the same declarations *inside* a `class` body work |
 | General reflection (`methods`, `instance_variables`) and `instance_variable_get`/`set` with a **non-literal** name | unsupported | ivars are C struct offsets with no name→offset table; DCE strips method names. A **literal** `instance_variable_get(:@x)` / `instance_variable_set(:@x, v)` *is* supported — it resolves to the known struct offset, like `send(:literal)` below. |

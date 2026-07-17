@@ -769,6 +769,11 @@ int diagnose_unsupported_call(Compiler *c, int id) {
       "Proc#ruby2_keywords is not supported: it is a shim for the Ruby 2.x-to-3.0 "
       "keyword-argument transition, and spinel targets modern keyword semantics, so it "
       "has nothing to toggle (see docs/limitations.md)" },
+    { "singleton_class",
+      "Object#singleton_class is not supported by AOT compilation: it is the gateway "
+      "to a per-object method table, which direct C calls have no room for -- the same "
+      "limit as define_singleton_method. Define methods in the class body instead "
+      "(see docs/limitations.md)" },
     { "set_trace_func",
       "set_trace_func is not supported by AOT compilation: it requires an interpreter "
       "loop to hook, and compiled code has no such loop (see docs/limitations.md)" },
@@ -832,7 +837,14 @@ int diagnose_unsupported_call(Compiler *c, int id) {
     why = buf;
   }
 
-  if (!why) return 0;
+  if (!why) {
+    /* a documented limit buried under a chain (`obj.singleton_class.class`)
+       would otherwise be shadowed by the OUTER call's generic diagnostic:
+       walk down the receiver chain */
+    if (recv >= 0 && nt_kind(nt, recv) == NK_CallNode)
+      return diagnose_unsupported_call(c, recv);
+    return 0;
+  }
   if (diag_user_defines(c, name)) return 0;
   unsupported_feature(c, id, why);
   return 1;
