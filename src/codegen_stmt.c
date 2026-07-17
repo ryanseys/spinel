@@ -7166,6 +7166,13 @@ else {
       const char *cn = nt_str(nt, sexpr, "name");
       if (cn && comp_class_index(c, cn) >= 0) return;
     }
+    /* `class << obj` on a statically-traceable instance: the inner defs were
+       reattached to a synthesized singleton subclass (register_singleton_defs)
+       and are emitted from the method list, so the block is compile-time. */
+    if (exty && (sp_streq(exty, "ConstantReadNode") || sp_streq(exty, "LocalVariableReadNode"))) {
+      TyKind et = comp_ntype(c, sexpr);
+      if (ty_is_object(et) && c->classes[ty_object_class(et)].is_singleton_of) return;
+    }
     unsupported(c, id, "singleton class on arbitrary object");
   }
   if (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) {

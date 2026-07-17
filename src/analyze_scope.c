@@ -1226,7 +1226,7 @@ void register_singleton_defs(Compiler *c) {
      subclass; a non-traceable receiver keeps today's behavior. */
   for (int id = 0; id < nt->count; id++) {
     NodeKind idk = nt_kind(nt, id);
-    int recv, is_extend = 0, is_dsm = 0;
+    int recv, is_extend = 0, is_dsm = 0, is_scls = 0;
     if (idk == NK_DefNode) {
       recv = nt_ref(nt, id, "receiver");
     }
@@ -1239,6 +1239,12 @@ void register_singleton_defs(Compiler *c) {
       }
       else if (cn && sp_streq(cn, "extend")) { recv = nt_ref(nt, id, "receiver"); is_extend = 1; }
       else continue;
+    }
+    else if (idk == NK_SingletonClassNode) {
+      /* `class << obj; def m; ...; end; end` -- the block form of def obj.m.
+         `class << self` / `class << <Class>` are class-method sugar handled in
+         walk_scope; only an instance const/local receiver routes here. */
+      recv = nt_ref(nt, id, "expression"); is_scls = 1;
     }
     else continue;
 
@@ -1273,6 +1279,24 @@ void register_singleton_defs(Compiler *c) {
       continue;
     }
     int newci = sg_get_or_make(c, &m, wnode, parent_ci);
+    if (is_scls) {
+      /* reattach every DefNode in the singleton-class body. The generic walk
+         already created each as a (receiverless) scope; only class_id/is_cmethod
+         need flipping, exactly like def obj.m. */
+      int sbody = nt_ref(nt, id, "body");
+      int bn = 0; const int *stmts = sbody >= 0 ? nt_arr(nt, sbody, "body", &bn) : NULL;
+      for (int k = 0; k < bn; k++) {
+        if (nt_kind(nt, stmts[k]) != NK_DefNode) continue;
+        for (int ds = 1; ds < c->nscopes; ds++) {
+          if (c->scopes[ds].def_node == stmts[k]) {
+            c->scopes[ds].class_id = newci;
+            c->scopes[ds].is_cmethod = 0;
+            break;
+          }
+        }
+      }
+      continue;
+    }
     /* def / dsm: reattach the scope whose def_node == id to the subclass. */
     for (int ds = 1; ds < c->nscopes; ds++) {
       if (c->scopes[ds].def_node == id) {
