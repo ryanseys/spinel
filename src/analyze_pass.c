@@ -3400,6 +3400,32 @@ static int ie_kernel_global(const char *n) {
    receiver temp: SelfNode becomes a read of `tmp`, and a receiverless CallNode
    (other than a Kernel global) gains `tmp` as its receiver -- instance_eval
    dispatches those on the new self. Skips nested class/module/def bodies. */
+/* Whether the subtree reads (or writes) local `name` anywhere: an unused
+   instance_eval/exec block param must not get a synthesized binding, since an
+   unread local never gets a C declaration (#2734). */
+static int ie_subtree_uses_local(const NodeTable *nt, int root, const char *name, int depth) {
+  if (root < 0 || depth > 200) return 0;
+  const char *ty = nt_type(nt, root);
+  if (ty && (sp_streq(ty, "LocalVariableReadNode") ||
+             sp_streq(ty, "LocalVariableWriteNode") ||
+             sp_streq(ty, "LocalVariableTargetNode") ||
+             sp_streq(ty, "LocalVariableOperatorWriteNode") ||
+             sp_streq(ty, "LocalVariableOrWriteNode") ||
+             sp_streq(ty, "LocalVariableAndWriteNode"))) {
+    const char *nm = nt_str(nt, root, "name");
+    if (nm && sp_streq(nm, name)) return 1;
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++)
+    if (ie_subtree_uses_local(nt, nt_ref_at(nt, root, i), name, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, root, i, &n);
+    for (int k = 0; k < n; k++)
+      if (ie_subtree_uses_local(nt, ids[k], name, depth + 1)) return 1;
+  }
+  return 0;
+}
 static void ie_subtree_retarget(Compiler *c, int root, const char *tmp, int depth) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (root < 0 || root >= nt->count || depth > 200) return;
@@ -3528,6 +3554,9 @@ int desugar_instance_eval_builtin(Compiler *c) {
       int an2 = nt_ref(nt, id, "arguments");
       int ac2 = 0; const int *av2 = nt_arr(nt, an2, "arguments", &ac2);
       for (int k = 0; k < np; k++) {
+        /* an unused param never gets a C declaration; splice the arg bare so
+           its side effects still run (#2734) */
+        if (!ie_subtree_uses_local(nt, body, pnames[k], 0)) { items[ni++] = av2[k]; continue; }
         int w = nt_new_node(nt, "LocalVariableWriteNode");
         if (w < 0) { ni = -1; break; }
         nt_node_set_str(nt, w, "name", pnames[k]);
@@ -3535,7 +3564,9 @@ int desugar_instance_eval_builtin(Compiler *c) {
         items[ni++] = w;
       }
     }
-    else if (np == 1) {   /* instance_eval yields self to the sole param */
+    else if (np == 1 && ie_subtree_uses_local(nt, body, pnames[0], 0)) {
+      /* instance_eval yields self to the sole param; an unused param binds
+         nothing (#2734) */
       int rd = nt_new_node(nt, "LocalVariableReadNode");
       int w = nt_new_node(nt, "LocalVariableWriteNode");
       if (rd < 0 || w < 0) continue;

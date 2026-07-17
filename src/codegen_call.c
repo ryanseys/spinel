@@ -10456,14 +10456,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             char pn[16]; snprintf(pn, sizeof pn, "_%d", p + 1);
             LocalVar *plv = scope_local(comp_scope_of(c, id), pn);
             int ppoly = plv && plv->type == TY_POLY;
+            int pdecl = plv && plv->type != TY_UNKNOWN;   /* see the requireds loop (#2734) */
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "lv_%s = ", rename_local(pn));
+            if (!pdecl) buf_puts(g_pre, "(void)(");
+            else buf_printf(g_pre, "lv_%s = ", rename_local(pn));
             if (is_exec) {
               if (p < iac) { if (ppoly) emit_boxed(c, iav[p], g_pre); else emit_expr(c, iav[p], g_pre); }
               else emit_ie_param_default(c, plv ? plv->type : TY_POLY, g_pre);
             }
             else buf_printf(g_pre, "_t%d", tr);
-            buf_puts(g_pre, ";\n");
+            buf_puts(g_pre, pdecl ? ";\n" : ");\n");
           }
         }
         else {
@@ -10508,8 +10510,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           /* a scalar slot (e.g. an int block param, which is NOT widened) fed a
              poly arg needs the reverse: unbox the poly down to the slot type. */
           int pscalar = plv && plv->type != TY_POLY && plv->type != TY_UNKNOWN;
+          /* an unused param stays TY_UNKNOWN and gets no C declaration:
+             evaluate its rvalue for effect only (#2734) */
+          int pdecl = plv && plv->type != TY_UNKNOWN;
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "lv_%s = ", rename_local(pn));
+          if (!pdecl) buf_puts(g_pre, "(void)(");
+          else buf_printf(g_pre, "lv_%s = ", rename_local(pn));
           if (as_kind) {
             /* element of the auto-splat array; box the scalar kinds into the
                poly slot (PolyArray_get already yields an sp_RbVal). */
@@ -10543,7 +10549,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             else emit_ie_param_default(c, plv ? plv->type : TY_POLY, g_pre);
           }
           else buf_printf(g_pre, "_t%d", tr);  /* instance_eval yields self */
-          buf_puts(g_pre, ";\n");
+          buf_puts(g_pre, pdecl ? ";\n" : ");\n");
         }
         /* keyword block params: each binds to its matched `k: v` value, or to
            the default expr when an optional keyword is omitted. */
