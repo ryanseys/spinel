@@ -1813,6 +1813,15 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
       const char *kn = nt_str(nt, kws[j], "name");
       if (kn) nameset_add(&params, kn);
     }
+    /* `**kw` binds the whole trailing kwargs hash in the prologue below --
+       only the collect-all form; alongside named keywords the remainder split
+       is not implemented, so that mix keeps the old diagnostic (#2648) */
+    int kwrest0 = pn0 >= 0 ? nt_ref(nt, pn0, "keyword_rest") : -1;
+    const char *kwrty0 = kwrest0 >= 0 ? nt_type(nt, kwrest0) : NULL;
+    if (kwrty0 && sp_streq(kwrty0, "KeywordRestParameterNode") && nkw == 0) {
+      const char *krn = nt_str(nt, kwrest0, "name");
+      if (krn) nameset_add(&params, krn);
+    }
   }
   proc_collect_used(c, body, &used);
   int nnumbered = 0;
@@ -2281,6 +2290,41 @@ else if (orecv >= 0 && onm) {
       else buf_printf(pb, "args[%d];\n", k);
     }
   }
+  /* A celled param: this proc's frame OWNS a variable an inner proc captures,
+     so materialize its heap cell here and copy the bound value in -- reads and
+     writes below go through the (*_cell_x) forms, and the inner proc's capture
+     fill takes the cell pointer (#2648). Mirrors the method-prologue shapes. */
+  for (int k = 0; k < arity; k++) {
+    const char *p = proc_param_name(c, create, k);
+    LocalVar *lv = p ? scope_local(bs, p) : NULL;
+    if (!lv || !lv->is_cell) continue;
+    if (lv->type == TY_PROC) {
+      buf_printf(pb, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL);"
+                     " SP_GC_ROOT(_cell_%s); *_cell_%s = (mrb_int)(uintptr_t)lv_%s;%c", p, p, p, p, 10);
+    }
+    else if (lv->type == TY_FLOAT) {
+      buf_printf(pb, "    mrb_float *_cell_%s = (mrb_float *)sp_gc_alloc(sizeof(mrb_float), NULL, NULL);"
+                     " SP_GC_ROOT(_cell_%s); *_cell_%s = lv_%s;%c", p, p, p, p, 10);
+    }
+    else if (lv->type == TY_POLY) {
+      buf_printf(pb, "    sp_RbVal *_cell_%s = (sp_RbVal *)sp_gc_alloc(sizeof(sp_RbVal), NULL, sp_cell_scan_rbval);"
+                     " SP_GC_ROOT(_cell_%s); *_cell_%s = lv_%s;%c", p, p, p, p, 10);
+    }
+    else if (proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type)) {
+      buf_puts(pb, "    ");
+      emit_ctype(c, lv->type, pb);
+      buf_printf(pb, " *_cell_%s = (", p);
+      emit_ctype(c, lv->type, pb);
+      buf_printf(pb, " *)sp_gc_alloc(sizeof(void *), NULL, %s);",
+                 lv->type == TY_STRING ? "sp_cell_scan_str" : "sp_cell_scan_ptr");
+      buf_printf(pb, ""
+                     " SP_GC_ROOT(_cell_%s); *_cell_%s = lv_%s;%c", p, p, p, 10);
+    }
+    else {
+      buf_printf(pb, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL);"
+                     " SP_GC_ROOT(_cell_%s); *_cell_%s = lv_%s;%c", p, p, p, p, 10);
+    }
+  }
   /* Splat rest and trailing post params. Both read the boxed side-channel:
      every call path now publishes all args boxed (yield's lean ABI was
      retired for this), so any position is recoverable regardless of the
@@ -2363,6 +2407,24 @@ else if (orecv >= 0 && onm) {
       else buf_printf(pb, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", kn);
       buf_puts(pb, ";\n");
       buf_printf(pb, "    (void)lv_%s;\n", kn);
+    }
+  }
+  /* `**kw` (no named keywords alongside): the whole trailing kwargs hash, or
+     an empty hash when the caller passed none (#2648). */
+  {
+    int pnr = proc_params_node(c, create);
+    int kwr = pnr >= 0 ? nt_ref(nt, pnr, "keyword_rest") : -1;
+    const char *kwrty = kwr >= 0 ? nt_type(nt, kwr) : NULL;
+    if (kwrty && sp_streq(kwrty, "KeywordRestParameterNode") && nkw == 0) {
+      const char *krn = nt_str(nt, kwr, "name");
+      if (krn) {
+        g_needs_proc_poly_argslot = 1;
+        buf_printf(pb, "    sp_RbVal lv_%s = (argc > 0 && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
+                       " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id))"
+                       " ? _sp_proc_poly_args[argc-1]"
+                       " : sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);"
+                       " (void)lv_%s;%c", krn, krn, 10);
+      }
     }
   }
   for (int i = 0; i < locals.n; i++) {

@@ -477,6 +477,20 @@ int a_proc_create_or_lifted(Compiler *c, int id) {
   return is_proc_create(c, id) || a_block_is_lifted(c, id) || a_is_fiber_or_gen_create(c, id);
 }
 
+/* Does the subtree rooted at `root` contain node `id`? Bounded recursion over
+   every ref/arr field. */
+static int a_subtree_contains(const NodeTable *nt, int root, int id, int depth) {
+  if (root < 0 || root >= nt->count || depth > 300) return 0;
+  if (root == id) return 1;
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++)
+    if (a_subtree_contains(nt, nd->r[i].ref, id, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (a_subtree_contains(nt, nd->a[i].ids[j], id, depth + 1)) return 1;
+  return 0;
+}
+
 void mark_proc_captures(Compiler *c) {
   const NodeTable *nt = c->nt;
   char *inproc = (char *)calloc((size_t)nt->count, 1);
@@ -511,6 +525,25 @@ void mark_proc_captures(Compiler *c) {
         if (!a_is_write_node(nt_type(nt, w))) continue;
         const char *wn = nt_str(nt, w, "name");
         if (wn && sp_streq(wn, nm)) owned = 1;
+      }
+      /* a param of an ENCLOSING proc: it lives in that proc's frame (a "later
+         slice"), and this proc closes over it -- the enclosing proc's prologue
+         materializes the cell (#2648). Only proc-fn enclosers: an inlined
+         iterator block's params bind in the loop, where no cell exists yet. */
+      if (!owned) {
+        for (int q = 0; q < nt->count && !owned; q++) {
+          if (q == id || !is_proc_create(c, q)) continue;
+          int qpn = a_proc_params_node(c, q);
+          int qrn = 0; const int *qreqs = qpn >= 0 ? nt_arr(nt, qpn, "requireds", &qrn) : NULL;
+          int has = 0;
+          for (int k = 0; k < qrn && !has; k++) {
+            const char *qn = nt_str(nt, qreqs[k], "name");
+            if (qn && sp_streq(qn, nm)) has = 1;
+          }
+          if (!has) continue;
+          int qb = a_proc_body(c, q);
+          if (qb >= 0 && a_subtree_contains(nt, qb, id, 0)) owned = 1;
+        }
       }
       if (owned) {
         /* A fiber/generator now cells a captured heap object too (string /
