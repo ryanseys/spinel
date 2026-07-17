@@ -2943,6 +2943,22 @@ int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *
     if (!nm) continue;
     if (sp_streq(nm, "new")) { if (has_new) *has_new = 1; need = 1; }
   }
+  /* A class-level @ivar read/written in the body is NOT inherited in Ruby: each
+     class holds its own (civ_<Cls>_<name>), and an inherited class method must
+     bind to the CALLING class's storage, not the defining class's. Specializing
+     the method for ci re-attributes its body to ci, so its civ_ references key
+     on ci (civ_<Sub>_...). Without this, Sub.tag read Base's civ_ -- a value Ruby
+     never shares down the hierarchy. @@class-variables ARE shared and use a
+     separate mechanism, so only plain @ivar nodes trigger this. */
+  if (!need) {
+    for (int id = 0; id < nt->count; id++) {
+      if (c->nscope[id] != mi) continue;
+      NodeKind k = nt_kind(nt, id);
+      if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode ||
+          k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
+          k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableTargetNode) { need = 1; break; }
+    }
+  }
   if (cmethod_reaches_override(c, mi, ci, def_cls, 0)) need = 1;
   return need;
 }
@@ -3052,7 +3068,19 @@ void specialize_inherited_cls_new(Compiler *c) {
     if (comp_cmethod_in_class(c, ci, mname) >= 0) continue;  /* defined on ci */
     int def_cls = -1;
     int mi = comp_cmethod_in_chain(c, ci, mname, &def_cls);
-    if (mi < 0 || def_cls == ci || mi >= snap) continue;     /* not inherited */
+    if (mi < 0 || def_cls == ci) continue;                   /* not inherited */
+    /* The nearest inherited copy may itself be a fresh specialization built
+       this pass for an INTERMEDIATE subclass (index >= snap); specializing
+       from it would re-attribute that intermediate's storage. Remap to the
+       ORIGINAL (same def_node, index < snap) so ci binds its own civ_. */
+    if (mi >= snap) {
+      int orig = -1;
+      for (int o = 1; o < snap; o++)
+        if (c->scopes[o].def_node == c->scopes[mi].def_node && c->scopes[o].is_cmethod) { orig = o; break; }
+      if (orig < 0) continue;
+      mi = orig; def_cls = c->scopes[orig].class_id;
+      if (def_cls == ci) continue;
+    }
     int has_new = 0;
     if (!cmethod_needs_specialization(c, mi, ci, def_cls, &has_new)) continue;
     /* Clone mi for ci and, transitively, the inherited intermediates it reaches
