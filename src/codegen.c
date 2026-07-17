@@ -3503,6 +3503,42 @@ void emit_super(Compiler *c, int id, Buf *b) {
   /* Strip __prep_N_ prefix to get the user method name for parent chain lookup. */
   const char *uname = comp_prep_user_name(s->name);
   int p = c->classes[s->class_id].parent;
+  /* super inside a class method: resolve through the parent's CLASS-method
+     chain and call the sp_<Cls>_s_ form (class methods take no instance
+     self). The instance path below would miss `def self.x` entirely. */
+  if (s->is_cmethod) {
+    int cdef = -1;
+    int cmi = p >= 0 ? comp_cmethod_in_chain(c, p, uname, &cdef) : -1;
+    if (cmi < 0) {
+      const char *scn2 = class_ruby_name(c, s->class_id);
+      if (!scn2) scn2 = c->classes[s->class_id].name;
+      buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for %s\"), %s)",
+                 uname, scn2, default_value(comp_ntype(c, id)));
+      return;
+    }
+    buf_printf(b, "sp_%s_s_%s(", c->classes[cdef].c_name, mc(uname));
+    if (ty && sp_streq(ty, "ForwardingSuperNode")) {
+      Scope *pm = &c->scopes[cmi];
+      int n = s->nparams < pm->nparams ? s->nparams : pm->nparams;
+      for (int i = 0; i < n; i++) {
+        LocalVar *src = scope_local(s, s->pnames[i]);
+        LocalVar *dst = scope_local(pm, pm->pnames[i]);
+        TyKind st = src ? src->type : TY_UNKNOWN;
+        TyKind dt = dst ? dst->type : TY_UNKNOWN;
+        buf_puts(b, i == 0 ? "" : ", ");
+        if (dt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) {
+          Buf _bx; memset(&_bx, 0, sizeof _bx);
+          buf_printf(&_bx, "lv_%s", rename_local(s->pnames[i]));
+          emit_boxed_text(c, st, _bx.p, b);
+          free(_bx.p);
+        }
+        else buf_printf(b, "lv_%s", rename_local(s->pnames[i]));
+      }
+    }
+    else emit_args_filled(c, cmi, nt_ref(c->nt, id, "arguments"), "", b);
+    buf_puts(b, ")");
+    return;
+  }
   int defcls = -1;
   int mi = p >= 0 ? comp_method_in_chain(c, p, uname, &defcls) : -1;
   if (mi < 0) {
