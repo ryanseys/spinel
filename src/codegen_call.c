@@ -8123,21 +8123,177 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "read")) {
       if (argc == 0) buf_printf(b, "sp_File_read(%s)", r);
+      else if (argc >= 2 && nt_type(nt, argv[1]) &&
+               sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode")) {
+        /* read(len, buffer): rebind the buffer local to the bytes read (#2811) */
+        const char *bnm = nt_str(nt, argv[1], "name");
+        int trd = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = sp_File_read_n(%s, ", trd, r);
+        emit_int_expr(c, argv[0], b);
+        buf_printf(b, "); lv_%s = _t%d; _t%d; })", bnm ? rename_local(bnm) : "?", trd, trd);
+      }
       else { buf_puts(b, "sp_File_read_n("); buf_puts(b, r); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       free(rb.p); return;
     }
     if (sp_streq(name, "gets") || sp_streq(name, "readline")) {
-      buf_printf(b, "sp_File_gets(%s)", r); free(rb.p); return;
+      /* separator / limit / chomp: forms (#2809); readline raises EOFError
+         at end of file (#2817) */
+      int gsep = -1, glim = -1, gchomp = 0;
+      for (int k = 0; k < argc; k++) {
+        const char *kty = nt_type(nt, argv[k]);
+        if (kty && sp_streq(kty, "KeywordHashNode")) {
+          int cv = struct_kwarg_value(c, argv[k], "chomp");
+          if (cv >= 0 && nt_type(nt, cv) && sp_streq(nt_type(nt, cv), "TrueNode")) gchomp = 1;
+        }
+        else if (comp_ntype(c, argv[k]) == TY_INT) glim = argv[k];
+        else gsep = argv[k];
+      }
+      int is_rdl = sp_streq(name, "readline");
+      if (argc == 0 && !is_rdl) buf_printf(b, "sp_File_gets(%s)", r);
+      else {
+        buf_printf(b, "sp_File_%s(%s, ", is_rdl ? "readline_sep" : "gets_sep", r);
+        if (gsep >= 0) emit_expr(c, gsep, b); else buf_puts(b, "\"\\n\"");
+        buf_puts(b, ", ");
+        if (glim >= 0) emit_int_expr(c, glim, b); else buf_puts(b, "0");
+        buf_printf(b, ", %d)", gchomp);
+      }
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "getc") && argc == 0) {
+      buf_printf(b, "sp_File_getc(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "readchar") && argc == 0) {
+      buf_printf(b, "sp_File_readchar(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "getbyte") && argc == 0) {
+      buf_printf(b, "sp_File_getbyte(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "ungetc") && argc == 1) {
+      buf_printf(b, "sp_File_ungetc(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      free(rb.p); return;
+    }
+    if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc >= 1) {
+      buf_printf(b, "sp_File_readpartial(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "sysseek") && argc >= 1) {
+      buf_printf(b, "sp_File_sysseek(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+      buf_puts(b, ")");
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "flock") && argc == 1) {
+      buf_printf(b, "sp_File_flock(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      free(rb.p); return;
+    }
+    if ((sp_streq(name, "fsync") || sp_streq(name, "fdatasync")) && argc == 0) {
+      buf_printf(b, "sp_File_fsync(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "autoclose?") && argc == 0) {
+      buf_printf(b, "({ (void)%s; (mrb_bool)1; })", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "pid") && argc == 0) {
+      buf_printf(b, "({ (void)%s; sp_box_nil(); })", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "to_i") && argc == 0) {
+      buf_printf(b, "sp_File_fileno(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "lineno") && argc == 0) {
+      buf_printf(b, "((%s)->lineno)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "lineno=") && argc == 1) {
+      buf_printf(b, "((%s)->lineno = ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "pos=") && argc == 1) {
+      /* reposition; the assignment expression's value is the offset (#2798) */
+      int tp2 = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", tp2); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_File_seek(%s, _t%d, 0); _t%d; })", r, tp2, tp2);
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "putc") && argc == 1) {
+      buf_printf(b, "sp_File_putc(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "printf") && argc >= 1) {
+      /* format into a string, then write it (#2796) */
+      int tfp = ++g_tmp, tfa = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "const char *_t%d = ", tfp);
+      Buf ffb; memset(&ffb, 0, sizeof ffb);
+      emit_expr(c, argv[0], &ffb);
+      buf_printf(g_pre, "%s;\n", ffb.p ? ffb.p : "\"\"");
+      free(ffb.p);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new();\n", tfa);
+      for (int ai = 1; ai < argc; ai++) {
+        Buf fab; memset(&fab, 0, sizeof fab);
+        emit_boxed(c, argv[ai], &fab);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", tfa, fab.p ? fab.p : "sp_box_nil()");
+        free(fab.p);
+      }
+      buf_printf(b, "({ sp_File_write(%s, sp_str_format_polyarr(_t%d, _t%d)); sp_box_nil(); })", r, tfp, tfa);
+      free(rb.p); return;
+    }
+    /* each_char / each_byte (#2794) */
+    if ((sp_streq(name, "each_char") || sp_streq(name, "each_byte")) &&
+        nt_ref(nt, id, "block") >= 0) {
+      int blk2 = nt_ref(nt, id, "block");
+      const char *bp2 = block_param_name(c, blk2, 0);
+      const char *bpn2 = bp2 ? rename_local(bp2) : NULL;
+      int bdy2 = nt_ref(nt, blk2, "body");
+      int bbn2 = 0; const int *bbb2 = bdy2 >= 0 ? nt_arr(nt, bdy2, "body", &bbn2) : NULL;
+      int is_byte = sp_streq(name, "each_byte");
+      int rf2 = ++g_tmp, lt2 = ++g_tmp;
+      buf_puts(b, "({ ");
+      buf_printf(b, "sp_File *_t%d = %s; ", rf2, r);
+      if (is_byte)
+        buf_printf(b, "mrb_int _t%d; while ((_t%d = sp_File_getbyte(_t%d)) != SP_INT_NIL) {", lt2, lt2, rf2);
+      else
+        buf_printf(b, "const char *_t%d; while ((_t%d = sp_File_getc(_t%d)) != NULL) {", lt2, lt2, rf2);
+      if (bpn2) buf_printf(b, " %s lv_%s = _t%d;", is_byte ? "mrb_int" : "const char *", bpn2, lt2);
+      for (int k = 0; k < bbn2; k++) emit_stmt(c, bbb2[k], b, 0);
+      buf_printf(b, " } (sp_File *)_t%d; })", rf2);
+      free(rb.p); return;
     }
     if (sp_streq(name, "readlines")) {
-      buf_printf(b, "sp_File_readlines(%s)", r); free(rb.p); return;
+      int rsep = -1, rchomp = 0;
+      for (int k = 0; k < argc; k++) {
+        const char *kty = nt_type(nt, argv[k]);
+        if (kty && sp_streq(kty, "KeywordHashNode")) {
+          int cv = struct_kwarg_value(c, argv[k], "chomp");
+          if (cv >= 0 && nt_type(nt, cv) && sp_streq(nt_type(nt, cv), "TrueNode")) rchomp = 1;
+        }
+        else rsep = argv[k];
+      }
+      if (rsep < 0 && !rchomp) buf_printf(b, "sp_File_readlines(%s)", r);
+      else {
+        buf_printf(b, "sp_File_readlines_sep(%s, ", r);
+        if (rsep >= 0) emit_expr(c, rsep, b); else buf_puts(b, "\"\\n\"");
+        buf_printf(b, ", %d)", rchomp);
+      }
+      free(rb.p); return;
     }
     if (sp_streq(name, "write") || sp_streq(name, "syswrite")) {
-      if (argc >= 1) {
+      /* every argument writes in order; the return is the total byte count (#2814) */
+      if (argc == 1) {
         buf_printf(b, "sp_File_write(%s, ", r);
         if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
         else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
         buf_puts(b, ")");
+      }
+      else if (argc >= 2) {
+        int tw = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = 0;", tw);
+        for (int k = 0; k < argc; k++) {
+          buf_printf(b, " _t%d += sp_File_write(%s, ", tw, r);
+          if (comp_ntype(c, argv[k]) == TY_STRING) emit_expr(c, argv[k], b);
+          else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[k], b); buf_puts(b, ")"); }
+          buf_puts(b, ");");
+        }
+        buf_printf(b, " _t%d; })", tw);
       }
       else buf_puts(b, "0");
       free(rb.p); return;
@@ -8172,8 +8328,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
          inside the half-built sp_File_write(...) call. Same class of bug as
          the format/sprintf codegen below (#1498 / #1508). */
       Buf *abs = (Buf *)calloc(argc > 0 ? (size_t)argc : 1, sizeof(Buf));
+      int *aarr = (int *)calloc(argc > 0 ? (size_t)argc : 1, sizeof(int));
       for (int k = 0; k < argc; k++) {
-        if (comp_ntype(c, argv[k]) == TY_STRING) emit_expr(c, argv[k], &abs[k]);
+        TyKind akt = comp_ntype(c, argv[k]);
+        if (sp_streq(name, "puts") && (ty_is_array(akt) || akt == TY_POLY_ARRAY || akt == TY_POLY)) {
+          /* an Array argument prints one element per line (#2813) */
+          aarr[k] = 1;
+          emit_boxed(c, argv[k], &abs[k]);
+        }
+        else if (akt == TY_STRING) emit_expr(c, argv[k], &abs[k]);
         else { buf_puts(&abs[k], "sp_poly_to_s("); emit_boxed(c, argv[k], &abs[k]); buf_puts(&abs[k], ")"); }
       }
       /* puts uses sp_File_puts, which appends a newline per argument (and only
@@ -8192,7 +8355,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(g_pre, "({ ");
         for (int k = 0; k < argc; k++) {
           const char *at = abs[k].p ? abs[k].p : "\"\"";
-          if (is_puts) {
+          if (is_puts && aarr[k])
+            buf_printf(g_pre, "sp_File_puts_val(%s, %s); ", r, at);
+          else if (is_puts) {
             int ts = ++g_tmp;
             buf_printf(g_pre, "sp_File_puts(%s, ({ const char *_t%d = %s; _t%d ? _t%d : \"\"; })); ",
                        r, ts, at, ts, ts);
@@ -8205,11 +8370,12 @@ void emit_call(Compiler *c, int id, Buf *b) {
       }
       else for (int k = 0; k < argc; k++) free(abs[k].p);
       free(abs);
+      free(aarr);
       buf_puts(b, "((mrb_int)0)");
       free(rb.p); return;
     }
     if (sp_streq(name, "close")) {
-      buf_printf(b, "sp_File_close(%s)", r); free(rb.p); return;
+      buf_printf(b, "({ sp_File_close(%s); sp_box_nil(); })", r); free(rb.p); return;
     }
     if (sp_streq(name, "closed?")) {
       buf_printf(b, "sp_File_closed_p(%s)", r); free(rb.p); return;
@@ -8237,9 +8403,26 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "path") || sp_streq(name, "to_path")) {
       buf_printf(b, "sp_File_path(%s)", r); free(rb.p); return;
     }
-    if (sp_streq(name, "flush") || sp_streq(name, "sync=") || sp_streq(name, "sync")) {
-      if (sp_streq(name, "sync")) { buf_printf(b, "((mrb_bool)1)"); } /* always synced */
-      else { emit_expr(c, recv, b); }
+    if (sp_streq(name, "sync")) {
+      /* CRuby's default: buffered (false); spinel does not model per-handle
+         sync state, so report the default (#2792) */
+      buf_printf(b, "({ (void)%s; (mrb_bool)0; })", r);
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "sync=") && argc >= 1) {
+      int ts2 = ++g_tmp;
+      buf_printf(b, "({ mrb_bool _t%d = (", ts2);
+      if (comp_ntype(c, argv[0]) == TY_BOOL) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_poly_truthy("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+      buf_printf(b, "); if (_t%d) sp_File_flush(%s); _t%d; })", ts2, r, ts2);
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "flush") || sp_streq(name, "binmode")) {
+      /* flush/binmode return self, so they chain (#2799) */
+      int tfl = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = %s; ", tfl, r);
+      if (sp_streq(name, "flush")) buf_printf(b, "sp_File_flush(_t%d); ", tfl);
+      buf_printf(b, "_t%d; })", tfl);
       free(rb.p); return;
     }
     if ((sp_streq(name, "each_line") || sp_streq(name, "each")) &&
@@ -8249,19 +8432,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
       const char *bpn = bp ? rename_local(bp) : NULL;
       int bdy = nt_ref(nt, blk, "body");
       int bbn = 0; const int *bbb = bdy >= 0 ? nt_arr(nt, bdy, "body", &bbn) : NULL;
-      int lt = ++g_tmp, rf = ++g_tmp, buft = ++g_tmp;
+      /* an optional separator argument (#2810) forces the general reader */
+      int esep = (argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING) ? argv[0] : -1;
+      int lt = ++g_tmp, rf = ++g_tmp;
       buf_puts(b, "({ ");
       buf_printf(b, "sp_File *_t%d = %s; ", rf, r);
       free(rb.p); r = NULL;
-      /* Read each line into ONE reusable heap line string (allocated once
-         per loop, length reset per line) instead of a GC string per line;
-         the line does not escape the loop body. A heap string carries a
-         real marker header, so runtime helpers can root it -- a raw stack
-         buffer must not cross the runtime API (its [-1] byte is arbitrary
-         stack memory for the GC mark). */
-      buf_printf(b, "char *_t%d = sp_str_alloc(65535); SP_GC_ROOT(_t%d); const char *_t%d; "
-                    "while ((_t%d = sp_File_gets_into(_t%d, _t%d, 65536)) != NULL) {",
-                 buft, buft, lt, lt, rf, buft);
+      /* Each iteration yields a FRESH heap line string, matching CRuby --
+         a stored reference must keep its own line, not a mutated shared
+         buffer (#2803). */
+      buf_printf(b, "const char *_t%d; while ((_t%d = sp_File_gets_sep(_t%d, ", lt, lt, rf);
+      if (esep >= 0) emit_expr(c, esep, b); else buf_puts(b, "\"\\n\"");
+      buf_puts(b, ", 0, 0)) != NULL) {");
       if (bpn) buf_printf(b, " const char *lv_%s = _t%d;", bpn, lt);
       for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
       buf_printf(b, " } (sp_File *)_t%d; })", rf);
@@ -8270,6 +8452,39 @@ void emit_call(Compiler *c, int id, Buf *b) {
     free(rb.p);
   }
 
+  /* IO instance methods on a poly-carried handle (an IO.pipe element): unbox
+     and dispatch, unless a user class defines the name (then the general poly
+     dispatch owns it). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY &&
+      (sp_streq(name, "write") || sp_streq(name, "read") || sp_streq(name, "gets") ||
+       sp_streq(name, "readline") || sp_streq(name, "close") || sp_streq(name, "flush") ||
+       sp_streq(name, "fileno"))) {
+    int iocand = 0;
+    for (int k = 0; k < c->nclasses && !iocand; k++)
+      if (comp_method_in_chain(c, k, name, NULL) >= 0 ||
+          comp_reader_in_chain(c, k, name, NULL) ||
+          c->classes[k].is_native_class)   /* a native class's methods are not in scopes */
+        iocand = 1;
+    if (!iocand) {
+      int tio2 = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = sp_poly_as_io(", tio2);
+      emit_boxed(c, recv, b);
+      buf_printf(b, ", \"%s\"); ", name);
+      if (sp_streq(name, "write") && argc >= 1) {
+        buf_printf(b, "sp_File_write(_t%d, ", tio2);
+        if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+        buf_puts(b, "); })");
+      }
+      else if (sp_streq(name, "read")) buf_printf(b, "sp_File_read(_t%d); })", tio2);
+      else if (sp_streq(name, "gets")) buf_printf(b, "sp_File_gets(_t%d); })", tio2);
+      else if (sp_streq(name, "readline")) buf_printf(b, "sp_File_readline_sep(_t%d, \"\\n\", 0, 0); })", tio2);
+      else if (sp_streq(name, "close")) buf_printf(b, "sp_File_close(_t%d); })", tio2);
+      else if (sp_streq(name, "flush")) buf_printf(b, "sp_File_flush(_t%d); })", tio2);
+      else buf_printf(b, "sp_File_fileno(_t%d); })", tio2);
+      return;
+    }
+  }
   /* `poly_val << x`: runtime dispatch via sp_poly_shl. For an array receiver it
      appends and returns the (same) array; for an integer it returns the shifted
      value. Use sp_poly_shl's RESULT -- returning the receiver would discard the
@@ -9617,7 +9832,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                     " : ((sp_Class){(mrb_int)-1, \"Enumerator\"}); })", te, te);
       return;
     }
-    else if (rt == TY_IO) cn = "IO";
+    else if (rt == TY_IO) {
+      /* a path-backed handle is a File; a raw stream (STDOUT, pipe end) is an
+         IO (#2797) */
+      int tio = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = ", tio); emit_expr(c, recv, b);
+      buf_printf(b, "; (_t%d && sp_File_path(_t%d)[0] && sp_File_path(_t%d)[0] != '<')"
+                    " ? ((sp_Class){(mrb_int)-121, \"File\"})"
+                    " : ((sp_Class){(mrb_int)-120, \"IO\"}); })", tio, tio, tio);
+      return;
+    }
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
     else if (rt == TY_NIL) cn = "NilClass";
     else if (rt == TY_METHOD) cn = method_expr_is_unbound(c, recv) ? "UnboundMethod" : "Method";
@@ -10948,6 +11172,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_puts(b, "(isatty(2) != 0)"); return;
       }
     }
+    /* IO.pipe / IO.copy_stream / IO.sysopen (#2815) */
+    if (tcn && sp_streq(tcn, "IO")) {
+      if (sp_streq(name, "pipe") && argc == 0) { buf_puts(b, "sp_io_pipe()"); return; }
+      if (sp_streq(name, "copy_stream") && argc == 2) {
+        buf_puts(b, "sp_io_copy_stream("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+        emit_expr(c, argv[1], b); buf_puts(b, ")"); return;
+      }
+      if (sp_streq(name, "sysopen") && argc >= 1) {
+        buf_puts(b, "sp_io_sysopen("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+      }
+    }
     /* Signal module queries (#2735) */
     if (tcn && sp_streq(tcn, "Signal") && sp_streq(name, "list") && argc == 0) {
       buf_puts(b, "sp_signal_list()"); return;
@@ -11399,8 +11634,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "}, %d)", argc); return;
     }
     if (sp_streq(name, "readlines") && argc >= 1) {
-      /* File.readlines(path) or File.readlines(path, chomp: true) */
-      int chomp = 0;
+      /* File.readlines(path[, sep][, chomp: true]) (#2820) */
+      int chomp = 0, csep = -1;
       for (int ki = 1; ki < argc; ki++) {
         const char *kty = nt_type(nt, argv[ki]);
         if (kty && sp_streq(kty, "KeywordHashNode")) {
@@ -11408,6 +11643,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           if (cv >= 0 && nt_type(nt, cv) && sp_streq(nt_type(nt, cv), "TrueNode"))
             chomp = 1;
         }
+        else csep = argv[ki];
+      }
+      if (csep >= 0) {
+        buf_puts(b, "sp_file_readlines_sep(");
+        emit_expr(c, argv[0], b); buf_puts(b, ", ");
+        emit_expr(c, csep, b);
+        buf_printf(b, ", %d)", chomp);
+        return;
       }
       if (chomp) buf_puts(b, "sp_file_readlines_chomp(");
       else buf_puts(b, "sp_file_readlines(");
@@ -12306,6 +12549,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 1 &&
       (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
       comp_ntype(c, argv[0]) == TY_REGEX) {
+    buf_puts(b, "((void *)("); emit_expr(c, recv, b); buf_puts(b, ") == (void *)(");
+    emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
+  }
+  /* IO handles compare by pointer identity (f.flush.equal?(f), #2799) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_IO && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) &&
+      comp_ntype(c, argv[0]) == TY_IO) {
     buf_puts(b, "((void *)("); emit_expr(c, recv, b); buf_puts(b, ") == (void *)(");
     emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
   }

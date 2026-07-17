@@ -3914,9 +3914,31 @@ int desugar_dir_surface(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
+    /* Kernel#open(path, ...) is File.open when no user method shadows it (#2816) */
+    if (nm && recv < 0 && sp_streq(nm, "open") &&
+        comp_method_index(c, "open") < 0 &&
+        nt_ref(nt, id, "arguments") >= 0) {
+      int fr2 = nt_new_node(nt, "ConstantReadNode");
+      if (fr2 >= 0) {
+        nt_node_set_str(nt, fr2, "name", "File");
+        nt_node_set_ref(nt, id, "receiver", fr2);
+        comp_grow_node_arrays(c);
+        c->nscope[fr2] = c->nscope[id];
+        changed = 1;
+      }
+      continue;
+    }
     if (!nm || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
     const char *rn = nt_str(nt, recv, "name");
     if (!rn) continue;
+    /* IO.read/write/readlines/binread/foreach are the File forms (#2793) */
+    if (sp_streq(rn, "IO") &&
+        (sp_streq(nm, "read") || sp_streq(nm, "write") || sp_streq(nm, "binread") ||
+         sp_streq(nm, "binwrite") || sp_streq(nm, "readlines") || sp_streq(nm, "foreach"))) {
+      nt_node_set_str(nt, recv, "name", "File");
+      rn = "File";
+      changed = 1;
+    }
     /* File.foreach(path){|l|} -> File.readlines(path).each{|l|}; the
        blockless form enumerates the lines array (#2777) */
     if (sp_streq(rn, "File") && sp_streq(nm, "foreach")) {

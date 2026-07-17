@@ -97,6 +97,7 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     default: break;
   }
   if (t == TY_TIME) { buf_printf(b, "(*(sp_Time *)(%s).v.p)", expr); return; }  /* boxed by-value copy */
+  if (t == TY_CLASS) { buf_printf(b, "sp_unbox_class(%s)", expr); return; }  /* a by-value struct, not a pointer (#2797) */
   if (ty_is_object(t)) { buf_printf(b, "(sp_%s *)(%s).v.p", c->classes[ty_object_class(t)].c_name, expr); return; }
   const char *cn = c_type_name(t);
   if (cn) buf_printf(b, "(%s)(%s).v.p", cn, expr);

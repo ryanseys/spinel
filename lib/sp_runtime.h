@@ -48,6 +48,7 @@ static int sp_bt_n = 0;
 #include <signal.h>
 #include <fcntl.h>
 #include <fnmatch.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #if !defined(__APPLE__) && !defined(__FreeBSD__)
@@ -1209,6 +1210,7 @@ static inline const char *sp_File_gets(sp_File *f) {
   size_t n = strlen(buf);
   char *r = sp_str_alloc(n);
   memcpy(r, buf, n);
+  f->lineno++;
   return r;
 }
 /* Read a line into a caller-provided buffer without allocating. The returned
@@ -1228,7 +1230,153 @@ static inline const char *sp_File_gets_into(sp_File *f, char *s, int cap) {
   if (!f || !f->fp) return NULL;
   if (!fgets(s, cap, f->fp)) return NULL;
   sp_str_set_len(s, strlen(s));
+  f->lineno++;
   return s;
+}
+/* IO#gets with separator / limit / chomp (#2809, #2810, #2820). sep NULL
+   reads to EOF; limit <= 0 means unlimited. NULL at EOF. */
+static const char *sp_File_gets_sep(sp_File *f, const char *sep, mrb_int limit, mrb_bool chomp) {
+  if (!f || !f->fp) return NULL;
+  size_t sl = sep ? strlen(sep) : 0;
+  /* fast path: the default "\n" separator with no limit reads via fgets
+     (the byte-wise loop below costs a call per character) */
+  if (sl == 1 && sep[0] == '\n' && limit <= 0) {
+    char buf[65536];
+    if (!fgets(buf, (int)sizeof buf, f->fp)) return NULL;
+    size_t n = strlen(buf);
+    if (chomp && n && buf[n - 1] == '\n') n--;
+    char *r = sp_str_alloc(n);
+    memcpy(r, buf, n); r[n] = 0;
+    sp_str_set_len(r, n);
+    f->lineno++;
+    return r;
+  }
+  size_t cap = 256, len = 0;
+  char *buf = (char *)malloc(cap);
+  if (!buf) return NULL;
+  int ch;
+  while ((ch = fgetc(f->fp)) != EOF) {
+    if (len + 2 > cap) { cap *= 2; char *nb = (char *)realloc(buf, cap); if (!nb) { free(buf); return NULL; } buf = nb; }
+    buf[len++] = (char)ch;
+    if (sl && len >= sl && memcmp(buf + len - sl, sep, sl) == 0) break;
+    if (limit > 0 && (mrb_int)len >= limit) break;
+  }
+  if (len == 0) { free(buf); return NULL; }
+  if (chomp && sl && len >= sl && memcmp(buf + len - sl, sep, sl) == 0) len -= sl;
+  char *r = sp_str_alloc(len);
+  memcpy(r, buf, len); r[len] = 0;
+  sp_str_set_len(r, len);
+  free(buf);
+  f->lineno++;
+  return r;
+}
+/* IO#readlines with separator / chomp (#2820) */
+static sp_StrArray *sp_File_readlines_sep(sp_File *f, const char *sep, mrb_bool chomp) {
+  sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
+  const char *l;
+  while ((l = sp_File_gets_sep(f, sep, 0, chomp)) != NULL) sp_StrArray_push(a, l);
+  return a;
+}
+static sp_StrArray *sp_file_readlines_sep(const char *path, const char *sep, mrb_bool chomp) {
+  sp_File *f = sp_File_open(path, "r");
+  SP_GC_ROOT(f);
+  sp_StrArray *a = sp_File_readlines_sep(f, sep, chomp);
+  sp_File_close(f);
+  return a;
+}
+/* IO#readline: gets or EOFError (#2817) */
+static const char *sp_File_readline_sep(sp_File *f, const char *sep, mrb_int limit, mrb_bool chomp) {
+  const char *r = sp_File_gets_sep(f, sep, limit, chomp);
+  if (!r) sp_raise_cls("EOFError", "end of file reached");
+  return r;
+}
+/* IO#getc: one (UTF-8) character, nil (NULL) at EOF */
+static const char *sp_File_getc(sp_File *f) {
+  if (!f || !f->fp) return NULL;
+  int ch = fgetc(f->fp);
+  if (ch == EOF) return NULL;
+  int extra = ((ch & 0xE0) == 0xC0) ? 1 : ((ch & 0xF0) == 0xE0) ? 2 : ((ch & 0xF8) == 0xF0) ? 3 : 0;
+  char *r = sp_str_alloc((size_t)(1 + extra));
+  size_t n = 0;
+  r[n++] = (char)ch;
+  for (int i = 0; i < extra; i++) {
+    int c2 = fgetc(f->fp);
+    if (c2 == EOF) break;
+    r[n++] = (char)c2;
+  }
+  r[n] = 0;
+  sp_str_set_len(r, n);
+  return r;
+}
+static const char *sp_File_readchar(sp_File *f) {
+  const char *r = sp_File_getc(f);
+  if (!r) sp_raise_cls("EOFError", "end of file reached");
+  return r;
+}
+static mrb_int sp_File_getbyte(sp_File *f) {
+  if (!f || !f->fp) return SP_INT_NIL;
+  int ch = fgetc(f->fp);
+  return ch == EOF ? SP_INT_NIL : (mrb_int)ch;
+}
+/* IO#ungetc: push back the (first byte of the) argument */
+static sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v) {
+  if (f && f->fp) {
+    if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) {
+      size_t n = sp_str_byte_len(v.v.s);
+      for (size_t i = n; i > 0; i--) ungetc((unsigned char)v.v.s[i - 1], f->fp);
+    }
+    else if (v.tag == SP_TAG_INT) ungetc((int)v.v.i, f->fp);
+  }
+  return sp_box_nil();
+}
+/* IO#readpartial / #sysread: up to n bytes, EOFError at EOF (#2812) */
+static const char *sp_File_readpartial(sp_File *f, mrb_int n) {
+  if (!f || !f->fp || n < 0) sp_raise_cls("EOFError", "end of file reached");
+  char *r = sp_str_alloc((size_t)n);
+  size_t got = fread(r, 1, (size_t)n, f->fp);
+  if (got == 0 && n > 0) sp_raise_cls("EOFError", "end of file reached");
+  r[got] = 0;
+  sp_str_set_len(r, got);
+  return r;
+}
+static mrb_int sp_File_sysseek(sp_File *f, mrb_int off, mrb_int whence) {
+  if (!f || !f->fp) return 0;
+  fseek(f->fp, (long)off, whence == 1 ? SEEK_CUR : whence == 2 ? SEEK_END : SEEK_SET);
+  return (mrb_int)ftell(f->fp);
+}
+static mrb_int sp_File_flock(sp_File *f, mrb_int op) {
+  if (!f || !f->fp) return 0;
+  return flock(fileno(f->fp), (int)op) == 0 ? 0 : 1;
+}
+static mrb_int sp_File_fsync(sp_File *f) {
+  if (!f || !f->fp) return 0;
+  fflush(f->fp);
+  fsync(fileno(f->fp));
+  return 0;
+}
+/* IO#putc: write one character (Integer byte or a String's first char),
+   returning the argument */
+static sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v) {
+  if (f && f->fp) {
+    if (v.tag == SP_TAG_INT) fputc((int)(v.v.i & 0xff), f->fp);
+    else if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) fputc(v.v.s[0], f->fp);
+  }
+  return v;
+}
+/* IO.copy_stream(src, dst): both path strings (#2815); returns bytes copied */
+static mrb_int sp_io_copy_stream(const char *src, const char *dst) {
+  FILE *in = fopen(src ? src : "", "rb");
+  if (!in)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", src ? src : ""));
+  FILE *out = fopen(dst ? dst : "", "wb");
+  if (!out) { fclose(in); sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", dst ? dst : "")); }
+  char buf[8192]; size_t got; mrb_int total = 0;
+  while ((got = fread(buf, 1, sizeof buf, in)) > 0) { fwrite(buf, 1, got, out); total += (mrb_int)got; }
+  fclose(in); fclose(out);
+  return total;
 }
 static inline const char *sp_File_read(sp_File *f) {
   if (!f || !f->fp) return sp_str_empty;
@@ -1762,6 +1910,11 @@ static inline mrb_int sp_int_shr(mrb_int a, mrb_int n) {
 static sp_RbVal sp_box_class_name(const char *name) { sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = SP_CLASS_BY_NAME; r.v.s = name; return r; }
 /* box a sp_Class into a poly slot (a name-backed class boxes by name). */
 static sp_RbVal sp_box_class(sp_Class c) { if (sp_class_nil_p(c)) return sp_box_nil(); if (c.name) return sp_box_class_name(c.name); sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = (int)c.cls_id; r.v.i = c.cls_id; return r; }
+static sp_Class sp_unbox_class(sp_RbVal v) {
+  if (v.tag != SP_TAG_CLASS) return SP_CLASS_NIL;
+  if (v.cls_id == SP_CLASS_BY_NAME) { sp_Class c = {-1, v.v.s}; return c; }
+  { sp_Class c = {(mrb_int)v.cls_id}; return c; }
+}
 /* box a sp_Bigint* into a poly slot (heterogeneous container element, or a
    promote-mode overflow result). */
 static sp_RbVal sp_box_bigint(sp_Bigint *b) { sp_RbVal r; r.tag = SP_TAG_BIGINT; r.cls_id = 0; r.v.p = b; return r; }
@@ -2199,6 +2352,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_OBJECT: return SPL("Object");   /* a bare Object.new instance */
         case SP_BUILTIN_BASIC_OBJECT: return SPL("BasicObject");
         case SP_BUILTIN_PROC: return SPL("Proc");
+        case SP_BUILTIN_IO: return SPL("IO");
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
         default: { sp_Class c = {v.cls_id}; return sp_class_to_s(c); }
       }
@@ -2961,6 +3115,11 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
     }
     if (a.cls_id == SP_BUILTIN_STR_ARRAY) {
       sp_StrArray_push((sp_StrArray *)a.v.p, b.tag == SP_TAG_STR ? (const char *)b.v.p : sp_str_empty);
+      return a;
+    }
+    if (a.cls_id == SP_BUILTIN_IO && a.v.p) {
+      /* IO#<< through a boxed handle writes and chains (#2802) */
+      sp_File_write((sp_File *)a.v.p, sp_poly_to_s(b));
       return a;
     }
   }
@@ -6638,12 +6797,50 @@ static sp_File *sp_file_stat_handle(const char *path) {
   f->fp = NULL;
   f->path = sp_sprintf("%s", path ? path : "");
   f->mode = (&("\xff" "stat")[1]);
+  f->lineno = 0;
   return f;
 }
 static mrb_int sp_file_stat_mode(const char *path) {
   struct stat st;
   if (stat(path ? path : "", &st) != 0) return 0;
   return (mrb_int)st.st_mode;
+}
+/* IO#puts with an Array argument: one element per line, recursively (#2813) */
+static void sp_File_puts_val(sp_File *f, sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
+    mrb_int n = sp_poly_length(v);
+    for (mrb_int i = 0; i < n; i++) sp_File_puts_val(f, sp_poly_arr_get(v, i));
+    return;
+  }
+  {
+    const char *sv = (v.tag == SP_TAG_NIL) ? "" : sp_poly_to_s(v);
+    sp_File_puts(f, sv ? sv : "");
+  }
+}
+/* A boxed IO handle read back out of a poly slot (an IO.pipe element, a
+   poly-widened local): unbox for the IO instance dispatch, NoMethodError on
+   any other tag. */
+static sp_File *sp_poly_as_io(sp_RbVal v, const char *m) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p) return (sp_File *)v.v.p;
+  sp_raise_poly_nomethod(m, v);
+  return NULL;
+}
+/* IO.pipe -> [reader, writer] handles (#2815) */
+static sp_PolyArray *sp_io_pipe(void) {
+  int fds[2];
+  if (sp_io_make_pipe(fds) != 0) sp_raise_cls("IOError", "pipe failed");
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  sp_PolyArray_push(a, sp_box_obj(sp_io_fdopen(fds[0], "r"), SP_BUILTIN_IO));
+  sp_PolyArray_push(a, sp_box_obj(sp_io_fdopen(fds[1], "w"), SP_BUILTIN_IO));
+  return a;
+}
+static mrb_int sp_io_sysopen(const char *path) {
+  int fd = open(path ? path : "", O_RDONLY);
+  if (fd < 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
+  return (mrb_int)fd;
 }
 /* File.fnmatch: shell-glob match with CRuby's pathname/dot-file defaults */
 static mrb_bool sp_file_fnmatch(const char *pat, const char *path) {

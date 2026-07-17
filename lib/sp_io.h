@@ -13,7 +13,7 @@
 #include "sp_types.h"   /* mrb_int, mrb_bool */
 #include "sp_array.h"   /* sp_IntArray (for #winsize) */
 
-typedef struct { FILE *fp; const char *path; const char *mode; } sp_File;
+typedef struct { FILE *fp; const char *path; const char *mode; mrb_int lineno; } sp_File;
 
 /* File.open(path, mode) -> GC-managed handle (block form is codegen-only). */
 sp_File *sp_File_open(const char *path, const char *mode);

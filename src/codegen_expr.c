@@ -1374,6 +1374,8 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     /* predefined punctuation globals: $/ is the record separator "\n"; $! / $; /
        $, read nil (spinel doesn't honor the split/print-sep defaults) */
     if (nm && sp_streq(nm, "$stdin")) { buf_puts(b, "sp_io_stdin()"); return; }
+    if (nm && sp_streq(nm, "$stdout")) { buf_puts(b, "sp_io_stdout()"); return; }
+    if (nm && sp_streq(nm, "$stderr")) { buf_puts(b, "sp_io_stderr()"); return; }
     if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return; }
     if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_status"); return; }
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return; }
@@ -1547,6 +1549,11 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       if (sp_streq(nm, "APPEND"))   { buf_puts(b, "((mrb_int)O_APPEND)"); return; }
       if (sp_streq(nm, "NONBLOCK")) { buf_puts(b, "((mrb_int)O_NONBLOCK)"); return; }
       if (sp_streq(nm, "BINARY"))   { buf_puts(b, "((mrb_int)0)"); return; }
+      /* the flock(2) operation constants (#2808) */
+      if (sp_streq(nm, "LOCK_SH")) { buf_puts(b, "((mrb_int)LOCK_SH)"); return; }
+      if (sp_streq(nm, "LOCK_EX")) { buf_puts(b, "((mrb_int)LOCK_EX)"); return; }
+      if (sp_streq(nm, "LOCK_UN")) { buf_puts(b, "((mrb_int)LOCK_UN)"); return; }
+      if (sp_streq(nm, "LOCK_NB")) { buf_puts(b, "((mrb_int)LOCK_NB)"); return; }
     }
     if (par_nmc && (sp_streq(par_nmc, "IO") || sp_streq(par_nmc, "File")) && nm) {
       /* IO#seek whence constants (File inherits them from IO); the Ruby

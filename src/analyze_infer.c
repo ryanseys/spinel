@@ -2040,16 +2040,11 @@ else {
     }
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "IO")) {
-      /* IO.pipe -> [r, w] pair; each is TY_POLY; the pair is a str_array */
-      if (sp_streq(name, "pipe")) return TY_STR_ARRAY;
+      /* IO.pipe -> [reader, writer], boxed IO handles (#2815) */
+      if (sp_streq(name, "pipe")) return TY_POLY_ARRAY;
+      if (sp_streq(name, "copy_stream") || sp_streq(name, "sysopen")) return TY_INT;
     }
-    /* File handle metadata (#2790) */
-    if (recv >= 0 && infer_type(c, recv) == TY_IO) {
-      if (sp_streq(name, "size") || sp_streq(name, "chmod") || sp_streq(name, "mode")) return TY_INT;
-      if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime")) return TY_TIME;
-      if (sp_streq(name, "ftype")) return TY_STRING;
-      if (sp_streq(name, "stat")) return TY_IO;
-    }
+
     /* <local>.yield(v) or bare <local>.yield: a generator yielder / fiber yield
        returns the value the next resume (or Enumerator#feed) supplies -- poly.
        Gated on a local receiver so Fiber.yield (const receiver) and the yield
@@ -2247,21 +2242,39 @@ else {
     if (sp_streq(name, "read") && nt_ref(nt, id, "arguments") >= 0) return TY_STRING;
     if (sp_streq(name, "readlines")) return TY_STR_ARRAY;
     if (sp_streq(name, "write") || sp_streq(name, "syswrite") || sp_streq(name, "pos") ||
-        sp_streq(name, "tell") || sp_streq(name, "seek") || sp_streq(name, "rewind") ||
-        sp_streq(name, "close")) return TY_INT;
-    if (sp_streq(name, "print") || sp_streq(name, "puts") || sp_streq(name, "flush")) return TY_NIL;
+        sp_streq(name, "tell") || sp_streq(name, "seek") || sp_streq(name, "rewind"))
+      return TY_INT;
+    if (sp_streq(name, "close")) return TY_POLY;      /* nil (#2801) */
+    if (sp_streq(name, "print") || sp_streq(name, "puts")) return TY_NIL;
+    if (sp_streq(name, "flush") || sp_streq(name, "binmode")) return TY_IO;  /* self (#2799) */
     if (sp_streq(name, "closed?") || sp_streq(name, "eof?") || sp_streq(name, "eof") ||
-        sp_streq(name, "tty?") || sp_streq(name, "isatty")) return TY_BOOL;
-    if (sp_streq(name, "fileno")) return TY_INT;
+        sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
+        sp_streq(name, "sync") || sp_streq(name, "sync=") ||
+        sp_streq(name, "autoclose?") ||
+        sp_streq(name, "==") || sp_streq(name, "equal?") || sp_streq(name, "eql?"))
+      return TY_BOOL;
+    if (sp_streq(name, "fileno") || sp_streq(name, "to_i") || sp_streq(name, "lineno") ||
+        sp_streq(name, "lineno=") || sp_streq(name, "pos=") || sp_streq(name, "flock") ||
+        sp_streq(name, "fsync") || sp_streq(name, "fdatasync") || sp_streq(name, "getbyte") ||
+        sp_streq(name, "sysseek") || sp_streq(name, "size") || sp_streq(name, "chmod") ||
+        sp_streq(name, "mode"))
+      return TY_INT;
+    if (sp_streq(name, "getc") || sp_streq(name, "readchar") || sp_streq(name, "readpartial") ||
+        sp_streq(name, "sysread") || sp_streq(name, "ftype")) return TY_STRING;
+    if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime")) return TY_TIME;
+    if (sp_streq(name, "stat")) return TY_IO;
+    if (sp_streq(name, "putc") || sp_streq(name, "printf") || sp_streq(name, "ungetc") ||
+        sp_streq(name, "pid")) return TY_POLY;
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) return TY_INT_ARRAY;
     if (sp_streq(name, "<<")) return TY_IO;   /* writes, returns self (chainable) */
-    if (sp_streq(name, "each_line") || sp_streq(name, "each")) {
+    if (sp_streq(name, "each_line") || sp_streq(name, "each") ||
+        sp_streq(name, "each_char") || sp_streq(name, "each_byte")) {
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0) {
         const char *bp0 = block_param_name(c, blk, 0);
         Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
         LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv) blv->type = TY_STRING;
+        if (blv) blv->type = sp_streq(name, "each_byte") ? TY_INT : TY_STRING;
       }
       return TY_IO;
     }
@@ -3785,8 +3798,9 @@ else {
         return TY_POLY;
       if (sp_streq(name, "alive?") || sp_streq(name, "dead?") || sp_streq(name, "closed?") ||
           sp_streq(name, "eof?")) return TY_BOOL;
-      if (sp_streq(name, "write") || sp_streq(name, "read") || sp_streq(name, "gets") ||
+      if (sp_streq(name, "read") || sp_streq(name, "gets") ||
           sp_streq(name, "readline")) return TY_STRING;
+      if (sp_streq(name, "write")) return TY_INT;   /* IO#write: the byte count */
       if (sp_streq(name, "close") || sp_streq(name, "flush")) return TY_NIL;
       if (sp_streq(name, "fileno")) return TY_INT;
       if (sp_streq(name, "synchronize")) {
@@ -5023,7 +5037,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* $stdin is the IO handle over the C stdin stream (gets/read/tty?/... via
        the TY_IO dispatch). $stdout/$stderr keep their dedicated AST-shape
        emission arm and stay untyped here. */
-    if (nm && sp_streq(nm, "$stdin")) return TY_IO;
+    if (nm && (sp_streq(nm, "$stdin") || sp_streq(nm, "$stdout") ||
+               sp_streq(nm, "$stderr"))) return TY_IO;   /* the C stream handles (#2818) */
     /* predefined punctuation globals: $/ defaults to "\n"; $! / $; / $, read nil */
     if (nm && sp_streq(nm, "$/")) return TY_STRING;
     if (nm && sp_streq(nm, "$?")) return TY_INT;  /* last child exit status */
@@ -5147,8 +5162,10 @@ TyKind infer_uncached(Compiler *c, int id) {
                  sp_streq(nm, "ALT_SEPARATOR"))) return TY_STRING;
       if (nm && (sp_streq(nm, "RDONLY") || sp_streq(nm, "WRONLY") || sp_streq(nm, "RDWR") ||
                  sp_streq(nm, "CREAT") || sp_streq(nm, "EXCL") || sp_streq(nm, "TRUNC") ||
-                 sp_streq(nm, "APPEND") || sp_streq(nm, "NONBLOCK") || sp_streq(nm, "BINARY")))
-        return TY_INT;   /* the open(2) flag constants (#2788) */
+                 sp_streq(nm, "APPEND") || sp_streq(nm, "NONBLOCK") || sp_streq(nm, "BINARY") ||
+                 sp_streq(nm, "LOCK_SH") || sp_streq(nm, "LOCK_EX") || sp_streq(nm, "LOCK_UN") ||
+                 sp_streq(nm, "LOCK_NB")))
+        return TY_INT;   /* the open(2)/flock(2) flag constants (#2788, #2808) */
     }
     if (par_nm && (sp_streq(par_nm, "IO") || sp_streq(par_nm, "File"))) {
       /* IO#seek whence constants (File inherits them from IO) */

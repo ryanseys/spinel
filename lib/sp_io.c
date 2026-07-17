@@ -27,6 +27,7 @@ sp_File *sp_File_open(const char *path, const char *mode) {
   if (!f->fp) { sp_raise_cls("Errno::ENOENT", "No such file or directory"); return NULL; }
   f->path = path;
   f->mode = mode;
+  f->lineno = 0;
   return f;
 }
 
@@ -43,6 +44,7 @@ sp_File *sp_io_fdopen(int fd, const char *mode) {
   if (!f->fp) { sp_raise_cls("IOError", "fdopen failed"); return NULL; }
   f->path = NULL;
   f->mode = mode;
+  f->lineno = 0;
   return f;
 }
 
