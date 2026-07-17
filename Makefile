@@ -614,12 +614,17 @@ endif
 # One snapshot test: compile $< with the integrated pipeline, run, diff
 # against $<.expected (or CRuby), write PASS/FAIL/ERR to $@. Shared by the
 # test/ rule and the per-package rules below.
+# The generated C goes to a stable path derived from $@ (not the per-test
+# tmpdir): the compile hash sccache computes covers the preprocessed source,
+# which embeds the input path in #line directives, so a random tmpdir path
+# would give every run a fresh cache key and the cache would never hit.
+# The .c/.o are deleted after the link -- only the cache entry survives.
 define RUN_ONE_TEST
 @mkdir -p build/test-results
 @tmpdir=$$(mktemp -d /tmp/spinel-test.XXXXXX); \
 ast=$$tmpdir/test.ast; \
 ir=$$tmpdir/test.ir; \
-cfile=$$tmpdir/test.c; \
+cfile=$(@:.ok=.c); \
 bin=$$tmpdir/test_bin; \
 exp=$$tmpdir/expected; \
 act=$$tmpdir/actual; \
@@ -668,6 +673,7 @@ else \
   echo ERR > "$@"; \
   if [ -t 1 ]; then printf E; fi; \
 fi; \
+rm -f "$$cfile" "$$cfile.o"; \
 rm -rf "$$tmpdir"
 endef
 
