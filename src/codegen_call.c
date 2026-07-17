@@ -4228,8 +4228,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
       if (cn && sp_streq(cn, "Random")) {
         if (argc >= 1) {
+          /* A Bignum seed (Random.new(2**70)) folds to its low 64 bits --
+             the PRNG state only holds 64 bits of seed anyway. */
+          int is_big = comp_ntype(c, argv[0]) == TY_BIGINT;
           buf_puts(b, "sp_Random_new(");
+          if (is_big) buf_puts(b, "sp_bigint_to_int(");
           emit_expr(c, argv[0], b);
+          if (is_big) buf_puts(b, ")");
           buf_puts(b, ")");
         }
         else {
