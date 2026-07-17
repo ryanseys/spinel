@@ -61,6 +61,7 @@ typedef enum {
   TY_MUTEX,        /* a Mutex (sp_mutex *) */
   TY_CONDVAR,      /* a ConditionVariable (sp_condvar *) */
   TY_RANDOM,       /* a per-instance PRNG (sp_Random *) */
+  TY_DIR,          /* an open directory handle (sp_Dir *) */
   TY_METHOD,       /* a bound Method object (sp_BoundMethod *) */
   TY_IO,           /* a File/IO handle (sp_File *) */
   TY_ARGF,         /* the ARGF pseudo-IO singleton (sp_Argf *) */

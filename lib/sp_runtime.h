@@ -6959,6 +6959,31 @@ sp_StrArray *sp_dir_glob_dot(const char *pattern);
    CRuby, not the glob-style empty result. */
 /* sp_dir_entries_impl: moved to lib/sp_cold.c */
 sp_StrArray *sp_dir_entries_impl(const char *path, int children);
+/* ---- Dir handles (#2821): an open directory stream with its path ---- */
+typedef struct { DIR *dp; const char *path; } sp_Dir;
+static void sp_Dir_fin(void *p) { sp_Dir *d = (sp_Dir *)p; if (d->dp) { closedir(d->dp); d->dp = NULL; } }
+static void sp_Dir_scan(void *p) { sp_Dir *d = (sp_Dir *)p; if (d->path) sp_mark_string(d->path); }
+static sp_Dir *sp_Dir_new(const char *path) {
+  DIR *dp = opendir(path ? path : "");
+  if (!dp)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ dir_initialize - %s", path ? path : ""));
+  sp_Dir *d = (sp_Dir *)sp_gc_alloc(sizeof(sp_Dir), sp_Dir_fin, sp_Dir_scan);
+  d->dp = dp;
+  d->path = NULL;   /* set below: the sprintf may GC, and the scan reads path */
+  SP_GC_ROOT(d);
+  d->path = sp_sprintf("%s", path ? path : "");
+  return d;
+}
+static const char *sp_Dir_read(sp_Dir *d) {
+  if (!d || !d->dp) return NULL;
+  struct dirent *e = readdir(d->dp);
+  return e ? sp_sprintf("%s", e->d_name) : NULL;
+}
+static const char *sp_Dir_path(sp_Dir *d) { return d && d->path ? d->path : sp_str_empty; }
+static sp_RbVal sp_Dir_close(sp_Dir *d) { if (d && d->dp) { closedir(d->dp); d->dp = NULL; } return sp_box_nil(); }
+static sp_Dir *sp_Dir_rewind(sp_Dir *d) { if (d && d->dp) rewinddir(d->dp); return d; }
+static mrb_int sp_Dir_tell(sp_Dir *d) { return d && d->dp ? (mrb_int)telldir(d->dp) : 0; }
 static sp_StrArray *sp_dir_entries(const char *path) { return sp_dir_entries_impl(path, 0); }
 /* Dir.empty?(path): a directory with no non-dot entries; a non-directory is
    false, a missing path CRuby's Errno::ENOENT (#2823). */

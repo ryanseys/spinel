@@ -40,6 +40,7 @@ const char *ty_name(TyKind t) {
     case TY_MUTEX:   return "mutex";
     case TY_CONDVAR: return "condvar";
     case TY_RANDOM:  return "random";
+    case TY_DIR:     return "dir";
     case TY_METHOD:  return "method";
     case TY_IO:      return "io";
     case TY_ENUMERATOR: return "enumerator";

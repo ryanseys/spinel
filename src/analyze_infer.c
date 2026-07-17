@@ -1792,6 +1792,7 @@ else {
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
       if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
       if (cn && sp_streq(cn, "File")) return TY_IO;   /* File.new is File.open (#2779) */
+      if (cn && sp_streq(cn, "Dir")) return TY_DIR;   /* Dir.new is an open handle (#2821) */
       if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
                  sp_streq(cn, "Random") || sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
@@ -1847,6 +1848,7 @@ else {
       if (cn && sp_streq(cn, "ConditionVariable")) return TY_CONDVAR;
       if (cn && sp_streq(cn, "Random")) return TY_RANDOM;
       if (cn && sp_streq(cn, "File")) return TY_IO;   /* File.new is File.open (#2779) */
+      if (cn && sp_streq(cn, "Dir")) return TY_DIR;   /* Dir.new is an open handle (#2821) */
       if (cn && (sp_streq(cn, "Thread") ||
                  sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
@@ -2232,6 +2234,43 @@ else {
         if (blv) blv->type = TY_STRING;
       }
       return TY_ARGF;
+    }
+  }
+
+  /* Dir.new / Dir.open and the Dir handle instance surface (#2821) */
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
+      (sp_streq(name, "new") || sp_streq(name, "open")) && argc >= 1) {
+    int dblk = nt_ref(nt, id, "block");
+    if (dblk < 0) return TY_DIR;
+    const char *dp0 = block_param_name(c, dblk, 0);
+    Scope *dbs = dp0 ? comp_scope_of(c, dblk) : NULL;
+    LocalVar *dlv = (dbs && dp0) ? scope_local(dbs, dp0) : NULL;
+    if (dlv) dlv->type = TY_DIR;
+    {
+      int dbdy = nt_ref(nt, dblk, "body");
+      int dbn2 = 0; const int *dbb2 = dbdy >= 0 ? nt_arr(nt, dbdy, "body", &dbn2) : NULL;
+      if (dbn2 > 0 && dbb2) return infer_type(c, dbb2[dbn2 - 1]);
+    }
+    return TY_POLY;
+  }
+  if (recv >= 0 && rt == TY_DIR) {
+    if (sp_streq(name, "class")) return TY_CLASS;
+    if (sp_streq(name, "read") || sp_streq(name, "path") || sp_streq(name, "to_path"))
+      return TY_STRING;
+    if (sp_streq(name, "children") || sp_streq(name, "entries")) return TY_STR_ARRAY;
+    if (sp_streq(name, "tell") || sp_streq(name, "pos")) return TY_INT;
+    if (sp_streq(name, "close")) return TY_POLY;   /* nil */
+    if (sp_streq(name, "rewind")) return TY_DIR;
+    if (sp_streq(name, "each") || sp_streq(name, "each_child")) {
+      int dblk3 = nt_ref(nt, id, "block");
+      if (dblk3 >= 0) {
+        const char *dbp3 = block_param_name(c, dblk3, 0);
+        Scope *dbs3 = dbp3 ? comp_scope_of(c, dblk3) : NULL;
+        LocalVar *dlv3 = (dbs3 && dbp3) ? scope_local(dbs3, dbp3) : NULL;
+        if (dlv3) dlv3->type = TY_STRING;
+      }
+      return TY_DIR;
     }
   }
 

@@ -4496,8 +4496,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       /* File.new is File.open: handled by the File class-method block in the
-         later dispatch (#2779) */
-      if (cn && sp_streq(cn, "File")) return 0;
+         later dispatch (#2779). Dir.new likewise (#2821). */
+      if (cn && (sp_streq(cn, "File") || sp_streq(cn, "Dir"))) return 0;
       /* `.new` on a constant Spinel could not resolve -- not a user class, not a
          builtin/stdlib class handled above (Mutex, Thread, etc. return earlier).
          It is either a genuine undefined constant or a real stdlib class Spinel
@@ -8145,6 +8145,47 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
 
   /* TY_IO (File/IO handle) instance methods */
+  /* Dir handle instance methods (#2821) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_DIR) {
+    Buf drb = {0};
+    emit_expr(c, recv, &drb);
+    const char *dr = drb.p ? drb.p : "NULL";
+    if (sp_streq(name, "read") && argc == 0) { buf_printf(b, "sp_Dir_read(%s)", dr); free(drb.p); return; }
+    if ((sp_streq(name, "path") || sp_streq(name, "to_path")) && argc == 0) {
+      buf_printf(b, "sp_Dir_path(%s)", dr); free(drb.p); return;
+    }
+    if (sp_streq(name, "close") && argc == 0) { buf_printf(b, "sp_Dir_close(%s)", dr); free(drb.p); return; }
+    if (sp_streq(name, "rewind") && argc == 0) { buf_printf(b, "sp_Dir_rewind(%s)", dr); free(drb.p); return; }
+    if ((sp_streq(name, "tell") || sp_streq(name, "pos")) && argc == 0) {
+      buf_printf(b, "sp_Dir_tell(%s)", dr); free(drb.p); return;
+    }
+    if ((sp_streq(name, "children") || sp_streq(name, "entries")) && argc == 0) {
+      buf_printf(b, "sp_dir_entries_impl(sp_Dir_path(%s), %d)", dr,
+                 sp_streq(name, "children") ? 1 : 0);
+      free(drb.p); return;
+    }
+    if ((sp_streq(name, "each") || sp_streq(name, "each_child")) &&
+        nt_ref(nt, id, "block") >= 0) {
+      int dblk2 = nt_ref(nt, id, "block");
+      const char *dbp = block_param_name(c, dblk2, 0);
+      const char *dbpn = dbp ? rename_local(dbp) : NULL;
+      int dbdy = nt_ref(nt, dblk2, "body");
+      int dbbn = 0; const int *dbbb = dbdy >= 0 ? nt_arr(nt, dbdy, "body", &dbbn) : NULL;
+      int tdh = ++g_tmp, tdn = ++g_tmp;
+      int skip_dots = sp_streq(name, "each_child");
+      buf_puts(b, "({ ");
+      buf_printf(b, "sp_Dir *_t%d = %s; const char *_t%d; ", tdh, dr, tdn);
+      buf_printf(b, "while ((_t%d = sp_Dir_read(_t%d)) != NULL) {", tdn, tdh);
+      if (skip_dots)
+        buf_printf(b, " if (sp_str_eq(_t%d, \".\") || sp_str_eq(_t%d, \"..\")) continue;", tdn, tdn);
+      if (dbpn) buf_printf(b, " const char *lv_%s = _t%d;", dbpn, tdn);
+      for (int k = 0; k < dbbn; k++) emit_stmt(c, dbbb[k], b, 0);
+      buf_printf(b, " } (sp_Dir *)_t%d; })", tdh);
+      return;
+    }
+    free(drb.p);
+  }
+
   if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
     const char *r = NULL;
     Buf rb = {0};
@@ -9882,6 +9923,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                     " : ((sp_Class){(mrb_int)-1, \"Enumerator\"}); })", te, te);
       return;
     }
+    else if (rt == TY_DIR) cn = "Dir";
     else if (rt == TY_IO) {
       /* a path-backed handle is a File; a raw stream (STDOUT, pipe end) is an
          IO (#2797) */
@@ -11786,6 +11828,38 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
+    /* Dir.new / Dir.open -> a directory handle; the block form closes on
+       exit and returns the block's value (#2821) */
+    if ((sp_streq(name, "new") || sp_streq(name, "open")) && argc >= 1) {
+      int dblk = nt_ref(nt, id, "block");
+      if (dblk < 0) {
+        buf_puts(b, "sp_Dir_new("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      const char *dp0 = block_param_name(c, dblk, 0);
+      const char *dpn = dp0 ? rename_local(dp0) : NULL;
+      int dbody = nt_ref(nt, dblk, "body");
+      int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
+      TyKind dres = comp_ntype(c, id);
+      int dscalar = is_scalar_ret(dres) && dres != TY_VOID && dres != TY_NIL && dres != TY_UNKNOWN;
+      int td = ++g_tmp, tdv = ++g_tmp;
+      buf_puts(b, "({ ");
+      buf_printf(b, "sp_Dir *_t%d = sp_Dir_new(", td); emit_expr(c, argv[0], b); buf_puts(b, "); ");
+      buf_printf(b, "SP_GC_ROOT(_t%d); ", td);
+      if (dpn) buf_printf(b, "sp_Dir *lv_%s = _t%d; ", dpn, td);
+      for (int k = 0; k < dbn - 1; k++) emit_stmt(c, dbb[k], b, 0);
+      if (dbn > 0 && dscalar) {
+        emit_ctype(c, dres, b); buf_printf(b, " _t%d = ", tdv);
+        if (dres == TY_POLY && comp_ntype(c, dbb[dbn - 1]) != TY_POLY) emit_boxed(c, dbb[dbn - 1], b);
+        else emit_expr(c, dbb[dbn - 1], b);
+        buf_puts(b, "; ");
+      }
+      else if (dbn > 0) emit_stmt(c, dbb[dbn - 1], b, 0);
+      buf_printf(b, "sp_Dir_close(_t%d); ", td);
+      if (dscalar && dbn > 0) buf_printf(b, "_t%d; })", tdv);
+      else buf_puts(b, "0; })");
+      return;
+    }
     if (sp_streq(name, "pwd") && argc == 0) { buf_puts(b, "sp_dir_pwd()"); return; }
     if (sp_streq(name, "home") && argc == 0) { buf_puts(b, "sp_dir_home()"); return; }
     if (sp_streq(name, "empty?") && argc == 1) {

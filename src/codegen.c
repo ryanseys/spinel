@@ -20,6 +20,7 @@ const char *ty_nullable_builtin_id(TyKind t) {
     case TY_EXCEPTION:  return "SP_BUILTIN_EXCEPTION";
     case TY_PROC:       return "SP_BUILTIN_PROC";
     case TY_METHOD:     return "SP_BUILTIN_METHOD";
+    case TY_DIR:        return "SP_BUILTIN_DIR";
     default:            return NULL;
   }
 }
@@ -4118,6 +4119,7 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_MUTEX:                 buf_puts(b, "Thread::Mutex"); break;
     case TY_CONDVAR:               buf_puts(b, "Thread::ConditionVariable"); break;
     case TY_RANDOM:                buf_puts(b, "Random"); break;
+    case TY_DIR:                   buf_puts(b, "Dir"); break;
     case TY_METHOD:                buf_puts(b, "Method"); break;
     case TY_IO:                    buf_puts(b, "IO"); break;
     case TY_ARGF:                  buf_puts(b, "ARGF"); break;
