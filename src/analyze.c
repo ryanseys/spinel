@@ -5126,6 +5126,45 @@ static void mark_empty_array_receivers(Compiler *c) {
 /* A direct empty `{}` literal receiver of a block method (`{}.select { }`)
    infers TY_UNKNOWN and can't dispatch; mark it so infer types it as the
    bare-{} hash (STR_POLY), the same fallback a never-narrowed `{}` local uses. */
+/* A method whose body TAIL is a bare empty `[]` / `{}` literal returns that
+   container, but an unmarked empty literal infers TY_UNKNOWN (its element
+   type normally back-fills from usage), so the method collapsed to a void C
+   function that silently discarded the value. Mark the tail literal so it
+   types as the bare-container default (poly array / STR_POLY hash), the same
+   thing `x = []; x` returns. Skipped when the method has explicit returns:
+   their unification (`return [1]` elsewhere) should keep narrowing. */
+static void mark_empty_literal_tails(Compiler *c) {
+  if (!c->empty_arr_recv || !c->empty_hash_recv) return;
+  const NodeTable *nt = c->nt;
+  char *has_ret = (char *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), 1);
+  if (has_ret) {
+    for (int id = 0; id < nt->count; id++) {
+      if (nt_kind(nt, id) != NK_ReturnNode) continue;
+      Scope *rs = comp_scope_of(c, id);
+      if (rs) has_ret[(int)(rs - c->scopes)] = 1;
+    }
+  }
+  for (int s = 1; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (sc->body < 0 || (has_ret && has_ret[s])) continue;
+    if (nt_kind(nt, sc->body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(nt, sc->body, "body", &bn);
+    if (bn <= 0) continue;
+    int last = bb[bn - 1];
+    if (last < 0 || last >= c->node_cap) continue;
+    const char *lty = nt_type(nt, last);
+    if (!lty) continue;
+    int en = 0;
+    if (sp_streq(lty, "ArrayNode")) {
+      nt_arr(nt, last, "elements", &en);
+      if (en == 0) c->empty_arr_recv[last] = 1;
+    } else if (sp_streq(lty, "HashNode") || sp_streq(lty, "KeywordHashNode")) {
+      nt_arr(nt, last, "elements", &en);
+      if (en == 0) c->empty_hash_recv[last] = 1;
+    }
+  }
+  free(has_ret);
+}
 static void mark_empty_hash_receivers(Compiler *c) {
   if (!c->empty_hash_recv) return;
   const NodeTable *nt = c->nt;
@@ -5461,6 +5500,7 @@ void analyze_program(Compiler *c) {
   /* pre-fixpoint: an empty `{}` block-method receiver types as the STR_POLY
      hash so infer_block_params declares its |k, v| params (#2336). */
   mark_empty_hash_receivers(c);
+  mark_empty_literal_tails(c);
 
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
