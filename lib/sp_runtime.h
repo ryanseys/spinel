@@ -46,6 +46,8 @@ static int sp_bt_n = 0;
 #endif
 #include <unistd.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <fnmatch.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #if !defined(__APPLE__) && !defined(__FreeBSD__)
@@ -6519,15 +6521,181 @@ const char *sp_file_read(const char *path);
 void sp_file_write(const char *path, const char *data);
 /* sp_file_mtime: moved to lib/sp_cold.c */
 sp_Time sp_file_mtime(const char *path);
+sp_Time sp_file_atime(const char *path);
+sp_Time sp_file_ctime(const char *path);
+/* ---- the File stat/predicate and IO-op surface (#2774-#2778, #2782) ---- */
+static const char *sp_file_ftype(const char *path) {
+  struct stat st;
+  if (lstat(path ? path : "", &st) != 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_file_s_ftype - %s", path ? path : ""));
+  if (S_ISREG(st.st_mode)) return (&("\xff" "file")[1]);
+  if (S_ISDIR(st.st_mode)) return (&("\xff" "directory")[1]);
+  if (S_ISLNK(st.st_mode)) return (&("\xff" "link")[1]);
+  if (S_ISFIFO(st.st_mode)) return (&("\xff" "fifo")[1]);
+  if (S_ISCHR(st.st_mode)) return (&("\xff" "characterSpecial")[1]);
+  if (S_ISBLK(st.st_mode)) return (&("\xff" "blockSpecial")[1]);
+#ifdef S_ISSOCK
+  if (S_ISSOCK(st.st_mode)) return (&("\xff" "socket")[1]);
+#endif
+  return (&("\xff" "unknown")[1]);
+}
+static mrb_bool sp_file_writable(const char *path) { return access(path ? path : "", W_OK) == 0; }
+static mrb_bool sp_file_executable(const char *path) { return access(path ? path : "", X_OK) == 0; }
+static mrb_int sp_file_size_q(const char *path) {   /* Integer size, or nil for missing/empty */
+  struct stat st;
+  if (stat(path ? path : "", &st) != 0 || st.st_size == 0) return SP_INT_NIL;
+  return (mrb_int)st.st_size;
+}
+static mrb_bool sp_file_pipe(const char *path) {
+  struct stat st;
+  return stat(path ? path : "", &st) == 0 && S_ISFIFO(st.st_mode);
+}
+static mrb_bool sp_file_identical(const char *a, const char *b) {
+  struct stat sa, sb;
+  if (stat(a ? a : "", &sa) != 0 || stat(b ? b : "", &sb) != 0) return 0;
+  return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+}
+static const char *sp_file_realpath(const char *path) {
+  char buf[4096];
+  if (!realpath(path ? path : "", buf))
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ realpath_rec - %s", path ? path : ""));
+  return sp_sprintf("%s", buf);
+}
+static const char *sp_file_read_len(const char *path, mrb_int n) {
+  FILE *fp = fopen(path ? path : "", "rb");
+  if (!fp)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
+  if (n < 0) n = 0;
+  char *r = sp_str_alloc(n);
+  size_t got = fread(r, 1, (size_t)n, fp);
+  fclose(fp);
+  r[got] = 0;
+  sp_str_set_len(r, got);
+  return r;
+}
+static mrb_int sp_file_chmod(mrb_int mode, const char *path) {
+  if (chmod(path ? path : "", (mode_t)mode) != 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ apply2files - %s", path ? path : ""));
+  return 1;
+}
+static mrb_int sp_file_truncate(const char *path, mrb_int n) {
+  if (truncate(path ? path : "", (off_t)n) != 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_file_s_truncate - %s", path ? path : ""));
+  return 0;
+}
+static mrb_int sp_file_write_at(const char *path, const char *data, mrb_int off) {
+  int fd = open(path ? path : "", O_WRONLY | O_CREAT, 0666);
+  if (fd < 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
+  size_t n = sp_str_byte_len(data ? data : "");
+  ssize_t w = pwrite(fd, data ? data : "", n, (off_t)off);
+  close(fd);
+  return w < 0 ? 0 : (mrb_int)w;
+}
+static mrb_int sp_file_write_mode(const char *path, const char *data, const char *mode) {
+  FILE *fp = fopen(path ? path : "", mode && mode[0] ? mode : "w");
+  if (!fp)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
+  size_t n = sp_str_byte_len(data ? data : "");
+  fwrite(data ? data : "", 1, n, fp);
+  fclose(fp);
+  return (mrb_int)n;
+}
+/* File.open with integer open(2) flags: open the fd, then wrap it in the
+   stdio handle the sp_File surface expects (#2788). */
+static sp_File *sp_File_open_flags(const char *path, mrb_int fl) {
+  int fd = open(path ? path : "", (int)fl, 0666);
+  if (fd < 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
+  int acc = (int)fl & O_ACCMODE;
+  const char *m = (acc == O_RDONLY) ? "r"
+                : (acc == O_WRONLY) ? (((int)fl & O_APPEND) ? "a" : "w")
+                : (((int)fl & O_APPEND) ? "a+" : "r+");
+  return sp_io_fdopen(fd, m);
+}
+/* File.stat(path) / File#stat: a path-carrying handle whose metadata methods
+   (size/mtime/atime/ctime/ftype/mode) stat the path -- the pragmatic subset of
+   File::Stat this backend models (#2775, #2790). */
+static void sp_file_stat_scan(void *p) {
+  sp_File *f = (sp_File *)p;
+  if (f->path) sp_mark_string(f->path);
+  if (f->mode) sp_mark_string(f->mode);
+}
+static sp_File *sp_file_stat_handle(const char *path) {
+  struct stat st;
+  if (stat(path ? path : "", &st) != 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_file_s_stat - %s", path ? path : ""));
+  sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), NULL, sp_file_stat_scan);
+  f->fp = NULL;
+  f->path = sp_sprintf("%s", path ? path : "");
+  f->mode = (&("\xff" "stat")[1]);
+  return f;
+}
+static mrb_int sp_file_stat_mode(const char *path) {
+  struct stat st;
+  if (stat(path ? path : "", &st) != 0) return 0;
+  return (mrb_int)st.st_mode;
+}
+/* File.fnmatch: shell-glob match with CRuby's pathname/dot-file defaults */
+static mrb_bool sp_file_fnmatch(const char *pat, const char *path) {
+  return fnmatch(pat ? pat : "", path ? path : "", FNM_PATHNAME | FNM_PERIOD) == 0;
+}
+static const char *sp_file_dirname(const char *path);
+const char *sp_file_basename(const char *path);
+/* File.split(path) -> [dirname, basename] */
+static sp_StrArray *sp_file_split(const char *path) {
+  sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
+  sp_StrArray_push(a, sp_file_dirname(path));
+  sp_StrArray_push(a, sp_file_basename(path));
+  return a;
+}
 /* File.size(path) -> byte size. Raises Errno::ENOENT on a missing path,
    matching MRI (and sp_file_read / sp_file_mtime, which stat/open the
    same way). */
 /* sp_file_size: moved to lib/sp_cold.c */
 mrb_int sp_file_size(const char *path);
+/* File.zero?/empty?: a zero-length non-directory (regular file, /dev/null,
+   ...); false when the path is missing (#2783). */
+static mrb_bool sp_file_zero(const char *path) {
+  struct stat st;
+  if (stat(path ? path : "", &st) != 0) return 0;
+  if (S_ISDIR(st.st_mode)) return 0;
+  return st.st_size == 0;
+}
 /* sp_backtick: moved to lib/sp_cold.c */
 const char *sp_backtick(const char *cmd);
 /* sp_file_basename: moved to lib/sp_cold.c */
 const char *sp_file_basename(const char *path);
+const char *sp_file_basename2(const char *path, const char *suffix);
+/* File.join with runtime-typed components: strings pass through, arrays
+   flatten recursively (#2786), nil is CRuby's TypeError. */
+static void sp_file_join_flat(sp_RbVal v, const char **parts, int *np) {
+  if (*np >= 64) return;
+  if (v.tag == SP_TAG_NIL)
+    sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  if (v.tag == SP_TAG_STR) { parts[(*np)++] = v.v.s ? v.v.s : ""; return; }
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
+    mrb_int n = sp_poly_length(v);
+    for (mrb_int i = 0; i < n; i++) sp_file_join_flat(sp_poly_arr_get(v, i), parts, np);
+    return;
+  }
+  parts[(*np)++] = sp_poly_to_s(v);
+}
+static const char *sp_file_join_vals(sp_RbVal *vals, int n) {
+  const char *parts[64]; int np = 0;
+  for (int i = 0; i < n; i++) sp_file_join_flat(vals[i], parts, &np);
+  return sp_file_join(parts, np);
+}
 /* Issue #892: File.dirname / File.extname / Dir.pwd. */
 static const char *sp_file_dirname(const char *path) {
   const char *s = strrchr(path, '/');

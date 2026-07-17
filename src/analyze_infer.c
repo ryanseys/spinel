@@ -1791,8 +1791,9 @@ else {
         return sp_streq(name, "__hash_new_default") ? TY_POLY_POLY_HASH : TY_UNKNOWN;
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
       if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
+      if (cn && sp_streq(cn, "File")) return TY_IO;   /* File.new is File.open (#2779) */
       if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
-                 sp_streq(cn, "Random") || sp_streq(cn, "IO") || sp_streq(cn, "File") ||
+                 sp_streq(cn, "Random") || sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
     }
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "LocalVariableReadNode") ||
@@ -1845,8 +1846,9 @@ else {
       if (cn && (sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor"))) return TY_MUTEX;
       if (cn && sp_streq(cn, "ConditionVariable")) return TY_CONDVAR;
       if (cn && sp_streq(cn, "Random")) return TY_RANDOM;
+      if (cn && sp_streq(cn, "File")) return TY_IO;   /* File.new is File.open (#2779) */
       if (cn && (sp_streq(cn, "Thread") ||
-                 sp_streq(cn, "IO") || sp_streq(cn, "File") ||
+                 sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
     }
   }
@@ -2001,22 +2003,29 @@ else {
         return TY_INT;
     }
     if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "File")) {
+        nt_str(nt, recv, "name") &&
+        (sp_streq(nt_str(nt, recv, "name"), "File") ||
+         sp_streq(nt_str(nt, recv, "name"), "FileTest"))) {
       if (sp_streq(name, "basename") || sp_streq(name, "dirname") || sp_streq(name, "extname") ||
           sp_streq(name, "read") || sp_streq(name, "binread") || sp_streq(name, "expand_path") ||
-          sp_streq(name, "join"))
+          sp_streq(name, "join") || sp_streq(name, "realpath") || sp_streq(name, "ftype") ||
+          sp_streq(name, "path") || sp_streq(name, "absolute_path"))
         return TY_STRING;
       if (sp_streq(name, "exist?") || sp_streq(name, "exists?"))
         return TY_BOOL;
       if (sp_streq(name, "write") || sp_streq(name, "binwrite") || sp_streq(name, "delete") ||
-          sp_streq(name, "unlink") || sp_streq(name, "rename") || sp_streq(name, "size"))
+          sp_streq(name, "unlink") || sp_streq(name, "rename") || sp_streq(name, "size") ||
+          sp_streq(name, "size?") || sp_streq(name, "chmod") || sp_streq(name, "truncate"))
         return TY_INT;
       if (sp_streq(name, "readable?") || sp_streq(name, "directory?") || sp_streq(name, "file?") ||
-          sp_streq(name, "zero?") || sp_streq(name, "empty?") || sp_streq(name, "symlink?"))
+          sp_streq(name, "zero?") || sp_streq(name, "empty?") || sp_streq(name, "symlink?") ||
+          sp_streq(name, "writable?") || sp_streq(name, "executable?") || sp_streq(name, "pipe?") ||
+          sp_streq(name, "identical?") || sp_streq(name, "fnmatch") || sp_streq(name, "fnmatch?"))
         return TY_BOOL;
-      if (sp_streq(name, "mtime"))
+      if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime"))
         return TY_TIME;
-      if (sp_streq(name, "readlines")) return TY_STR_ARRAY;
+      if (sp_streq(name, "readlines") || sp_streq(name, "split")) return TY_STR_ARRAY;
+      if (sp_streq(name, "stat")) return TY_IO;   /* the path-carrying stat handle */
       /* File.open / File.new without a block -> a typed IO handle */
       if (sp_streq(name, "open") || sp_streq(name, "new")) {
         int blk = nt_ref(nt, id, "block");
@@ -2033,6 +2042,13 @@ else {
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "IO")) {
       /* IO.pipe -> [r, w] pair; each is TY_POLY; the pair is a str_array */
       if (sp_streq(name, "pipe")) return TY_STR_ARRAY;
+    }
+    /* File handle metadata (#2790) */
+    if (recv >= 0 && infer_type(c, recv) == TY_IO) {
+      if (sp_streq(name, "size") || sp_streq(name, "chmod") || sp_streq(name, "mode")) return TY_INT;
+      if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime")) return TY_TIME;
+      if (sp_streq(name, "ftype")) return TY_STRING;
+      if (sp_streq(name, "stat")) return TY_IO;
     }
     /* <local>.yield(v) or bare <local>.yield: a generator yielder / fiber yield
        returns the value the next resume (or Enumerator#feed) supplies -- poly.
@@ -5129,6 +5145,10 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (par_nm && sp_streq(par_nm, "File")) {
       if (nm && (sp_streq(nm, "SEPARATOR") || sp_streq(nm, "PATH_SEPARATOR") ||
                  sp_streq(nm, "ALT_SEPARATOR"))) return TY_STRING;
+      if (nm && (sp_streq(nm, "RDONLY") || sp_streq(nm, "WRONLY") || sp_streq(nm, "RDWR") ||
+                 sp_streq(nm, "CREAT") || sp_streq(nm, "EXCL") || sp_streq(nm, "TRUNC") ||
+                 sp_streq(nm, "APPEND") || sp_streq(nm, "NONBLOCK") || sp_streq(nm, "BINARY")))
+        return TY_INT;   /* the open(2) flag constants (#2788) */
     }
     if (par_nm && (sp_streq(par_nm, "IO") || sp_streq(par_nm, "File"))) {
       /* IO#seek whence constants (File inherits them from IO) */

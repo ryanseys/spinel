@@ -3916,7 +3916,29 @@ int desugar_dir_surface(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     if (!nm || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
     const char *rn = nt_str(nt, recv, "name");
-    if (!rn || !sp_streq(rn, "Dir")) continue;
+    if (!rn) continue;
+    /* File.foreach(path){|l|} -> File.readlines(path).each{|l|}; the
+       blockless form enumerates the lines array (#2777) */
+    if (sp_streq(rn, "File") && sp_streq(nm, "foreach")) {
+      int fblk = nt_ref(nt, id, "block");
+      if (fblk >= 0 && nt_kind(nt, fblk) == NK_BlockNode) {
+        int ic = nt_new_node(nt, "CallNode");
+        if (ic < 0) continue;
+        nt_node_set_str(nt, ic, "name", "readlines");
+        nt_node_set_ref(nt, ic, "receiver", recv);
+        nt_node_set_ref(nt, ic, "arguments", nt_ref(nt, id, "arguments"));
+        nt_node_set_ref(nt, ic, "block", -1);
+        nt_node_set_str(nt, id, "name", "each");
+        nt_node_set_ref(nt, id, "receiver", ic);
+        nt_node_set_ref(nt, id, "arguments", -1);
+        comp_grow_node_arrays(c);
+        c->nscope[ic] = c->nscope[id];
+        changed = 1;
+      }
+      else { nt_node_set_str(nt, id, "name", "readlines"); changed = 1; }
+      continue;
+    }
+    if (!sp_streq(rn, "Dir")) continue;
     int blk = nt_ref(nt, id, "block");
     int args = nt_ref(nt, id, "arguments");
     int an = 0; nt_arr(nt, args >= 0 ? args : -1, "arguments", &an);

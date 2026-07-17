@@ -1536,7 +1536,17 @@ void emit_expr(Compiler *c, int id, Buf *b) {
          marker without an out-of-bounds [-1] over-read on a bare literal. */
       if (sp_streq(nm, "SEPARATOR"))      { buf_puts(b, "(&(\"\\xff\" \"/\")[1])"); return; }
       if (sp_streq(nm, "PATH_SEPARATOR")) { buf_puts(b, "(&(\"\\xff\" \":\")[1])"); return; }
-      if (sp_streq(nm, "ALT_SEPARATOR"))  { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
+      if (sp_streq(nm, "ALT_SEPARATOR"))  { buf_puts(b, "((const char *)0)"); return; }  /* nil off Windows (#2781) */
+      /* the open(2) flag constants, via the C macros (#2788) */
+      if (sp_streq(nm, "RDONLY"))   { buf_puts(b, "((mrb_int)O_RDONLY)"); return; }
+      if (sp_streq(nm, "WRONLY"))   { buf_puts(b, "((mrb_int)O_WRONLY)"); return; }
+      if (sp_streq(nm, "RDWR"))     { buf_puts(b, "((mrb_int)O_RDWR)"); return; }
+      if (sp_streq(nm, "CREAT"))    { buf_puts(b, "((mrb_int)O_CREAT)"); return; }
+      if (sp_streq(nm, "EXCL"))     { buf_puts(b, "((mrb_int)O_EXCL)"); return; }
+      if (sp_streq(nm, "TRUNC"))    { buf_puts(b, "((mrb_int)O_TRUNC)"); return; }
+      if (sp_streq(nm, "APPEND"))   { buf_puts(b, "((mrb_int)O_APPEND)"); return; }
+      if (sp_streq(nm, "NONBLOCK")) { buf_puts(b, "((mrb_int)O_NONBLOCK)"); return; }
+      if (sp_streq(nm, "BINARY"))   { buf_puts(b, "((mrb_int)0)"); return; }
     }
     if (par_nmc && (sp_streq(par_nmc, "IO") || sp_streq(par_nmc, "File")) && nm) {
       /* IO#seek whence constants (File inherits them from IO); the Ruby

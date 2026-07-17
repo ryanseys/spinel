@@ -368,18 +368,24 @@ else {
 /* ---- File.read/size/mtime/join/readlines + Math.lgamma (cold) ---- */
 
 const char *sp_file_join(const char **parts, int n) {
+  /* CRuby boundary rule (#2785): exactly one separator joins adjacent
+     components -- when the accumulated path already ends with '/', the next
+     component's leading '/'s are dropped; otherwise one is inserted. */
   size_t total = 0;
-  for (int i = 0; i < n; i++) {
-    if (parts[i]) total += strlen(parts[i]);
-    if (i < n - 1) total++;
-  }
+  for (int i = 0; i < n; i++) { if (parts[i]) total += strlen(parts[i]); total++; }
   char *r = sp_str_alloc((mrb_int)total);
   size_t off = 0;
   for (int i = 0; i < n; i++) {
-    if (parts[i]) { size_t l = strlen(parts[i]); memcpy(r + off, parts[i], l); off += l; }
-    if (i < n - 1) r[off++] = '/';
+    const char *p = parts[i] ? parts[i] : "";
+    if (i > 0) {
+      if (off > 0 && r[off - 1] == '/') { while (*p == '/') p++; }
+      else if (*p != '/') r[off++] = '/';
+    }
+    size_t l = strlen(p);
+    memcpy(r + off, p, l); off += l;
   }
   r[off] = 0;
+  sp_str_set_len(r, off);
   return r;
 }
 
@@ -468,6 +474,32 @@ const char *sp_file_read(const char *path) {
   return buf;
 }
 
+sp_Time sp_file_atime(const char *path) {
+  if (!path) { sp_raise_cls("TypeError", "no implicit conversion of nil into String"); return (sp_Time){0, 0, 0}; }
+  struct stat st;
+  if (stat(path, &st) == -1) {
+    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.atime - %s", strerror(errno), path));
+    return (sp_Time){0, 0, 0};
+  }
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+  return (sp_Time){(int64_t)st.st_atimespec.tv_sec, (int32_t)st.st_atimespec.tv_nsec, 0};
+#else
+  return (sp_Time){(int64_t)st.st_atim.tv_sec, (int32_t)st.st_atim.tv_nsec, 0};
+#endif
+}
+sp_Time sp_file_ctime(const char *path) {
+  if (!path) { sp_raise_cls("TypeError", "no implicit conversion of nil into String"); return (sp_Time){0, 0, 0}; }
+  struct stat st;
+  if (stat(path, &st) == -1) {
+    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.ctime - %s", strerror(errno), path));
+    return (sp_Time){0, 0, 0};
+  }
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+  return (sp_Time){(int64_t)st.st_ctimespec.tv_sec, (int32_t)st.st_ctimespec.tv_nsec, 0};
+#else
+  return (sp_Time){(int64_t)st.st_ctim.tv_sec, (int32_t)st.st_ctim.tv_nsec, 0};
+#endif
+}
 sp_Time sp_file_mtime(const char *path) {
   if (!path) {
     sp_raise_cls("TypeError", "no implicit conversion of nil into String");
@@ -738,17 +770,42 @@ const char *sp_backtick(const char *cmd) {
 }
 
 const char *sp_file_basename(const char *path) {
-  const char *s = strrchr(path, '/');
-  const char *base = s ? s + 1 : path;
+  /* CRuby: trailing separators are ignored ("/a/b/" -> "b"); an all-separator
+     path is "/" (#2784). */
+  size_t end = strlen(path);
+  while (end > 0 && path[end - 1] == '/') end--;
+  if (end == 0) {
+    if (path[0] == '/') { char *r = sp_str_alloc(1); r[0] = '/'; r[1] = 0; return r; }
+    return sp_str_alloc(0);
+  }
+  size_t start = end;
+  while (start > 0 && path[start - 1] != '/') start--;
   /* sp_gc_mark looks at byte[-1] to distinguish heap strings (`\xfe`)
-     from literals (`\xff`). A `s+1` mid-path pointer has whatever the
-     '/' was before it — and for an arbitrary string that's not a tag,
-     so the GC tries to dereference it as a heap header and segfaults.
-     Return a fresh sp_str_alloc'd copy so the prefix marker is right. */
-  size_t n = strlen(base);
-  char *buf = sp_str_alloc(n);
-  memcpy(buf, base, n + 1);
+     from literals (`\xff`). A mid-path pointer has whatever byte came
+     before it, so return a fresh sp_str_alloc'd copy with the right marker. */
+  size_t n = end - start;
+  char *buf = sp_str_alloc((mrb_int)n);
+  memcpy(buf, path + start, n);
+  buf[n] = 0;
   return buf;
+}
+/* File.basename(path, suffix): ".*" strips the (non-leading) last extension,
+   any other suffix strips a literal tail match (#2774). */
+const char *sp_file_basename2(const char *path, const char *suffix) {
+  const char *base = sp_file_basename(path);
+  size_t n = strlen(base);
+  if (suffix && strcmp(suffix, ".*") == 0) {
+    const char *dot = strrchr(base, '.');
+    if (dot && dot != base) n = (size_t)(dot - base);
+  }
+  else if (suffix && suffix[0]) {
+    size_t sl = strlen(suffix);
+    if (n > sl && strcmp(base + n - sl, suffix) == 0) n -= sl;
+  }
+  if (n == strlen(base)) return base;
+  char *r = sp_str_alloc((mrb_int)n);
+  memcpy(r, base, n); r[n] = 0;
+  return r;
 }
 
 const char *sp_file_extname(const char *path) {

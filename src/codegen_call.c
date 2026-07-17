@@ -4475,6 +4475,9 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         unsupported(c, id, "Time.new argument form");
         return 1;
       }
+      /* File.new is File.open: handled by the File class-method block in the
+         later dispatch (#2779) */
+      if (cn && sp_streq(cn, "File")) return 0;
       /* `.new` on a constant Spinel could not resolve -- not a user class, not a
          builtin/stdlib class handled above (Mutex, Thread, etc. return earlier).
          It is either a genuine undefined constant or a real stdlib class Spinel
@@ -8097,6 +8100,27 @@ void emit_call(Compiler *c, int id, Buf *b) {
     Buf rb = {0};
     emit_expr(c, recv, &rb);
     r = rb.p ? rb.p : "NULL";
+    /* metadata via the handle's path (#2790) */
+    if (argc == 0 && (sp_streq(name, "size") || sp_streq(name, "mtime") ||
+                      sp_streq(name, "atime") || sp_streq(name, "ctime") ||
+                      sp_streq(name, "ftype"))) {
+      buf_printf(b, "sp_file_%s(sp_File_path(%s))", sp_streq(name, "size") ? "size" : name, r);
+      free(rb.p); return;
+    }
+    if (argc == 0 && sp_streq(name, "mode") && strstr(r, "sp_file_stat_handle")) {
+      buf_printf(b, "sp_file_stat_mode(sp_File_path(%s))", r);
+      free(rb.p); return;
+    }
+    if (argc == 1 && sp_streq(name, "chmod")) {
+      /* the instance form returns 0, not the class form's file count */
+      buf_puts(b, "({ sp_file_chmod("); emit_int_expr(c, argv[0], b);
+      buf_printf(b, ", sp_File_path(%s)); (mrb_int)0; })", r);
+      free(rb.p); return;
+    }
+    if (argc == 0 && sp_streq(name, "stat")) {
+      buf_printf(b, "sp_file_stat_handle(sp_File_path(%s))", r);
+      free(rb.p); return;
+    }
     if (sp_streq(name, "read")) {
       if (argc == 0) buf_printf(b, "sp_File_read(%s)", r);
       else { buf_puts(b, "sp_File_read_n("); buf_puts(b, r); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -11181,23 +11205,122 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      generic sp_obj_to_hash reflection hook (codegen.c), reached from
      sp_json_val, which then serializes the resulting hash. */
 
-  /* Dir.exist? / Dir.exists? -> directory test */
+  /* Dir.exist? -> directory test; Dir.exists? was removed in Ruby 4.0 (#2780) */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
       (sp_streq(name, "exist?") || sp_streq(name, "exists?")) && argc == 1) {
+    if (sp_streq(name, "exists?")) {
+      buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
+      buf_puts(b, "); sp_raise_cls(\"NoMethodError\", \"undefined method 'exists?' for class Dir\"); (mrb_bool)0; })");
+      return;
+    }
     buf_puts(b, "sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ")");
     return;
   }
 
   /* File class methods -> runtime helpers (the runtime has long carried
-     these; only the dispatch was missing). */
+     these; only the dispatch was missing). FileTest shares File's predicate
+     surface (#2819). */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "File")) {
+      nt_str(nt, recv, "name") &&
+      (sp_streq(nt_str(nt, recv, "name"), "File") ||
+       sp_streq(nt_str(nt, recv, "name"), "FileTest"))) {
     if ((sp_streq(name, "basename") || sp_streq(name, "dirname") || sp_streq(name, "extname")) && argc == 1) {
       buf_printf(b, "sp_file_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
+    if (sp_streq(name, "basename") && argc == 2) {
+      buf_puts(b, "sp_file_basename2("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_expr(c, argv[1], b); buf_puts(b, ")"); return;
+    }
     if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 1) {
       buf_puts(b, "sp_file_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    /* File.read(path, length) -> the first length bytes (#2776) */
+    if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 2) {
+      buf_puts(b, "sp_file_read_len("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_int_expr(c, argv[1], b); buf_puts(b, ")"); return;
+    }
+    /* the stat/predicate family (#2775) */
+    if (sp_streq(name, "ftype") && argc == 1) {
+      buf_puts(b, "sp_file_ftype("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "writable?") && argc == 1) {
+      buf_puts(b, "sp_file_writable("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "executable?") && argc == 1) {
+      buf_puts(b, "sp_file_executable("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "size?") && argc == 1) {
+      buf_puts(b, "sp_file_size_q("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "pipe?") && argc == 1) {
+      buf_puts(b, "sp_file_pipe("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "identical?") && argc == 2) {
+      buf_puts(b, "sp_file_identical("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_expr(c, argv[1], b); buf_puts(b, ")"); return;
+    }
+    if ((sp_streq(name, "atime") || sp_streq(name, "ctime")) && argc == 1) {
+      buf_printf(b, "sp_file_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "realpath") && argc == 1) {
+      buf_puts(b, "sp_file_realpath("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "stat") && argc == 1) {
+      buf_puts(b, "sp_file_stat_handle("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    /* the path-manipulation family (#2774, #2787) */
+    if (sp_streq(name, "split") && argc == 1) {
+      buf_puts(b, "sp_file_split("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "path") && argc == 1) {
+      emit_expr(c, argv[0], b); return;
+    }
+    if (sp_streq(name, "absolute_path") && (argc == 1 || argc == 2)) {
+      buf_puts(b, "sp_file_expand_path("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      if (argc == 2) emit_expr(c, argv[1], b); else buf_puts(b, "(const char *)0");
+      buf_puts(b, ")"); return;
+    }
+    if ((sp_streq(name, "fnmatch") || sp_streq(name, "fnmatch?")) && argc >= 2) {
+      buf_puts(b, "sp_file_fnmatch("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_expr(c, argv[1], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "dirname") && argc == 2) {
+      /* File.dirname(path, level): apply dirname `level` times (#2787) */
+      int td = ++g_tmp, ti2 = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", td); emit_expr(c, argv[0], b);
+      buf_printf(b, "; mrb_int _tl%d = ", td); emit_int_expr(c, argv[1], b);
+      buf_printf(b, "; for (mrb_int _t%d = 0; _t%d < _tl%d; _t%d++) _t%d = sp_file_dirname(_t%d); _t%d; })",
+                 ti2, ti2, td, ti2, td, td, td);
+      return;
+    }
+    /* chmod / truncate (#2778) */
+    if (sp_streq(name, "chmod") && argc == 2) {
+      buf_puts(b, "sp_file_chmod("); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_expr(c, argv[1], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "truncate") && argc == 2) {
+      buf_puts(b, "sp_file_truncate("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_int_expr(c, argv[1], b); buf_puts(b, ")"); return;
+    }
+    /* File.write(path, str, offset) / File.write(path, str, mode: "a") (#2782) */
+    if ((sp_streq(name, "write") || sp_streq(name, "binwrite")) && argc == 3) {
+      const char *k3 = nt_type(nt, argv[2]);
+      if (k3 && sp_streq(k3, "KeywordHashNode")) {
+        int mv = struct_kwarg_value(c, argv[2], "mode");
+        if (mv >= 0) {
+          buf_puts(b, "sp_file_write_mode("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+          emit_str_expr(c, argv[1], b); buf_puts(b, ", ");
+          emit_expr(c, mv, b); buf_puts(b, ")");
+          return;
+        }
+      }
+      else {
+        buf_puts(b, "sp_file_write_at("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+        emit_str_expr(c, argv[1], b); buf_puts(b, ", ");
+        emit_int_expr(c, argv[2], b); buf_puts(b, ")");
+        return;
+      }
     }
     if ((sp_streq(name, "write") || sp_streq(name, "binwrite")) && argc == 2) {
       /* runtime write is void; Ruby returns the byte count */
@@ -11209,11 +11332,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else emit_expr(c, argv[1], b);
       buf_puts(b, "; sp_file_write(_wp, _wd); (mrb_int)sp_str_byte_len(_wd); })"); return;
     }
-    if ((sp_streq(name, "exist?") || sp_streq(name, "exists?") || sp_streq(name, "readable?")) && argc == 1) {
+    /* File.exists? was removed in Ruby 4.0: NoMethodError at the call (#2780) */
+    if (sp_streq(name, "exists?") && argc == 1) {
+      buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
+      buf_puts(b, "); sp_raise_cls(\"NoMethodError\", \"undefined method 'exists?' for class File\"); (mrb_bool)0; })");
+      return;
+    }
+    if ((sp_streq(name, "exist?") || sp_streq(name, "readable?")) && argc == 1) {
       buf_puts(b, "sp_file_exist("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
-    if ((sp_streq(name, "directory?") || sp_streq(name, "zero?") || sp_streq(name, "empty?")) && argc == 1) {
+    if (sp_streq(name, "directory?") && argc == 1) {
       buf_puts(b, "sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    /* zero-length non-directory, not the directory test it aliased to (#2783) */
+    if ((sp_streq(name, "zero?") || sp_streq(name, "empty?")) && argc == 1) {
+      buf_puts(b, "sp_file_zero("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
     if (sp_streq(name, "symlink?") && argc == 1) {
       buf_puts(b, "sp_file_symlink("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
@@ -11221,8 +11354,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "file?") && argc == 1) {
       buf_puts(b, "(!sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ") && sp_file_exist("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
     }
-    if ((sp_streq(name, "delete") || sp_streq(name, "unlink")) && argc == 1) {
-      buf_puts(b, "({ sp_file_delete("); emit_expr(c, argv[0], b); buf_puts(b, "); (mrb_int)1; })"); return;
+    if ((sp_streq(name, "delete") || sp_streq(name, "unlink")) && argc >= 1) {
+      buf_puts(b, "({ ");
+      for (int k = 0; k < argc; k++) {
+        buf_puts(b, "sp_file_delete("); emit_expr(c, argv[k], b); buf_puts(b, "); ");
+      }
+      buf_printf(b, "(mrb_int)%d; })", argc); return;
     }
     if (sp_streq(name, "rename") && argc == 2) {
       buf_puts(b, "({ sp_file_rename("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
@@ -11240,6 +11377,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, ")"); return;
     }
     if (sp_streq(name, "join")) {
+      int has_dyn = 0;
+      for (int k = 0; k < argc; k++) {
+        TyKind jt = comp_ntype(c, argv[k]);
+        if (ty_is_array(jt) || jt == TY_POLY_ARRAY || jt == TY_POLY) has_dyn = 1;
+      }
+      if (has_dyn) {
+        /* an Array component flattens into the path (#2786); box everything
+           and let the runtime walk it */
+        buf_printf(b, "sp_file_join_vals((sp_RbVal[]){");
+        for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_boxed(c, argv[k], b); }
+        if (argc == 0) buf_puts(b, "sp_box_nil()");
+        buf_printf(b, "}, %d)", argc); return;
+      }
       /* each component initializes a `const char *` slot, so a poly arg (e.g.
          doom's `File.join(Dir.tmpdir, ...)` where the first component stays
          poly) must be unboxed via sp_poly_to_s, not land its sp_RbVal raw. */
@@ -11263,13 +11413,31 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else buf_puts(b, "sp_file_readlines(");
       emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
-    /* File.open(path, mode) / File.new(path, mode) without block -> TY_IO handle */
+    /* File.open(path, mode) / File.new(path, mode) without block -> TY_IO
+       handle. The mode may be a string, an integer flag word (#2788), or a
+       trailing `mode:` keyword (#2789). */
     if (sp_streq(name, "open") || sp_streq(name, "new")) {
       int block = nt_ref(nt, id, "block");
+      int kw_mode = -1;
+      if (argc >= 2 && nt_type(nt, argv[argc - 1]) &&
+          sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode"))
+        kw_mode = struct_kwarg_value(c, argv[argc - 1], "mode");
+      int int_mode = argc >= 2 && kw_mode < 0 && comp_ntype(c, argv[1]) == TY_INT;
+      #define EMIT_FILE_OPEN() do { \
+        if (int_mode) { \
+          buf_puts(b, "sp_File_open_flags("); emit_expr(c, argv[0], b); buf_puts(b, ", "); \
+          emit_int_expr(c, argv[1], b); buf_puts(b, ")"); \
+        } \
+        else { \
+          buf_puts(b, "sp_File_open("); emit_expr(c, argv[0], b); buf_puts(b, ", "); \
+          if (kw_mode >= 0) emit_expr(c, kw_mode, b); \
+          else if (argc >= 2 && !(nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))) emit_expr(c, argv[1], b); \
+          else buf_puts(b, "\"r\""); \
+          buf_puts(b, ")"); \
+        } \
+      } while (0)
       if (block < 0) {
-        buf_puts(b, "sp_File_open("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
-        if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "\"r\"");
-        buf_puts(b, ")");
+        EMIT_FILE_OPEN();
         return;
       }
       /* File.open(path, mode) { |f| body } -> open, run body, close, return body value */
@@ -11281,9 +11449,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int rv = ++g_tmp, tf = ++g_tmp;
       int scalar = is_scalar_ret(res) && res != TY_VOID && res != TY_NIL && res != TY_UNKNOWN;
       buf_puts(b, "({ ");
-      buf_printf(b, "sp_File *_t%d = sp_File_open(", tf); emit_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "\"r\"");
-      buf_puts(b, "); ");
+      buf_printf(b, "sp_File *_t%d = ", tf); EMIT_FILE_OPEN(); buf_puts(b, "; ");
+      #undef EMIT_FILE_OPEN
       /* Root the handle for the block's duration: the body may allocate and
          trigger a GC, and an unrooted sp_File would be swept (its finalizer
          fcloses mid-iteration, silently truncating each_line loops). */
