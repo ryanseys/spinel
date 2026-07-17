@@ -6714,7 +6714,18 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     Buf rs = expr_buf(c, recv);
     const char *r = rs.p ? rs.p : "";
     int done = 1;
-    if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc")) buf_printf(b, "sp_time_utc(%s)", r);
+    /* CRuby's #utc/#gmtime/#localtime mutate the receiver (and return it);
+       the get* flavors copy. sp_Time is a value struct, so when the receiver
+       is an LVALUE (a local, an ivar slot) the mutation is a write-back
+       assignment -- `v.utc` then really updates v (#2637). A temporary
+       receiver has nothing to observe afterwards, so the copy serves it. */
+    int r_lval = nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
+                                       sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"));
+    if ((sp_streq(name, "utc") || sp_streq(name, "gmtime")) && r_lval)
+      buf_printf(b, "(%s = sp_time_utc(%s))", r, r);
+    else if (sp_streq(name, "localtime") && argc == 0 && r_lval)
+      buf_printf(b, "(%s = sp_time_localtime(%s))", r, r);
+    else if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc")) buf_printf(b, "sp_time_utc(%s)", r);
     else if (sp_streq(name, "localtime") || sp_streq(name, "getlocal")) buf_printf(b, "sp_time_localtime(%s)", r);
     else if (sp_streq(name, "year"))  buf_printf(b, "sp_time_year(%s)", r);
     else if (sp_streq(name, "mon") || sp_streq(name, "month")) buf_printf(b, "sp_time_mon(%s)", r);
