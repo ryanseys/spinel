@@ -21,6 +21,17 @@ p d.set_trace_func(4)
 def extend(a); "toplevel:#{a}"; end
 p extend(9)
 
+# a user-defined SINGLETON method of a limited name is that method too:
+# `Mod.prepend(kwargs)` resolves to `def self.prepend`, not Module#prepend (#2712)
+module Broadcasts
+  def self.prepend(stream:, target:, html:)
+    "#{stream}/#{target}/#{html}"
+  end
+  def self.replace(x); "rep:#{x}"; end
+end
+puts Broadcasts.prepend(stream: "articles", target: "articles", html: "<div/>")
+puts Broadcasts.replace(1)
+
 # the compile-time forms these limits point you at keep working
 module Mx; def mm; "mm"; end; end
 class Ok; include Mx; attr_accessor :v; end

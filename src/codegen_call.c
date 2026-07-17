@@ -553,10 +553,14 @@ static int collect_class_constants(Compiler *c, int ci, int inherit,
    The instance_eval/class_eval/module_eval block forms carry a literal block,
    not a string, and are handled separately -- they never reach here. */
 /* Does the program define a method of this name itself? Such a call is that
-   method, not the builtin, so a documented-limit diagnostic must not claim it. */
+   method, not the builtin, so a documented-limit diagnostic must not claim it.
+   Singleton (class) methods count too: `def self.prepend(...)` on a module
+   makes `Mod.prepend(...)` that method, not Module#prepend (#2712). */
 int diag_user_defines(Compiler *c, const char *name) {
-  for (int uk = 0; uk < c->nclasses; uk++)
+  for (int uk = 0; uk < c->nclasses; uk++) {
     if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
+    if (comp_cmethod_in_chain(c, uk, name, NULL) >= 0) return 1;
+  }
   return comp_method_index(c, name) >= 0;
 }
 
