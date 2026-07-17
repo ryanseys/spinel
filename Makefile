@@ -430,6 +430,43 @@ PKG_TEST_TARGETS := $(foreach t,$(PKG_TESTS),build/test-results/pkg.$(call pkg_o
 # behaviour is still gated by the output diff. Keep this list minimal.
 TEST_WARN_SUPPRESS := -Wno-unused-value
 
+# ---- Precompiled runtime header for the per-test compiles ----
+# Every generated test TU includes the same lib/sp_runtime.h; the cc step is
+# >99% of a test's cost and roughly half of that is parsing the header, so
+# the suite precompiles it once per make invocation (measured: gcc -15%,
+# clang -23% on the per-test compile). Two variants cover the two TU shapes
+# the emitter produces: plain, and `#define SP_TU_NO_POLY_RENDER 1` before
+# the include. gcc picks the .gch up implicitly from the include path; clang
+# ignores gcc-style implicit lookup and needs an explicit -include-pch.
+# Each variant dir also carries a copy of sp_runtime.h so gcc degrades to a
+# normal textual include if the .gch is unusable. The PCH path is keyed on
+# compiler kind and $(OPT) because a PCH only loads under the exact flags
+# it was built with (for clang a mismatch is a hard error, not a fallback).
+CC_KIND  := $(if $(findstring clang,$(shell $(CC) --version 2>/dev/null | head -1)),clang,gcc)
+PCH_ROOT := build/pch/$(CC_KIND)$(subst -,,$(OPT))
+PCH_FLAGS = $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS)
+PCH_PLAIN  := $(PCH_ROOT)/plain/sp_runtime.h.gch
+PCH_NOPOLY := $(PCH_ROOT)/nopoly/sp_runtime.h.gch
+SP_LIB_HDRS := $(wildcard lib/*.h)
+
+$(PCH_PLAIN): $(SP_LIB_HDRS)
+	@mkdir -p $(@D)
+	@cp lib/sp_runtime.h $(@D)/sp_runtime.h
+	@$(CC) $(PCH_FLAGS) -Ilib -x c-header $(@D)/sp_runtime.h -o $@
+
+$(PCH_NOPOLY): $(SP_LIB_HDRS)
+	@mkdir -p $(@D)
+	@cp lib/sp_runtime.h $(@D)/sp_runtime.h
+	@$(CC) $(PCH_FLAGS) -DSP_TU_NO_POLY_RENDER=1 -Ilib -x c-header $(@D)/sp_runtime.h -o $@
+
+ifeq ($(CC_KIND),clang)
+PCH_USE_PLAIN  = -include-pch $(PCH_PLAIN)
+PCH_USE_NOPOLY = -include-pch $(PCH_NOPOLY)
+else
+PCH_USE_PLAIN  = -I$(PCH_ROOT)/plain
+PCH_USE_NOPOLY = -I$(PCH_ROOT)/nopoly
+endif
+
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone — a stale `.ok` reading PASS was a recurring foot-gun.)
@@ -594,7 +631,11 @@ stdinf=/dev/null; \
 if [ -f "$<.stdin" ]; then stdinf="$<.stdin"; fi; \
 rm -f "$@.diff"; \
 $(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
-$(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib "$$cfile" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
+{ pchuse="$(PCH_USE_PLAIN)"; pchf="$(PCH_PLAIN)"; \
+  if head -2 "$$cfile" | grep -q SP_TU_NO_POLY_RENDER; then pchuse="$(PCH_USE_NOPOLY)"; pchf="$(PCH_NOPOLY)"; fi; \
+  [ -f "$$pchf" ] || pchuse=""; \
+  $(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib -c "$$cfile" -o "$$cfile.o" 2>/dev/null; } && \
+$(CC) $(CFLAGS) "$$cfile.o" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
 if [ $$? -eq 0 ]; then \
   if [ -f "$<.expected" ]; then \
     LC_ALL=C sed 's/\r$$//' "$<.expected" >"$$exp.n"; \
@@ -633,12 +674,12 @@ endef
 # Per-package test rules (one pattern rule per bundled package: GNU Make
 # patterns allow a single %, so the package name is fixed per rule).
 define PKG_TEST_RULE
-build/test-results/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) | $$(SPINEL)
+build/test-results/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) $$(PCH_PLAIN) $$(PCH_NOPOLY) | $$(SPINEL)
 	$$(RUN_ONE_TEST)
 endef
 $(foreach d,$(wildcard packages/*/test),$(eval $(call PKG_TEST_RULE,$(patsubst packages/%/test,%,$(d)))))
 
-build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) | $(SPINEL)
+build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) | $(SPINEL)
 	$(RUN_ONE_TEST)
 
 clean-test-results:
