@@ -714,18 +714,6 @@ int diag_user_defines(Compiler *c, const char *name) {
   return comp_method_index(c, name) >= 0;
 }
 
-/* Does class ci descend from an explicit `< BasicObject` (a blank slate)?
-   Such an instance answers only BasicObject's own methods and what the user
-   defined; the Object/Kernel default arms must NOT serve it (#2703). */
-static int class_is_blank_slate(Compiler *c, int ci) {
-  for (int k = ci; k >= 0; k = c->classes[k].parent) {
-    int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
-    const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
-    if (sn && sp_streq(sn, "BasicObject")) return 1;
-    if (sn && c->classes[k].parent < 0) return 0;   /* rooted at another builtin */
-  }
-  return 0;
-}
 /* BasicObject's own instance methods (the spinel-relevant surface). */
 static int basicobject_own_method(const char *n) {
   static const char *const B[] = { "==", "!=", "!", "equal?", "instance_eval",

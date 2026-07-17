@@ -2737,18 +2737,11 @@ static char *rewrite_syntax_sugar(char *source) {
     if (source[i] == '\n' && lsp == 0 && nhd > 0) {
       OUT_CHAR('\n'); i++; in_hd = 1; continue;
     }
-    /* .send(:foo, args) → .foo(args) */
-    if (i + 7 < len && strncmp(source + i, ".send(:", 7) == 0) {
-      REWRITE_SEND_CALL(".send(:", 7, 0);
-      continue;
-    }
-    /* .send("foo", args) → .foo(args). Plain string literal only;
-       interpolated strings parse as InterpolatedStringNode and are
-       left untouched (Spinel can't resolve the name statically). */
-    if (i + 7 < len && strncmp(source + i, ".send(\"", 7) == 0) {
-      REWRITE_SEND_CALL(".send(\"", 7, 1);
-      continue;
-    }
+    /* `.send(...)` is NOT rewritten here (it used to be): the textual pass
+       has no types, so it also erased sends on BasicObject subclasses, which
+       lack #send and must raise (#2725). The analyze-side send desugar
+       retargets it with the receiver's class in hand. `.__send__` stays: it
+       IS a BasicObject method, so the blind rewrite is always right. */
     /* .__send__(:foo, args) → .foo(args). CRuby's overrides-resistant
        alias of send; semantically identical for Spinel's static dispatch. */
     if (i + 11 < len && strncmp(source + i, ".__send__(:", 11) == 0) {

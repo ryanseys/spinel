@@ -4046,6 +4046,14 @@ int desugar_public_send_recv(Compiler *c) {
     int is_pub = nm && sp_streq(nm, "public_send");
     int is_snd = nm && (sp_streq(nm, "send") || sp_streq(nm, "__send__"));
     if (!is_pub && !is_snd) continue;
+    /* A blank-slate receiver has no #send / #public_send (only __send__ is
+       BasicObject's): leave the call unretargeted, and the blank-slate gate
+       raises CRuby's NoMethodError for the send itself (#2725). */
+    if (!sp_streq(nm, "__send__")) {
+      int bsrecv = nt_ref(nt, id, "receiver");
+      TyKind bsrt = bsrecv >= 0 ? infer_type(c, bsrecv) : TY_UNKNOWN;
+      if (ty_is_object(bsrt) && class_is_blank_slate(c, ty_object_class(bsrt))) continue;
+    }
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
