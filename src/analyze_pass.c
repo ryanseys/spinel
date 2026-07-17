@@ -3594,6 +3594,57 @@ int desugar_builtin_class_var_recv(Compiler *c) {
   return changed;
 }
 
+/* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the
+   AST, so composition always runs proc-to-proc. The to_proc emission builds a
+   real trampoline proc that publishes its boxed result through the return
+   slot; the raw sp_method_to_proc tramp does not, which is why composing the
+   Method directly mis-typed the intermediate (#2692). */
+int desugar_compose_method_operand(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, ">>") && !sp_streq(nm, "<<"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (recv < 0 || an != 1 || !av) continue;
+    TyKind rt = infer_type(c, recv), at = infer_type(c, av[0]);
+    int r_m = rt == TY_METHOD, a_m = at == TY_METHOD;
+    if (!r_m && !a_m) continue;
+    if (!(rt == TY_METHOD || rt == TY_PROC) || !(at == TY_METHOD || at == TY_PROC)) continue;
+    int a0 = av[0];
+    int base = nt->count;
+    if (r_m) {
+      int tp = nt_new_node(nt, "CallNode");
+      if (tp < 0) continue;
+      nt_node_set_ref(nt, tp, "receiver", recv);
+      nt_node_set_str(nt, tp, "name", "to_proc");
+      nt_node_set_ref(nt, tp, "arguments", -1);
+      nt_node_set_ref(nt, tp, "block", -1);
+      nt_node_set_ref(nt, id, "receiver", tp);
+    }
+    if (a_m) {
+      int tp = nt_new_node(nt, "CallNode");
+      int na = nt_new_node(nt, "ArgumentsNode");
+      if (tp < 0 || na < 0) continue;
+      nt_node_set_ref(nt, tp, "receiver", a0);
+      nt_node_set_str(nt, tp, "name", "to_proc");
+      nt_node_set_ref(nt, tp, "arguments", -1);
+      nt_node_set_ref(nt, tp, "block", -1);
+      nt_node_set_arr(nt, na, "arguments", &tp, 1);
+      nt_node_set_ref(nt, id, "arguments", na);
+    }
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_public_method(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
