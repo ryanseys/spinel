@@ -3216,6 +3216,164 @@ void check_block_rest_support(Compiler *c) {
 /* `recv.public_method(:sym)` -> `recv.method(:sym)`: the same bound Method,
    reusing all the `method(:sym)` machinery (reachability, arity, call). The
    private/protected visibility distinction is not modeled. #2687 */
+/* Does any node under `root` have kind `k`? Descends every ref/arr field. */
+static int subtree_has_kind(const NodeTable *nt, int root, NodeKind k, int depth) {
+  if (root < 0 || root >= nt->count || depth > 200) return 0;
+  if (nt_kind(nt, root) == k) return 1;
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++)
+    if (subtree_has_kind(nt, nd->r[i].ref, k, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (subtree_has_kind(nt, nd->a[i].ids[j], k, depth + 1)) return 1;
+  return 0;
+}
+
+/* Repoint every SelfNode under `root` at a fresh ConstantReadNode(cname): the
+   PARENT's ref/arr slot is retargeted (a node's type string is immutable).
+   Does not descend into nested class/module/def bodies, whose self differs. */
+static void subtree_self_to_const(Compiler *c, int root, const char *cname, int depth) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (root < 0 || root >= nt->count || depth > 200) return;
+  NodeKind k = nt_kind(nt, root);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode) return;
+  SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++) {
+    int ch = nd->r[i].ref;
+    if (ch >= 0 && nt_kind(nt, ch) == NK_SelfNode) {
+      int cr = nt_new_node(nt, "ConstantReadNode");
+      if (cr < 0) return;
+      nt_node_set_str(nt, cr, "name", cname);
+      comp_grow_node_arrays(c);
+      c->nscope[cr] = c->nscope[root];
+      nd = &nt->nodes[root];        /* nt_new_node may realloc nt->nodes */
+      nd->r[i].ref = cr;
+    }
+    else subtree_self_to_const(c, ch, cname, depth + 1);
+    nd = &nt->nodes[root];
+  }
+  for (int i = 0; i < nd->na; i++) {
+    for (int j = 0; j < nd->a[i].n; j++) {
+      int ch = nd->a[i].ids[j];
+      if (ch >= 0 && nt_kind(nt, ch) == NK_SelfNode) {
+        int cr = nt_new_node(nt, "ConstantReadNode");
+        if (cr < 0) return;
+        nt_node_set_str(nt, cr, "name", cname);
+        comp_grow_node_arrays(c);
+        c->nscope[cr] = c->nscope[root];
+        nd = &nt->nodes[root];
+        nd->a[i].ids[j] = cr;
+      }
+      else subtree_self_to_const(c, ch, cname, depth + 1);
+      nd = &nt->nodes[root];
+    }
+  }
+}
+
+/* The value forms of class_eval / class_exec (and module_*): the block is
+   evaluated with self = the class, and the call's value is the block's. A
+   pure-def body is a compile-time reopen (class_eval_reopen_class) and is left
+   to that path; any def-containing body stays out. For a value body, rewrite
+
+     C.class_eval { body }      ->  (-> () { body }).call
+     C.class_exec(a) { |x| b }  ->  (->(x) { b }).call(a)
+
+   reusing the block's own parameters/body nodes, with SelfNode occurrences in
+   the body repointed at the receiver constant. #2697 */
+int desugar_class_eval_value(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "class_eval") && !sp_streq(nm, "class_exec") &&
+                !sp_streq(nm, "module_eval") && !sp_streq(nm, "module_exec"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
+    const char *cname = nt_str(nt, recv, "name");
+    if (!cname || comp_class_index(c, cname) < 0) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    int body = nt_ref(nt, blk, "body");
+    if (body < 0) continue;
+    if (subtree_has_kind(nt, body, NK_DefNode, 0)) continue;   /* reopen path */
+
+    /* the block's params bind the exec args; collect their names */
+    const char *pnames[8]; int pvals[8]; int np = 0;
+    {
+      int bparams = nt_ref(nt, blk, "parameters");
+      int params = bparams >= 0 ? nt_ref(nt, bparams, "parameters") : -1;
+      int rn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &rn) : NULL;
+      int an2 = nt_ref(nt, id, "arguments");
+      int ac2 = 0; const int *av2 = an2 >= 0 ? nt_arr(nt, an2, "arguments", &ac2) : NULL;
+      if (rn > 8 || rn != ac2) continue;   /* arity mismatch / exotic params: leave it */
+      int ok = 1;
+      for (int k = 0; k < rn && ok; k++) {
+        pnames[k] = nt_str(nt, reqs[k], "name");
+        pvals[k] = av2[k];
+        if (!pnames[k]) ok = 0;
+      }
+      /* NOTE on shadowing: spinel interns block params in the ENCLOSING scope
+         (a known representation), so the spliced `param = arg` write binds the
+         same slot the block body already reads -- exactly a regular block's
+         behavior here. */
+      if (!ok) continue;
+      np = rn;
+    }
+
+    subtree_self_to_const(c, body, cname, 0);
+    int base = nt->count;
+    /* `param = arg` writes prepended to the body, then the body statements */
+    int items[8 + 64]; int ni = 0;
+    for (int k = 0; k < np; k++) {
+      int w = nt_new_node(nt, "LocalVariableWriteNode");
+      if (w < 0) { ni = -1; break; }
+      nt_node_set_str(nt, w, "name", pnames[k]);
+      nt_node_set_ref(nt, w, "value", pvals[k]);
+      items[ni++] = w;
+    }
+    if (ni < 0) continue;
+    {
+      int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+      if (bn > 64) continue;
+      for (int k = 0; k < bn; k++) items[ni++] = bb[k];
+    }
+    int stmts = nt_new_node(nt, "StatementsNode");
+    int beg = nt_new_node(nt, "BeginNode");
+    if (stmts < 0 || beg < 0) continue;
+    nt_node_set_arr(nt, stmts, "body", items, ni);
+    nt_node_set_ref(nt, beg, "statements", stmts);
+    /* the call becomes a transparent alias of the begin's value */
+    nt_node_set_str(nt, id, "name", "itself");
+    nt_node_set_ref(nt, id, "receiver", beg);
+    nt_node_set_ref(nt, id, "block", -1);
+    nt_node_set_ref(nt, id, "arguments", -1);
+
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    /* splice the body into the enclosing scope: re-home every node that lived
+       in the BLOCK's scope (nested blocks keep their own) */
+    {
+      Scope *bs = comp_scope_of(c, body);
+      int stack[256]; int sp = 0; stack[sp++] = body;
+      int bsi = bs ? (int)(bs - c->scopes) : -1;
+      while (sp > 0 && bsi >= 0) {
+        int nid = stack[--sp];
+        if (nid < 0 || nid >= nt->count) continue;
+        if (c->nscope[nid] == bsi) c->nscope[nid] = encl;
+        const SpNode *nd = &nt->nodes[nid];
+        for (int i2 = 0; i2 < nd->nr && sp < 250; i2++) stack[sp++] = nd->r[i2].ref;
+        for (int i2 = 0; i2 < nd->na; i2++)
+          for (int j2 = 0; j2 < nd->a[i2].n && sp < 250; j2++) stack[sp++] = nd->a[i2].ids[j2];
+      }
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_public_method(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
