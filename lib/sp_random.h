@@ -40,6 +40,7 @@ sp_Random *sp_random_default_get(void);
 const char *sp_Random_bytes(sp_Random *r, mrb_int n);
 mrb_int sp_Random_new_seed(void);
 const char *sp_Random_urandom(mrb_int n);
+const char *sp_Random_inspect(sp_Random *r);
 mrb_int sp_kernel_srand(mrb_int seed);
 
 #endif

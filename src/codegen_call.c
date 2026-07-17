@@ -8170,6 +8170,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_Random_seed("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
+    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
+      buf_puts(b, "sp_Random_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
     /* a Random instance is an opaque object: #class, and identity #==/#equal? (#2524) */
     if (sp_streq(name, "class") && argc == 0) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ((sp_Class){0, SPL(\"Random\")}))");

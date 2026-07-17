@@ -473,6 +473,10 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "{ sp_Enumerator *_pe = ("); emit_expr(c, arg, b);
     buf_puts(b, "); fputs(sp_enum_inspect(_pe), stdout); putchar('\\n'); }\n");
   }
+  else if (t == TY_RANDOM) {
+    buf_puts(b, "{ sp_Random *_pr = ("); emit_expr(c, arg, b);
+    buf_puts(b, "); fputs(sp_Random_inspect(_pr), stdout); putchar('\\n'); }\n");
+  }
   else if (t == TY_EXCEPTION) {
     /* boxed-path inspect: NULL prints nil, else #<Class: message> */
     int ev = ++g_tmp;

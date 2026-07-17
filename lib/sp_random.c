@@ -164,6 +164,11 @@ const char *sp_Random_urandom(mrb_int n) {
   sp_str_set_len(b, (size_t)n);
   return b;
 }
+/* Random#inspect / #to_s: CRuby's default object rendering (the seed is not
+   part of it; the address matches CRuby's zero-padded 16-digit form). */
+const char *sp_Random_inspect(sp_Random *r) {
+  return sp_sprintf("#<Random:0x%016llx>", (unsigned long long)(uintptr_t)r);
+}
 /* Kernel#srand: seed the shared Kernel stream and remember the previous
    seed, which srand returns (CRuby returns the prior seed, not the new
    one). Every rand form -- bare/int/range, shuffle, sample, the Random
