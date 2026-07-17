@@ -6700,6 +6700,35 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* Klass.instance_method(:sym) -> the unbound object: the same
+     sp_BoundMethod with a NULL self, so name/arity/owner ride the Method
+     arms; #bind supplies the self (#2676). */
+  if (sp_streq(name, "instance_method") && method_sym_arg(c, id) != NULL) {
+    int umi = method_obj_target_mi(c, id);
+    if (umi >= 0) {
+      buf_puts(b, "sp_bound_method_new(NULL, (mrb_int)(uintptr_t)&");
+      emit_method_cname(c, &c->scopes[umi], b);
+      buf_puts(b, ", ");
+      emit_str_literal(b, method_sym_arg(c, id));
+      buf_puts(b, ")");
+      return;
+    }
+  }
+  /* UnboundMethod#bind(obj): the same target with obj as self. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 1 && sp_streq(name, "bind")) {
+    int mn2 = method_recv_node(c, recv);
+    int t2 = mn2 >= 0 ? method_obj_target_mi(c, mn2) : -1;
+    if (t2 >= 0 && ty_is_object(comp_ntype(c, argv[0]))) {
+      buf_puts(b, "sp_bound_method_new((void *)(");
+      emit_expr(c, argv[0], b);
+      buf_puts(b, "), (mrb_int)(uintptr_t)&");
+      emit_method_cname(c, &c->scopes[t2], b);
+      buf_puts(b, ", ");
+      emit_str_literal(b, method_sym_arg(c, mn2));
+      buf_puts(b, ")");
+      return;
+    }
+  }
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object. */
   if (sp_streq(name, "method") && method_sym_arg(c, id) != NULL) {
     const char *sym = method_sym_arg(c, id);

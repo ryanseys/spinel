@@ -6856,7 +6856,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
     nm = nt_str(nt, id, "name");
     /* `method(:foo)` takes a reference to foo without calling it; the target
        must still be emitted, so treat the symbol arg as a called name. */
-    if (nm && sp_streq(nm, "method")) {
+    if (nm && (sp_streq(nm, "method") || sp_streq(nm, "instance_method"))) {
       int margs = nt_ref(nt, id, "arguments");
       int man = 0; const int *mav = margs >= 0 ? nt_arr(nt, margs, "arguments", &man) : NULL;
       if (man >= 1) {

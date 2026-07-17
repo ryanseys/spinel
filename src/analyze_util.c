@@ -752,7 +752,10 @@ int is_method_obj_call(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0 || !nt_type(nt, node) || !sp_streq(nt_type(nt, node), "CallNode")) return 0;
   const char *nm = nt_str(nt, node, "name");
-  return nm && sp_streq(nm, "method") && method_sym_arg(c, node) != NULL;
+  /* Module#instance_method builds the same object, unbound (NULL self); the
+     Method machinery (name/arity/owner/call-after-bind) rides it (#2676) */
+  return nm && (sp_streq(nm, "method") || sp_streq(nm, "instance_method")) &&
+         method_sym_arg(c, node) != NULL;
 }
 
 /* The target method scope index bound by a `method(:sym)` node, or -1
@@ -762,6 +765,17 @@ int method_obj_target_mi(Compiler *c, int node) {
   const char *sym = method_sym_arg(c, node);
   if (!sym) return -1;
   int recv = nt_ref(nt, node, "receiver");
+  /* Klass.instance_method(:m): the class's INSTANCE method (Klass.method(:m)
+     would be the class method) */
+  {
+    const char *nm0 = nt_str(nt, node, "name");
+    if (nm0 && sp_streq(nm0, "instance_method")) {
+      const char *rn = (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode)
+                       ? nt_str(nt, recv, "name") : NULL;
+      int ci = rn ? comp_class_index(c, rn) : -1;
+      return ci >= 0 ? comp_method_in_chain(c, ci, sym, NULL) : -1;
+    }
+  }
   if (recv < 0) {
     int mi = comp_method_index(c, sym);
     if (mi < 0) { Scope *s = comp_scope_of(c, node); if (s && s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, sym, NULL); }
@@ -782,6 +796,10 @@ int method_recv_node(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   if (recv < 0) return -1;
   if (is_method_obj_call(c, recv)) return recv;
+  /* UnboundMethod#bind(obj) re-binds the same target: see through it (#2676) */
+  if (nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "name") &&
+      sp_streq(nt_str(nt, recv, "name"), "bind"))
+    return method_recv_node(c, nt_ref(nt, recv, "receiver"));
   const char *rty = nt_type(nt, recv);
   if (rty && sp_streq(rty, "LocalVariableReadNode")) {
     const char *vn = nt_str(nt, recv, "name");
@@ -794,6 +812,11 @@ int method_recv_node(Compiler *c, int recv) {
       if (!wn || !vn || !sp_streq(wn, vn)) continue;
       int val = nt_ref(nt, w, "value");
       if (is_method_obj_call(c, val)) return val;
+      if (val >= 0 && nt_kind(nt, val) == NK_CallNode && nt_str(nt, val, "name") &&
+          sp_streq(nt_str(nt, val, "name"), "bind")) {
+        int inner = method_recv_node(c, nt_ref(nt, val, "receiver"));
+        if (inner >= 0) return inner;
+      }
     }
   }
   return -1;

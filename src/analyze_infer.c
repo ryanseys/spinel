@@ -1365,6 +1365,10 @@ TyKind infer_call(Compiler *c, int id) {
     return g_promote_mode ? TY_POLY : TY_INT;
   }
   if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "to_proc")) return TY_PROC;
+  /* Klass.instance_method(:m) -> an (unbound) method object; #bind re-binds (#2676) */
+  if (recv >= 0 && sp_streq(name, "instance_method") && method_sym_arg(c, id) != NULL &&
+      method_obj_target_mi(c, id) >= 0) return TY_METHOD;
+  if (recv >= 0 && rt == TY_METHOD && argc == 1 && sp_streq(name, "bind")) return TY_METHOD;
   /* Method#owner is a class value; #receiver is the bound receiver (#2701) */
   if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "owner")) return TY_CLASS;
   if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "receiver")) {
