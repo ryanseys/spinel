@@ -1131,74 +1131,158 @@ static int sg_single_new_write(Compiler *c, const char *name, int is_const,
   return write;
 }
 
+/* wnode -> synthesized subclass index map, so every singleton def/extend on
+   one binding shares one subclass. comp_class_index cannot be trusted mid-pass
+   (its index excludes classes added during this pass). */
+typedef struct { int *wkey, *wci, n, cap; } SgMap;
+static int sg_get_or_make(Compiler *c, SgMap *m, int wnode, int parent_ci) {
+  for (int i = 0; i < m->n; i++) if (m->wkey[i] == wnode) return m->wci[i];
+  const NodeTable *nt = c->nt;
+  char snm[96];
+  snprintf(snm, sizeof snm, "%s__sg_%d", c->classes[parent_ci].name ? c->classes[parent_ci].name : "Obj", wnode);
+  ClassInfo *sc = comp_class_new(c, snm, wnode);
+  int newci = (int)(sc - c->classes);
+  sc->parent = parent_ci;
+  sc->is_singleton_of = parent_ci + 1;
+  /* retarget the `= Parent.new(...)` receiver to the synthesized class so the
+     binding's type becomes ty_object(newci) and .new builds it. */
+  int wval = nt_ref(nt, wnode, "value");
+  int wrecv = nt_ref(nt, wval, "receiver");
+  nt_node_set_str(nt, wrecv, "name", snm);
+  if (m->n >= m->cap) { m->cap = m->cap ? m->cap * 2 : 8; m->wkey = realloc(m->wkey, sizeof(int) * (size_t)m->cap); m->wci = realloc(m->wci, sizeof(int) * (size_t)m->cap); }
+  m->wkey[m->n] = wnode; m->wci[m->n] = newci; m->n++;
+  return newci;
+}
+
+/* The binding a singleton node targets: fills *is_const / *rn / *owner (the
+   enclosing scope, for a local) and returns the receiver node, or -1. */
+static int sg_binding(Compiler *c, int id, int recv, int *is_const, const char **rn, Scope **owner) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return -1;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && rk != NK_LocalVariableReadNode) return -1;
+  *is_const = (rk == NK_ConstantReadNode);
+  *rn = nt_str(nt, recv, "name");
+  if (!*rn) return -1;
+  if (*is_const && comp_class_index(c, *rn) >= 0) return -1;  /* class method */
+  /* the local's binding scope is the node's ENCLOSING scope (the receiver read
+     is walked under the method/call scope, so its own nscope is wrong). */
+  *owner = *is_const ? NULL : comp_scope_of(c, id);
+  return recv;
+}
+
+/* Copy module `mod_ci`'s instance methods onto subclass `newci` (obj.extend). */
+static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
+  const NodeTable *nt = c->nt;
+  int snap = c->nscopes;
+  for (int ms = 0; ms < snap; ms++) {
+    Scope *src = &c->scopes[ms];
+    if (src->class_id != mod_ci || src->is_cmethod || !src->name) continue;
+    if (comp_method_in_class(c, newci, src->name) >= 0) continue;
+    Scope *dst = comp_scope_new(c, src->name, src->def_node);
+    int dst_idx = (int)(dst - c->scopes);
+    src = &c->scopes[ms];   /* comp_scope_new may realloc */
+    /* Clone + re-walk the module body under the subclass so implicit-self
+       calls (and ivar reads) re-attribute to it, not the module -- exactly
+       what `include` does (a shared body would resolve `name` against the
+       module). */
+    if (src->body >= 0) {
+      int nb = nt_clone_subtree((NodeTable *)nt, src->body);
+      if (nb >= 0) {
+        comp_grow_node_arrays(c);
+        src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
+        dst->body = nb;
+        walk_scope(c, nb, dst_idx, newci);
+      }
+      else dst->body = src->body;
+    }
+    dst->class_id = newci;
+    dst->is_cmethod = 0;    /* an instance method of the singleton subclass */
+    dst->reachable = src->reachable;
+    dst->yields = src->yields;
+    dst->nrequired = src->nrequired;
+    dst->rest_idx = src->rest_idx;
+    dst->kwrest_idx = src->kwrest_idx;
+    src->is_transplanted_source = 1;   /* the module original is copied away */
+    if (src->blk_param) dst->blk_param = strdup(src->blk_param);
+    dst->nparams = src->nparams;
+    if (src->nparams > 0) {
+      dst->pnames = malloc(sizeof(char *) * (size_t)src->nparams);
+      dst->pdefault = malloc(sizeof(int) * (size_t)src->nparams);
+      for (int p = 0; p < src->nparams; p++) {
+        dst->pnames[p] = src->pnames[p] ? strdup(src->pnames[p]) : NULL;
+        dst->pdefault[p] = src->pdefault ? src->pdefault[p] : -1;
+      }
+    }
+  }
+}
+
 void register_singleton_defs(Compiler *c) {
   const NodeTable *nt = c->nt;
-  /* wnode -> synthesized class index, so a second def on the same binding
-     reuses the first's subclass. comp_class_index cannot be trusted mid-pass
-     (its index does not include classes added during this pass). */
-  int *wkey = NULL; int *wci = NULL; int wn = 0, wcap = 0;
-  /* Pass 1: find `def <recv>.m` and `<recv>.define_singleton_method(:m){}`
-     whose receiver is a constant or local that is NOT a class name (a class
-     receiver is a normal class method). Group by the binding so all singleton
-     defs on one object share one synthesized class. */
+  SgMap m = {0};
+  /* Find `def <recv>.m`, `<recv>.define_singleton_method(:m){}`, and
+     `<recv>.extend(Mod)` whose receiver is a constant or local that statically
+     holds one user object. Group by the binding so they share one synthesized
+     subclass; a non-traceable receiver keeps today's behavior. */
   for (int id = 0; id < nt->count; id++) {
     NodeKind idk = nt_kind(nt, id);
-    int recv, def_key = id;
+    int recv, is_extend = 0, is_dsm = 0;
     if (idk == NK_DefNode) {
       recv = nt_ref(nt, id, "receiver");
     }
     else if (idk == NK_CallNode) {
       const char *cn = nt_str(nt, id, "name");
-      if (!cn || !sp_streq(cn, "define_singleton_method")) continue;
-      recv = nt_ref(nt, id, "receiver");
+      if (cn && sp_streq(cn, "define_singleton_method")) {
+        recv = nt_ref(nt, id, "receiver"); is_dsm = 1;
+        /* only a real dsm with a block is a singleton def */
+        if (nt_ref(nt, id, "block") < 0) continue;
+      }
+      else if (cn && sp_streq(cn, "extend")) { recv = nt_ref(nt, id, "receiver"); is_extend = 1; }
+      else continue;
     }
     else continue;
-    if (recv < 0) continue;
-    NodeKind rk = nt_kind(nt, recv);
-    int is_const = (rk == NK_ConstantReadNode);
-    int is_local = (rk == NK_LocalVariableReadNode);
-    if (!is_const && !is_local) continue;
-    const char *rn = nt_str(nt, recv, "name");
-    if (!rn) continue;
-    if (is_const && comp_class_index(c, rn) >= 0) continue;  /* class method */
 
-    /* The local's binding scope is the DefNode's ENCLOSING scope (the receiver
-       read node is walked under the method scope, so its own nscope is wrong
-       for matching the write). */
-    Scope *owner = is_local ? comp_scope_of(c, id) : NULL;
+    int is_const = 0; const char *rn = NULL; Scope *owner = NULL;
+    if (sg_binding(c, id, recv, &is_const, &rn, &owner) < 0) continue;
     int parent_ci = -1;
     int wnode = sg_single_new_write(c, rn, is_const, owner, &parent_ci);
     if (wnode < 0) continue;   /* not statically traceable: leave as today */
+    /* a user-defined method of the singleton name is that method, not the
+       machinery (#2652). */
+    if (is_dsm && comp_method_in_chain(c, parent_ci, "define_singleton_method", NULL) >= 0) continue;
 
-    /* One synthesized subclass per binding, keyed on the write node. */
-    int newci = -1;
-    for (int i = 0; i < wn; i++) if (wkey[i] == wnode) { newci = wci[i]; break; }
-    if (newci < 0) {
-      char snm[96];
-      snprintf(snm, sizeof snm, "%s__sg_%d", c->classes[parent_ci].name ? c->classes[parent_ci].name : "Obj", wnode);
-      ClassInfo *sc = comp_class_new(c, snm, wnode);
-      newci = (int)(sc - c->classes);
-      sc->parent = parent_ci;
-      sc->is_singleton_of = parent_ci + 1;
-      /* retarget the `= Parent.new(...)` receiver to the synthesized class so
-         the binding's type becomes ty_object(newci) and .new builds it. */
-      int wval = nt_ref(nt, wnode, "value");
-      int wrecv = nt_ref(nt, wval, "receiver");
-      nt_node_set_str(nt, wrecv, "name", snm);
-      if (wn >= wcap) { wcap = wcap ? wcap * 2 : 8; wkey = realloc(wkey, sizeof(int) * (size_t)wcap); wci = realloc(wci, sizeof(int) * (size_t)wcap); }
-      wkey[wn] = wnode; wci[wn] = newci; wn++;
+    if (is_extend) {
+      /* A user-defined `extend`/`define_singleton_method` of the same name is
+         that method, not the singleton machinery (#2652) -- leave it alone. */
+      if (comp_method_in_chain(c, parent_ci, "extend", NULL) >= 0) continue;
+      /* Every argument must be a known module/class constant; otherwise this is
+         not a compile-time-resolvable extend (a runtime value, an Integer). */
+      int anode = nt_ref(nt, id, "arguments");
+      int an = 0; const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+      if (an == 0) continue;
+      int all_mods = 1;
+      for (int j = 0; j < an; j++) {
+        NodeKind ak = nt_kind(nt, args[j]);
+        if ((ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) ||
+            comp_class_index(c, nt_str(nt, args[j], "name")) < 0) { all_mods = 0; break; }
+      }
+      if (!all_mods) continue;
+      int newci = sg_get_or_make(c, &m, wnode, parent_ci);
+      for (int j = 0; j < an; j++)
+        sg_transplant_module(c, comp_class_index(c, nt_str(nt, args[j], "name")), newci);
+      continue;
     }
-    /* Reattach this def (the scope whose def_node == the def/dsm node) as an
-       instance method of the synthesized subclass. */
+    int newci = sg_get_or_make(c, &m, wnode, parent_ci);
+    /* def / dsm: reattach the scope whose def_node == id to the subclass. */
     for (int ds = 1; ds < c->nscopes; ds++) {
-      if (c->scopes[ds].def_node == def_key) {
+      if (c->scopes[ds].def_node == id) {
         c->scopes[ds].class_id = newci;
         c->scopes[ds].is_cmethod = 0;
         break;
       }
     }
   }
-  free(wkey); free(wci);
+  free(m.wkey); free(m.wci);
 }
 
 void register_structs(Compiler *c) {

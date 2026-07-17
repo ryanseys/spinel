@@ -6021,6 +6021,21 @@ static int class_includes_module_named(Compiler *c, int cid, const char *mod_nam
 
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* `obj.extend(Mod)` on a statically-traceable object (its type is a
+     synthesized singleton subclass) is done at compile time: the module's
+     methods were transplanted into the subclass. The runtime call is a
+     no-op; evaluate the receiver for effect. */
+  {
+    const char *cnm = nt_str(nt, id, "name");
+    int crecv = nt_ref(nt, id, "receiver");
+    if (cnm && sp_streq(cnm, "extend") && crecv >= 0) {
+      TyKind crt = comp_ntype(c, crecv);
+      if (ty_is_object(crt) && c->classes[ty_object_class(crt)].is_singleton_of) {
+        buf_puts(b, "((void)("); emit_expr(c, crecv, b); buf_puts(b, "))");
+        return;
+      }
+    }
+  }
   /* A documented limit is reported before anything else looks at the call:
      otherwise an earlier arm reports it as a generic gap (or, for a bare
      `binding`, as a NameError) and the specific message never runs. */

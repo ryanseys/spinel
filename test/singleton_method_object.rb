@@ -69,3 +69,33 @@ end
 B = Box.new
 B.define_singleton_method(:doubled) { v * 2 }
 p B.doubled
+
+# obj.extend(Mod): transplant module methods onto the singleton subclass
+module Loud
+  def shout
+    label.upcase
+  end
+end
+module Soft
+  def whisper
+    label.downcase
+  end
+end
+class Speaker
+  def initialize(s)
+    @s = s
+  end
+  def label
+    @s
+  end
+end
+SPK = Speaker.new("Hi")
+SPK.extend(Loud)
+SPK.extend(Soft)
+def SPK.both
+  "#{shout}/#{whisper}"
+end
+p SPK.shout
+p SPK.whisper
+p SPK.both
+p SPK.class
