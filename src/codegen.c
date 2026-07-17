@@ -2599,7 +2599,9 @@ int is_exc_name(const char *n) {
     "ZeroDivisionError", "NotImplementedError", "StopIteration",
     "FloatDomainError", "Math::DomainError", "FrozenError", "EncodingError",
     "LoadError", "RegexpError", "StringScanner_Error", "FiberError",
-    "UncaughtThrowError", NULL
+    "UncaughtThrowError", "SyntaxError", "SecurityError", "Interrupt",
+    "SignalException", "ThreadError", "ClosedQueueError",
+    "NoMatchingPatternError", "NoMatchingPatternKeyError", "SystemExit", NULL
   };
   for (int i = 0; EX[i]; i++) if (sp_streq(n, EX[i])) return 1;
   return 0;
@@ -4841,6 +4843,14 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "case -142:return SPL(\"Rational\");case -143:return SPL(\"Regexp\");");
     buf_puts(&b, "case -144:return SPL(\"Enumerator\");case -145:return SPL(\"Struct\");");
     buf_puts(&b, "case -146:return SPL(\"Data\");");
+    buf_puts(&b, "case -147:return SPL(\"SyntaxError\");case -148:return SPL(\"SecurityError\");");
+    buf_puts(&b, "case -149:return SPL(\"RegexpError\");case -150:return SPL(\"EncodingError\");");
+    buf_puts(&b, "case -151:return SPL(\"SignalException\");case -152:return SPL(\"Interrupt\");");
+    buf_puts(&b, "case -153:return SPL(\"ThreadError\");case -154:return SPL(\"FiberError\");");
+    buf_puts(&b, "case -155:return SPL(\"ClosedQueueError\");case -156:return SPL(\"UncaughtThrowError\");");
+    buf_puts(&b, "case -157:return SPL(\"NoMatchingPatternError\");case -158:return SPL(\"NoMatchingPatternKeyError\");");
+    buf_puts(&b, "case -159:return SPL(\"EOFError\");case -160:return SPL(\"Math::DomainError\");");
+    buf_puts(&b, "case -161:return SPL(\"SystemExit\");");
     buf_puts(&b, "default:return \"\";} }\n\n");
   }
   /* Threaded-runtime marker: the driver greps for this and links the
@@ -4932,8 +4942,10 @@ char *codegen_program(const NodeTable *nt) {
      IndexError, RangeError, ZeroDivisionError, IOError, LocalJumpError
      -> StandardError (RuntimeError previously said Exception; CRuby says
      StandardError) */
-  buf_puts(&b, "  case -124:case -125:case -126:case -127:case -129:"
+  buf_puts(&b, "  case -124:case -125:case -126:case -127:"
                "case -132:case -134:case -136:case -138:case -139: return ((sp_Class){-123});\n");
+  /* StopIteration -> IndexError (#2760) */
+  buf_puts(&b, "  case -129: return ((sp_Class){-132});\n");
   /* KeyError -> IndexError; FloatDomainError -> RangeError; FrozenError ->
      RuntimeError; NotImplementedError -> ScriptError */
   buf_puts(&b, "  case -133: return ((sp_Class){-132});\n");
@@ -4942,6 +4954,21 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(&b, "  case -140: return ((sp_Class){-141});\n");
   /* NoMethodError -> NameError */
   buf_puts(&b, "  case -128: return ((sp_Class){-127});\n");
+  /* the rarer exception subclasses (#2768):
+     RegexpError, EncodingError, ThreadError, FiberError,
+     NoMatchingPatternError, Math::DomainError -> StandardError */
+  buf_puts(&b, "  case -149:case -150:case -153:case -154:case -157:case -160: return ((sp_Class){-123});\n");
+  /* SyntaxError -> ScriptError; SecurityError, SignalException -> Exception */
+  buf_puts(&b, "  case -147: return ((sp_Class){-141});\n");
+  buf_puts(&b, "  case -148:case -151:case -161: return ((sp_Class){-122});\n");
+  /* Interrupt -> SignalException; ClosedQueueError -> StopIteration;
+     UncaughtThrowError -> ArgumentError; NoMatchingPatternKeyError ->
+     NoMatchingPatternError; EOFError -> IOError */
+  buf_puts(&b, "  case -152: return ((sp_Class){-151});\n");
+  buf_puts(&b, "  case -155: return ((sp_Class){-129});\n");
+  buf_puts(&b, "  case -156: return ((sp_Class){-126});\n");
+  buf_puts(&b, "  case -158: return ((sp_Class){-157});\n");
+  buf_puts(&b, "  case -159: return ((sp_Class){-138});\n");
   /* NilClass, TrueClass, FalseClass, Proc, Struct, Data -> Object */
   buf_puts(&b, "  case -110:case -111:case -112:case -118:case -145:case -146: return ((sp_Class){-116});\n");
   /* Module -> Object, Class -> Module */

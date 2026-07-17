@@ -697,6 +697,21 @@ int builtin_class_id(const char *name) {
   if (sp_streq(name, "Enumerator"))  return -144;
   if (sp_streq(name, "Struct"))      return -145;
   if (sp_streq(name, "Data"))        return -146;
+  if (sp_streq(name, "SyntaxError")) return -147;
+  if (sp_streq(name, "SecurityError")) return -148;
+  if (sp_streq(name, "RegexpError")) return -149;
+  if (sp_streq(name, "EncodingError")) return -150;
+  if (sp_streq(name, "SignalException")) return -151;
+  if (sp_streq(name, "Interrupt"))   return -152;
+  if (sp_streq(name, "ThreadError")) return -153;
+  if (sp_streq(name, "FiberError"))  return -154;
+  if (sp_streq(name, "ClosedQueueError")) return -155;
+  if (sp_streq(name, "UncaughtThrowError")) return -156;
+  if (sp_streq(name, "NoMatchingPatternError")) return -157;
+  if (sp_streq(name, "NoMatchingPatternKeyError")) return -158;
+  if (sp_streq(name, "EOFError"))    return -159;
+  if (sp_streq(name, "Math::DomainError")) return -160;
+  if (sp_streq(name, "SystemExit"))  return -161;
   return 0;
 }
 const char *c_type_name(TyKind t) {

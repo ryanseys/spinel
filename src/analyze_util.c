@@ -16,7 +16,11 @@ int is_builtin_class_name(const char *n) {
        e.class comparisons); raise/rescue position resolves by name. */
     "IndexError","KeyError","RangeError","FloatDomainError",
     "ZeroDivisionError","FrozenError","IOError","LocalJumpError",
-    "NotImplementedError","ScriptError",NULL
+    "NotImplementedError","ScriptError","SyntaxError","SecurityError",
+    "RegexpError","EncodingError","SignalException","Interrupt",
+    "ThreadError","FiberError","ClosedQueueError","UncaughtThrowError",
+    "NoMatchingPatternError","NoMatchingPatternKeyError","EOFError",
+    "SystemExit",NULL
   };
   for (int i = 0; CL[i]; i++) if (sp_streq(n, CL[i])) return 1;
   return 0;
@@ -41,7 +45,10 @@ int is_builtin_exception_name(const char *n) {
     "ZeroDivisionError", "NotImplementedError", "StopIteration",
     "FloatDomainError", "FrozenError", "EncodingError", "LoadError",
     "SystemExit", "Interrupt", "ScriptError", "SyntaxError",
-    "RegexpError", NULL
+    "RegexpError", "SecurityError", "SignalException", "ThreadError",
+    "FiberError", "ClosedQueueError", "UncaughtThrowError",
+    "NoMatchingPatternError", "NoMatchingPatternKeyError",
+    "LocalJumpError", "Math::DomainError", NULL
   };
   for (int i = 0; EXC[i]; i++) if (sp_streq(n, EXC[i])) return 1;
   return 0;

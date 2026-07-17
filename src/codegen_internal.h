@@ -450,6 +450,7 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
 int builtin_class_id(const char *name);
 int is_builtin_class_name(const char *n);
+int is_builtin_exception_name(const char *n);
 const char *c_type_name(TyKind t);
 int is_scalar_ret(TyKind t);
 const char *ffi_c_type(const char *spec);

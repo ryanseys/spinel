@@ -1636,6 +1636,9 @@ void emit_expr(Compiler *c, int id, Buf *b) {
             for (int bi = 0; builtins[bi]; bi++)
               if (sp_streq(cn, builtins[bi])) { res = "constant"; break; }
           }
+          /* exception classes are constants too (#2767) */
+          if (!res && (is_builtin_exception_name(cn) || is_builtin_class_name(cn)))
+            res = "constant";
         }
       }
       else if (sp_streq(vt, "ConstantPathNode")) {
