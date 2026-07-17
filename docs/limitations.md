@@ -90,6 +90,12 @@ Limited today, but additively fixable; listed roughly easiest-first.
   proc so a trailing `Hash` forwarded through `*args` is treated as keywords.
   Spinel targets modern Ruby keyword semantics directly, so the shim has nothing
   to toggle; there is no 2.x behavior to opt back into.
+  `Hash.ruby2_keywords_hash` / `Hash.ruby2_keywords_hash?` are the same shim
+  from the hash side (marking / reading the flag) and are rejected the same
+  way.
+- **`slice_before` / `slice_after` with a `Proc` pattern** — rejected at
+  compile time (a stored-proc `===` call per element); use the block form.
+  Range, Class, Regexp, and value patterns are supported.
 - **Frozen literals** — explicit `.freeze` then mutation raises `FrozenError`,
   matching CRuby. (String literals are *not* implicitly frozen — see below.)
 - **Comparable is keyed on `<=>` presence** — the Comparable operator methods

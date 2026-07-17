@@ -1,4 +1,4 @@
-# Hash.try_convert / ruby2_keywords_hash, Array member?/entries/find_all/
+# Hash.try_convert, Array member?/entries/find_all/
 # grep(variable pattern or block)/chain, String tr_s!/delete_prefix!/
 # delete_suffix!/byteindex(Regexp)/dedup.
 
@@ -6,8 +6,6 @@
 p(Hash.try_convert({ a: 1 }))
 p(Hash.try_convert("x"))
 p(Hash.try_convert(nil))
-p(Hash.ruby2_keywords_hash({ a: 1 }))
-p(Hash.ruby2_keywords_hash?({ a: 1 }))
 
 # Array#member? (include? alias), #entries (to_a alias)
 p([1, nil, 2].member?(nil))
