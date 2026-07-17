@@ -1432,3 +1432,273 @@ const char *sp_dir_home_user(const char *user) {
   return sp_str_dup_external(pw->pw_dir);
 }
 sp_StrArray *sp_dir_children(const char *path) { return sp_dir_entries_impl(path, 1); }
+
+/* ---- Signal trap machinery + Enumerator cursor/generator ops moved from
+   sp_runtime.h ----
+   Only tiny TU-defined helpers are linked from here (sp_proc_call, the boxed
+   proc constructor, the trap state, the proc argument/return slots): the heavy
+   poly/hash/render helpers (sp_enum_items_from, sp_poly_each_elem, ...) stay
+   `static` in the generated TU so -O1 still prunes them from programs that
+   never use them -- de-externing those measurably bloats every test compile. */
+#include <signal.h>
+#include "sp_enum.h"
+typedef struct sp_Proc sp_Proc;
+extern char **environ;
+extern sp_RbVal sp_box_proc(void *p);
+extern const char *sp_trap_state[];
+extern struct sp_Proc *sp_trap_proc[];
+extern SP_NORETURN void sp_raise_stop_iteration(sp_RbVal result);
+extern SP_TLS sp_RbVal _sp_proc_poly_ret;
+extern SP_TLS sp_RbVal _sp_proc_poly_args[];
+extern mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args);
+extern const char *sp_signal_signame(mrb_int no);
+extern SP_COLD int sp_signal_resolve(sp_RbVal sig);
+
+sp_Enumerator *sp_Enumerator_dup(sp_Enumerator *e);
+void sp_Enumerator_scan(void *p);
+sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth);
+sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e);
+sp_RbVal sp_enum_with_index_value(sp_Enumerator *e);
+sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped);
+sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items);
+sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, mrb_int off);
+sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size);
+sp_RbVal sp_enum_gen_pull(sp_Enumerator *e);
+sp_RbVal sp_Enumerator_next(sp_Enumerator *e);
+sp_RbVal sp_Enumerator_peek(sp_Enumerator *e);
+sp_PolyArray *sp_enum_values_wrap(sp_RbVal v);
+sp_PolyArray *sp_Enumerator_next_values(sp_Enumerator *e);
+sp_PolyArray *sp_Enumerator_peek_values(sp_Enumerator *e);
+sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e);
+sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v);
+sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, mrb_int n);
+sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e);
+void sp_sig_c_handler(int no);
+void sp_sig_exit_dispatch(void);
+sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler);
+mrb_int sp_process_kill1(sp_RbVal sig, mrb_int pid);
+sp_RbVal sp_Enumerator_size(sp_Enumerator *e);
+
+sp_Enumerator *sp_Enumerator_dup(sp_Enumerator *e) {
+  if (!e) return e;
+  sp_Enumerator *d = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
+  *d = *e;
+  return d;
+}
+void sp_Enumerator_scan(void *p) {
+  sp_Enumerator *e = (sp_Enumerator *)p;
+  if (e->items) sp_gc_mark(e->items);
+  if (e->fib) sp_gc_mark(e->fib);
+  if (e->gen_cap) sp_gc_mark(e->gen_cap);
+  if (e->peeked) sp_mark_rbval(e->peek_val);
+  sp_mark_rbval(e->size);
+  if (e->has_feed) sp_mark_rbval(e->feed);
+  sp_mark_rbval(e->gen_result);
+  sp_mark_rbval(e->source);
+}
+sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth) {
+  e->source = src;
+  e->meth = meth;
+  return e;
+}
+sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e) {
+  e->gen_label = TRUE;
+  return e;
+}
+sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) {
+  if (e->meth && (strcmp(e->meth, "each") == 0 || strcmp(e->meth, "each_with_index") == 0))
+    return e->source;
+  sp_raise_cls("NotImplementedError",
+               sp_sprintf("Enumerator#with_index return value for a stored %s enumerator",
+                          e->meth ? e->meth : "generator"));
+  return sp_box_nil();
+}
+sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped) {
+  if (e->meth && (strcmp(e->meth, "map") == 0 || strcmp(e->meth, "collect") == 0))
+    return sp_box_poly_array(mapped);
+  if (e->meth && (strcmp(e->meth, "each") == 0 || strcmp(e->meth, "each_with_index") == 0))
+    return e->source;
+  sp_raise_cls("NotImplementedError",
+               sp_sprintf("Enumerator#with_index return value for a stored %s enumerator",
+                          e->meth ? e->meth : "generator"));
+  return sp_box_nil();
+}
+sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
+  SP_GC_ROOT(items);
+  sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = "each";
+  return e;
+}
+sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, mrb_int off) {
+  sp_PolyArray *src = e ? e->items : NULL;
+  mrb_int n = src ? src->len : 0;
+  /* Root the source enumerator (a temp `arr.each` is otherwise unreachable): the
+     sp_PolyArray_new below can collect it and free src mid-loop -> use-after-free
+     of src->data[i] under GC stress. Rooting `e` keeps src alive transitively --
+     sp_Enumerator_scan marks e->items and the GC is non-moving. */
+  SP_GC_ROOT(e);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  for (mrb_int i = 0; i < n; i++) {
+    sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
+    sp_PolyArray_push(pair, src->data[i]);
+    sp_PolyArray_push(pair, sp_box_int(off + i));
+    sp_PolyArray_push(out, sp_box_poly_array(pair));
+  }
+  { sp_RbVal src_recv = e ? e->source : sp_box_nil();
+    sp_Enumerator *r = sp_Enumerator_new_from_items(out); r->source = src_recv; return r; }
+}
+sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size) {
+  sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
+  e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size; e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = "each";
+  return e;
+}
+sp_RbVal sp_enum_gen_pull(sp_Enumerator *e) {
+  if (!e->fib) {
+    e->fib = sp_Fiber_new(e->gen);
+    if (e->gen_cap) e->fib->user_data = e->gen_cap;
+  }
+  if (!sp_Fiber_alive(e->fib)) sp_raise_stop_iteration(e->gen_result);
+  sp_RbVal feed = e->has_feed ? e->feed : sp_box_nil();
+  e->has_feed = FALSE; e->feed = sp_box_nil();   /* consumed by this resume */
+  sp_RbVal v = sp_Fiber_resume(e->fib, feed);
+  if (!sp_Fiber_alive(e->fib)) { e->gen_result = v; sp_raise_stop_iteration(v); }
+  return v;
+}
+sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {
+  if (e->gen) {
+    if (e->peeked) { e->peeked = FALSE; return e->peek_val; }
+    return sp_enum_gen_pull(e);
+  }
+  if (!e->items || e->cursor >= e->items->len) sp_raise_stop_iteration(e->source);
+  return e->items->data[e->cursor++];
+}
+sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {
+  if (e->gen) {
+    if (!e->peeked) { e->peek_val = sp_enum_gen_pull(e); e->peeked = TRUE; }
+    return e->peek_val;
+  }
+  if (!e->items || e->cursor >= e->items->len) sp_raise_stop_iteration(e->source);
+  return e->items->data[e->cursor];
+}
+sp_PolyArray *sp_enum_values_wrap(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)v.v.p;
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  sp_PolyArray_push(a, v);
+  return a;
+}
+sp_PolyArray *sp_Enumerator_next_values(sp_Enumerator *e) { return sp_enum_values_wrap(sp_Enumerator_next(e)); }
+sp_PolyArray *sp_Enumerator_peek_values(sp_Enumerator *e) { return sp_enum_values_wrap(sp_Enumerator_peek(e)); }
+sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) {
+  if (!e) return NULL;
+  if (e->gen) { e->fib = NULL; e->peeked = FALSE; e->gen_result = sp_box_nil(); }
+  else e->cursor = 0;
+  e->feed = sp_box_nil(); e->has_feed = FALSE;
+  return e;
+}
+sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v) {
+  if (!e) return sp_box_nil();
+  if (e->has_feed) sp_raise_cls("TypeError", (&("\xff" "feed value already set")[1]));
+  e->feed = v; e->has_feed = TRUE;
+  return sp_box_nil();
+}
+sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, mrb_int n) {
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  if (n <= 0) return r;
+  if (e->gen) {
+    sp_Fiber *f = sp_Fiber_new(e->gen);
+    SP_GC_ROOT(f);
+    if (e->gen_cap) f->user_data = e->gen_cap;
+    for (mrb_int i = 0; i < n; i++) {
+      if (!sp_Fiber_alive(f)) break;
+      sp_RbVal v = sp_Fiber_resume(f, sp_box_nil());
+      if (!sp_Fiber_alive(f)) break;
+      sp_PolyArray_push(r, v);
+    }
+    return r;
+  }
+  mrb_int lim = e->items ? e->items->len : 0;
+  if (n < lim) lim = n;
+  for (mrb_int i = 0; i < lim; i++) sp_PolyArray_push(r, e->items->data[i]);
+  return r;
+}
+sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  if (!e) return r;
+  if (e->gen) {
+    sp_Fiber *f = sp_Fiber_new(e->gen);
+    SP_GC_ROOT(f);
+    if (e->gen_cap) f->user_data = e->gen_cap;
+    while (sp_Fiber_alive(f)) {
+      sp_RbVal v = sp_Fiber_resume(f, sp_box_nil());
+      if (!sp_Fiber_alive(f)) break;
+      sp_PolyArray_push(r, v);
+    }
+    return r;
+  }
+  if (e->items) for (mrb_int i = 0; i < e->items->len; i++) sp_PolyArray_push(r, e->items->data[i]);
+  return r;
+}
+void sp_sig_c_handler(int no) {
+  sp_Proc *p = (no >= 0 && no < SP_SIG_MAX) ? (sp_Proc *)sp_trap_proc[no] : NULL;
+  if (p) {
+    mrb_int slot = (mrb_int)no;
+    _sp_proc_poly_args[0] = sp_box_int((mrb_int)no);
+    sp_proc_call(p, 1, &slot);
+  }
+}
+void sp_sig_exit_dispatch(void) {
+  sp_Proc *p = (sp_Proc *)sp_trap_proc[0];
+  sp_trap_proc[0] = NULL;   /* run once */
+  if (p) { mrb_int slot = 0; _sp_proc_poly_args[0] = sp_box_int(0); sp_proc_call(p, 1, &slot); }
+}
+sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {
+  int no = sp_signal_resolve(sig);
+  if (no == SIGKILL || no == SIGSTOP)
+    sp_raise_cls("Errno::EINVAL",
+                 sp_sprintf("Invalid argument - SIG%s", sp_signal_signame(no)));
+  /* the previous handler: a stored proc or command string; an untouched
+     signal reads "DEFAULT", except EXIT whose default handler is nil (#2839) */
+  sp_RbVal prev = sp_trap_proc[no] ? sp_box_proc((sp_Proc *)sp_trap_proc[no])
+                : sp_trap_state[no] ? sp_box_str(sp_trap_state[no])
+                : no == 0 ? sp_box_nil()
+                : sp_box_str((&("\xff" "DEFAULT")[1]));
+  if (handler.tag == SP_TAG_OBJ && handler.cls_id == SP_BUILTIN_PROC && handler.v.p) {
+    sp_trap_proc[no] = (sp_Proc *)handler.v.p;
+    sp_trap_state[no] = NULL;
+    if (no == 0) { static int armed = 0; if (!armed) { armed = 1; atexit(sp_sig_exit_dispatch); } }
+    else signal(no, sp_sig_c_handler);
+  }
+  else {
+    const char *hs = (handler.tag == SP_TAG_STR && handler.v.s) ? handler.v.s : "DEFAULT";
+    int ignore = strcmp(hs, "IGNORE") == 0 || strcmp(hs, "SIG_IGN") == 0;
+    sp_trap_proc[no] = NULL;
+    /* SYSTEM_DEFAULT reads back as itself (#2839); it installs SIG_DFL too.
+       An EXIT string command clears the handler, whose read-back is nil. */
+    sp_trap_state[no] = no == 0 ? NULL
+                      : ignore ? (&("\xff" "IGNORE")[1])
+                      : strcmp(hs, "SYSTEM_DEFAULT") == 0 ? (&("\xff" "SYSTEM_DEFAULT")[1])
+                      : (&("\xff" "DEFAULT")[1]);
+    if (no != 0) signal(no, ignore ? SIG_IGN : SIG_DFL);
+  }
+  return prev;
+}
+mrb_int sp_process_kill1(sp_RbVal sig, mrb_int pid) {
+  int no = sp_signal_resolve(sig);
+  if (kill((pid_t)pid, no) != 0) {
+    if (errno == ESRCH) sp_raise_cls("Errno::ESRCH", sp_sprintf("No such process - %lld", (long long)pid));
+    if (errno == EPERM) sp_raise_cls("Errno::EPERM", sp_sprintf("Operation not permitted - %lld", (long long)pid));
+    sp_raise_cls("Errno::EINVAL", "Invalid argument");
+  }
+  return 1;
+}
+sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {
+  if (!e) return sp_box_nil();
+  if (e->items) return sp_box_int(e->items->len);
+  if (e->size.tag == SP_TAG_OBJ && e->size.cls_id == SP_BUILTIN_PROC) {
+    (void)sp_proc_call((sp_Proc *)e->size.v.p, 0, NULL);
+    return _sp_proc_poly_ret;
+  }
+  return e->size;
+}

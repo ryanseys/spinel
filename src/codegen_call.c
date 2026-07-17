@@ -7314,7 +7314,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       }
       if (needs_slot && !g_needs_proc_poly_argslot) {
         g_needs_proc_poly_argslot = 1;
-        buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
+        buf_puts(&g_proc_protos, "extern SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
       }
       Buf *pb = &g_procs;
       buf_printf(pb, "static mrb_int _mtp_%d(void *cap, mrb_int argc, mrb_int *args) {\n", tid);

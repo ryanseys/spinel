@@ -1889,7 +1889,7 @@ static sp_RbVal sp_box_float_array(void *p) { return sp_box_obj(p, SP_BUILTIN_FL
 static sp_RbVal sp_box_str_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_STR_ARRAY); }
 static sp_RbVal sp_box_sym_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_SYM_ARRAY); }
 static sp_RbVal sp_box_ptr_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_PTR_ARRAY); }
-static sp_RbVal sp_box_proc(void *p)        { return sp_box_obj(p, SP_BUILTIN_PROC); }
+sp_RbVal sp_box_proc(void *p)        { return sp_box_obj(p, SP_BUILTIN_PROC); }
 static sp_RbVal sp_box_method(void *p)      { return sp_box_obj(p, SP_BUILTIN_METHOD); }
 
 /* CRuby-compatible Array#index / #rindex / #find_index: returns
@@ -2568,10 +2568,9 @@ static SP_TLS sp_RbVal sp_pending_exc_recv, sp_pending_exc_key, sp_pending_exc_v
 static SP_TLS unsigned char sp_pending_exc_flags = 0;
 /* Signal.trap state (defined with the Signal machinery below; declared here
    so the GC mark hook can keep installed proc handlers live). */
-#define SP_SIG_MAX 65
 struct sp_Proc;
-static const char *sp_trap_state[SP_SIG_MAX];
-static struct sp_Proc *sp_trap_proc[SP_SIG_MAX];
+const char *sp_trap_state[SP_SIG_MAX];
+struct sp_Proc *sp_trap_proc[SP_SIG_MAX];
 SP_COLD void sp_exc_stage_recv(sp_RbVal v) { sp_pending_exc_recv = v; sp_pending_exc_flags |= 1; }
 SP_COLD void sp_exc_stage_key(sp_RbVal v)  { sp_pending_exc_key = v;  sp_pending_exc_flags |= 2; }
 SP_COLD void sp_exc_stage_val(sp_RbVal v)  { sp_pending_exc_val = v;  sp_pending_exc_flags |= 4; }
@@ -5883,7 +5882,7 @@ SP_NORETURN SP_COLD static void sp_raise_poly(sp_RbVal v) {
 /* Raise StopIteration carrying the iteration's return value as #result. Built as
    a carried object so a `rescue StopIteration => e` binding reads e.result; a
    generator supplies the value, a plain past-the-end #next raises with nil. */
-SP_NORETURN static void sp_raise_stop_iteration(sp_RbVal result) {
+SP_NORETURN void sp_raise_stop_iteration(sp_RbVal result) {
   /* Marker-prefixed message: sp_mark_string reads msg[-1] as the GC marker, so a
      bare rodata literal would be an out-of-bounds read at a section edge. */
   const char *msg = (&("\xff" "iteration reached an end")[1]);
@@ -6784,36 +6783,11 @@ static sp_BoundMethod *sp_bound_method_new(void *self, mrb_int fn, const char *n
    blockless #each) or a fiber-backed generator (Enumerator.new { |y| ... },
    where `y << v` is a Fiber.yield). The fiber is created lazily on first #next
    and re-created on #rewind. */
-typedef struct {
-  sp_PolyArray *items; mrb_int cursor;   /* materialized mode (items != NULL) */
-  void (*gen)(sp_Fiber *);                /* generator body (fiber mode, gen != NULL) */
-  void *gen_cap;                          /* captures, passed via fiber user_data */
-  sp_Fiber *fib;                          /* current generator fiber (lazy) */
-  mrb_bool peeked; sp_RbVal peek_val;     /* #peek lookahead cache */
-  sp_RbVal size;                          /* #size for a generator: a value, a
-                                             callable (Proc), or nil. Unused by
-                                             the materialized path (items->len). */
-  sp_RbVal feed; mrb_bool has_feed;       /* #feed: value returned by the next Fiber.yield */
-  sp_RbVal gen_result;                    /* generator body's return -> StopIteration#result */
-  sp_RbVal source;                        /* the iterated receiver -> materialized StopIteration#result */
-  const char *meth;                       /* creating method name, for #inspect ("each", ...) */
-  mrb_bool gen_label;                     /* #inspect as a Generator wrapper (chunk_while & co.):
-                                             the items are an eager snapshot, but CRuby shows
-                                             #<Enumerator: #<Enumerator::Generator:0x..>:each> */
-  mrb_bool frozen;                        /* Object#freeze observed (sp_gc_alloc zero-fills) */
-  mrb_bool is_chain;                      /* built by Enumerable#chain / Enumerator#+: the items
-                                             are the concatenated sources, and #class reports
-                                             Enumerator::Chain (sp_gc_alloc zero-fills) */
-} sp_Enumerator;
+#include "sp_enum.h"   /* sp_Enumerator; cursor/generator ops in lib/sp_cold.c */
 /* Enumerator#dup / #clone: a shallow struct copy is a distinct object (its
    cursor rewinds independently; == compares by pointer, so dup != original). */
-static void sp_Enumerator_scan(void *p);
-static sp_Enumerator *sp_Enumerator_dup(sp_Enumerator *e) {
-  if (!e) return e;
-  sp_Enumerator *d = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  *d = *e;
-  return d;
-}
+void sp_Enumerator_scan(void *p);
+sp_Enumerator *sp_Enumerator_dup(sp_Enumerator *e);
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ) {
     void *p = v.v.p;
@@ -6862,17 +6836,7 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("to_a", v));
   return NULL;
 }
-static void sp_Enumerator_scan(void *p) {
-  sp_Enumerator *e = (sp_Enumerator *)p;
-  if (e->items) sp_gc_mark(e->items);
-  if (e->fib) sp_gc_mark(e->fib);
-  if (e->gen_cap) sp_gc_mark(e->gen_cap);
-  if (e->peeked) sp_mark_rbval(e->peek_val);
-  sp_mark_rbval(e->size);
-  if (e->has_feed) sp_mark_rbval(e->feed);
-  sp_mark_rbval(e->gen_result);
-  sp_mark_rbval(e->source);
-}
+void sp_Enumerator_scan(void *p);
 /* Blockless Hash#each_value / #each_key: an external Enumerator over the
    hash's values / keys (each pair from the generic walker, second/first
    element taken). */
@@ -6887,47 +6851,24 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
 /* Stamp the iterated receiver and creating method onto a fresh Enumerator so
    #inspect shows the true origin (`#<Enumerator: "abc":each_char>`), not the
    materialized snapshot. Returns the enumerator for ctor-expression chaining. */
-static sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth) __attribute__((unused));
-static sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth) {
-  e->source = src;
-  e->meth = meth;
-  return e;
-}
+sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth);
+sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth);
 /* Mark an eagerly-materialized enumerator to #inspect as a Generator wrapper
    (what CRuby shows for chunk_while / slice_when / chunk without a terminal). */
-static sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e) __attribute__((unused));
-static sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e) {
-  e->gen_label = TRUE;
-  return e;
-}
+sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e);
+sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e);
 /* Enumerator#with_index block form returns whatever the enumerator's each
    returns with that block: for an `each`/`each_with_index` enumerator that is
    the source receiver itself. A stored collector enumerator (blockless map/
    select/...) would have to rebuild its collected result here -- reject that
    loudly rather than hand back the wrong value. */
-static sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) __attribute__((unused));
-static sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) {
-  if (e->meth && (strcmp(e->meth, "each") == 0 || strcmp(e->meth, "each_with_index") == 0))
-    return e->source;
-  sp_raise_cls("NotImplementedError",
-               sp_sprintf("Enumerator#with_index return value for a stored %s enumerator",
-                          e->meth ? e->meth : "generator"));
-  return sp_box_nil();
-}
+sp_RbVal sp_enum_with_index_value(sp_Enumerator *e);
+sp_RbVal sp_enum_with_index_value(sp_Enumerator *e);
 /* Enumerator#with_index block-form return value, given the block results collected
    as `mapped`: a map/collect enumerator returns the mapped array; each/
    each_with_index returns the source receiver; anything else is unsupported. */
-static sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped) __attribute__((unused));
-static sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped) {
-  if (e->meth && (strcmp(e->meth, "map") == 0 || strcmp(e->meth, "collect") == 0))
-    return sp_box_poly_array(mapped);
-  if (e->meth && (strcmp(e->meth, "each") == 0 || strcmp(e->meth, "each_with_index") == 0))
-    return e->source;
-  sp_raise_cls("NotImplementedError",
-               sp_sprintf("Enumerator#with_index return value for a stored %s enumerator",
-                          e->meth ? e->meth : "generator"));
-  return sp_box_nil();
-}
+sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped);
+sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped);
 static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside) {
   mrb_int n = sp_poly_length(h);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
@@ -6958,12 +6899,7 @@ static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
 /* Wrap an already-built poly array as an Enumerator, taking ownership of it
    (no re-snapshot). Lets callers that already hold a fresh array skip the
    sp_enum_items_from copy in sp_Enumerator_new_from. */
-static sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
-  SP_GC_ROOT(items);
-  sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = "each";
-  return e;
-}
+sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items);
 /* Enumerable#chain(*others) / Enumerator#+ : the sources are materialized and
    concatenated by the caller (the desugar builds `recv.to_a + other.to_a ...`),
    so the chain is a snapshot enumerator that reports as Enumerator::Chain. */
@@ -7099,24 +7035,7 @@ static sp_Enumerator *sp_Enumerator_new_cons(sp_RbVal arr, mrb_int n) {
    the [element, off + i] pairs of the source enumerator's items. The source is
    always a materialized enumerator here (each / each_char / each_slice / ...);
    a generator enumerator never reaches this path. */
-static sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, mrb_int off) {
-  sp_PolyArray *src = e ? e->items : NULL;
-  mrb_int n = src ? src->len : 0;
-  /* Root the source enumerator (a temp `arr.each` is otherwise unreachable): the
-     sp_PolyArray_new below can collect it and free src mid-loop -> use-after-free
-     of src->data[i] under GC stress. Rooting `e` keeps src alive transitively --
-     sp_Enumerator_scan marks e->items and the GC is non-moving. */
-  SP_GC_ROOT(e);
-  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-  for (mrb_int i = 0; i < n; i++) {
-    sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
-    sp_PolyArray_push(pair, src->data[i]);
-    sp_PolyArray_push(pair, sp_box_int(off + i));
-    sp_PolyArray_push(out, sp_box_poly_array(pair));
-  }
-  { sp_RbVal src_recv = e ? e->source : sp_box_nil();
-    sp_Enumerator *r = sp_Enumerator_new_from_items(out); r->source = src_recv; return r; }
-}
+sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, mrb_int off);
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the
    intermediate sp_StrArray that sp_str_chars + sp_enum_items_from would
@@ -7134,11 +7053,7 @@ static sp_PolyArray *sp_str_lines_poly(const char *s) {
   }
   return a;
 }
-static sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size) {
-  sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size; e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = "each";
-  return e;
-}
+sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size);
 
 /* Enumerator#inspect: the CRuby "#<Enumerator: <source>:<method>>" for a
    materialized enumerator with a known source; a generator has no printable
@@ -7155,18 +7070,7 @@ static const char *sp_enum_inspect(sp_Enumerator *e) {
 /* Pull the next value from the generator fiber, or raise StopIteration when it
    has run to completion. A resume that ends the body terminates the fiber and
    returns the body value, which is discarded in favor of StopIteration. */
-static sp_RbVal sp_enum_gen_pull(sp_Enumerator *e) {
-  if (!e->fib) {
-    e->fib = sp_Fiber_new(e->gen);
-    if (e->gen_cap) e->fib->user_data = e->gen_cap;
-  }
-  if (!sp_Fiber_alive(e->fib)) sp_raise_stop_iteration(e->gen_result);
-  sp_RbVal feed = e->has_feed ? e->feed : sp_box_nil();
-  e->has_feed = FALSE; e->feed = sp_box_nil();   /* consumed by this resume */
-  sp_RbVal v = sp_Fiber_resume(e->fib, feed);
-  if (!sp_Fiber_alive(e->fib)) { e->gen_result = v; sp_raise_stop_iteration(v); }
-  return v;
-}
+sp_RbVal sp_enum_gen_pull(sp_Enumerator *e);
 /* Enumerator.product(a, b[, c]): an Enumerator over the cartesian product,
    materialized as poly-array tuples in row-major order (#2484). */
 static sp_Enumerator *sp_Enumerator_product2(sp_RbVal a, sp_RbVal b) {
@@ -7195,95 +7099,28 @@ static sp_Enumerator *sp_Enumerator_product3(sp_RbVal a, sp_RbVal b, sp_RbVal cc
       }
   return sp_Enumerator_new_from(sp_box_poly_array(out));
 }
-static sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {
-  if (e->gen) {
-    if (e->peeked) { e->peeked = FALSE; return e->peek_val; }
-    return sp_enum_gen_pull(e);
-  }
-  if (!e->items || e->cursor >= e->items->len) sp_raise_stop_iteration(e->source);
-  return e->items->data[e->cursor++];
-}
-static sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {
-  if (e->gen) {
-    if (!e->peeked) { e->peek_val = sp_enum_gen_pull(e); e->peeked = TRUE; }
-    return e->peek_val;
-  }
-  if (!e->items || e->cursor >= e->items->len) sp_raise_stop_iteration(e->source);
-  return e->items->data[e->cursor];
-}
+sp_RbVal sp_Enumerator_next(sp_Enumerator *e);
+sp_RbVal sp_Enumerator_peek(sp_Enumerator *e);
 /* #next_values / #peek_values return the yielded value(s) as an array. A yield of
    several values (already a poly array element) is returned as-is; a single value
    is wrapped in a one-element array. (#2482) */
-static sp_PolyArray *sp_enum_values_wrap(sp_RbVal v) {
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)v.v.p;
-  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
-  sp_PolyArray_push(a, v);
-  return a;
-}
-static sp_PolyArray *sp_Enumerator_next_values(sp_Enumerator *e) { return sp_enum_values_wrap(sp_Enumerator_next(e)); }
-static sp_PolyArray *sp_Enumerator_peek_values(sp_Enumerator *e) { return sp_enum_values_wrap(sp_Enumerator_peek(e)); }
-static sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) {
-  if (!e) return NULL;
-  if (e->gen) { e->fib = NULL; e->peeked = FALSE; e->gen_result = sp_box_nil(); }
-  else e->cursor = 0;
-  e->feed = sp_box_nil(); e->has_feed = FALSE;
-  return e;
-}
+sp_PolyArray *sp_enum_values_wrap(sp_RbVal v);
+sp_PolyArray *sp_Enumerator_next_values(sp_Enumerator *e);
+sp_PolyArray *sp_Enumerator_peek_values(sp_Enumerator *e);
+sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e);
 /* Enumerator#size, defined after sp_proc_call so a callable size can be driven
    through the boxed-return channel. */
-static sp_RbVal sp_Enumerator_size(sp_Enumerator *e);
+sp_RbVal sp_Enumerator_size(sp_Enumerator *e);
 /* Enumerator#feed(v): sets the value the generator's next Fiber.yield returns
    (inside `y.yield`). Raises TypeError if a feed value is already pending, per
    CRuby; consumed by the next #next. Returns nil. */
-static sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v) {
-  if (!e) return sp_box_nil();
-  if (e->has_feed) sp_raise_cls("TypeError", (&("\xff" "feed value already set")[1]));
-  e->feed = v; e->has_feed = TRUE;
-  return sp_box_nil();
-}
+sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v);
 /* Enumerator#take(n) / #first(n): collect up to n values from a fresh run of the
    source (independent of the #next cursor), matching CRuby. */
-static sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, mrb_int n) {
-  sp_PolyArray *r = sp_PolyArray_new();
-  SP_GC_ROOT(r);
-  if (n <= 0) return r;
-  if (e->gen) {
-    sp_Fiber *f = sp_Fiber_new(e->gen);
-    SP_GC_ROOT(f);
-    if (e->gen_cap) f->user_data = e->gen_cap;
-    for (mrb_int i = 0; i < n; i++) {
-      if (!sp_Fiber_alive(f)) break;
-      sp_RbVal v = sp_Fiber_resume(f, sp_box_nil());
-      if (!sp_Fiber_alive(f)) break;
-      sp_PolyArray_push(r, v);
-    }
-    return r;
-  }
-  mrb_int lim = e->items ? e->items->len : 0;
-  if (n < lim) lim = n;
-  for (mrb_int i = 0; i < lim; i++) sp_PolyArray_push(r, e->items->data[i]);
-  return r;
-}
+sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, mrb_int n);
 /* Enumerator#to_a / #entries: drain the whole source into an array (a fresh run
    of the generator, independent of the #next cursor), matching CRuby. */
-static sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
-  sp_PolyArray *r = sp_PolyArray_new();
-  SP_GC_ROOT(r);
-  if (!e) return r;
-  if (e->gen) {
-    sp_Fiber *f = sp_Fiber_new(e->gen);
-    SP_GC_ROOT(f);
-    if (e->gen_cap) f->user_data = e->gen_cap;
-    while (sp_Fiber_alive(f)) {
-      sp_RbVal v = sp_Fiber_resume(f, sp_box_nil());
-      if (!sp_Fiber_alive(f)) break;
-      sp_PolyArray_push(r, v);
-    }
-    return r;
-  }
-  if (e->items) for (mrb_int i = 0; i < e->items->len; i++) sp_PolyArray_push(r, e->items->data[i]);
-  return r;
-}
+sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e);
 /* Universal proc return channel: every first-class proc publishes its result
    here, boxed, and the .call site unboxes it back to the call's inferred type
    (CRuby's uniform boxed-VALUE proc ABI). A file-static per TU, like the
@@ -7291,19 +7128,19 @@ static sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
    generated proc body live in the same TU and share this slot. Per-worker
    (SP_TLS): a concurrent Proc#call would otherwise race, and no safepoint poll
    lies between a body's store and the call site's read. */
-static SP_TLS sp_RbVal _sp_proc_poly_ret;
+SP_TLS sp_RbVal _sp_proc_poly_ret;
 /* Boxed-argument side-channel of the same ABI: a poly (or float) proc
    parameter reads its argument back from here, since it does not fit the
    mrb_int[] slot. Declared here so the compose/curry/to_proc trampolines
    below can publish through it like every generated call site does. */
-static SP_TLS sp_RbVal _sp_proc_poly_args[16];
+SP_TLS sp_RbVal _sp_proc_poly_args[16];
 /* The block passed to a first-class proc's .call { }: the caller publishes it
    here just before sp_proc_call, and the callee's &block-param prologue
    consumes (and clears) it. Same discipline as _sp_proc_poly_args (#2648). */
 static SP_TLS sp_Proc *_sp_proc_blk;
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
-static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }
+mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }
 /* <proc>.call(*arr): spread a runtime array into the mrb_int[16] / boxed
    side-channel ABI. Each element rides the side-channel (a poly parameter reads
    it there) and its unboxed projection fills the mrb_int slot (a concrete-typed
@@ -7346,14 +7183,14 @@ static sp_StrIntHash *sp_signal_list(void) {
     sp_StrIntHash_set(h, sp_sig_table[i].name, (mrb_int)sp_sig_table[i].no);
   return h;
 }
-static const char *sp_signal_signame(mrb_int no) {
+const char *sp_signal_signame(mrb_int no) {
   for (int i = 0; sp_sig_table[i].name; i++)
     if (sp_sig_table[i].no == (int)no) return sp_sig_table[i].name;
   return NULL;   /* nil for an unknown number, as in CRuby 3.4+ */
 }
 /* Resolve a signal designator (String/Symbol name with optional SIG prefix,
    or Integer) to its number; CRuby's errors for the invalid forms. */
-SP_COLD static int sp_signal_resolve(sp_RbVal sig) {
+SP_COLD int sp_signal_resolve(sp_RbVal sig) {
   const char *nm = NULL;
   if (sig.tag == SP_TAG_STR) nm = sig.v.s;
   else if (sig.tag == SP_TAG_SYM) nm = sp_sym_to_s((sp_sym)sig.v.i);
@@ -7369,61 +7206,12 @@ SP_COLD static int sp_signal_resolve(sp_RbVal sig) {
     if (strcmp(sp_sig_table[i].name, nm) == 0) return sp_sig_table[i].no;
   sp_raise_cls("ArgumentError", sp_sprintf("unsupported signal 'SIG%s'", nm));
 }
-static void sp_sig_c_handler(int no) {
-  sp_Proc *p = (no >= 0 && no < SP_SIG_MAX) ? (sp_Proc *)sp_trap_proc[no] : NULL;
-  if (p) {
-    mrb_int slot = (mrb_int)no;
-    _sp_proc_poly_args[0] = sp_box_int((mrb_int)no);
-    sp_proc_call(p, 1, &slot);
-  }
-}
-static void sp_sig_exit_dispatch(void) {
-  sp_Proc *p = (sp_Proc *)sp_trap_proc[0];
-  sp_trap_proc[0] = NULL;   /* run once */
-  if (p) { mrb_int slot = 0; _sp_proc_poly_args[0] = sp_box_int(0); sp_proc_call(p, 1, &slot); }
-}
-static sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {
-  int no = sp_signal_resolve(sig);
-  if (no == SIGKILL || no == SIGSTOP)
-    sp_raise_cls("Errno::EINVAL",
-                 sp_sprintf("Invalid argument - SIG%s", sp_signal_signame(no)));
-  /* the previous handler: a stored proc or command string; an untouched
-     signal reads "DEFAULT", except EXIT whose default handler is nil (#2839) */
-  sp_RbVal prev = sp_trap_proc[no] ? sp_box_proc((sp_Proc *)sp_trap_proc[no])
-                : sp_trap_state[no] ? sp_box_str(sp_trap_state[no])
-                : no == 0 ? sp_box_nil()
-                : sp_box_str((&("\xff" "DEFAULT")[1]));
-  if (handler.tag == SP_TAG_OBJ && handler.cls_id == SP_BUILTIN_PROC && handler.v.p) {
-    sp_trap_proc[no] = (sp_Proc *)handler.v.p;
-    sp_trap_state[no] = NULL;
-    if (no == 0) { static int armed = 0; if (!armed) { armed = 1; atexit(sp_sig_exit_dispatch); } }
-    else signal(no, sp_sig_c_handler);
-  }
-  else {
-    const char *hs = (handler.tag == SP_TAG_STR && handler.v.s) ? handler.v.s : "DEFAULT";
-    int ignore = strcmp(hs, "IGNORE") == 0 || strcmp(hs, "SIG_IGN") == 0;
-    sp_trap_proc[no] = NULL;
-    /* SYSTEM_DEFAULT reads back as itself (#2839); it installs SIG_DFL too.
-       An EXIT string command clears the handler, whose read-back is nil. */
-    sp_trap_state[no] = no == 0 ? NULL
-                      : ignore ? (&("\xff" "IGNORE")[1])
-                      : strcmp(hs, "SYSTEM_DEFAULT") == 0 ? (&("\xff" "SYSTEM_DEFAULT")[1])
-                      : (&("\xff" "DEFAULT")[1]);
-    if (no != 0) signal(no, ignore ? SIG_IGN : SIG_DFL);
-  }
-  return prev;
-}
+void sp_sig_c_handler(int no);
+void sp_sig_exit_dispatch(void);
+sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler);
 /* Process.kill: send `sig` to one pid; raises the errno family on failure and
    counts 1 on success (the emitter sums per-pid calls). Signal 0 probes. */
-static mrb_int sp_process_kill1(sp_RbVal sig, mrb_int pid) {
-  int no = sp_signal_resolve(sig);
-  if (kill((pid_t)pid, no) != 0) {
-    if (errno == ESRCH) sp_raise_cls("Errno::ESRCH", sp_sprintf("No such process - %lld", (long long)pid));
-    if (errno == EPERM) sp_raise_cls("Errno::EPERM", sp_sprintf("Operation not permitted - %lld", (long long)pid));
-    sp_raise_cls("Errno::EINVAL", "Invalid argument");
-  }
-  return 1;
-}
+mrb_int sp_process_kill1(sp_RbVal sig, mrb_int pid);
 /* SignalException.new(sig) / Interrupt.new(msg?): the message is the SIG-name
    and #signo rides the xkey slot (#2762, #2763). */
 static sp_Exception *sp_signal_exc_new(sp_RbVal sig) {
@@ -7497,15 +7285,7 @@ static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) {
    enumerator reports its snapshot length; a generator reports its stored size --
    calling it (no args) when it is a Proc and publishing through the boxed-return
    channel, else returning the stored value (nil when none was supplied). */
-static sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {
-  if (!e) return sp_box_nil();
-  if (e->items) return sp_box_int(e->items->len);
-  if (e->size.tag == SP_TAG_OBJ && e->size.cls_id == SP_BUILTIN_PROC) {
-    (void)sp_proc_call((sp_Proc *)e->size.v.p, 0, NULL);
-    return _sp_proc_poly_ret;
-  }
-  return e->size;
-}
+sp_RbVal sp_Enumerator_size(sp_Enumerator *e);
 /* Lambda strict-arity check: raise ArgumentError if argc is outside
    [req, req+opt] (no upper bound with a rest param). Procs are lenient. */
 static void sp_proc_lambda_arity_check(mrb_int argc, mrb_int req, mrb_int opt, mrb_bool has_rest, mrb_bool has_kw) {

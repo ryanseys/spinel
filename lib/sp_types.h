@@ -186,4 +186,8 @@ typedef struct{const char**keys;const char**vals;const char**order;mrb_int len;m
 typedef struct{mrb_int*keys;const char**vals;mrb_int*order;mrb_bool*used;mrb_int len;mrb_int cap;mrb_int mask;const char*default_v;}sp_IntStrHash;
 typedef struct{mrb_int*keys;mrb_int*vals;mrb_int*order;mrb_bool*used;mrb_int len;mrb_int cap;mrb_int mask;mrb_int default_v;}sp_IntIntHash;
 
+/* Signal table bound (0..64): shared by the trap state in the generated TU
+   and the trap machinery in lib/sp_cold.c. */
+#define SP_SIG_MAX 65
+
 #endif
