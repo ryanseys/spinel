@@ -189,6 +189,11 @@ int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
   emit_expr(c, node, &tmp);
   const char *txt = tmp.p ? tmp.p : "";
   int is_tok = strncmp(txt, "sp_raise_nomethod(", 18) == 0;
+  /* The missing-super arm emits a `(sp_raise_cls(...), 0)` comma expression
+     whose dummy tail is a bare int; in a pointer-typed slot that is ill-typed
+     C. The raise never returns, so evaluate it for the raise and yield the
+     slot's default instead. */
+  int is_cls_tok = strncmp(txt, "(sp_raise_cls(", 14) == 0;
   if (is_tok) {
     if (target == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", txt);
     else if (target == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", txt);
@@ -196,6 +201,10 @@ int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
     else if (target == TY_INT || target == TY_BOOL) buf_printf(b, "sp_poly_to_i(%s)", txt);
     else if (target == TY_POLY) buf_puts(b, txt);   /* already sp_RbVal */
     else emit_unbox_text(c, target, txt, b);         /* pointer/object/hash slot */
+  }
+  else if (is_cls_tok && target != TY_POLY && target != TY_UNKNOWN) {
+    buf_printf(b, "({ (void)%s; %s; })", txt, default_value(target));
+    is_tok = 1;
   }
   else buf_puts(b, txt);
   free(tmp.p);
