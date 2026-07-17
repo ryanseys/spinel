@@ -447,18 +447,23 @@ TyKind yield_value_type(Compiler *c, int mi) {
 else {
       TyKind crt = infer_type(c, crecv);
       if (ty_is_object(crt)) rmi = comp_method_in_chain(c, ty_object_class(crt), cn, NULL);
-      /* `Klass.new { block }`: the block feeds the class's initialize. */
+      /* `Klass.new { block }`: the block feeds the class's initialize. A
+         scoped receiver (`NS::Klass`) resolves by its leaf name, the key
+         classes are indexed under. */
       else if (cn && sp_streq(cn, "new") && nt_type(nt, crecv) &&
-               sp_streq(nt_type(nt, crecv), "ConstantReadNode")) {
+               (sp_streq(nt_type(nt, crecv), "ConstantReadNode") ||
+                sp_streq(nt_type(nt, crecv), "ConstantPathNode"))) {
         int nci = comp_class_index(c, nt_str(nt, crecv, "name"));
         if (nci >= 0) rmi = comp_method_in_chain(c, nci, "initialize", NULL);
       }
-      /* `Klass.m { block }` / `Mod.m { block }`: a class/module self-method
-         (singleton). Resolve the constant and look up its singleton method so
-         the block's value type flows back to m's return type -- instance
-         methods resolve via the ty_is_object arm above (#1446). */
+      /* `Klass.m { block }` / `Mod.m { block }` / `NS::Klass.m { block }`: a
+         class/module self-method (singleton). Resolve the constant and look
+         up its singleton method so the block's value type flows back to m's
+         return type -- instance methods resolve via the ty_is_object arm
+         above (#1446). */
       else if (nt_type(nt, crecv) &&
-               sp_streq(nt_type(nt, crecv), "ConstantReadNode")) {
+               (sp_streq(nt_type(nt, crecv), "ConstantReadNode") ||
+                sp_streq(nt_type(nt, crecv), "ConstantPathNode"))) {
         int nci = comp_class_index(c, nt_str(nt, crecv, "name"));
         if (nci >= 0) rmi = comp_cmethod_in_chain(c, nci, cn, NULL);
       }
@@ -977,7 +982,11 @@ int call_user_yield_mi(Compiler *c, int id) {
   else {
     TyKind rt = infer_type(c, recv);
     const char *rty = nt_type(nt, recv);
-    const char *cname = (rty && sp_streq(rty, "ConstantReadNode")) ? nt_str(nt, recv, "name") : NULL;
+    /* a scoped receiver (NS::Base.transaction { }) resolves by its leaf name,
+       the key classes are indexed under */
+    const char *cname = (rty && (sp_streq(rty, "ConstantReadNode") ||
+                                 sp_streq(rty, "ConstantPathNode")))
+                        ? nt_str(nt, recv, "name") : NULL;
     int ci = cname ? comp_class_index(c, cname) : -1;
     if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
     else if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);

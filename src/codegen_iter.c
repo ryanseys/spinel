@@ -60,7 +60,11 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   else {
     TyKind rt = comp_ntype(c, recv);
     const char *rty = nt_type(nt, recv);
-    const char *cname = (rty && sp_streq(rty, "ConstantReadNode")) ? nt_str(nt, recv, "name") : NULL;
+    /* a scoped receiver (NS::Base.transaction { }) resolves by its leaf name,
+       the key classes are indexed under */
+    const char *cname = (rty && (sp_streq(rty, "ConstantReadNode") ||
+                                 sp_streq(rty, "ConstantPathNode")))
+                        ? nt_str(nt, recv, "name") : NULL;
     int ci = cname ? comp_class_index(c, cname) : -1;
     if (ci >= 0) {
       /* Cls.method with a yield block: look up as a class method */
