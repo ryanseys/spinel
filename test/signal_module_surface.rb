@@ -37,3 +37,13 @@ Process.kill("USR1", Process.pid)
 sleep 0.05
 Signal.trap("EXIT") { puts "exit-handler-ran" }
 puts "main"
+Signal.trap("URG", "SYSTEM_DEFAULT")
+p(Signal.trap("URG", "DEFAULT"))
+p(Signal.trap("EXIT", "IGNORE").class)
+hits = 0
+Signal.trap("USR2") { |n| hits += 1 }
+Process.kill("USR2", Process.pid)
+sleep 0.05
+p hits
+log = []
+at_exit { log << "bye"; puts log.length }

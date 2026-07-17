@@ -2387,6 +2387,54 @@ static mrb_int sp_env_size(void) {
   for (char **e = environ; e && *e; e++) n++;
   return n;
 }
+/* ENV mutators (#2832). Each returns the fresh snapshot so the expression
+   value renders like ENV does. */
+static sp_StrStrHash *sp_env_to_h(void);
+static sp_StrStrHash *sp_env_clear(void) {
+  extern char **environ;
+  for (;;) {   /* environ shifts under unsetenv: restart until empty */
+    char **e = environ;
+    if (!e || !*e) break;
+    const char *eq = strchr(*e, '=');
+    size_t n = eq ? (size_t)(eq - *e) : strlen(*e);
+    char k[512];
+    if (n >= sizeof k) n = sizeof k - 1;
+    memcpy(k, *e, n); k[n] = 0;
+    unsetenv(k);
+  }
+  return sp_env_to_h();
+}
+/* ENV.shift: remove and return the first [key, value] pair, or nil */
+static sp_RbVal sp_env_shift(void) {
+  extern char **environ;
+  if (!environ || !*environ) return sp_box_nil();
+  const char *ent = *environ;
+  const char *eq = strchr(ent, '=');
+  size_t n = eq ? (size_t)(eq - ent) : strlen(ent);
+  char *k = sp_str_alloc(n);
+  memcpy(k, ent, n); k[n] = 0;
+  SP_GC_ROOT_STR(k);
+  const char *v = sp_sprintf("%s", eq ? eq + 1 : "");
+  SP_GC_ROOT_STR(v);
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  sp_PolyArray_push(a, sp_box_str(k));
+  sp_PolyArray_push(a, sp_box_str(v));
+  unsetenv(k);
+  return sp_box_poly_array(a);
+}
+/* ENV.update/merge!/replace with a string-pair hash */
+static sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace) {
+  if (replace) sp_env_clear();
+  if (h) {
+    SP_GC_ROOT(h);
+    for (mrb_int i = 0; i < h->len; i++) {
+      const char *v = sp_StrStrHash_get(h, h->order[i]);
+      if (v) setenv(h->order[i], v, 1); else unsetenv(h->order[i]);
+    }
+  }
+  return sp_env_to_h();
+}
 /* A snapshot of the environment as a StrStr hash: ENV's enumeration surface
    (keys/each/select/count{...}/inspect/...) is desugared onto it, so the
    whole Hash machinery serves it (#2742). Keys/values are copied onto the
@@ -2648,6 +2696,24 @@ SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
                 : (v.tag == SP_TAG_BOOL) ? (v.v.i ? "true" : "false")
                 : sp_sprintf("an instance of %s", sp_poly_class_name(v));
   return sp_sprintf("undefined method '%s' for %s", m, d);
+}
+/* Like sp_nomethod_msg, but also stages the failed call's argument list for
+   NoMethodError#args (#2837). */
+SP_COLD static const char *sp_nomethod_msg_args(const char *m, sp_RbVal v, mrb_int n, sp_RbVal *args) {
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(a, args[i]);
+  sp_exc_stage_key(sp_box_poly_array(a));
+  return sp_nomethod_msg(m, v);
+}
+/* The statically-typed gate arms keep their literal message; this stages the
+   argument list beside it. */
+SP_COLD static const char *sp_stage_args_msg(const char *msg, mrb_int n, sp_RbVal *args) {
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(a, args[i]);
+  sp_exc_stage_key(sp_box_poly_array(a));
+  return msg;
 }
 /* Float#round(half:) tie-breaking: :even is banker's rounding (rint under
    the default FE_TONEAREST), :down rounds ties toward zero. (:up is the
@@ -7679,8 +7745,12 @@ static sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {
   if (no == SIGKILL || no == SIGSTOP)
     sp_raise_cls("Errno::EINVAL",
                  sp_sprintf("Invalid argument - SIG%s", sp_signal_signame(no)));
+  /* the previous handler: a stored proc or command string; an untouched
+     signal reads "DEFAULT", except EXIT whose default handler is nil (#2839) */
   sp_RbVal prev = sp_trap_proc[no] ? sp_box_proc((sp_Proc *)sp_trap_proc[no])
-                : sp_box_str(sp_trap_state[no] ? sp_trap_state[no] : (&("\xff" "DEFAULT")[1]));
+                : sp_trap_state[no] ? sp_box_str(sp_trap_state[no])
+                : no == 0 ? sp_box_nil()
+                : sp_box_str((&("\xff" "DEFAULT")[1]));
   if (handler.tag == SP_TAG_OBJ && handler.cls_id == SP_BUILTIN_PROC && handler.v.p) {
     sp_trap_proc[no] = (sp_Proc *)handler.v.p;
     sp_trap_state[no] = NULL;
@@ -7691,7 +7761,12 @@ static sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {
     const char *hs = (handler.tag == SP_TAG_STR && handler.v.s) ? handler.v.s : "DEFAULT";
     int ignore = strcmp(hs, "IGNORE") == 0 || strcmp(hs, "SIG_IGN") == 0;
     sp_trap_proc[no] = NULL;
-    sp_trap_state[no] = ignore ? (&("\xff" "IGNORE")[1]) : (&("\xff" "DEFAULT")[1]);
+    /* SYSTEM_DEFAULT reads back as itself (#2839); it installs SIG_DFL too.
+       An EXIT string command clears the handler, whose read-back is nil. */
+    sp_trap_state[no] = no == 0 ? NULL
+                      : ignore ? (&("\xff" "IGNORE")[1])
+                      : strcmp(hs, "SYSTEM_DEFAULT") == 0 ? (&("\xff" "SYSTEM_DEFAULT")[1])
+                      : (&("\xff" "DEFAULT")[1]);
     if (no != 0) signal(no, ignore ? SIG_IGN : SIG_DFL);
   }
   return prev;
@@ -7732,6 +7807,27 @@ static const char *sp_exc_signm_acc(sp_Exception *e) {
   return sp_exc_message(e);
 }
 
+/* ENV.delete_if/keep_if/select!/reject!/filter!: the proc judges each
+   snapshot pair; `keep` selects which verdict survives (#2832). */
+static sp_StrStrHash *sp_env_filter_bang(sp_Proc *p, int keep) {
+  sp_StrStrHash *snap = sp_env_to_h();
+  SP_GC_ROOT(snap);
+  for (mrb_int i = 0; i < snap->len; i++) {
+    const char *k = snap->order[i];
+    const char *v = sp_StrStrHash_get(snap, k);
+    _sp_proc_poly_args[0] = sp_box_str(k);
+    _sp_proc_poly_args[1] = sp_box_str(v ? v : "");
+    mrb_int slots[16] = { (mrb_int)(uintptr_t)k, (mrb_int)(uintptr_t)(v ? v : "") };
+    /* a bool/poly-returning proc publishes through the boxed channel and
+       returns raw 0; pre-clear it so a typed proc's raw return still reads */
+    _sp_proc_poly_ret = sp_box_nil();
+    mrb_int r = sp_proc_call(p, 2, slots);
+    int truthy = (_sp_proc_poly_ret.tag != SP_TAG_NIL)
+                   ? sp_poly_truthy(_sp_proc_poly_ret) : (r != 0);
+    if ((truthy != 0) != (keep != 0)) unsetenv(k);
+  }
+  return sp_env_to_h();
+}
 static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) {
   if (!p || !p->fn) return;
   mrb_int n = sp_poly_length(arr);

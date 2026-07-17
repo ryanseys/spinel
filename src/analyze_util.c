@@ -625,6 +625,32 @@ int is_proc_literal(Compiler *c, int id) {
   if (recv >= 0 && name && sp_streq(name, "new") && is_proc_constant(nt, recv)) return 1;
   return 0;
 }
+/* A block lowered to a REAL sp_Proc by its consumer -- a deferred handler
+   (at_exit / Signal.trap, #2836) or an ENV block mutator (#2832). These need
+   the full proc capture machinery but keep their own call-level inference
+   (trap returns the previous handler, not the proc). */
+int is_handler_proc_block(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, id);
+  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  if (nt_ref(nt, id, "block") < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name) return 0;
+  if (sp_streq(name, "at_exit") || sp_streq(name, "trap")) {
+    if (recv < 0) return 1;
+    const char *hrty = nt_type(nt, recv);
+    return hrty && sp_streq(hrty, "ConstantReadNode") &&
+           nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Signal");
+  }
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "ENV") &&
+      (sp_streq(name, "delete_if") || sp_streq(name, "reject!") ||
+       sp_streq(name, "keep_if") || sp_streq(name, "select!") ||
+       sp_streq(name, "filter!")))
+    return 1;
+  return 0;
+}
 int is_proc_create(Compiler *c, int id) {
   const char *ty = nt_type(c->nt, id);
   if (ty && sp_streq(ty, "LambdaNode")) return 1;

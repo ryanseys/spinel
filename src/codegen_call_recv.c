@@ -1194,8 +1194,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n",
                    ti, ti, trecv, ti);
         /* Declare the block param in the loop body so the form is self-contained
-           (same rationale as find/detect above). */
-        if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
+           (same rationale as find/detect above); a |k, v| header destructures
+           the pair element (#1876 family). */
+        {
+          char es_fi[64]; snprintf(es_fi, sizeof es_fi, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
+          int splat_fi = emit_iter_autosplat(c, fblock, rt, es_fi, g_indent + 1);
+          if (!splat_fi && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
+        }
         for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
         int sv = g_indent; g_indent++;
         Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = sv;

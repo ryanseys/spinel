@@ -31,4 +31,7 @@ SignalException
 Errno::ESRCH
 handler true
 main
-exit-handler-ran
+"SYSTEM_DEFAULT"
+Proc
+1
+1

@@ -2247,12 +2247,7 @@ else {
     Scope *dbs = dp0 ? comp_scope_of(c, dblk) : NULL;
     LocalVar *dlv = (dbs && dp0) ? scope_local(dbs, dp0) : NULL;
     if (dlv) dlv->type = TY_DIR;
-    {
-      int dbdy = nt_ref(nt, dblk, "body");
-      int dbn2 = 0; const int *dbb2 = dbdy >= 0 ? nt_arr(nt, dbdy, "body", &dbn2) : NULL;
-      if (dbn2 > 0 && dbb2) return infer_type(c, dbb2[dbn2 - 1]);
-    }
-    return TY_POLY;
+    return TY_POLY;   /* block form: the block's boxed value (File.open's rule) */
   }
   if (recv >= 0 && rt == TY_DIR) {
     if (sp_streq(name, "class")) return TY_CLASS;
@@ -2938,6 +2933,14 @@ else {
   if (recv >= 0 && nt_type(nt, recv) &&
       (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
     const char *rname = nt_str(nt, recv, "name");
+    if (rname && sp_streq(rname, "ENV")) {
+      if (sp_streq(name, "frozen?")) return TY_BOOL;
+      if (sp_streq(name, "shift")) return TY_POLY;
+      if (sp_streq(name, "clear") || sp_streq(name, "update") || sp_streq(name, "merge!") ||
+          sp_streq(name, "replace") || sp_streq(name, "delete_if") || sp_streq(name, "reject!") ||
+          sp_streq(name, "keep_if") || sp_streq(name, "select!") || sp_streq(name, "filter!"))
+        return TY_STR_STR_HASH;   /* filter-block params seed in mark_proc_captures */
+    }
     if (rname && sp_streq(rname, "Signal")) {
       if (sp_streq(name, "trap") && argc >= 1) return TY_POLY;
       if (sp_streq(name, "list") && argc == 0) return TY_STR_INT_HASH;

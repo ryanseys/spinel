@@ -6678,6 +6678,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
           return;
         }
       }
+      /* arity: the key predicates take exactly 1 (#2831) */
+      if (enm && eac != 1 &&
+          (sp_streq(enm, "key?") || sp_streq(enm, "has_key?") ||
+           sp_streq(enm, "include?") || sp_streq(enm, "member?"))) {
+        buf_puts(b, "(");
+        for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
+        buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
+                      " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1)\")[1])), %s)",
+                   eac, default_value(comp_ntype(c, id)));
+        buf_puts(b, ")");
+        return;
+      }
       /* arity: [] takes 1; fetch takes 1..2 (#2773) */
       if (enm && sp_streq(enm, "[]") && eac != 1) {
         buf_puts(b, "(");
@@ -6695,6 +6707,43 @@ void emit_call(Compiler *c, int id, Buf *b) {
                       " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1..2)\")[1])), %s)",
                    eac, default_value(comp_ntype(c, id)));
         buf_puts(b, ")");
+        return;
+      }
+      /* the remaining query/mutation surface (#2832) */
+      if (enm && sp_streq(enm, "frozen?") && eac == 0) {
+        buf_puts(b, "((mrb_bool)0)");
+        return;
+      }
+      if (enm && sp_streq(enm, "clear") && eac == 0) {
+        buf_puts(b, "sp_env_clear()");
+        return;
+      }
+      if (enm && sp_streq(enm, "shift") && eac == 0) {
+        buf_puts(b, "sp_env_shift()");
+        return;
+      }
+      if (enm && (sp_streq(enm, "update") || sp_streq(enm, "merge!") ||
+                  sp_streq(enm, "replace")) && eac == 1 &&
+          nt_ref(nt, id, "block") < 0) {
+        TyKind ht2 = comp_ntype(c, eav[0]);
+        const char *hty2 = nt_type(nt, eav[0]);
+        if (ht2 == TY_STR_STR_HASH ||
+            (hty2 && (sp_streq(hty2, "HashNode") || sp_streq(hty2, "KeywordHashNode")))) {
+          buf_printf(b, "sp_env_update_h(");
+          emit_expr(c, eav[0], b);
+          buf_printf(b, ", %d)", sp_streq(enm, "replace") ? 1 : 0);
+          return;
+        }
+      }
+      if (enm && eac == 0 && nt_ref(nt, id, "block") >= 0 &&
+          (sp_streq(enm, "delete_if") || sp_streq(enm, "reject!") ||
+           sp_streq(enm, "keep_if") || sp_streq(enm, "select!") ||
+           sp_streq(enm, "filter!"))) {
+        int keep2 = sp_streq(enm, "keep_if") || sp_streq(enm, "select!") ||
+                    sp_streq(enm, "filter!");
+        buf_puts(b, "sp_env_filter_bang(");
+        emit_proc_literal(c, id, b);
+        buf_printf(b, ", %d)", keep2);
         return;
       }
       if (enm && sp_streq(enm, "to_s") && eac == 0) {
@@ -15928,22 +15977,68 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
              token so the recognized-token coercion sites can still see it. */
           int ret_scalar = is_scalar_ret(ret) && ret != TY_UNKNOWN &&
                            ret != TY_POLY && ret != TY_VOID && ret != TY_NIL;
+          /* stage the call's positional args for NoMethodError#args (#2837);
+             a splat/block/kwarg shape keeps the plain message */
+          int gac = 0; const int *gav = call_args(nt, id, &gac);
+          int gstage = 1;
+          for (int gk = 0; gk < gac; gk++) {
+            const char *gty = nt_type(nt, gav[gk]);
+            if (gty && (sp_streq(gty, "SplatNode") || sp_streq(gty, "BlockArgumentNode") ||
+                        sp_streq(gty, "KeywordHashNode"))) gstage = 0;
+          }
+          #define EMIT_GATE_ARGS() do { \
+            buf_printf(b, ", %d, (sp_RbVal[]){", gac); \
+            for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed(c, gav[gk], b); } \
+            if (gac == 0) buf_puts(b, "sp_box_nil()"); \
+            buf_puts(b, "}"); \
+          } while (0)
           if (sp_streq(dflt, "sp_box_nil()") && !ret_scalar) {
-            buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", ", nm ? nm : "?");
-            emit_boxed(c, recv, b); buf_puts(b, "))");
+            buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg%s(\"%s\", ",
+                       gstage ? "_args" : "", nm ? nm : "?");
+            emit_boxed(c, recv, b);
+            if (gstage) EMIT_GATE_ARGS();
+            buf_puts(b, "))");
           }
           else {
-            buf_printf(b, "(sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"%s\", ", nm ? nm : "?");
+            buf_printf(b, "(sp_raise_cls(\"NoMethodError\", sp_nomethod_msg%s(\"%s\", ",
+                       gstage ? "_args" : "", nm ? nm : "?");
             emit_boxed(c, recv, b);
+            if (gstage) EMIT_GATE_ARGS();
             buf_printf(b, ")), %s)", ret_scalar ? default_value(ret) : dflt);
           }
           return;
         }
-        if (sp_streq(dflt, "sp_box_nil()"))
-          buf_printf(b, "sp_raise_nomethod(\"undefined method '%s' for %s\")", nm ? nm : "?", rdesc);
-        else
-          buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for %s\"), %s)",
-                     nm ? nm : "?", rdesc, dflt);
+        {
+          int gac = 0; const int *gav = call_args(nt, id, &gac);
+          int gstage = 1;
+          for (int gk = 0; gk < gac; gk++) {
+            const char *gty = nt_type(nt, gav[gk]);
+            if (gty && (sp_streq(gty, "SplatNode") || sp_streq(gty, "BlockArgumentNode") ||
+                        sp_streq(gty, "KeywordHashNode"))) gstage = 0;
+          }
+          #define EMIT_GATE_MSG() do { \
+            if (gstage) { \
+              buf_printf(b, "sp_stage_args_msg(\"undefined method '%s' for %s\", %d, (sp_RbVal[]){", \
+                         nm ? nm : "?", rdesc, gac); \
+              for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed(c, gav[gk], b); } \
+              if (gac == 0) buf_puts(b, "sp_box_nil()"); \
+              buf_puts(b, "})"); \
+            } \
+            else buf_printf(b, "\"undefined method '%s' for %s\"", nm ? nm : "?", rdesc); \
+          } while (0)
+          if (sp_streq(dflt, "sp_box_nil()")) {
+            buf_puts(b, "sp_raise_nomethod(");
+            EMIT_GATE_MSG();
+            buf_puts(b, ")");
+          }
+          else {
+            buf_puts(b, "(sp_raise_cls(\"NoMethodError\", ");
+            EMIT_GATE_MSG();
+            buf_printf(b, "), %s)", dflt);
+          }
+          #undef EMIT_GATE_MSG
+          #undef EMIT_GATE_ARGS
+        }
         return;
       }
       buf_puts(b, dflt);

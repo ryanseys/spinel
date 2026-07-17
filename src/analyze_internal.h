@@ -116,6 +116,7 @@ int is_builtin_class_name(const char *n);
 int is_builtin_module_name(const char *n);
 int is_builtin_exception_name(const char *n);
 int builtin_method_known(const char *cls, const char *m);
+int is_handler_proc_block(Compiler *c, int id);
 int builtin_object_method_known(const char *m);
 int class_inherits_builtin_exception(Compiler *c, int ci);
 int an_re_has_captures(const char *src);

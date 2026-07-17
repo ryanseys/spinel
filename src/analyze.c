@@ -479,7 +479,8 @@ int a_is_fiber_or_gen_create(Compiler *c, int id) {
 }
 
 int a_proc_create_or_lifted(Compiler *c, int id) {
-  return is_proc_create(c, id) || a_block_is_lifted(c, id) || a_is_fiber_or_gen_create(c, id);
+  return is_proc_create(c, id) || a_block_is_lifted(c, id) ||
+         a_is_fiber_or_gen_create(c, id) || is_handler_proc_block(c, id);
 }
 
 /* Does the subtree rooted at `root` contain node `id`? Bounded recursion over
@@ -536,6 +537,25 @@ void mark_proc_captures(Compiler *c) {
         Scope *pbs3 = comp_scope_of(c, id);
         LocalVar *krv2 = (krn2 && pbs3) ? scope_local_intern(pbs3, krn2) : NULL;
         if (krv2 && krv2->type == TY_UNKNOWN) { krv2->type = TY_POLY; krv2->rbs_seeded = 1; }
+      }
+    }
+    /* ENV's block mutators (delete_if/keep_if/...) pass (key, value) string
+       pairs; seed the params so the proc binds them as strings (#2832) */
+    {
+      const char *cnm2 = nt_str(nt, id, "name");
+      int crecv2 = nt_ref(nt, id, "receiver");
+      if (cnm2 && crecv2 >= 0 && nt_kind(nt, crecv2) == NK_ConstantReadNode &&
+          nt_str(nt, crecv2, "name") && sp_streq(nt_str(nt, crecv2, "name"), "ENV")) {
+        int ern = 0; const int *ereqs = pn >= 0 ? nt_arr(nt, pn, "requireds", &ern) : NULL;
+        Scope *epbs = comp_scope_of(c, id);
+        for (int ek = 0; ek < ern && ek < 2 && epbs; ek++) {
+          const char *ernm = nt_str(nt, ereqs[ek], "name");
+          LocalVar *erlv = ernm ? scope_local_intern(epbs, ernm) : NULL;
+          if (erlv && (erlv->type == TY_UNKNOWN || erlv->type == TY_INT)) {
+            erlv->type = TY_STRING;
+            erlv->rbs_seeded = 1;
+          }
+        }
       }
     }
     /* a named &block param binds an sp_Proc* from the block side-channel:
@@ -2898,7 +2918,11 @@ static int desugar_builtin_method_obj(Compiler *c) {
                        : ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash"
                        : rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time"
                        : rt == TY_BOOL ? "Object" : NULL;
-      if (bcls && !builtin_method_known(bcls, sym) && !builtin_object_method_known(sym))
+      /* TrueClass/FalseClass define the logical operators (#2835) */
+      int bool_op = rt == TY_BOOL &&
+                    (sp_streq(sym, "&") || sp_streq(sym, "|") || sp_streq(sym, "^"));
+      if (bcls && !bool_op &&
+          !builtin_method_known(bcls, sym) && !builtin_object_method_known(sym))
         continue;
     }
     char wname[48];

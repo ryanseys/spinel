@@ -3898,7 +3898,13 @@ static int env_enum_method(const char *n) {
     "sort", "sort_by", "map", "collect", "flat_map", "filter_map", "group_by",
     "partition", "sum", "reduce", "inject", "invert", "key", "rassoc",
     "assoc", "slice", "except", "values_at", "count", "inspect", "hash",
-    "empty?", NULL };
+    "empty?",
+    /* the wider Enumerable/query surface (#2832) */
+    "to_hash", "entries", "first", "min", "max", "minmax", "tally", "uniq",
+    "zip", "take", "take_while", "drop", "drop_while", "each_slice",
+    "each_cons", "each_with_index", "each_with_object", "find_index", "grep",
+    "chunk", "chunk_while", "slice_when", "collect_concat",
+    "reverse_each", "value?", "has_value?", NULL };
   for (int i = 0; M[i]; i++) if (sp_streq(n, M[i])) return 1;
   return 0;
 }
@@ -3939,25 +3945,43 @@ int desugar_dir_surface(Compiler *c) {
       rn = "File";
       changed = 1;
     }
-    /* File.foreach(path){|l|} -> File.readlines(path).each{|l|}; the
-       blockless form enumerates the lines array (#2777) */
+    /* File.foreach(path){|l|} -> (File.readlines(path).each{|l|}; nil): the
+       block form returns nil, the blockless form an Enumerator (#2777, #2833) */
     if (sp_streq(rn, "File") && sp_streq(nm, "foreach")) {
       int fblk = nt_ref(nt, id, "block");
+      int ic = nt_new_node(nt, "CallNode");
+      if (ic < 0) continue;
+      nt_node_set_str(nt, ic, "name", "readlines");
+      nt_node_set_ref(nt, ic, "receiver", recv);
+      nt_node_set_ref(nt, ic, "arguments", nt_ref(nt, id, "arguments"));
+      nt_node_set_ref(nt, ic, "block", -1);
       if (fblk >= 0 && nt_kind(nt, fblk) == NK_BlockNode) {
-        int ic = nt_new_node(nt, "CallNode");
-        if (ic < 0) continue;
-        nt_node_set_str(nt, ic, "name", "readlines");
-        nt_node_set_ref(nt, ic, "receiver", recv);
-        nt_node_set_ref(nt, ic, "arguments", nt_ref(nt, id, "arguments"));
-        nt_node_set_ref(nt, ic, "block", -1);
+        int ec = nt_new_node(nt, "CallNode");
+        int nil2 = nt_new_node(nt, "NilNode");
+        int fstmts = nt_new_node(nt, "StatementsNode");
+        int fparen = nt_new_node(nt, "ParenthesesNode");
+        if (ec < 0 || nil2 < 0 || fstmts < 0 || fparen < 0) continue;
+        nt_node_set_str(nt, ec, "name", "each");
+        nt_node_set_ref(nt, ec, "receiver", ic);
+        nt_node_set_ref(nt, ec, "arguments", -1);
+        nt_node_set_ref(nt, ec, "block", fblk);
+        { int items2[2] = { ec, nil2 };
+          nt_node_set_arr(nt, fstmts, "body", items2, 2); }
+        nt_node_set_ref(nt, fparen, "body", fstmts);
+        nt_node_set_str(nt, id, "name", "itself");
+        nt_node_set_ref(nt, id, "receiver", fparen);
+      }
+      else {
+        /* no block: enumerate the lines array */
         nt_node_set_str(nt, id, "name", "each");
         nt_node_set_ref(nt, id, "receiver", ic);
-        nt_node_set_ref(nt, id, "arguments", -1);
-        comp_grow_node_arrays(c);
-        c->nscope[ic] = c->nscope[id];
-        changed = 1;
       }
-      else { nt_node_set_str(nt, id, "name", "readlines"); changed = 1; }
+      nt_node_set_ref(nt, id, "arguments", -1);
+      nt_node_set_ref(nt, id, "block", fblk >= 0 && nt_kind(nt, fblk) == NK_BlockNode ? -1 : -1);
+      comp_grow_node_arrays(c);
+      { int encl3 = c->nscope[id];
+        for (int j3 = ic; j3 < nt->count; j3++) c->nscope[j3] = encl3; }
+      changed = 1;
       continue;
     }
     if (!sp_streq(rn, "Dir")) continue;
@@ -4137,7 +4161,35 @@ int desugar_env_enum(Compiler *c) {
     nt_node_set_ref(nt, snap, "block", -1);
     comp_grow_node_arrays(c);
     c->nscope[snap] = c->nscope[id];
-    nt_node_set_ref(nt, id, "receiver", snap);
+    /* the plain-Enumerable names ride the pair ARRAY (the typed-hash surface
+       does not carry them); hash-native names stay on the snapshot (#2832) */
+    {
+      static const char *const VIA_A[] = {
+        "first", "min", "max", "minmax", "tally", "uniq", "zip", "take",
+        "take_while", "drop", "drop_while", "each_slice", "each_cons",
+        "each_with_index", "each_with_object", "find_index", "grep", "chunk",
+        "chunk_while", "slice_when", "collect_concat", "reverse_each",
+        NULL };
+      int via_a = 0;
+      for (int q = 0; VIA_A[q]; q++) if (sp_streq(nm, VIA_A[q])) { via_a = 1; break; }
+      if (via_a) {
+        int toa = nt_new_node(nt, "CallNode");
+        if (toa < 0) continue;
+        nt_node_set_str(nt, toa, "name", "to_a");
+        nt_node_set_ref(nt, toa, "receiver", snap);
+        nt_node_set_ref(nt, toa, "arguments", -1);
+        nt_node_set_ref(nt, toa, "block", -1);
+        comp_grow_node_arrays(c);
+        c->nscope[toa] = c->nscope[id];
+        nt_node_set_ref(nt, id, "receiver", toa);
+      }
+      else nt_node_set_ref(nt, id, "receiver", snap);
+    }
+    /* aliases the hash surface spells differently */
+    if (sp_streq(nm, "to_hash")) nt_node_set_str(nt, id, "name", "to_h");
+    else if (sp_streq(nm, "entries")) nt_node_set_str(nt, id, "name", "to_a");
+    else if (sp_streq(nm, "value?")) nt_node_set_str(nt, id, "name", "has_value?");
+    else if (sp_streq(nm, "collect_concat")) nt_node_set_str(nt, id, "name", "flat_map");
     changed = 1;
   }
   return changed;
