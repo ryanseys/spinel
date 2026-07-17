@@ -1358,9 +1358,7 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && name && argc == 1 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash")) {
-    if (sp_streq(name, "ruby2_keywords_hash?")) return TY_BOOL;
-    if (sp_streq(name, "try_convert") || sp_streq(name, "ruby2_keywords_hash"))
-      return TY_POLY;
+    if (sp_streq(name, "try_convert")) return TY_POLY;
   }
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
@@ -2934,11 +2932,13 @@ else {
       (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
     const char *rname = nt_str(nt, recv, "name");
     if (rname && sp_streq(rname, "ENV")) {
+      if (sp_streq(name, "class")) return TY_CLASS;
       if (sp_streq(name, "frozen?")) return TY_BOOL;
       if (sp_streq(name, "shift")) return TY_POLY;
+      if (sp_streq(name, "reject!") || sp_streq(name, "select!") || sp_streq(name, "filter!"))
+        return TY_POLY;   /* nil when nothing changed (#2844) */
       if (sp_streq(name, "clear") || sp_streq(name, "update") || sp_streq(name, "merge!") ||
-          sp_streq(name, "replace") || sp_streq(name, "delete_if") || sp_streq(name, "reject!") ||
-          sp_streq(name, "keep_if") || sp_streq(name, "select!") || sp_streq(name, "filter!"))
+          sp_streq(name, "replace") || sp_streq(name, "delete_if") || sp_streq(name, "keep_if"))
         return TY_STR_STR_HASH;   /* filter-block params seed in mark_proc_captures */
     }
     if (rname && sp_streq(rname, "Signal")) {

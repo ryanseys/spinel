@@ -1026,6 +1026,8 @@ static void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp,
     const char *pn = block_param_name(c, block, pj); if (!pn) continue;
     const char *pnr = rename_local(pn);
     LocalVar *lvp = asc ? scope_local(asc, pn) : NULL;
+    /* an unused param has no C declaration; the element read is pure (#2734) */
+    if (!lvp || lvp->type == TY_UNKNOWN) continue;
     TyKind pty = lvp ? lvp->type : TY_POLY;
     char src[96]; snprintf(src, sizeof src, "sp_poly_index_poly(_t%d, sp_box_int(%d))", elem_temp, pj);
     emit_indent(g_pre, indent); buf_printf(g_pre, "lv_%s = ", pnr);
@@ -4644,6 +4646,14 @@ int emit_grep_pred(Compiler *c, int pat, const char *ev, TyKind et, Buf *b) {
       else if (sp_streq(cn, "Float"))   yes = (et == TY_FLOAT);
       else if (sp_streq(cn, "Symbol"))  yes = (et == TY_SYMBOL);
       else if (sp_streq(cn, "Numeric")) yes = (et == TY_INT || et == TY_FLOAT);
+      /* reference-type / module patterns against a scalar element fold
+         statically too (#2843): everything is an Object/Kernel; the typed
+         scalars mix in Comparable; no scalar is an Array/Hash/user class */
+      else if (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") ||
+               sp_streq(cn, "Kernel")) yes = 1;
+      else if (sp_streq(cn, "Comparable"))
+        yes = (et == TY_INT || et == TY_FLOAT || et == TY_STRING);
+      else if (comp_class_index(c, cn) >= 0 || is_builtin_class_name(cn)) yes = 0;
       if (yes < 0) return 0;
       buf_printf(b, "((void)(%s), %d)", ev, yes);
       return 1;
@@ -4653,7 +4663,16 @@ int emit_grep_pred(Compiler *c, int pat, const char *ev, TyKind et, Buf *b) {
     else if (sp_streq(cn, "Float"))    buf_printf(b, "(%s).tag == SP_TAG_FLT", ev);
     else if (sp_streq(cn, "Symbol"))   buf_printf(b, "(%s).tag == SP_TAG_SYM", ev);
     else if (sp_streq(cn, "Numeric"))  buf_printf(b, "((%s).tag == SP_TAG_INT || (%s).tag == SP_TAG_FLT)", ev, ev);
-    else return 0;
+    else {
+      /* a reference-type class or module pattern (Array, Hash, Object,
+         Enumerable, a user class, ...): Module#=== on the boxed element via
+         the class machinery (#2843) */
+      int gcid = comp_class_index(c, cn);
+      int gbid = builtin_class_id(cn);
+      if (gcid >= 0) buf_printf(b, "sp_poly_is_a(%s, ((sp_Class){%d}))", ev, gcid);
+      else if (gbid != 0) buf_printf(b, "sp_poly_is_a(%s, ((sp_Class){%d, \"%s\"}))", ev, gbid, cn);
+      else return 0;
+    }
     return 1;
   }
   /* a variable pattern: dispatch on its analyzed type. A Class value tests

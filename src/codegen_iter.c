@@ -1647,9 +1647,20 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     const char *hn = ty_hash_cname(rt);
     if (!hn) return 0;
     int is_val = sp_streq(name, "each_value");
-    int t = ++g_tmp;
+    int t = ++g_tmp, th2 = ++g_tmp;
+    /* Evaluate the receiver ONCE into a rooted temp: a call receiver (the ENV
+       snapshot) re-evaluated per access built a fresh unrooted hash each time
+       and the GC swept the earlier ones mid-loop (#2842). */
+    {
+      Buf hb0; memset(&hb0, 0, sizeof hb0);
+      emit_expr(c, recv, &hb0);
+      emit_indent(b, indent);
+      buf_printf(b, "%s _t%d = %s; SP_GC_ROOT(_t%d);\n",
+                 c_type_name(rt), th2, hb0.p ? hb0.p : "NULL", th2);
+      free(hb0.p);
+    }
     Buf rb; memset(&rb, 0, sizeof rb);
-    emit_expr(c, recv, &rb);
+    buf_printf(&rb, "_t%d", th2);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < ", t, t);
     buf_puts(b, rb.p); buf_printf(b, "->len; _t%d++) {\n", t);

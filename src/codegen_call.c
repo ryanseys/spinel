@@ -777,6 +777,14 @@ int diagnose_unsupported_call(Compiler *c, int id) {
       "Proc#ruby2_keywords is not supported: it is a shim for the Ruby 2.x-to-3.0 "
       "keyword-argument transition, and spinel targets modern keyword semantics, so it "
       "has nothing to toggle (see docs/limitations.md)" },
+    { "ruby2_keywords_hash",
+      "Hash.ruby2_keywords_hash is not supported: it marks a hash for the Ruby "
+      "2.x-to-3.0 keyword-argument transition shim, and spinel targets modern keyword "
+      "semantics, so the flag has nothing to toggle (see docs/limitations.md)" },
+    { "ruby2_keywords_hash?",
+      "Hash.ruby2_keywords_hash? is not supported: it reads the Ruby 2.x-to-3.0 "
+      "keyword-transition flag, which spinel's hashes do not carry (see "
+      "docs/limitations.md)" },
     { "singleton_class",
       "Object#singleton_class is not supported by AOT compilation: it is the gateway "
       "to a per-object method table, which direct C calls have no room for -- the same "
@@ -1415,15 +1423,18 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       continue;
     }
     /* The running value is boxed (poly); the block param may infer a narrower
-       type, so unbox to match its C type. */
-    Scope *bs = comp_scope_of(c, blk);
-    LocalVar *plv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-    TyKind pt = (plv && plv->type != TY_UNKNOWN) ? plv->type : TY_POLY;
-    emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "lv_%s = ", bp);
-    if (pt == TY_POLY) buf_puts(g_pre, vbuf);
-    else { Buf ub; memset(&ub, 0, sizeof ub); emit_unbox_text(c, pt, vbuf, &ub); buf_puts(g_pre, ub.p ? ub.p : vbuf); free(ub.p); }
-    buf_puts(g_pre, ";\n");
+       type, so unbox to match its C type. A |k, v| header destructures a
+       pair element (hash.lazy rides the pair array, #2845). */
+    if (!emit_iter_autosplat(c, blk, TY_POLY_ARRAY, vbuf, g_indent + 1)) {
+      Scope *bs = comp_scope_of(c, blk);
+      LocalVar *plv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
+      TyKind pt = (plv && plv->type != TY_UNKNOWN) ? plv->type : TY_POLY;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "lv_%s = ", bp);
+      if (pt == TY_POLY) buf_puts(g_pre, vbuf);
+      else { Buf ub; memset(&ub, 0, sizeof ub); emit_unbox_text(c, pt, vbuf, &ub); buf_puts(g_pre, ub.p ? ub.p : vbuf); free(ub.p); }
+      buf_puts(g_pre, ";\n");
+    }
     int bbody = nt_ref(nt, blk, "body");
     int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
     for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], g_pre, g_indent + 1);
@@ -3802,20 +3813,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     return 1;
   }
-  /* Hash.try_convert(x): the hash itself, nil for a non-hash.
-     Hash.ruby2_keywords_hash(h) marks kwarg-splat provenance CRuby-side;
-     Spinel's hashes carry no such flag, so it answers the hash unchanged
-     (and the predicate form answers false). */
+  /* Hash.try_convert(x): the hash itself, nil for a non-hash. (The
+     ruby2_keywords_hash pair is a documented compile-time reject, #2846.) */
   if (recv >= 0 && argc == 1 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash") &&
-      (sp_streq(name, "try_convert") || sp_streq(name, "ruby2_keywords_hash") ||
-       sp_streq(name, "ruby2_keywords_hash?"))) {
+      sp_streq(name, "try_convert")) {
     TyKind at = comp_ntype(c, argv[0]);
-    if (sp_streq(name, "ruby2_keywords_hash?")) {
-      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
-      return 1;
-    }
     if (ty_is_hash(at)) { emit_boxed(c, argv[0], b); return 1; }
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     return 1;
@@ -6710,6 +6714,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
         return;
       }
       /* the remaining query/mutation surface (#2832) */
+      if (enm && sp_streq(enm, "class") && eac == 0) {
+        buf_puts(b, "((sp_Class){(mrb_int)-116, \"Object\"})");   /* ENV is an Object singleton */
+        return;
+      }
       if (enm && sp_streq(enm, "frozen?") && eac == 0) {
         buf_puts(b, "((mrb_bool)0)");
         return;
@@ -6741,7 +6749,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
            sp_streq(enm, "filter!"))) {
         int keep2 = sp_streq(enm, "keep_if") || sp_streq(enm, "select!") ||
                     sp_streq(enm, "filter!");
-        buf_puts(b, "sp_env_filter_bang(");
+        /* the bang trio answers nil when nothing changed (#2844) */
+        int optn = sp_streq(enm, "reject!") || sp_streq(enm, "select!") ||
+                   sp_streq(enm, "filter!");
+        buf_printf(b, "sp_env_filter_bang%s(", optn ? "_opt" : "");
         emit_proc_literal(c, id, b);
         buf_printf(b, ", %d)", keep2);
         return;
@@ -7926,14 +7937,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       ty_is_array(comp_ntype(c, recv)) &&
       (sp_streq(name, "slice_before") || sp_streq(name, "slice_after"))) {
-    /* CRuby's pattern form matches with `pattern === element`. Spinel has no
-       runtime type-dispatched #=== (like `when *arr`, a poly `===` lowers to
-       `==`), so a Range/Class/Regexp/Proc pattern would silently use `==` and
-       group wrongly. Reject those loudly; a plain value pattern (where
-       `===` is `==`) and the block form are unaffected. */
+    /* CRuby's pattern form matches with `pattern === element`: the boxed
+       pattern dispatches through sp_poly_case_eq (Range cover / Class is_a /
+       Regexp match / value equality, #2847). A Proc pattern would need a
+       stored-proc call per element and stays a loud reject. */
     TyKind spat = comp_ntype(c, argv[0]);
-    if (spat == TY_RANGE || spat == TY_CLASS || spat == TY_REGEX || spat == TY_PROC)
-      unsupported(c, id, "slice_before/slice_after with a Range, Class, or Regexp pattern (needs #=== dispatch); use a block or a value pattern");
+    if (spat == TY_PROC)
+      unsupported(c, id, "slice_before/slice_after with a Proc pattern; use the block form");
     buf_printf(b, "sp_Enumerator_new_from_items(sp_poly_slice_groups(");
     emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, argv[0], b);

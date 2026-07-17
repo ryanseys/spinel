@@ -3904,7 +3904,7 @@ static int env_enum_method(const char *n) {
     "zip", "take", "take_while", "drop", "drop_while", "each_slice",
     "each_cons", "each_with_index", "each_with_object", "find_index", "grep",
     "chunk", "chunk_while", "slice_when", "collect_concat",
-    "reverse_each", "value?", "has_value?", NULL };
+    "reverse_each", "value?", "has_value?", "lazy", NULL };
   for (int i = 0; M[i]; i++) if (sp_streq(n, M[i])) return 1;
   return 0;
 }
@@ -3920,6 +3920,65 @@ int desugar_dir_surface(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
+    /* a call chained onto an ENV mutator's result must land on ENV itself,
+       not the detached snapshot: (ENV.m1(a).m2(b)) -> (ENV.m1(a); ENV.m2(b))
+       (#2844) */
+    if (nm && recv >= 0 && nt_kind(nt, recv) == NK_CallNode) {
+      const char *mrn = NULL;
+      {
+        int mrecv = nt_ref(nt, recv, "receiver");
+        if (mrecv >= 0 && nt_kind(nt, mrecv) == NK_ConstantReadNode)
+          mrn = nt_str(nt, mrecv, "name");
+      }
+      const char *mnm = nt_str(nt, recv, "name");
+      if (mrn && mnm && sp_streq(mrn, "ENV") &&
+          (sp_streq(mnm, "clear") || sp_streq(mnm, "delete_if") ||
+           sp_streq(mnm, "keep_if") || sp_streq(mnm, "update") ||
+           sp_streq(mnm, "merge!") || sp_streq(mnm, "replace"))) {
+        int envc = nt_new_node(nt, "ConstantReadNode");
+        int outer = nt_new_node(nt, "CallNode");
+        int estmts = nt_new_node(nt, "StatementsNode");
+        int eparen = nt_new_node(nt, "ParenthesesNode");
+        if (envc < 0 || outer < 0 || estmts < 0 || eparen < 0) continue;
+        nt_node_set_str(nt, envc, "name", "ENV");
+        nt_node_set_str(nt, outer, "name", nm);
+        nt_node_set_ref(nt, outer, "receiver", envc);
+        nt_node_set_ref(nt, outer, "arguments", nt_ref(nt, id, "arguments"));
+        nt_node_set_ref(nt, outer, "block", nt_ref(nt, id, "block"));
+        { int eitems[2] = { recv, outer };
+          nt_node_set_arr(nt, estmts, "body", eitems, 2); }
+        nt_node_set_ref(nt, eparen, "body", estmts);
+        nt_node_set_str(nt, id, "name", "itself");
+        nt_node_set_ref(nt, id, "receiver", eparen);
+        nt_node_set_ref(nt, id, "arguments", -1);
+        nt_node_set_ref(nt, id, "block", -1);
+        comp_grow_node_arrays(c);
+        { int eencl = c->nscope[id];
+          c->nscope[envc] = eencl; c->nscope[outer] = eencl;
+          c->nscope[estmts] = eencl; c->nscope[eparen] = eencl; }
+        changed = 1;
+        continue;
+      }
+    }
+    /* hash.lazy enumerates [key, value] pairs: route through to_a so the
+       (working) array lazy chain serves it (#2845) */
+    if (nm && recv >= 0 && sp_streq(nm, "lazy") && nt_ref(nt, id, "block") < 0) {
+      TyKind hrt = infer_type(c, recv);
+      if (ty_is_hash(hrt)) {
+        int toa2 = nt_new_node(nt, "CallNode");
+        if (toa2 >= 0) {
+          nt_node_set_str(nt, toa2, "name", "to_a");
+          nt_node_set_ref(nt, toa2, "receiver", recv);
+          nt_node_set_ref(nt, toa2, "arguments", -1);
+          nt_node_set_ref(nt, toa2, "block", -1);
+          comp_grow_node_arrays(c);
+          c->nscope[toa2] = c->nscope[id];
+          nt_node_set_ref(nt, id, "receiver", toa2);
+          changed = 1;
+          continue;
+        }
+      }
+    }
     /* Kernel#open(path, ...) is File.open when no user method shadows it (#2816) */
     if (nm && recv < 0 && sp_streq(nm, "open") &&
         comp_method_index(c, "open") < 0 &&
@@ -4169,7 +4228,7 @@ int desugar_env_enum(Compiler *c) {
         "take_while", "drop", "drop_while", "each_slice", "each_cons",
         "each_with_index", "each_with_object", "find_index", "grep", "chunk",
         "chunk_while", "slice_when", "collect_concat", "reverse_each",
-        NULL };
+        "lazy", NULL };
       int via_a = 0;
       for (int q = 0; VIA_A[q]; q++) if (sp_streq(nm, VIA_A[q])) { via_a = 1; break; }
       if (via_a) {

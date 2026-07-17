@@ -3894,6 +3894,8 @@ void emit_regex_section(Buf *b) {
   }
   if (g_has_user_cmp)
     buf_puts(b, "static mrb_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, mrb_bool *comparable);\n");
+  if (g_needs_class_machinery)
+    buf_puts(b, "static int sp_poly_is_a(sp_RbVal obj, sp_Class klass);\n");
   if (g_gen_obj_hash)
     buf_puts(b, "static sp_RbVal sp_obj_to_hash(sp_RbVal v);\n");
   if (g_gen_obj_hashkey)
@@ -3911,7 +3913,8 @@ void emit_regex_section(Buf *b) {
   if (g_gen_obj_valeq)
     buf_puts(b, "  sp_obj_eq_hook = sp_obj_eq_dispatch;\n");
   if (g_needs_class_machinery)
-    buf_puts(b, "  sp_user_exc_parent_fn = sp_user_exc_parent;\n");
+    buf_puts(b, "  sp_user_exc_parent_fn = sp_user_exc_parent;\n"
+                "  sp_poly_is_a_hook = sp_poly_is_a;\n");
   /* Replace the runtime's hook with the superset that also marks this
      program's heap-typed globals/constants/class-ivars (it chains to
      sp_re_mark_globals itself). Skipped when there are none -- the marker would

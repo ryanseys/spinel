@@ -2447,10 +2447,15 @@ static sp_StrStrHash *sp_env_to_h(void) {
   for (char **e = environ; e && *e; e++) {
     const char *eq = strchr(*e, '=');
     if (!eq) continue;
+    /* copy the VALUE first and root it: the key below is a fresh unreachable
+       heap string until the set, and the value copy may GC (#2842 -- a large
+       environment collected mid-loop and swept the just-built key) */
+    const char *v = sp_str_dup_external(eq + 1);
+    SP_GC_ROOT_STR(v);
     size_t kl = (size_t)(eq - *e);
     char *k = sp_str_alloc_raw(kl + 1);
     memcpy(k, *e, kl); k[kl] = 0;
-    sp_StrStrHash_set(h, k, sp_str_dup_external(eq + 1));
+    sp_StrStrHash_set(h, k, v);
   }
   return h;
 }
@@ -7398,6 +7403,30 @@ static sp_Enumerator *sp_Enumerator_new_cycle(sp_RbVal arr, mrb_int n) {
 }
 /* slice_before/slice_after with a pattern VALUE: start a new group before
    (after) each element == pattern. Groups are poly arrays. */
+/* Generic `pattern === element` on boxed values (#2847): a Class pattern
+   dispatches through the generated class machinery (installed as a hook by
+   sp_re_init when the program carries it); Regexp matches a String; a Range
+   covers numerics; everything else is value equality. */
+static int (*sp_poly_is_a_hook)(sp_RbVal, sp_Class) = NULL;
+static mrb_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
+  if (pat.tag == SP_TAG_CLASS)
+    return sp_poly_is_a_hook ? (mrb_bool)(sp_poly_is_a_hook(e, sp_unbox_class(pat)) != 0) : 0;
+  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX)
+    return e.tag == SP_TAG_STR && e.v.s && sp_re_match_p(pat.v.p, e.v.s);
+  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_RANGE) {
+    sp_Range *r = (sp_Range *)pat.v.p;
+    if (e.tag == SP_TAG_INT) return sp_range_include(r, e.v.i);
+    if (e.tag == SP_TAG_FLT)
+      return e.v.f >= (mrb_float)r->first &&
+             (r->excl ? e.v.f < (mrb_float)r->last : e.v.f <= (mrb_float)r->last);
+    return 0;
+  }
+  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_FLOAT_RANGE) {
+    if (e.tag != SP_TAG_INT && e.tag != SP_TAG_FLT) return 0;
+    return sp_frange_cover(*(sp_FloatRange *)pat.v.p, sp_poly_to_f(e));
+  }
+  return sp_poly_eq(pat, e);
+}
 static sp_PolyArray *sp_poly_slice_groups(sp_RbVal arr, sp_RbVal pat, int after) {
   sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
@@ -7405,12 +7434,12 @@ static sp_PolyArray *sp_poly_slice_groups(sp_RbVal arr, sp_RbVal pat, int after)
   mrb_int len = items ? items->len : 0;
   for (mrb_int i = 0; i < len; i++) {
     sp_RbVal e = items->data[i];
-    if (!after && cur->len > 0 && sp_poly_eq(e, pat)) {
+    if (!after && cur->len > 0 && sp_poly_case_eq(pat, e)) {
       sp_PolyArray_push(out, sp_box_poly_array(cur));
       cur = sp_PolyArray_new();
     }
     sp_PolyArray_push(cur, e);
-    if (after && sp_poly_eq(e, pat)) {
+    if (after && sp_poly_case_eq(pat, e)) {
       sp_PolyArray_push(out, sp_box_poly_array(cur));
       cur = sp_PolyArray_new();
     }
@@ -7809,9 +7838,10 @@ static const char *sp_exc_signm_acc(sp_Exception *e) {
 
 /* ENV.delete_if/keep_if/select!/reject!/filter!: the proc judges each
    snapshot pair; `keep` selects which verdict survives (#2832). */
-static sp_StrStrHash *sp_env_filter_bang(sp_Proc *p, int keep) {
+static mrb_int sp_env_filter_core(sp_Proc *p, int keep) {
   sp_StrStrHash *snap = sp_env_to_h();
   SP_GC_ROOT(snap);
+  mrb_int removed = 0;
   for (mrb_int i = 0; i < snap->len; i++) {
     const char *k = snap->order[i];
     const char *v = sp_StrStrHash_get(snap, k);
@@ -7824,9 +7854,18 @@ static sp_StrStrHash *sp_env_filter_bang(sp_Proc *p, int keep) {
     mrb_int r = sp_proc_call(p, 2, slots);
     int truthy = (_sp_proc_poly_ret.tag != SP_TAG_NIL)
                    ? sp_poly_truthy(_sp_proc_poly_ret) : (r != 0);
-    if ((truthy != 0) != (keep != 0)) unsetenv(k);
+    if ((truthy != 0) != (keep != 0)) { unsetenv(k); removed++; }
   }
+  return removed;
+}
+static sp_StrStrHash *sp_env_filter_bang(sp_Proc *p, int keep) {
+  sp_env_filter_core(p, keep);
   return sp_env_to_h();
+}
+/* reject!/select!/filter!: nil when nothing changed (#2844) */
+static sp_RbVal sp_env_filter_bang_opt(sp_Proc *p, int keep) {
+  if (sp_env_filter_core(p, keep) == 0) return sp_box_nil();
+  return sp_box_obj(sp_env_to_h(), SP_BUILTIN_STR_STR_HASH);
 }
 static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) {
   if (!p || !p->fn) return;
