@@ -967,6 +967,7 @@ install: all bin/spin
 	install -m 644 lib/sp_io.h           $(SPNLDIR)/lib/
 	install -m 644 lib/sp_time.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_net.h          $(SPNLDIR)/lib/
+	install -m 644 lib/sp_random.h       $(SPNLDIR)/lib/
 	cp -r packages $(SPNLDIR)/packages
 	rm -rf $(SPNLDIR)/packages/*/build
 	install -d $(PREFIX)/bin
