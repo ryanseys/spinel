@@ -97,13 +97,15 @@ const char*sp_str_inspect(const char*s){SP_GC_ROOT_STR(s);if(!s){char*r=sp_str_a
    @ivar / @@cvar / $gvar, or a bare name optionally ending in ? ! =) or a
    known operator method name; otherwise it is quoted like a string: :"a b". */
 mrb_bool sp_sym_plain_name_p(const char *p, mrb_bool allow_suffix) {
-  /* ASCII identifier classification, locale-independent on purpose: symbol
-     quoting must not shift with LC_CTYPE. A multibyte name stays quoted. */
+  /* Identifier classification, locale-independent on purpose (no LC_CTYPE):
+     ASCII letters/digits/underscore by table, and any byte >= 0x80 counts as
+     an identifier character -- CRuby treats non-ASCII codepoints as valid
+     unquoted symbol characters (`:café` inspects without quotes). */
   unsigned char c = (unsigned char)*p;
-  if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_')) return FALSE;
+  if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 0x80)) return FALSE;
   for (p++; (c = (unsigned char)*p) != '\0'; p++)
     if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-          (c >= '0' && c <= '9') || c == '_')) break;
+          (c >= '0' && c <= '9') || c == '_' || c >= 0x80)) break;
   if (allow_suffix && (*p == '?' || *p == '!' || *p == '=')) p++;
   return *p == '\0';
 }
