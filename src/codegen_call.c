@@ -714,6 +714,26 @@ int diag_user_defines(Compiler *c, const char *name) {
   return comp_method_index(c, name) >= 0;
 }
 
+/* Does class ci descend from an explicit `< BasicObject` (a blank slate)?
+   Such an instance answers only BasicObject's own methods and what the user
+   defined; the Object/Kernel default arms must NOT serve it (#2703). */
+static int class_is_blank_slate(Compiler *c, int ci) {
+  for (int k = ci; k >= 0; k = c->classes[k].parent) {
+    int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
+    const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
+    if (sn && sp_streq(sn, "BasicObject")) return 1;
+    if (sn && c->classes[k].parent < 0) return 0;   /* rooted at another builtin */
+  }
+  return 0;
+}
+/* BasicObject's own instance methods (the spinel-relevant surface). */
+static int basicobject_own_method(const char *n) {
+  static const char *const B[] = { "==", "!=", "!", "equal?", "instance_eval",
+    "instance_exec", "__send__", "__id__", "initialize", "method_missing", NULL };
+  for (int i = 0; B[i]; i++) if (sp_streq(n, B[i])) return 1;
+  return 0;
+}
+
 /* The positional-argument count of a CallNode (0 when it has none). */
 static int argc_of(const NodeTable *nt, int id) {
   int a = nt_ref(nt, id, "arguments");
@@ -5843,6 +5863,29 @@ void emit_call(Compiler *c, int id, Buf *b) {
      otherwise an earlier arm reports it as a generic gap (or, for a bare
      `binding`, as a NameError) and the specific message never runs. */
   if (diagnose_unsupported_call(c, id)) return;
+  /* A blank-slate instance (class X < BasicObject) answers only BasicObject's
+     own methods and the user's: everything else is CRuby's NoMethodError, and
+     must not fall through to the Object/Kernel default arms (#2703). */
+  {
+    int bsrecv = nt_ref(nt, id, "receiver");
+    TyKind bsrt = bsrecv >= 0 ? comp_ntype(c, bsrecv) : TY_UNKNOWN;
+    const char *bsnm = nt_str(nt, id, "name");
+    if (bsnm && ty_is_object(bsrt)) {
+      int bsci = ty_object_class(bsrt);
+      if (bsci >= 0 && class_is_blank_slate(c, bsci) &&
+          !basicobject_own_method(bsnm) &&
+          comp_method_in_chain(c, bsci, bsnm, NULL) < 0 &&
+          !comp_reader_in_chain(c, bsci, bsnm, NULL) &&
+          !comp_writer_in_chain(c, bsci, bsnm, NULL)) {
+        const char *bscn = class_ruby_name(c, bsci) ? class_ruby_name(c, bsci) : c->classes[bsci].name;
+        buf_printf(b, "({ (void)("); emit_expr(c, bsrecv, b);
+        buf_printf(b, "); sp_raise_cls(\"NoMethodError\", "
+                      "(&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1])); %s; })",
+                   bsnm, bscn, default_value(comp_ntype(c, id)));
+        return;
+      }
+    }
+  }
   /* Object#itself is the receiver for every type (mirrors the general infer
      arm); a user-defined #itself still dispatches normally. */
   {
