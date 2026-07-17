@@ -842,6 +842,17 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     buf_puts(b, "({ ");
     emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
     if (lv && lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    else if (lv && lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
+             comp_ntype(c, v) != TY_POLY_ARRAY) {
+      /* a typed array into a poly-array slot: convert, as emit_assign does
+         (the statement form; this is its expression twin, #2834) */
+      TyKind avt = comp_ntype(c, v);
+      buf_printf(b, "sp_PolyArray_from_%s(",
+                 avt == TY_INT_ARRAY ? "int_array"
+                 : avt == TY_STR_ARRAY ? "str_array" : "float_array");
+      emit_expr(c, v, b);
+      buf_puts(b, ")");
+    }
     else if (lv && lv->type != TY_POLY && lv->type != TY_UNKNOWN &&
              comp_ntype(c, v) == TY_UNKNOWN)
       /* `if (x = obj.unresolved(...)) ...`: the gate's raise-all token into a
