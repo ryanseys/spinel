@@ -115,6 +115,8 @@ typedef struct { int node; char path[QC_MAXDEPTH][64]; int depth; char name[128]
 int is_builtin_class_name(const char *n);
 int is_builtin_module_name(const char *n);
 int is_builtin_exception_name(const char *n);
+int builtin_method_known(const char *cls, const char *m);
+int builtin_object_method_known(const char *m);
 int class_inherits_builtin_exception(Compiler *c, int ci);
 int an_re_has_captures(const char *src);
 int str_in(const char *s, const char *const *set);

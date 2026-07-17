@@ -2890,6 +2890,17 @@ static int desugar_builtin_method_obj(Compiler *c) {
     /* the typed-array (kind, op) trampoline path owns these */
     if (ty_is_array(rt) && sp_streq(sym, "push")) continue;
     if (comp_method_index(c, sym) >= 0) continue;     /* a same-named top-level def wins */
+    /* an undefined name must reach codegen's immediate NameError, not become
+       a wrapper whose body call aborts the build (#2752) */
+    {
+      const char *bcls = rt == TY_STRING ? "String" : rt == TY_INT ? "Integer"
+                       : rt == TY_FLOAT ? "Float" : rt == TY_SYMBOL ? "Symbol"
+                       : ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash"
+                       : rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time"
+                       : rt == TY_BOOL ? "Object" : NULL;
+      if (bcls && !builtin_method_known(bcls, sym) && !builtin_object_method_known(sym))
+        continue;
+    }
     char wname[48];
     snprintf(wname, sizeof wname, "__bam_%d", id);
     if (comp_method_index(c, wname) >= 0) continue;   /* synthesized on a prior pass */

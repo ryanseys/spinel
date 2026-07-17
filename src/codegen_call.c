@@ -610,12 +610,32 @@ static const struct { const char *cls; const char *m; int a; } sp_builtin_arity_
   {"Time","year",0},{"Time","zone",0},
   {NULL, NULL, 0}
 };
+/* Exported probes for the analyze-side method() desugar (#2752): whether the
+   builtin table knows (cls, m), and whether m is universal Object surface. */
+int builtin_method_known(const char *cls, const char *m);
+int builtin_object_method_known(const char *m);
 static int builtin_method_arity(const char *cls, const char *m, int *out) {
   for (int i = 0; sp_builtin_arity_tbl[i].cls; i++)
     if (sp_streq(sp_builtin_arity_tbl[i].cls, cls) && sp_streq(sp_builtin_arity_tbl[i].m, m))
       { *out = sp_builtin_arity_tbl[i].a; return 1; }
   return 0;
 }
+int builtin_method_known(const char *cls, const char *m) {
+  int a;
+  return builtin_method_arity(cls, m, &a);
+}
+int builtin_object_method_known(const char *m) {
+  static const char *const OBJM2[] = {
+    "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
+    "extend", "freeze", "frozen?", "hash", "inspect", "instance_of?",
+    "instance_variable_get", "instance_variable_set", "instance_variables",
+    "is_a?", "itself", "kind_of?", "method", "methods", "nil?",
+    "object_id", "public_send", "respond_to?", "send", "__send__",
+    "tap", "then", "to_s", "yield_self", "==", "!=", "!", "===", NULL };
+  for (int i = 0; OBJM2[i]; i++) if (sp_streq(m, OBJM2[i])) return 1;
+  return 0;
+}
+
 
 /* The constant names a class/module defines in its OWN body, in declaration
    order, appended to `out` (deduplicated). Scans every ClassNode/ModuleNode
@@ -7142,7 +7162,37 @@ void emit_call(Compiler *c, int id, Buf *b) {
         }
         buf_printf(b, "(mrb_int)(uintptr_t)&_bam_%sArray_%s", bk, bop);
       }
-      else buf_puts(b, "(mrb_int)0");  /* builtin/Kernel method: no callable address */
+      else {
+        /* An undefined name is CRuby's immediate NameError (#2752): with a
+           concretely-typed receiver, accept only names the builtin table (or
+           the universal Object surface) knows; everything else raises now,
+           not at call time. A poly/unknown receiver keeps the lenient path. */
+        TyKind nrt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+        const char *ncls = nrt == TY_STRING ? "String" : nrt == TY_INT ? "Integer"
+                         : nrt == TY_FLOAT ? "Float" : nrt == TY_SYMBOL ? "Symbol"
+                         : ty_is_array(nrt) ? "Array" : ty_is_hash(nrt) ? "Hash"
+                         : nrt == TY_RANGE ? "Range" : nrt == TY_TIME ? "Time"
+                         : nrt == TY_BOOL || nrt == TY_NIL ? "Object"
+                         : ty_is_object(nrt) ? "Object" : NULL;
+        static const char *const OBJM[] = {
+          "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
+          "extend", "freeze", "frozen?", "hash", "inspect", "instance_of?",
+          "instance_variable_get", "instance_variable_set", "instance_variables",
+          "is_a?", "itself", "kind_of?", "method", "methods", "nil?",
+          "object_id", "public_send", "respond_to?", "send", "__send__",
+          "tap", "then", "to_s", "yield_self", "==", "!=", "!", "===", NULL };
+        int nknown = 0, nba;
+        if (ncls && builtin_method_arity(ncls, sym, &nba)) nknown = 1;
+        for (int oi2 = 0; !nknown && OBJM[oi2]; oi2++)
+          if (sp_streq(sym, OBJM[oi2])) nknown = 1;
+        if (ncls && !nknown) {
+          buf_printf(b, "(mrb_int)(sp_raise_cls(\"NameError\","
+                        " sp_sprintf(\"undefined method '%s' for %%s\","
+                        " \"an instance of %s\")), 0)",
+                     sym, ncls);
+        }
+        else buf_puts(b, "(mrb_int)0");  /* builtin/Kernel method: no callable address */
+      }
     }
     buf_puts(b, ", ");
     /* a synthesized __bam_N forwarder is an implementation detail: Method#name
