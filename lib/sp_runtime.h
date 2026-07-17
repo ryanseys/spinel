@@ -2193,6 +2193,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_BIG_RATIONAL: return SPL("Rational");
         case SP_BUILTIN_REGEX: return SPL("Regexp");
         case SP_BUILTIN_OBJECT: return SPL("Object");   /* a bare Object.new instance */
+        case SP_BUILTIN_BASIC_OBJECT: return SPL("BasicObject");
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
         default: { sp_Class c = {v.cls_id}; return sp_class_to_s(c); }
       }

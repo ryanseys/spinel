@@ -3877,6 +3877,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT)");
         return 1;
       }
+      /* BasicObject.new: the same blank instance, tagged with the root's
+         cls_id so #class answers BasicObject (#2658) */
+      if (cn && sp_streq(cn, "BasicObject") && argc == 0) {
+        buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_BASIC_OBJECT)");
+        return 1;
+      }
       if (cn && (sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor"))) {
         buf_puts(b, "sp_Mutex_new()"); return 1;
       }

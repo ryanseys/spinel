@@ -1757,7 +1757,7 @@ else {
       /* ::Array.new / ::String.new / ::StringIO.new etc. */
       if (cn && sp_streq(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY;
-      if (cn && sp_streq(cn, "Object")) return TY_POLY;
+      if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) return TY_POLY;
       if (cn && sp_streq(cn, "String")) return TY_STRING;
       if (cn && sp_streq(cn, "Hash"))
         return sp_streq(name, "__hash_new_default") ? TY_POLY_POLY_HASH : TY_UNKNOWN;
@@ -1797,7 +1797,7 @@ else {
         return TY_POLY_ARRAY;
       }
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
-      if (cn && sp_streq(cn, "Object")) return TY_POLY;  /* identity sentinel */
+      if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) return TY_POLY;  /* identity sentinel */
       if (cn && sp_streq(cn, "String")) return TY_STRING;
       /* Hash.new { |hash, key| default } : a poly-keyed poly hash with a
          default-proc (the block computes the missing-key value). A default-block
