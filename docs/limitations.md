@@ -186,6 +186,12 @@ its immediate values -- `1.equal?(1)`, `:s.equal?(:s)`, and (on 64-bit)
 The same applies to `freeze` on these values: they are value-frozen already
 (`frozen?` is `true`), and `freeze` is an identity no-op.
 
+**Regexp literals share one compiled object.** Each pattern is compiled once
+at startup and every textually-equal literal names that one object, so
+`/ab/.equal?(/ab/)` is `true` (CRuby allocates per literal: `false`). Same
+shared-immutable-storage treatment as above; `==`/`eql?`/matching are
+unaffected.
+
 **Strings DO have identity.** Every string is a real pointer (heap or
 static), and every literal *occurrence* is its own static object, so
 `"abc".equal?("abc")` is `false` across two occurrences and aliasing
