@@ -5899,6 +5899,80 @@ void emit_call(Compiler *c, int id, Buf *b) {
       }
     }
   }
+  /* Small CRuby-exact arms for immediate receivers (#2732, #2733, #2751,
+     #2764), placed ahead of the generic paths that mis-emit them. */
+  {
+    const char *nm0 = nt_str(nt, id, "name");
+    int rv0 = nt_ref(nt, id, "receiver");
+    TyKind rt0 = rv0 >= 0 ? comp_ntype(c, rv0) : TY_UNKNOWN;
+    int ac0 = 0; const int *av0 = call_args(nt, id, &ac0);
+    /* true <=> true is 0; nil <=> nil is 0; any other bool/nil pairing is nil */
+    if (nm0 && sp_streq(nm0, "<=>") && ac0 == 1 &&
+        (rt0 == TY_BOOL || rt0 == TY_NIL)) {
+      TyKind at0 = comp_ntype(c, av0[0]);
+      if (rt0 == TY_BOOL && at0 == TY_BOOL) {
+        int t1 = ++g_tmp, t2 = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", t1); emit_expr(c, rv0, b);
+        buf_printf(b, "; mrb_int _t%d = ", t2); emit_expr(c, av0[0], b);
+        buf_printf(b, "; (_t%d != 0) == (_t%d != 0) ? sp_box_int(0) : sp_box_nil(); })", t1, t2);
+        return;
+      }
+      if (rt0 == TY_NIL && at0 == TY_NIL) {
+        buf_puts(b, "((void)("); emit_expr(c, rv0, b); buf_puts(b, "), (void)(");
+        emit_expr(c, av0[0], b); buf_puts(b, "), sp_box_int(0))");
+        return;
+      }
+      buf_puts(b, "((void)("); emit_expr(c, rv0, b); buf_puts(b, "), (void)(");
+      emit_expr(c, av0[0], b); buf_puts(b, "), sp_box_nil())");
+      return;
+    }
+    /* a boolean has no #=~ (so #!~ fails the same way): CRuby's NoMethodError.
+       A program that REOPENS TrueClass/FalseClass with its own #=~ keeps it. */
+    if (nm0 && (sp_streq(nm0, "=~") || sp_streq(nm0, "!~")) && ac0 == 1 && rt0 == TY_BOOL &&
+        !diag_user_defines(c, "=~")) {
+      int t1 = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", t1); emit_expr(c, rv0, b);
+      buf_printf(b, "; (void)("); emit_expr(c, av0[0], b);
+      buf_printf(b, "); sp_raise_cls(\"NoMethodError\", _t%d ?"
+                    " (&(\"\\xff\" \"undefined method '=~' for true\")[1])"
+                    " : (&(\"\\xff\" \"undefined method '=~' for false\")[1])); 0; })", t1);
+      return;
+    }
+    /* TrueClass.new / FalseClass.new / NilClass.new: no allocator */
+    if (nm0 && sp_streq(nm0, "new") && rv0 >= 0 && nt_kind(nt, rv0) == NK_ConstantReadNode) {
+      const char *cn0 = nt_str(nt, rv0, "name");
+      if (cn0 && (sp_streq(cn0, "TrueClass") || sp_streq(cn0, "FalseClass") ||
+                  sp_streq(cn0, "NilClass"))) {
+        buf_printf(b, "(sp_raise_cls(\"NoMethodError\","
+                      " (&(\"\\xff\" \"undefined method 'new' for class %s\")[1])), 0)", cn0);
+        return;
+      }
+    }
+    /* clone(freeze: false) on an immediate: CRuby's ArgumentError */
+    if (nm0 && sp_streq(nm0, "clone") && ac0 == 1 &&
+        (rt0 == TY_BOOL || rt0 == TY_NIL || rt0 == TY_INT || rt0 == TY_SYMBOL || rt0 == TY_FLOAT) &&
+        nt_type(nt, av0[0]) && sp_streq(nt_type(nt, av0[0]), "KeywordHashNode")) {
+      int fv = struct_kwarg_value(c, av0[0], "freeze");
+      if (fv >= 0 && nt_type(nt, fv) && sp_streq(nt_type(nt, fv), "FalseNode")) {
+        const char *icn = rt0 == TY_NIL ? "NilClass" : rt0 == TY_INT ? "Integer"
+                        : rt0 == TY_SYMBOL ? "Symbol" : rt0 == TY_FLOAT ? "Float" : NULL;
+        if (icn) {
+          buf_printf(b, "({ (void)("); emit_expr(c, rv0, b);
+          buf_printf(b, "); sp_raise_cls(\"ArgumentError\","
+                        " (&(\"\\xff\" \"can't unfreeze %s\")[1])); %s; })",
+                     icn, default_value(comp_ntype(c, id)));
+          return;
+        }
+        int t1 = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", t1); emit_expr(c, rv0, b);
+        buf_printf(b, "; sp_raise_cls(\"ArgumentError\", _t%d ?"
+                      " (&(\"\\xff\" \"can't unfreeze TrueClass\")[1])"
+                      " : (&(\"\\xff\" \"can't unfreeze FalseClass\")[1])); %s; })",
+                   t1, default_value(comp_ntype(c, id)));
+        return;
+      }
+    }
+  }
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
   /* a public_send-lowered call (stamped by the desugars): a private or
      protected target raises NoMethodError like CRuby, which enforces
@@ -7246,18 +7320,42 @@ void emit_call(Compiler *c, int id, Buf *b) {
         free(pv.p);
       }
     }
-    /* <proc>.call(*arr): a single splat argument spreads a runtime array into
-       the ABI at call time (its length is dynamic, unlike the fixed mrb_int[16]
-       list). #2691 */
-    if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SplatNode")) {
-      int sx = nt_ref(nt, argv[0], "expression");
-      if (sx >= 0) {
+    /* <proc>.call with any splat among the arguments: materialize the full
+       argument list (fixed args pushed, each splat expanded) and spread it at
+       call time -- the length is dynamic, unlike the fixed mrb_int[16] list.
+       #2691, #2729 */
+    {
+      int any_splat = 0;
+      for (int k = 0; k < argc; k++)
+        if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) any_splat = 1;
+      if (any_splat) {
         g_needs_proc_poly_argslot = 1;
+        int ta = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);%c", ta, ta, 10);
+        for (int k = 0; k < argc; k++) {
+          Buf ab; memset(&ab, 0, sizeof ab);
+          const char *aty = nt_type(nt, argv[k]);
+          if (aty && sp_streq(aty, "SplatNode")) {
+            int sx = nt_ref(nt, argv[k], "expression");
+            if (sx >= 0) emit_boxed(c, sx, &ab);
+            int ts = ++g_tmp, ti = ++g_tmp;
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "{ sp_PolyArray *_t%d = sp_enum_items_from(%s); SP_GC_ROOT(_t%d);"
+                              " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                              " sp_PolyArray_push(_t%d, _t%d->data[_t%d]); }%c",
+                       ts, ab.p ? ab.p : "sp_box_nil()", ts, ti, ti, ts, ti, ta, ts, ti, 10);
+          }
+          else {
+            emit_boxed(c, argv[k], &ab);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);%c", ta, ab.p ? ab.p : "sp_box_nil()", 10);
+          }
+          free(ab.p);
+        }
         buf_puts(b, "((void)sp_proc_call_spread(");
         emit_expr(c, recv, b);
-        buf_puts(b, ", ");
-        emit_boxed(c, sx, b);
-        buf_puts(b, "), ");
+        buf_printf(b, ", sp_box_poly_array(_t%d)), ", ta);
         emit_proc_ret_unbox(c, rty, b);
         buf_puts(b, ")");
         return;

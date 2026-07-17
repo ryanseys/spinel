@@ -516,6 +516,28 @@ void mark_proc_captures(Compiler *c) {
     int encl = c->nscope[id];
     ANameSet params = {0}, used = {0};
     int pn = a_proc_params_node(c, id);
+    /* keyword params bind BOXED (extracted from the call-site kwargs hash),
+       so their static type is poly -- an untyped one lets the body's tail
+       mis-derive (a `[a, k]` settled INT_ARRAY and misread the PolyArray,
+       #2728). Seeded: the write pass's reset must not wipe it. */
+    {
+      int kn2 = 0; const int *kws2 = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn2) : NULL;
+      Scope *pbs2 = kn2 > 0 ? comp_scope_of(c, id) : NULL;
+      for (int k2 = 0; k2 < kn2 && pbs2; k2++) {
+        const char *kname2 = nt_str(nt, kws2[k2], "name");
+        LocalVar *klv2 = kname2 ? scope_local_intern(pbs2, kname2) : NULL;
+        if (klv2 && klv2->type == TY_UNKNOWN) { klv2->type = TY_POLY; klv2->rbs_seeded = 1; }
+      }
+      /* `**kw` binds the whole boxed kwargs hash: poly likewise */
+      int kwrest2 = pn >= 0 ? nt_ref(nt, pn, "keyword_rest") : -1;
+      const char *kwrty2 = kwrest2 >= 0 ? nt_type(nt, kwrest2) : NULL;
+      if (kwrty2 && sp_streq(kwrty2, "KeywordRestParameterNode")) {
+        const char *krn2 = nt_str(nt, kwrest2, "name");
+        Scope *pbs3 = comp_scope_of(c, id);
+        LocalVar *krv2 = (krn2 && pbs3) ? scope_local_intern(pbs3, krn2) : NULL;
+        if (krv2 && krv2->type == TY_UNKNOWN) { krv2->type = TY_POLY; krv2->rbs_seeded = 1; }
+      }
+    }
     /* a named &block param binds an sp_Proc* from the block side-channel:
        type it so `b.call(...)` rides the TY_PROC dispatch (#2648) */
     {

@@ -838,6 +838,9 @@ TyKind infer_call(Compiler *c, int id) {
       (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
       !an_user_defines_method(c, name))
     return TY_STRING;
+  /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
+  if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
+      (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
   /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+ (#2545) */
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
   if (recv < 0 && sp_streq(name, "Complex")) return TY_COMPLEX;
