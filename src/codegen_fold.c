@@ -2804,14 +2804,25 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     emit_stmt(c, bb[j], b, 0);
     buf_puts(b, " ");
   }
-  buf_printf(b, "_t%d = ", tacc);
-  /* a poly-typed body value coerces back to a scalar accumulator */
-  TyKind rbt = comp_ntype(c, bb[bn - 1]);
-  if (rbt == TY_POLY && acc_ty == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, bb[bn - 1], b); buf_puts(b, ")"); }
-  else if (rbt == TY_POLY && acc_ty == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, bb[bn - 1], b); buf_puts(b, ")"); }
-  else if (rbt == TY_POLY && acc_ty == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, bb[bn - 1], b); buf_puts(b, ")"); }
-  else emit_expr(c, bb[bn - 1], b);
-  buf_puts(b, "; } } ");
+  /* The tail's own prelude (a proc call publishing its args to the boxed
+     side-channel, a rooted temp) must land INSIDE the loop, before this
+     iteration's accumulator assignment: with the enclosing statement's g_pre
+     it would run once, ahead of the whole fold, and every iteration would
+     reuse the first publication (#2684). Statements are legal here -- we are
+     inside the loop body of a statement expression. */
+  {
+    Buf tail; memset(&tail, 0, sizeof tail);
+    Buf *saved_pre = g_pre;
+    g_pre = b;
+    TyKind rbt = comp_ntype(c, bb[bn - 1]);
+    if (rbt == TY_POLY && acc_ty == TY_INT) { buf_puts(&tail, "sp_poly_to_i("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
+    else if (rbt == TY_POLY && acc_ty == TY_FLOAT) { buf_puts(&tail, "sp_poly_to_f("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
+    else if (rbt == TY_POLY && acc_ty == TY_STRING) { buf_puts(&tail, "sp_poly_to_s("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
+    else emit_expr(c, bb[bn - 1], &tail);
+    g_pre = saved_pre;
+    buf_printf(b, "_t%d = %s; } } ", tacc, tail.p ? tail.p : "0");
+    free(tail.p);
+  }
   /* the expression must carry the INFERRED type: a poly-typed reduce
      (e.g. a dyn-send body) boxes its scalar accumulator */
   if (comp_ntype(c, id) == TY_POLY && acc_ty != TY_POLY) {

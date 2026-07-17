@@ -3645,6 +3645,73 @@ int desugar_compose_method_operand(Compiler *c) {
   return changed;
 }
 
+/* reduce(&pr) / inject(init, &pr): forward the proc through a literal
+   two-param block calling it -- `{ |__fa, __fb| pr.call(__fa, __fb) }` -- so
+   the fold machinery sees an ordinary block (#2684). The fold emitter places
+   the proc call's prelude inside the loop (see emit_reduce_block_expr). */
+int desugar_reduce_proc_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject"))) continue;
+    if (nt_ref(nt, id, "receiver") < 0) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0) continue;
+    const char *exty = nt_type(nt, ex);
+    int simple = exty && (sp_streq(exty, "LocalVariableReadNode") ||
+                          sp_streq(exty, "InstanceVariableReadNode") ||
+                          sp_streq(exty, "LambdaNode"));
+    if (!simple || infer_type(c, ex) != TY_PROC) continue;
+
+    int base = nt->count;
+    char pn[2][40]; int reqs[2], reads[2];
+    int ok = 1;
+    for (int k = 0; k < 2 && ok; k++) {
+      snprintf(pn[k], sizeof pn[k], "__fold_%d_%d", id, k);
+      reqs[k] = nt_new_node(nt, "RequiredParameterNode");
+      reads[k] = nt_new_node(nt, "LocalVariableReadNode");
+      if (reqs[k] < 0 || reads[k] < 0) { ok = 0; break; }
+      nt_node_set_str(nt, reqs[k], "name", pn[k]);
+      nt_node_set_str(nt, reads[k], "name", pn[k]);
+    }
+    if (!ok) continue;
+    int params = nt_new_node(nt, "ParametersNode");
+    int bparams = nt_new_node(nt, "BlockParametersNode");
+    int callargs = nt_new_node(nt, "ArgumentsNode");
+    int callnode = nt_new_node(nt, "CallNode");
+    int body = nt_new_node(nt, "StatementsNode");
+    int blocknode = nt_new_node(nt, "BlockNode");
+    if (params < 0 || bparams < 0 || callargs < 0 || callnode < 0 || body < 0 || blocknode < 0) continue;
+    nt_node_set_arr(nt, params, "requireds", reqs, 2);
+    nt_node_set_ref(nt, bparams, "parameters", params);
+    nt_node_set_arr(nt, callargs, "arguments", reads, 2);
+    nt_node_set_ref(nt, callnode, "receiver", ex);
+    nt_node_set_str(nt, callnode, "name", "call");
+    nt_node_set_ref(nt, callnode, "arguments", callargs);
+    nt_node_set_ref(nt, callnode, "block", -1);
+    nt_node_set_arr(nt, body, "body", &callnode, 1);
+    nt_node_set_ref(nt, blocknode, "parameters", bparams);
+    nt_node_set_ref(nt, blocknode, "body", body);
+    nt_node_set_ref(nt, id, "block", blocknode);
+
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    Scope *bs = comp_scope_of(c, blocknode);
+    for (int k = 0; k < 2; k++) {
+      LocalVar *lv = scope_local_intern(bs, pn[k]);
+      if (lv) lv->is_block_param = 1;
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_public_method(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;

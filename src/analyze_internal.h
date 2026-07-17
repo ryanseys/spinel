@@ -219,6 +219,7 @@ int desugar_class_eval_value(Compiler *c);
 int desugar_instance_eval_builtin(Compiler *c);
 int desugar_builtin_class_var_recv(Compiler *c);
 int desugar_compose_method_operand(Compiler *c);
+int desugar_reduce_proc_arg(Compiler *c);
 const char *builtin_class_var_static_name(Compiler *c, int node);
 int desugar_enumerable_chain(Compiler *c);
 int desugar_implicit_send(Compiler *c);
