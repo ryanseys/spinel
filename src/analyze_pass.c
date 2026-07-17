@@ -3649,6 +3649,131 @@ int desugar_compose_method_operand(Compiler *c) {
    two-param block calling it -- `{ |__fa, __fb| pr.call(__fa, __fb) }` -- so
    the fold machinery sees an ordinary block (#2684). The fold emitter places
    the proc call's prelude inside the loop (see emit_reduce_block_expr). */
+/* Does the subtree contain any of the given kinds? */
+static int subtree_has_any_kind(const NodeTable *nt, int root, const NodeKind *ks, int nk, int depth) {
+  if (root < 0 || root >= nt->count || depth > 200) return 0;
+  NodeKind k = nt_kind(nt, root);
+  for (int i = 0; i < nk; i++) if (k == ks[i]) return 1;
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++)
+    if (subtree_has_any_kind(nt, nd->r[i].ref, ks, nk, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (subtree_has_any_kind(nt, nd->a[i].ids[j], ks, nk, depth + 1)) return 1;
+  return 0;
+}
+
+/* Does the subtree read local `nm` under a proc-create (a capture)? */
+static int subtree_proc_captures_name(Compiler *c, int root, const char *nm, int in_proc, int depth) {
+  const NodeTable *nt = c->nt;
+  if (root < 0 || root >= nt->count || depth > 200) return 0;
+  int now_proc = in_proc || is_proc_create(c, root);
+  if (now_proc && nt_kind(nt, root) == NK_LocalVariableReadNode) {
+    const char *rn = nt_str(nt, root, "name");
+    if (rn && sp_streq(rn, nm)) return 1;
+  }
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++)
+    if (subtree_proc_captures_name(c, nd->r[i].ref, nm, now_proc, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (subtree_proc_captures_name(c, nd->a[i].ids[j], nm, now_proc, depth + 1)) return 1;
+  return 0;
+}
+
+/* Rename every local read/write of `oldn` under `root` to `newn`. */
+static void subtree_rename_local(NodeTable *nt, int root, const char *oldn, const char *newn, int depth) {
+  if (root < 0 || root >= nt->count || depth > 200) return;
+  NodeKind k = nt_kind(nt, root);
+  if (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode ||
+      k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+      k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableTargetNode) {
+    const char *nm = nt_str(nt, root, "name");
+    if (nm && sp_streq(nm, oldn)) nt_node_set_str(nt, root, "name", newn);
+  }
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++) subtree_rename_local(nt, nd->r[i].ref, oldn, newn, depth + 1);
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) subtree_rename_local(nt, nd->a[i].ids[j], oldn, newn, depth + 1);
+}
+
+/* An INLINED iterator block whose param is captured by a proc it creates:
+   `[1,2].map { |i| ->{ i } }`. The block's binding lives in the loop and each
+   iteration must capture a FRESH cell, so wrap the body in an immediately-
+   called lambda that owns the variable -- `{ |i| (->(i){ body }).call(i) }` --
+   and the enclosing-proc-param capture machinery does the rest (#2648).
+   Bodies with control flow that must reach the ITERATION (next/break/return/
+   redo) are left alone: inside the wrapper they would bind to the lambda. */
+int desugar_block_capture_wrap(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    if (is_proc_create(c, id)) continue;             /* a proc literal is not an iterator */
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    if (nt_int(nt, blk, "cap_wrapped", 0)) continue;   /* fixpoint: wrap once */
+    int body = nt_ref(nt, blk, "body");
+    int bparams = nt_ref(nt, blk, "parameters");
+    int params = bparams >= 0 ? nt_ref(nt, bparams, "parameters") : -1;
+    int rn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &rn) : NULL;
+    if (body < 0 || rn < 1 || rn > 4 || !reqs) continue;
+    /* only fire when a proc INSIDE the body captures one of the block params */
+    int captured = 0;
+    const char *pn[4];
+    for (int k = 0; k < rn; k++) {
+      pn[k] = nt_str(nt, reqs[k], "name");
+      if (!pn[k]) { captured = -1; break; }
+      if (subtree_proc_captures_name(c, body, pn[k], 0, 0)) captured = 1;
+    }
+    if (captured != 1) continue;
+    static const NodeKind bad[] = { NK_NextNode, NK_BreakNode, NK_ReturnNode, NK_RedoNode, NK_YieldNode };
+    if (subtree_has_any_kind(nt, body, bad, 5, 0)) continue;
+
+    int base = nt->count;
+    /* The wrapper's params get FRESH names and the body's references are
+       renamed to them: the scope table is shared per-name, so celling the
+       original name would also derail the outer loop's own plain binding. */
+    char wn[4][48];
+    int wreqs[4], wreads[4]; int ok = 1;
+    for (int k = 0; k < rn && ok; k++) {
+      snprintf(wn[k], sizeof wn[k], "__cap_%d_%s", id, pn[k]);
+      wreqs[k] = nt_new_node(nt, "RequiredParameterNode");
+      wreads[k] = nt_new_node(nt, "LocalVariableReadNode");
+      if (wreqs[k] < 0 || wreads[k] < 0) { ok = 0; break; }
+      nt_node_set_str(nt, wreqs[k], "name", wn[k]);
+      nt_node_set_str(nt, wreads[k], "name", pn[k]);   /* call arg reads the ORIGINAL */
+    }
+    if (ok) for (int k = 0; k < rn; k++) subtree_rename_local(nt, body, pn[k], wn[k], 0);
+    if (!ok) continue;
+    int wparams = nt_new_node(nt, "ParametersNode");
+    int wlam = nt_new_node(nt, "LambdaNode");
+    int wargs = nt_new_node(nt, "ArgumentsNode");
+    int wcall = nt_new_node(nt, "CallNode");
+    int nbody = nt_new_node(nt, "StatementsNode");
+    if (wparams < 0 || wlam < 0 || wargs < 0 || wcall < 0 || nbody < 0) continue;
+    nt_node_set_arr(nt, wparams, "requireds", wreqs, rn);
+    /* a LambdaNode's "parameters" IS the ParametersNode (see a_proc_params_node) */
+    nt_node_set_ref(nt, wlam, "parameters", wparams);
+    nt_node_set_ref(nt, wlam, "body", body);
+    nt_node_set_arr(nt, wargs, "arguments", wreads, rn);
+    nt_node_set_ref(nt, wcall, "receiver", wlam);
+    nt_node_set_str(nt, wcall, "name", "call");
+    nt_node_set_ref(nt, wcall, "arguments", wargs);
+    nt_node_set_ref(nt, wcall, "block", -1);
+    nt_node_set_arr(nt, nbody, "body", &wcall, 1);
+    nt_node_set_ref(nt, blk, "body", nbody);
+    nt_node_set_int(nt, blk, "cap_wrapped", 1);
+
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_reduce_proc_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
