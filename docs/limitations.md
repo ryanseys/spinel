@@ -348,6 +348,15 @@ which Spinel deliberately does not carry. `String#grapheme_clusters` and
 byte-level iteration, use the supported `String#chars`, `#each_char`,
 `#codepoints`, or `#bytes`.
 
+#### `String#unicode_normalize`
+
+Unicode normalization (`"é".unicode_normalize(:nfc) # => "é"`) requires
+shipping and maintaining the Unicode decomposition/composition tables, which
+Spinel deliberately does not carry -- the same limit as
+`String#grapheme_clusters` above. `String#unicode_normalize`,
+`#unicode_normalize!`, and `#unicode_normalized?` are therefore not supported,
+and a call to them is rejected at compile time.
+
 #### Aliasing the regexp match globals
 
 CRuby's `English` library aliases the punctuation match globals to readable
