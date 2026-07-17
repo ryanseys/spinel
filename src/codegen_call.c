@@ -9975,13 +9975,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     else if (rt == TY_DIR) cn = "Dir";
     else if (rt == TY_IO) {
-      /* a path-backed handle is a File; a raw stream (STDOUT, pipe end) is an
-         IO (#2797) */
+      /* a stat handle is a File::Stat (#2841); a path-backed handle is a
+         File; a raw stream (STDOUT, pipe end) is an IO (#2797) */
       int tio = ++g_tmp;
       buf_printf(b, "({ sp_File *_t%d = ", tio); emit_expr(c, recv, b);
-      buf_printf(b, "; (_t%d && sp_File_path(_t%d)[0] && sp_File_path(_t%d)[0] != '<')"
+      buf_printf(b, "; (_t%d && _t%d->mode && strcmp(_t%d->mode, \"stat\") == 0)"
+                    " ? ((sp_Class){(mrb_int)-1, \"File::Stat\"})"
+                    " : (_t%d && sp_File_path(_t%d)[0] && sp_File_path(_t%d)[0] != '<')"
                     " ? ((sp_Class){(mrb_int)-121, \"File\"})"
-                    " : ((sp_Class){(mrb_int)-120, \"IO\"}); })", tio, tio, tio);
+                    " : ((sp_Class){(mrb_int)-120, \"IO\"}); })",
+                 tio, tio, tio, tio, tio, tio);
       return;
     }
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */

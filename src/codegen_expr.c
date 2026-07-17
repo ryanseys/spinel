@@ -1497,6 +1497,16 @@ void emit_expr(Compiler *c, int id, Buf *b) {
         }
       }
     }
+    /* a ::-scoped BUILTIN class is a first-class Class value (#2840) */
+    if (par_nmc && nm) {
+      char qbuf[160];
+      snprintf(qbuf, sizeof qbuf, "%s::%s", par_nmc, nm);
+      int qid = builtin_class_id(qbuf);
+      if (qid != 0) {
+        buf_printf(b, "((sp_Class){(mrb_int)%d, \"%s\"})", qid, qbuf);
+        return;
+      }
+    }
     LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
     if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "cst_%s", nm); return; }
     if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }

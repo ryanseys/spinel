@@ -4868,6 +4868,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "case -157:return SPL(\"NoMatchingPatternError\");case -158:return SPL(\"NoMatchingPatternKeyError\");");
     buf_puts(&b, "case -159:return SPL(\"EOFError\");case -160:return SPL(\"Math::DomainError\");");
     buf_puts(&b, "case -161:return SPL(\"SystemExit\");case -162:return SPL(\"Signal\");");
+    buf_puts(&b, "case -163:return SPL(\"Process::Status\");");
     buf_puts(&b, "default:return \"\";} }\n\n");
   }
   /* Threaded-runtime marker: the driver greps for this and links the

@@ -5172,6 +5172,20 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (nm && sp_streq(nm, "ARGF")) return TY_ARGF;
     /* well-known module constants */
     int par_id = nt_ref(nt, id, "parent");
+    /* a ::-scoped BUILTIN class (Math::DomainError, Process::Status) is a
+       first-class Class value like its bare siblings (#2840) */
+    {
+      int qpar = par_id;
+      const char *qpty = qpar >= 0 ? nt_type(nt, qpar) : NULL;
+      const char *qpnm = (qpty && (sp_streq(qpty, "ConstantReadNode") ||
+                                   sp_streq(qpty, "ConstantPathNode")))
+                         ? nt_str(nt, qpar, "name") : NULL;
+      if (qpnm && nm) {
+        char qbuf[160];
+        snprintf(qbuf, sizeof qbuf, "%s::%s", qpnm, nm);
+        if (builtin_class_id(qbuf) != 0) return TY_CLASS;
+      }
+    }
     const char *par_ty = par_id >= 0 ? nt_type(nt, par_id) : NULL;
     /* the qualifying module is the parent's leaf name, so a nested / root
        path (`::Float::MAX`) qualifies by `Float` too -- match codegen's
