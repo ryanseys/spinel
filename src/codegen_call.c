@@ -6904,8 +6904,33 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "lambda?")) {
     buf_puts(b, "sp_proc_lambda_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "parameters")) {
-    buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && sp_streq(name, "parameters")) {
+    /* parameters() follows the receiver's own nature (mode -1); an explicit
+       `lambda:` keyword forces the view: true -> lambda (kinds as stored),
+       false -> proc (req remapped to opt at print), nil -> the receiver's own.
+       Kinds are stored canonically, see the meta emitter. #2693 */
+    int pmode = -1, pmode_ok = argc == 0;
+    if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
+      int en = 0; const int *elems = nt_arr(nt, argv[0], "elements", &en);
+      if (en == 1) {
+        int key = nt_ref(nt, elems[0], "key");
+        const char *kn = key >= 0 ? nt_str(nt, key, "unescaped") : NULL;
+        if (!kn && key >= 0) kn = nt_str(nt, key, "value");
+        int val = nt_ref(nt, elems[0], "value");
+        const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
+        if (kn && sp_streq(kn, "lambda") && vty) {
+          if (sp_streq(vty, "TrueNode"))  { pmode = 1;  pmode_ok = 1; }
+          if (sp_streq(vty, "FalseNode")) { pmode = 0;  pmode_ok = 1; }
+          if (sp_streq(vty, "NilNode"))   { pmode = -1; pmode_ok = 1; }
+        }
+      }
+    }
+    if (pmode_ok) {
+      buf_printf(b, "sp_proc_parameters_ids("); emit_expr(c, recv, b);
+      buf_printf(b, ", %d, (sp_sym)%d, (sp_sym)%d)",
+                 pmode, comp_sym_intern(c, "req"), comp_sym_intern(c, "opt"));
+      return;
+    }
   }
   /* Proc#source_location: [file, line] of a proc LITERAL receiver (its
      definition site is the node itself). #2649 */

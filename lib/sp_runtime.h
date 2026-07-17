@@ -6990,6 +6990,28 @@ static const char *sp_proc_inspect(sp_Proc *p) {
   return sp_sprintf(p->lambda_p ? "#<Proc:0x%016llx (lambda)>" : "#<Proc:0x%016llx>",
                     (unsigned long long)(uintptr_t)p);
 }
+/* Proc#parameters with an explicit mode. Kinds are stored canonically
+   (lambda-style: a plain positional is "req"); printing for proc mode remaps
+   req -> opt, which leaves defaulted positionals (stored "opt") and every
+   non-positional kind untouched -- exactly CRuby's parameters(lambda:) rule.
+   mode: 1 = lambda view, 0 = proc view, -1 = the receiver's own nature.
+   req_id/opt_id are the generated TU's interned ids for those kinds. #2693 */
+static sp_PolyArray *sp_proc_parameters_ids(sp_Proc *p, int mode, sp_sym req_id, sp_sym opt_id) __attribute__((unused));
+static sp_PolyArray *sp_proc_parameters_ids(sp_Proc *p, int mode, sp_sym req_id, sp_sym opt_id) {
+  sp_PolyArray *r = sp_PolyArray_new();
+  if (!p || p->param_count <= 0 || !p->param_kinds) return r;
+  SP_GC_ROOT(r);
+  int want_lambda = mode >= 0 ? mode : (p->lambda_p ? 1 : 0);
+  for (mrb_int i = 0; i < p->param_count; i++) {
+    sp_sym k = p->param_kinds[i];
+    if (!want_lambda && k == req_id) k = opt_id;
+    sp_PolyArray *pair = sp_PolyArray_new();
+    sp_PolyArray_push(pair, sp_box_sym(k));
+    if (p->param_names && p->param_names[i] >= 0) sp_PolyArray_push(pair, sp_box_sym(p->param_names[i]));
+    sp_PolyArray_push(r, sp_box_poly_array(pair));
+  }
+  return r;
+}
 static sp_PolyArray *sp_proc_parameters(sp_Proc *p) { sp_PolyArray *r = sp_PolyArray_new(); if (!p || p->param_count <= 0 || !p->param_kinds) return r; SP_GC_ROOT(r); for (mrb_int i = 0; i < p->param_count; i++) { sp_PolyArray *pair = sp_PolyArray_new(); sp_PolyArray_push(pair, sp_box_sym(p->param_kinds[i])); if (p->param_names && p->param_names[i] >= 0) sp_PolyArray_push(pair, sp_box_sym(p->param_names[i])); sp_PolyArray_push(r, sp_box_poly_array(pair)); } return r; }
 
 /* Proc#<< / Proc#>> composition. The composed proc captures the two

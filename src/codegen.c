@@ -2045,7 +2045,12 @@ else if (orecv >= 0 && onm) {
     int pn = proc_params_node(c, create);
     if (pn >= 0) {
       int n = 0; const int *ids;
-      const char *pos_kind = is_lambda ? "req" : "opt";
+      /* kinds are stored CANONICALLY (lambda-style): a plain positional is
+         "req", a defaulted one "opt". sp_proc_parameters_ids remaps req->opt
+         at print time when the wanted mode is proc, so parameters() and
+         parameters(lambda:) both read the same array (#2693). */
+      const char *pos_kind = "req";
+      (void)is_lambda;
       ids = nt_arr(nt, pn, "requireds", &n);
       for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
         pkind[meta_count] = pos_kind;
@@ -2093,11 +2098,15 @@ else if (orecv >= 0 && onm) {
       for (int i = 0; i < nnumbered && meta_count < PMETA_MAX; i++) {
         char nbuf[4];
         snprintf(nbuf, sizeof nbuf, "_%d", i + 1);
-        pkind[meta_count] = "opt";
+        pkind[meta_count] = "req";  /* canonical, like a named plain positional */
         pname[meta_count++] = comp_sym_intern(c, nbuf);
       }
     }
     if (meta_count > 0) {
+      /* the print-time remap needs both ids resolvable regardless of which
+         kinds this particular proc uses */
+      comp_sym_intern(c, "req");
+      comp_sym_intern(c, "opt");
       buf_printf(&g_procs, "static const sp_sym _proc_kinds_%d[] = {", pid);
       for (int k = 0; k < meta_count; k++) buf_printf(&g_procs, "%s(sp_sym)%d", k ? ", " : "", comp_sym_intern(c, pkind[k]));
       buf_puts(&g_procs, "};\n");

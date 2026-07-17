@@ -1413,6 +1413,9 @@ TyKind infer_call(Compiler *c, int id) {
     return TY_PROC;
 
   /* Proc introspection */
+  /* parameters(lambda: <bool/nil>) forces the view; same shape as parameters() */
+  if (recv >= 0 && rt == TY_PROC && argc == 1 && sp_streq(name, "parameters"))
+    return TY_POLY_ARRAY;
   if (recv >= 0 && rt == TY_PROC && argc == 0) {
     if (sp_streq(name, "arity")) return TY_INT;
     if (sp_streq(name, "lambda?")) return TY_BOOL;
