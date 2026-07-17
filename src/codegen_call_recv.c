@@ -6572,8 +6572,10 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         int tia = ++g_tmp;
         buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
         buf_printf(b, "); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tia, tia);
-        for (int ji = 0; ji < ivc->nivars; ji++)
-          buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", tia, ivc->ivars[ji]);
+        /* Data/Struct members are NOT @-instance variables in CRuby (#2849) */
+        if (!ivc->is_struct)
+          for (int ji = 0; ji < ivc->nivars; ji++)
+            buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", tia, ivc->ivars[ji]);
         buf_printf(b, "_t%d; })", tia);
         return 1;
       }
@@ -6604,8 +6606,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       int mi = -1;
-      for (int i = 0; i < c->classes[cid].nivars; i++)
-        if (sp_streq(c->classes[cid].ivars[i], sym)) { mi = i; break; }
+      /* Data/Struct members live in the layout but are NOT @-instance
+         variables in CRuby: a get answers nil, not the member (#2849) */
+      if (!c->classes[cid].is_struct)
+        for (int i = 0; i < c->classes[cid].nivars; i++)
+          if (sp_streq(c->classes[cid].ivars[i], sym)) { mi = i; break; }
       if (mi >= 0) {
         /* A value object is passed by value, so a field write only sticks when
            the receiver is an lvalue (a local / ivar / self); a pointer object

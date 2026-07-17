@@ -2611,7 +2611,8 @@ else {
                             ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
         /* A name in the layout yields its declared type; an undefined-but-valid
            `@`-name reads as nil and a bad name (no `@`) raises NameError -- both poly. */
-        int iv = (sym && sym[0] == '@') ? comp_ivar_index(cls, sym) : -1;
+        /* Data/Struct members are not @-ivars in CRuby: read as nil (#2849) */
+        int iv = (sym && sym[0] == '@' && !cls->is_struct) ? comp_ivar_index(cls, sym) : -1;
         if (iv >= 0) return cls->ivar_types[iv];
         return TY_POLY;
       }
