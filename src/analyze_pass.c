@@ -3854,6 +3854,52 @@ int desugar_reduce_proc_arg(Compiler *c) {
   return changed;
 }
 
+/* ENV's enumeration/read-only surface rides a StrStr-hash snapshot: retarget
+   the receiver at a receiverless __env_to_h call, and the whole Hash machinery
+   serves keys/each/select/count{...}/inspect/... (#2742). Mutators and the
+   direct read/write arms (\[\], \[\]=, fetch sans block, delete, store) stay on
+   the real environment. */
+static int env_enum_method(const char *n) {
+  static const char *const M[] = {
+    "keys", "values", "each", "each_pair", "each_key", "each_value",
+    "each_entry", "to_h", "to_a", "select", "filter", "reject", "any?",
+    "all?", "none?", "one?", "find", "detect", "find_all", "min_by", "max_by",
+    "sort", "sort_by", "map", "collect", "flat_map", "filter_map", "group_by",
+    "partition", "sum", "reduce", "inject", "invert", "key", "rassoc",
+    "assoc", "slice", "except", "values_at", "count", "inspect", "hash",
+    "empty?", NULL };
+  for (int i = 0; M[i]; i++) if (sp_streq(n, M[i])) return 1;
+  return 0;
+}
+int desugar_env_enum(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (!nm || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || !sp_streq(rn, "ENV")) continue;
+    int is_enum = env_enum_method(nm);
+    /* fetch WITH a block rides the snapshot's block-aware Hash#fetch (#2745) */
+    if (!is_enum && sp_streq(nm, "fetch") && nt_ref(nt, id, "block") >= 0) is_enum = 1;
+    if (!is_enum) continue;
+    int snap = nt_new_node(nt, "CallNode");
+    if (snap < 0) continue;
+    nt_node_set_str(nt, snap, "name", "__env_to_h");
+    nt_node_set_ref(nt, snap, "receiver", -1);
+    nt_node_set_ref(nt, snap, "arguments", -1);
+    nt_node_set_ref(nt, snap, "block", -1);
+    comp_grow_node_arrays(c);
+    c->nscope[snap] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", snap);
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_public_method(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;

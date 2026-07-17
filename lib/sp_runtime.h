@@ -2228,6 +2228,25 @@ static mrb_int sp_env_size(void) {
   for (char **e = environ; e && *e; e++) n++;
   return n;
 }
+/* A snapshot of the environment as a StrStr hash: ENV's enumeration surface
+   (keys/each/select/count{...}/inspect/...) is desugared onto it, so the
+   whole Hash machinery serves it (#2742). Keys/values are copied onto the
+   GC string heap -- environ storage may move under setenv. */
+static sp_StrStrHash *sp_env_to_h(void) __attribute__((unused));
+static sp_StrStrHash *sp_env_to_h(void) {
+  extern char **environ;
+  sp_StrStrHash *h = sp_StrStrHash_new();
+  SP_GC_ROOT(h);
+  for (char **e = environ; e && *e; e++) {
+    const char *eq = strchr(*e, '=');
+    if (!eq) continue;
+    size_t kl = (size_t)(eq - *e);
+    char *k = sp_str_alloc_raw(kl + 1);
+    memcpy(k, *e, kl); k[kl] = 0;
+    sp_StrStrHash_set(h, k, sp_str_dup_external(eq + 1));
+  }
+  return h;
+}
 static mrb_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b);
 static mrb_float sp_poly_to_f(sp_RbVal v);  /* defined below; used by the bigint+float arms */
 static mrb_int sp_poly_to_i(sp_RbVal v);    /* defined below; used by the rational helper */

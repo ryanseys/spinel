@@ -1765,6 +1765,11 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+. The arg is
      already the concatenation of every source's #to_a, so the chain enumerator
      just snapshots it. #2545 / #2548 / #2551 */
+  /* the desugared ENV snapshot (#2742) */
+  if (recv < 0 && sp_streq(name, "__env_to_h") && argc == 0) {
+    buf_puts(b, "sp_env_to_h()");
+    return 1;
+  }
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) {
     buf_puts(b, "sp_enum_chain_new("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
@@ -6497,6 +6502,82 @@ void emit_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b);
       buf_puts(b, ")");
       return;
+    }
+  }
+  /* ENV direct arms: identity, copy refusal, mutators, arity and key-type
+     validation (#2743, #2746, #2747, #2765, #2766, #2773). */
+  {
+    int erecv = nt_ref(nt, id, "receiver");
+    const char *erty = erecv >= 0 ? nt_type(nt, erecv) : NULL;
+    const char *ern = (erty && sp_streq(erty, "ConstantReadNode")) ? nt_str(nt, erecv, "name") : NULL;
+    if (ern && sp_streq(ern, "ENV")) {
+      const char *enm = nt_str(nt, id, "name");
+      int eac = 0; const int *eav = call_args(nt, id, &eac);
+      /* a non-String key never converts: TypeError at the call (#2765/#2766) */
+      if (enm && eac >= 1 &&
+          (sp_streq(enm, "[]") || sp_streq(enm, "fetch") || sp_streq(enm, "key?") ||
+           sp_streq(enm, "has_key?") || sp_streq(enm, "include?") || sp_streq(enm, "member?") ||
+           sp_streq(enm, "delete") || sp_streq(enm, "store") || sp_streq(enm, "[]="))) {
+        TyKind kt = comp_ntype(c, eav[0]);
+        const char *kcn = kt == TY_SYMBOL ? "Symbol" : kt == TY_INT ? "Integer"
+                        : kt == TY_FLOAT ? "Float" : kt == TY_BOOL ? "TrueClass"
+                        : kt == TY_NIL ? "nil" : NULL;
+        if (kcn) {
+          buf_printf(b, "(sp_raise_cls(\"TypeError\","
+                        " (&(\"\\xff\" \"no implicit conversion of %s into String\")[1])), %s)",
+                     kcn, default_value(comp_ntype(c, id)));
+          return;
+        }
+      }
+      /* arity: [] takes 1; fetch takes 1..2 (#2773) */
+      if (enm && sp_streq(enm, "[]") && eac != 1) {
+        buf_puts(b, "(");
+        for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
+        buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
+                      " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1)\")[1])), %s)",
+                   eac, default_value(comp_ntype(c, id)));
+        buf_puts(b, ")");
+        return;
+      }
+      if (enm && sp_streq(enm, "fetch") && (eac == 0 || eac > 2) && nt_ref(nt, id, "block") < 0) {
+        buf_puts(b, "(");
+        for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
+        buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
+                      " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1..2)\")[1])), %s)",
+                   eac, default_value(comp_ntype(c, id)));
+        buf_puts(b, ")");
+        return;
+      }
+      if (enm && sp_streq(enm, "to_s") && eac == 0) {
+        buf_puts(b, "(&(\"\\xff\" \"ENV\")[1])");
+        return;
+      }
+      if (enm && (sp_streq(enm, "dup") || sp_streq(enm, "clone")) && eac == 0) {
+        buf_printf(b, "(sp_raise_cls(\"TypeError\","
+                      " (&(\"\\xff\" \"Cannot %s ENV, use ENV.to_h to get a copy of ENV as a hash\")[1])), sp_box_nil())",
+                   enm);
+        return;
+      }
+      if (enm && sp_streq(enm, "freeze") && eac == 0) {
+        buf_puts(b, "(sp_raise_cls(\"TypeError\", (&(\"\\xff\" \"cannot freeze ENV\")[1])), sp_box_nil())");
+        return;
+      }
+      /* ENV.delete(k): the removed value (or nil) */
+      if (enm && sp_streq(enm, "delete") && eac == 1) {
+        int t1 = ++g_tmp, t2 = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", t1); emit_expr(c, eav[0], b);
+        buf_printf(b, "; const char *_t%d = getenv(_t%d);"
+                      " _t%d = _t%d ? sp_str_dup_external(_t%d) : NULL;"
+                      " unsetenv(_t%d); _t%d; })", t2, t1, t2, t2, t2, t1, t2);
+        return;
+      }
+      /* ENV.store(k, v) is []= */
+      if (enm && sp_streq(enm, "store") && eac == 2) {
+        buf_puts(b, "sp_env_aset(");
+        emit_expr(c, eav[0], b); buf_puts(b, ", ");
+        emit_boxed(c, eav[1], b); buf_puts(b, ")");
+        return;
+      }
     }
   }
   /* ENV[key] -> getenv */

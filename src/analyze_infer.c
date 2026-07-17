@@ -843,6 +843,8 @@ TyKind infer_call(Compiler *c, int id) {
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
   /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+ (#2545) */
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
+  /* the desugared ENV snapshot (#2742) */
+  if (recv < 0 && sp_streq(name, "__env_to_h") && argc == 0) return TY_STR_STR_HASH;
   if (recv < 0 && sp_streq(name, "Complex")) return TY_COMPLEX;
   if (recv < 0 && sp_streq(name, "Rational") && (argc == 1 || argc == 2)) return TY_RATIONAL;
   if (recv >= 0) {
@@ -2920,6 +2922,28 @@ else {
     if (rty && sp_streq(rty, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) return TY_BOOL;
+    }
+  }
+  /* ENV direct arms (#2743, #2746): typed results so p/interp accept them */
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
+    const char *rn = nt_str(nt, recv, "name");
+    if (rn && sp_streq(rn, "ENV")) {
+      if (sp_streq(name, "to_s")) return TY_STRING;
+      /* a non-String key raises TypeError; type the (diverging) call poly */
+      if (argc >= 1 &&
+          (sp_streq(name, "[]") || sp_streq(name, "fetch") || sp_streq(name, "key?") ||
+           sp_streq(name, "has_key?") || sp_streq(name, "include?") || sp_streq(name, "member?") ||
+           sp_streq(name, "delete") || sp_streq(name, "store"))) {
+        TyKind kt0 = infer_type(c, argv[0]);
+        if (kt0 == TY_SYMBOL || kt0 == TY_INT || kt0 == TY_FLOAT ||
+            kt0 == TY_BOOL || kt0 == TY_NIL) return TY_POLY;
+      }
+      /* wrong arity raises ArgumentError; poly likewise */
+      if (sp_streq(name, "[]") && argc != 1) return TY_POLY;
+      if (sp_streq(name, "fetch") && (argc == 0 || argc > 2)) return TY_POLY;
+      if (sp_streq(name, "delete")) return TY_STRING;   /* nullable string: NULL is nil */
+      if (sp_streq(name, "store") || sp_streq(name, "[]=")) return TY_STRING;
+      if (sp_streq(name, "dup") || sp_streq(name, "clone") || sp_streq(name, "freeze")) return TY_POLY;
     }
   }
 
