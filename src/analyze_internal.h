@@ -216,6 +216,7 @@ int desugar_value_callable_forwards(Compiler *c);
 int desugar_block_destructure_params(Compiler *c);
 int desugar_public_method(Compiler *c);
 int desugar_class_eval_value(Compiler *c);
+int desugar_instance_eval_builtin(Compiler *c);
 int desugar_enumerable_chain(Compiler *c);
 int desugar_implicit_send(Compiler *c);
 int desugar_public_send_recv(Compiler *c);

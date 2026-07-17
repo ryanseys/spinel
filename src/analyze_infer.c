@@ -767,6 +767,11 @@ TyKind infer_call(Compiler *c, int id) {
       return rt;
   }
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
+  /* Object#itself is the receiver, whatever its type -- the scattered per-type
+     arms below predate this and remain harmless. */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "itself") &&
+      nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, "itself"))
+    return infer_type(c, recv);
 
   /* A literal integer power whose result exceeds int64 (`10 ** 30`, `2 ** 70`)
      is a Bignum in every overflow mode (CRuby). Type it bigint so codegen emits

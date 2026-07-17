@@ -5546,7 +5546,8 @@ void analyze_program(Compiler *c) {
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
     ch |= type_block_rest_params(c);           /* |*rest| locals are poly arrays */
     ch |= desugar_public_method(c);            /* recv.public_method(:m) -> recv.method(:m) */
-    ch |= desugar_class_eval_value(c);           /* C.class_eval { v } -> (->(){v}).call */
+    ch |= desugar_class_eval_value(c);
+    ch |= desugar_instance_eval_builtin(c);    /* "s".instance_eval { m } -> splice on a temp */           /* C.class_eval { v } -> (->(){v}).call */
     ch |= desugar_enumerable_chain(c);               /* x.chain(y) / enum+enum -> __enum_chain(x.to_a + y.to_a) */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
     ch |= desugar_public_send_recv(c);         /* r.public_send(:m, a) -> r.m(a), visibility-stamped */

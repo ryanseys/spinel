@@ -3374,6 +3374,201 @@ int desugar_class_eval_value(Compiler *c) {
   return changed;
 }
 
+/* Kernel functions spinel dispatches globally: a receiverless call to one of
+   these inside an instance_eval splice must stay receiverless (CRuby finds
+   them through the receiver's ancestry via Kernel; spinel's equivalents are
+   free functions). */
+static int ie_kernel_global(const char *n) {
+  static const char *const K[] = {
+    "puts", "print", "p", "pp", "warn", "raise", "require", "require_relative",
+    "printf", "sprintf", "format", "rand", "srand", "sleep", "exit", "abort",
+    "loop", "lambda", "proc", "catch", "throw", "gets", "binding",
+    "block_given?", "at_exit", "caller", "freeze", "frozen?", NULL };
+  for (int i = 0; K[i]; i++) if (sp_streq(n, K[i])) return 1;
+  return 0;
+}
+
+/* Repoint self and receiverless calls in an instance_eval body at the bound
+   receiver temp: SelfNode becomes a read of `tmp`, and a receiverless CallNode
+   (other than a Kernel global) gains `tmp` as its receiver -- instance_eval
+   dispatches those on the new self. Skips nested class/module/def bodies. */
+static void ie_subtree_retarget(Compiler *c, int root, const char *tmp, int depth) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (root < 0 || root >= nt->count || depth > 200) return;
+  NodeKind k = nt_kind(nt, root);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode) return;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, root, "name");
+    if (nm && nt_ref(nt, root, "receiver") < 0 && !ie_kernel_global(nm)) {
+      int rd = nt_new_node(nt, "LocalVariableReadNode");
+      if (rd < 0) return;
+      nt_node_set_str(nt, rd, "name", tmp);
+      comp_grow_node_arrays(c);
+      c->nscope[rd] = c->nscope[root];
+      nt_node_set_ref(nt, root, "receiver", rd);
+      nt_node_set_int(nt, root, "vcall", 0);   /* no longer a bare identifier */
+    }
+  }
+  SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++) {
+    int ch = nd->r[i].ref;
+    if (ch >= 0 && nt_kind(nt, ch) == NK_SelfNode) {
+      int rd = nt_new_node(nt, "LocalVariableReadNode");
+      if (rd < 0) return;
+      nt_node_set_str(nt, rd, "name", tmp);
+      comp_grow_node_arrays(c);
+      c->nscope[rd] = c->nscope[root];
+      nd = &nt->nodes[root];
+      nd->r[i].ref = rd;
+    }
+    else ie_subtree_retarget(c, ch, tmp, depth + 1);
+    nd = &nt->nodes[root];
+  }
+  for (int i = 0; i < nd->na; i++) {
+    for (int j = 0; j < nd->a[i].n; j++) {
+      int ch = nd->a[i].ids[j];
+      if (ch >= 0 && nt_kind(nt, ch) == NK_SelfNode) {
+        int rd = nt_new_node(nt, "LocalVariableReadNode");
+        if (rd < 0) return;
+        nt_node_set_str(nt, rd, "name", tmp);
+        comp_grow_node_arrays(c);
+        c->nscope[rd] = c->nscope[root];
+        nd = &nt->nodes[root];
+        nd->a[i].ids[j] = rd;
+      }
+      else ie_subtree_retarget(c, ch, tmp, depth + 1);
+      nd = &nt->nodes[root];
+    }
+  }
+}
+
+/* instance_eval / instance_exec with a block on a BUILTIN receiver: splice the
+   body inline with self bound to a temp (#2634). User-object receivers keep
+   the dedicated codegen path (ie_direct), which handles their ivars/methods.
+
+     "abc".instance_eval { upcase }        ->  begin __ieN = "abc"; __ieN.upcase end
+     "xy".instance_exec(3) { |n| self*n }  ->  begin n = 3; __ieN = "xy"; __ieN*__ieN? .. end
+
+   instance_eval also yields self to a sole block param. def-containing bodies
+   are singleton definitions and stay out (the documented dsm limit). */
+int desugar_instance_eval_builtin(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "instance_eval") && !sp_streq(nm, "instance_exec"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    TyKind rt = infer_type(c, recv);
+    /* builtin value receivers only; user objects ride ie_direct, and an
+       unresolved receiver may still become one */
+    if (!(rt == TY_STRING || rt == TY_INT || rt == TY_FLOAT || rt == TY_SYMBOL ||
+          rt == TY_BOOL || rt == TY_RANGE || rt == TY_TIME || rt == TY_REGEX ||
+          rt == TY_COMPLEX || rt == TY_RATIONAL ||
+          ty_is_array(rt) || ty_is_hash(rt))) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    int body = nt_ref(nt, blk, "body");
+    if (body < 0) continue;
+    if (subtree_has_kind(nt, body, NK_DefNode, 0)) continue;
+
+    int is_exec = sp_streq(nm, "instance_exec");
+    const char *pnames[8]; int np = 0;
+    {
+      int bparams = nt_ref(nt, blk, "parameters");
+      int params = bparams >= 0 ? nt_ref(nt, bparams, "parameters") : -1;
+      int rn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &rn) : NULL;
+      int an2 = nt_ref(nt, id, "arguments");
+      int ac2 = 0; nt_arr(nt, an2 >= 0 ? an2 : -1, "arguments", &ac2);
+      if (is_exec) { if (rn > 8 || rn != ac2) continue; }
+      else { if (ac2 != 0 || rn > 1) continue; }   /* instance_eval { |s| }: s = self */
+      int ok = 1;
+      for (int k = 0; k < rn && ok; k++)
+        if (!(pnames[k] = nt_str(nt, reqs[k], "name"))) ok = 0;
+      if (!ok) continue;
+      np = rn;
+    }
+
+    char tmp[32];
+    snprintf(tmp, sizeof tmp, "__ie_%d", id);
+    /* the temp is a synthesized local: scope construction already ran, so
+       intern it (typed as the receiver) or no declaration is ever emitted */
+    {
+      Scope *es = comp_scope_of(c, id);
+      LocalVar *lv = es ? scope_local_intern(es, tmp) : NULL;
+      if (!lv) continue;
+      lv->type = rt;
+    }
+    ie_subtree_retarget(c, body, tmp, 0);
+
+    int base = nt->count;
+    int items[8 + 66]; int ni = 0;
+    /* bind the receiver first (evaluated once), then the params */
+    int wrecv = nt_new_node(nt, "LocalVariableWriteNode");
+    if (wrecv < 0) continue;
+    nt_node_set_str(nt, wrecv, "name", tmp);
+    nt_node_set_ref(nt, wrecv, "value", recv);
+    items[ni++] = wrecv;
+    if (is_exec) {
+      int an2 = nt_ref(nt, id, "arguments");
+      int ac2 = 0; const int *av2 = nt_arr(nt, an2, "arguments", &ac2);
+      for (int k = 0; k < np; k++) {
+        int w = nt_new_node(nt, "LocalVariableWriteNode");
+        if (w < 0) { ni = -1; break; }
+        nt_node_set_str(nt, w, "name", pnames[k]);
+        nt_node_set_ref(nt, w, "value", av2[k]);
+        items[ni++] = w;
+      }
+    }
+    else if (np == 1) {   /* instance_eval yields self to the sole param */
+      int rd = nt_new_node(nt, "LocalVariableReadNode");
+      int w = nt_new_node(nt, "LocalVariableWriteNode");
+      if (rd < 0 || w < 0) continue;
+      nt_node_set_str(nt, rd, "name", tmp);
+      nt_node_set_str(nt, w, "name", pnames[0]);
+      nt_node_set_ref(nt, w, "value", rd);
+      items[ni++] = w;
+    }
+    if (ni < 0) continue;
+    {
+      int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+      if (bn > 64) continue;
+      for (int k = 0; k < bn; k++) items[ni++] = bb[k];
+    }
+    int stmts = nt_new_node(nt, "StatementsNode");
+    int beg = nt_new_node(nt, "BeginNode");
+    if (stmts < 0 || beg < 0) continue;
+    nt_node_set_arr(nt, stmts, "body", items, ni);
+    nt_node_set_ref(nt, beg, "statements", stmts);
+    nt_node_set_str(nt, id, "name", "itself");
+    nt_node_set_ref(nt, id, "receiver", beg);
+    nt_node_set_ref(nt, id, "block", -1);
+    nt_node_set_ref(nt, id, "arguments", -1);
+
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    {
+      Scope *bs = comp_scope_of(c, body);
+      int stack[256]; int sp = 0; stack[sp++] = body;
+      int bsi = bs ? (int)(bs - c->scopes) : -1;
+      while (sp > 0 && bsi >= 0) {
+        int nid = stack[--sp];
+        if (nid < 0 || nid >= nt->count) continue;
+        if (c->nscope[nid] == bsi) c->nscope[nid] = encl;
+        const SpNode *nd = &nt->nodes[nid];
+        for (int i2 = 0; i2 < nd->nr && sp < 250; i2++) stack[sp++] = nd->r[i2].ref;
+        for (int i2 = 0; i2 < nd->na; i2++)
+          for (int j2 = 0; j2 < nd->a[i2].n && sp < 250; j2++) stack[sp++] = nd->a[i2].ids[j2];
+      }
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_public_method(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;

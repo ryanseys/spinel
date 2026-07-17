@@ -5647,6 +5647,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
      otherwise an earlier arm reports it as a generic gap (or, for a bare
      `binding`, as a NameError) and the specific message never runs. */
   if (diagnose_unsupported_call(c, id)) return;
+  /* Object#itself is the receiver for every type (mirrors the general infer
+     arm); a user-defined #itself still dispatches normally. */
+  {
+    const char *nm0 = nt_str(nt, id, "name");
+    if (nm0 && sp_streq(nm0, "itself") && nt_ref(nt, id, "receiver") >= 0 &&
+        nt_ref(nt, id, "block") < 0) {
+      int ac0 = 0; call_args(nt, id, &ac0);
+      if (ac0 == 0 && !diag_user_defines(c, "itself")) {
+        emit_expr(c, nt_ref(nt, id, "receiver"), b);
+        return;
+      }
+    }
+  }
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
   /* a public_send-lowered call (stamped by the desugars): a private or
      protected target raises NoMethodError like CRuby, which enforces
