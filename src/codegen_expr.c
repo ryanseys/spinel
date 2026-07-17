@@ -797,6 +797,18 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       return;
     }
     LocalVar *slv = lrn ? scope_local(comp_scope_of(c, id), lrn) : NULL;
+    /* The node cache can lag a later narrowing of the local itself (a
+       map-block hash-key param settling from poly to string): a POLY-typed
+       read of a concretely-declared local boxes the declared value so the
+       consumer's poly dispatch stays well-typed (#2730). */
+    if (slv && slv->type != TY_POLY && slv->type != TY_UNKNOWN &&
+        slv->type != TY_STRBUF && comp_ntype(c, id) == TY_POLY) {
+      Buf rb3; memset(&rb3, 0, sizeof rb3);
+      emit_local_ref(c, id, lrn, &rb3);
+      emit_boxed_text(c, slv->type, rb3.p ? rb3.p : "", b);
+      free(rb3.p);
+      return;
+    }
     if (slv && slv->type == TY_STRBUF) {
       /* A mutable-string local read yields an independent GC string copy: its
          sp_String buffer is not itself a GC object, so a bare cstr pointer
