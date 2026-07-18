@@ -7672,7 +7672,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      poly slot is already handled by the want_poly boxing above. (#2900) */
   else if (g_result_var && !g_result_poly && (vty == TY_VOID || vty == TY_NIL) &&
            sp_streq(ty, "CallNode")) {
-    buf_puts(b, "("); emit_tail_value(c, id, b); buf_puts(b, ", 0)");
+    /* Cast the nil default to the result slot's type: a bare 0 in the comma
+       expression is an int, not a null-pointer constant, so assigning it to a
+       pointer slot is -Wint-conversion. typeof gives NULL for a pointer and 0
+       for an int uniformly. */
+    buf_puts(b, "("); emit_tail_value(c, id, b);
+    buf_printf(b, ", (__typeof__(%s))0)", g_result_var);
   }
   else emit_tail_value(c, id, b);
   buf_puts(b, ";\n");
