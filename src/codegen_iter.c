@@ -150,7 +150,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   int tag = ++g_tmp;
   if (g_inline_depth >= SP_INLINE_DEPTH_MAX)
-    unsupported_feature(c, id, "a method that yields and calls itself recursively (inlining cannot terminate; no standalone function to fall back to)");
+    unsupported_feature(c, id, "a method that uses its block (yield or block.call) and calls itself recursively (inlining cannot terminate; no standalone function to fall back to)");
   g_inline_depth++;
   int saved_nren = g_nren, saved_block = g_block_id;
   int saved_emcls = g_emitting_class_id;
