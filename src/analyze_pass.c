@@ -2763,7 +2763,14 @@ int infer_param_types(Compiler *c) {
          params -- a poly block-param's `x + 1` must not widen Set#+'s
          operand (which then breaks Set#| for every caller). */
       static const char *const POLY_SCALAR_OPS[] = {
-        "+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", NULL };
+        "+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>",
+        /* Comparisons against a scalar: sp_poly_eq / sp_poly_cmp serve the
+           scalar tags directly, and a user-class receiver reaches its own
+           `==`/`<=>` through the runtime dispatch with a boxed (poly) operand.
+           Binding the scalar arg here would poison a user comparison's param --
+           e.g. `node == :sym` (node poly) widening Set#=='s `other` to Symbol,
+           which then breaks Set#subset?'s `other.include?` (#2877). */
+        "==", "!=", "eql?", "<=>", "<", "<=", ">", ">=", NULL };
       int op_scalar = 0;
       if (name)
         for (int o = 0; POLY_SCALAR_OPS[o]; o++)
