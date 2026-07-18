@@ -5507,11 +5507,14 @@ TyKind infer_uncached(Compiler *c, int id) {
       kt = ty_unify(kt, infer_type(c, nt_ref(nt, els[k], "key")));
       int vnode = nt_ref(nt, els[k], "value");
       TyKind vt_elem = infer_type(c, vnode);
-      /* A nested hash literal (even empty `{}`) is a non-scalar value; treat
-         it as poly so the outer hash promotes to a poly-valued variant. */
+      /* A nested hash/array literal whose element kind is unresolved (a bare
+         `{}` or `[]`) is still a non-scalar value; treat it as poly so the
+         outer hash promotes to a poly-valued variant rather than erasing the
+         whole hash to UNKNOWN (which would reject `{ "k" => [] }`). */
       if (vt_elem == TY_UNKNOWN) {
         const char *vnode_ty = nt_type(nt, vnode);
-        if (vnode_ty && (sp_streq(vnode_ty, "HashNode") || sp_streq(vnode_ty, "KeywordHashNode")))
+        if (vnode_ty && (sp_streq(vnode_ty, "HashNode") || sp_streq(vnode_ty, "KeywordHashNode") ||
+                         sp_streq(vnode_ty, "ArrayNode")))
           vt_elem = TY_POLY;
       }
       vt = ty_unify(vt, vt_elem);
