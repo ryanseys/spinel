@@ -561,7 +561,7 @@ Adjacent ecosystem (community-built, not part of this repo):
   analysis). The zero-dependency tools — `spinel-doctor` (health check),
   `spinel-reduce` (minimal-repro reducer), and `spinel-flatten` — now
   ship in the box; see [`tools/`](tools/).
-- [spin packages](https://github.com/OriPekelman/spin packages): a survey of
+- [spin packages](https://github.com/OriPekelman/spinelgems): a survey of
   which RubyGems compile and run under Spinel, plus bundler-spinel, a
   Bundler plugin that vendors and compatibility-gates `Gemfile`
   dependencies.
