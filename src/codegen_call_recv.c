@@ -2639,12 +2639,16 @@ else {
         return 1;
       }
       if (sp_streq(name, "last") && argc == 0) {
+        /* Self-contained statement-expression: the receiver is bound to a temp
+           (needed twice, for length and index) inside `({ ... })` rather than
+           spilled to g_pre. A g_pre decl leaks into an expression context when
+           `.last` is itself hoisted -- e.g. as the receiver of a following
+           `.call` (`pipe.last.call(x)`), where it landed mid-`_t = ...`. */
         int t = ++g_tmp;
         Buf rb = expr_buf(c, recv);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "%s _t%d = ", c_type_name(rt), t);
-        buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-        buf_printf(b, "sp_%sArray_get(_t%d, sp_%sArray_length(_t%d) - 1)", k, t, k, t);
+        buf_printf(b, "({ %s _t%d = %s; sp_%sArray_get(_t%d, sp_%sArray_length(_t%d) - 1); })",
+                   c_type_name(rt), t, rb.p ? rb.p : "", k, t, k, t);
+        free(rb.p);
         return 1;
       }
       if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
@@ -3082,12 +3086,14 @@ else {
         return 1;
       }
       if (sp_streq(name, "last") && argc == 0) {
+        /* self-contained stmt-expr, not a g_pre decl: `.last` is hoistable as a
+           receiver (e.g. `arr.last.call(x)`) where a g_pre decl would leak into
+           the surrounding expression (#2942). */
         int t = ++g_tmp;
         Buf rb = expr_buf(c, recv);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_PolyArray *_t%d = ", t);
-        buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-        buf_printf(b, "sp_PolyArray_get(_t%d, sp_PolyArray_length(_t%d) - 1)", t, t);
+        buf_printf(b, "({ sp_PolyArray *_t%d = %s; sp_PolyArray_get(_t%d, sp_PolyArray_length(_t%d) - 1); })",
+                   t, rb.p ? rb.p : "", t, t);
+        free(rb.p);
         return 1;
       }
       if ((sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1) {
