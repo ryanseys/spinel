@@ -8109,7 +8109,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         sp_streq(name, "ord")       ? "sp_poly_ord" :
         sp_streq(name, "bit_length") ? "sp_poly_bit_length" :
         sp_streq(name, "numerator")   ? "sp_poly_numerator" :
-        sp_streq(name, "denominator") ? "sp_poly_denominator" : NULL;
+        sp_streq(name, "denominator") ? "sp_poly_denominator" :
+        sp_streq(name, "begin")       ? "sp_poly_range_begin" :
+        sp_streq(name, "end")         ? "sp_poly_range_end" : NULL;
       if (pfn) {
         int has_user = 0;
         for (int kk = 0; kk < c->nclasses && !has_user; kk++)

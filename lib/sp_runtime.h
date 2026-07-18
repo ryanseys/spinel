@@ -2663,6 +2663,10 @@ static sp_RbVal sp_poly_imaginary(sp_RbVal v) {
   sp_raise_poly_nomethod("imaginary", v);
 }
 static mrb_bool sp_poly_zero_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i == 0; if (v.tag == SP_TAG_FLT) return v.v.f == 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) == 0; sp_raise_poly_nomethod("zero?", v); }
+/* Range#begin / #end on a boxed value (an int-backed sp_Range read out of a
+   poly container): the endpoint as an Integer. */
+static mrb_int sp_poly_range_begin(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) return ((sp_Range *)v.v.p)->first; sp_raise_poly_nomethod("begin", v); }
+static mrb_int sp_poly_range_end(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) return ((sp_Range *)v.v.p)->last; sp_raise_poly_nomethod("end", v); }
 static mrb_bool sp_poly_positive_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i > 0; if (v.tag == SP_TAG_FLT) return v.v.f > 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) > 0; sp_raise_poly_nomethod("positive?", v); }
 static mrb_bool sp_poly_negative_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i < 0; if (v.tag == SP_TAG_FLT) return v.v.f < 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) < 0; sp_raise_poly_nomethod("negative?", v); }
 /* abs of a negative int goes through SP_POLY_INT_OP(sub, 0, x): plain -x is
