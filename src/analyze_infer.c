@@ -868,6 +868,13 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "chars") &&
       nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name))
     return TY_STR_ARRAY;
+  /* Array#find / #detect over a poly value that is an array at runtime (an
+     inner array read out of a poly container): the matched element (or nil) is
+     boxed, so the result is poly (#2904). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
+      (sp_streq(name, "find") || sp_streq(name, "detect")) &&
+      nt_ref(nt, id, "block") >= 0 && !an_user_defines_method(c, name))
+    return TY_POLY;
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;

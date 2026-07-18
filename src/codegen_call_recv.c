@@ -562,6 +562,43 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
 
+  /* find/detect over a bare poly value that is only known to be an array at
+     runtime (an inner array read out of a poly container:
+     `[[1,2],[3,4]].map { |row| row.find { } }`): coerce to a poly array and
+     scan, mirroring the poly-array form inside the ty_is_array block below,
+     which this receiver type does not enter (#2904). */
+  if (recv >= 0 && rt == TY_POLY && (sp_streq(name, "find") || sp_streq(name, "detect")) &&
+      nt_ref(nt, id, "block") >= 0 && argc == 0) {
+    int fblock = nt_ref(nt, id, "block");
+    const char *bp = block_param_name(c, fblock, 0); if (bp) bp = rename_local(bp);
+    int fbody = nt_ref(nt, fblock, "body");
+    int fbn = 0; const int *fbb = fbody >= 0 ? nt_arr(nt, fbody, "body", &fbn) : NULL;
+    if (fbn >= 1) {
+      int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
+      Buf rb = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);\n",
+                 trecv, rb.p ? rb.p : "sp_box_nil()", trecv);
+      free(rb.p);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tres, tres);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+      char es[64]; snprintf(es, sizeof es, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
+      int splat = emit_iter_autosplat(c, fblock, TY_POLY_ARRAY, es, g_indent + 1);
+      if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
+      for (int j = 0; j < fbn - 1; j++) emit_stmt(c, fbb[j], g_pre, g_indent + 1);
+      int sv = g_indent; g_indent++;
+      Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, fbb[fbn - 1], &cb); g_indent = sv;
+      emit_indent(g_pre, g_indent + 1);
+      if (!splat && bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
+      else buf_printf(g_pre, "if (%s) { _t%d = %s; break; }\n", cb.p ? cb.p : "0", tres, es);
+      free(cb.p);
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      buf_printf(b, "_t%d", tres); return 1;
+    }
+  }
+
   if (recv >= 0 && ty_is_array(rt)) {
     if (sp_streq(name, "pack") && argc == 1 &&
         (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_STR_ARRAY)) {
