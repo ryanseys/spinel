@@ -175,10 +175,21 @@ mrb_int sp_Random_new_seed(void) {
    source wired up, so this draws from a freshly time-seeded stream). */
 const char *sp_Random_urandom(mrb_int n) {
   if (n < 0) sp_raise_cls("ArgumentError", "negative string size");
-  sp_Random tmp; tmp.seed = 0;
-  sp_pcg_seed(&tmp.state, ((uint64_t)time(NULL) << 20) ^ (uint64_t)(uintptr_t)&tmp ^ 0x9E3779B97F4A7C15ULL);
+  /* A persistent stream seeded once, ADVANCED per draw -- re-seeding from
+     time() on every call gave the same bytes within a second (never varying,
+     so a zero byte never appeared over many calls). Per-worker in the threaded
+     build. spinel has no real OS entropy; this is a deterministic-per-run
+     stand-in. */
+  static SP_TLS uint64_t sp_urandom_state;
+  static SP_TLS int sp_urandom_seeded;
+  if (!sp_urandom_seeded) {
+    sp_pcg_seed(&sp_urandom_state,
+                ((uint64_t)time(NULL) << 20) ^ ((uint64_t)clock() << 8) ^
+                (uint64_t)(uintptr_t)&sp_urandom_state ^ 0x9E3779B97F4A7C15ULL);
+    sp_urandom_seeded = 1;
+  }
   char *b = sp_str_alloc((size_t)n);
-  for (mrb_int i = 0; i < n; i++) b[i] = (char)(sp_random_next(&tmp) & 0xff);
+  for (mrb_int i = 0; i < n; i++) b[i] = (char)(sp_pcg32_adv(&sp_urandom_state) & 0xff);
   b[n] = 0;
   sp_str_set_len(b, (size_t)n);
   return b;

@@ -9073,9 +9073,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       /* a dynamic Integer argument may be 0 at run time (a Float [0,1)) or
          nonzero (an Integer [0,|n|)), so the result is boxed and chosen at
-         run time (#2549). */
+         run time (#2549). A Float bound truncates to an integer (rand(3.5)
+         draws over [0,3)); cast explicitly so the narrowing is intentional,
+         not a warning (#2868). */
       int tn = ++g_tmp;
-      buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, av[0], b);
+      int a0_flt = comp_ntype(c, av[0]) == TY_FLOAT;
+      buf_printf(b, "({ mrb_int _t%d = ", tn);
+      if (a0_flt) buf_puts(b, "(mrb_int)(");
+      emit_int_expr(c, av[0], b);
+      if (a0_flt) buf_puts(b, ")");
       buf_printf(b, "; if (_t%d < 0) _t%d = -_t%d; _t%d > 0"
                     " ? sp_box_int(sp_krand_below(_t%d))"
                     " : sp_box_float(sp_krand_float()); })",
@@ -13985,9 +13991,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, ")");
       return;
     }
+    /* `<<` on a signed value is undefined behavior when the receiver is
+       negative (`-8 << 1`); do the shift on the unsigned bit pattern and
+       reinterpret -- same two's-complement result, well-defined, no runtime
+       cost (a bare reinterpret). `>>` stays a signed (arithmetic) shift, which
+       matches Ruby and is only implementation-defined, not UB. */
+    int shl_neg_safe = sp_streq(name, "<<");
     buf_puts(b, "(");
+    if (shl_neg_safe) buf_puts(b, "(mrb_int)((uint64_t)(");
     if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     else emit_expr(c, recv, b);
+    if (shl_neg_safe) buf_puts(b, ")");
     buf_printf(b, " %s ", name);
     if (at0 == TY_POLY) {
       buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -13999,6 +14013,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")");
     }
     else emit_expr(c, argv[0], b);
+    if (shl_neg_safe) buf_puts(b, ")");
     buf_puts(b, ")");
     return;
   }
@@ -14560,6 +14575,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "({ const char *_t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; (strcmp(_t%d, ", tv); emit_expr(c, argv[0], b);
       buf_printf(b, ") >= 0 && strcmp(_t%d, ", tv); emit_expr(c, argv[1], b); buf_puts(b, ") <= 0); })");
+      return;
+    }
+    /* A Bignum receiver: sp_Bigint* can't be compared with >=/<= (that is a
+       pointer comparison); route through sp_bigint_cmp, coercing an int bound
+       to a Bignum first (#2863). */
+    if (rt == TY_BIGINT) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "; (sp_bigint_cmp(_t%d, ", tv);
+      if (comp_ntype(c, argv[0]) == TY_BIGINT) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_printf(b, ") >= 0 && sp_bigint_cmp(_t%d, ", tv);
+      if (comp_ntype(c, argv[1]) == TY_BIGINT) emit_expr(c, argv[1], b);
+      else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
+      buf_puts(b, ") <= 0); })");
       return;
     }
     if (ty_is_numeric(rt)) {
