@@ -7126,31 +7126,50 @@ void emit_call(Compiler *c, int id, Buf *b) {
          yields, keeping the ternary's two branches a single type. */
       int mabi_poly = g_promote_mode;
       const char *aty = mabi_poly ? "sp_RbVal" : "mrb_int";
-      /* A poly argument (e.g. `f.call(acc.call(x))`, where the inner call
-         yields a boxed value) does not fit the mrb_int slot: hoist it to a
-         rooted temp, publish it to the proc poly-arg side-channel, and pass
-         an int placeholder, matching the general proc-call ABI. Hoisting also
-         evaluates a side-effecting arg exactly once. (#2874) */
+      /* Hoist every argument to a rooted temp and publish it (boxed) to the
+         proc poly-arg side-channel, mirroring the general proc-call ABI. The
+         callee may be a poly-signatured Proc whose params read from that
+         side-channel (`cb.call(5)` where cb was read out of a container and its
+         param unified to poly), so even an Integer arg must be published, not
+         just left in the mrb_int slot (#2883). A poly arg that is itself a
+         side-effecting call is also evaluated exactly once this way (#2874). */
       int *aptmp = (argc && !mabi_poly) ? calloc(argc, sizeof(int)) : NULL;
-      if (aptmp) for (int k = 0; k < argc; k++) {
-        if (comp_ntype(c, argv[k]) != TY_POLY) continue;
+      if (aptmp) {
         g_needs_proc_poly_argslot = 1;
-        aptmp[k] = ++g_tmp;
-        /* the arg may itself spill setup into g_pre; emit it into a private
-           buffer first, then splice that setup ahead of the temp assignment
-           so it does not land mid-declaration. */
-        Buf inner; memset(&inner, 0, sizeof inner);
-        Buf valb; memset(&valb, 0, sizeof valb);
-        Buf *saved_pre = g_pre; g_pre = &inner;
-        emit_expr(c, argv[k], &valb);
-        g_pre = saved_pre;
-        if (inner.p) buf_puts(g_pre, inner.p);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", aptmp[k], valb.p ? valb.p : "sp_box_nil()");
-        emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", aptmp[k]);
-        emit_indent(g_pre, g_indent); buf_printf(g_pre, "_sp_proc_poly_args[%d] = _t%d;\n", k, aptmp[k]);
-        free(inner.p); free(valb.p);
+        for (int k = 0; k < argc; k++) {
+          TyKind at = comp_ntype(c, argv[k]);
+          int storable = ty_is_object(at) || c_type_name(at) != NULL;
+          aptmp[k] = ++g_tmp;
+          /* the arg may spill setup into g_pre; emit into a private buffer
+             first so it lands ahead of the temp declaration, not mid-line. */
+          Buf inner; memset(&inner, 0, sizeof inner);
+          Buf valb; memset(&valb, 0, sizeof valb);
+          Buf *saved_pre = g_pre; g_pre = &inner;
+          emit_expr(c, argv[k], &valb);
+          g_pre = saved_pre;
+          if (inner.p) buf_puts(g_pre, inner.p);
+          emit_indent(g_pre, g_indent);
+          if (storable) emit_ctype(c, at, g_pre); else buf_puts(g_pre, "mrb_int");
+          buf_printf(g_pre, " _t%d = %s;\n", aptmp[k], valb.p ? valb.p : "0");
+          if (at == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", aptmp[k]); }
+          else if (proc_slot_is_ptr(at)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", aptmp[k]); }
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "_sp_proc_poly_args[%d] = ", k);
+          { char tn[24]; snprintf(tn, sizeof tn, "_t%d", aptmp[k]);
+            if (storable) emit_boxed_text(c, at, tn, g_pre); else buf_puts(g_pre, "sp_box_nil()"); }
+          buf_puts(g_pre, ";\n");
+          free(inner.p); free(valb.p);
+        }
       }
+      #define EMIT_POLY_CALL_SLOT(k) do { \
+        TyKind _at = comp_ntype(c, argv[k]); \
+        if (aptmp) { \
+          if (_at == TY_POLY) buf_printf(b, "sp_poly_to_i(_t%d)", aptmp[k]); \
+          else if (proc_slot_is_ptr(_at)) buf_printf(b, "(mrb_int)(uintptr_t)_t%d", aptmp[k]); \
+          else if (_at == TY_FLOAT) buf_puts(b, "0"); \
+          else buf_printf(b, "_t%d", aptmp[k]); \
+        } else emit_expr(c, argv[k], b); \
+      } while (0)
       /* both arms yield a BOXED result now that the call types poly: the
          Method arm's legacy int ABI result boxes, the Proc arm reads the
          boxed return slot intact */
@@ -7160,9 +7179,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       for (int k = 0; k < argc; k++) {
         buf_puts(b, ", ");
         if (mabi_poly) emit_boxed(c, argv[k], b);
-        else if (aptmp && aptmp[k]) buf_printf(b, "sp_poly_to_i(_t%d)", aptmp[k]);
-        else if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[k], b);
+        else EMIT_POLY_CALL_SLOT(k);
       }
       /* the Proc publishes its result in _sp_proc_poly_ret (universal return
          ABI); evaluate for effect and read the boxed sp_RbVal intact, matching
@@ -7171,12 +7188,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, ")%s : ((void)sp_proc_call((sp_Proc *)_t%d.v.p, %d, (mrb_int[16]){", mabi_poly ? "" : ")", t, argc);
       for (int k = 0; k < argc; k++) {
         if (k) buf_puts(b, ", ");
-        if (aptmp && aptmp[k]) buf_printf(b, "sp_poly_to_i(_t%d)", aptmp[k]);
-        else if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[k], b);
+        EMIT_POLY_CALL_SLOT(k);
       }
       if (argc == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
       buf_puts(b, "}), _sp_proc_poly_ret))");
+      #undef EMIT_POLY_CALL_SLOT
       free(aptmp);
       return;
     }
