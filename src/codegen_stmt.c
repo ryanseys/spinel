@@ -1517,8 +1517,12 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, Buf *b) {
   const int *posts = nt_arr(nt, pat, "posts", &npost);
   /* With a rest the array need only be long enough to hold the leading
      requireds and the trailing posts; without a rest posts do not occur. */
-  buf_printf(b, "((%s).tag == SP_TAG_OBJ && sp_poly_length(%s) %s %dLL",
-             arr, arr, has_rest ? ">=" : "==", apn + npost);
+  /* An array pattern needs an ARRAY (a value responding to #deconstruct), not
+     any SP_TAG_OBJ: a Hash is also SP_TAG_OBJ and sp_poly_length returns its
+     pair count, so without the array-kind guard `{a: 1, r: 2}` would wrongly
+     match `[x, y]` (a Hash has no #deconstruct in CRuby). */
+  buf_printf(b, "((%s).tag == SP_TAG_OBJ && sp_poly_is_array_kind((%s).cls_id) && sp_poly_length(%s) %s %dLL",
+             arr, arr, arr, has_rest ? ">=" : "==", apn + npost);
   for (int i = 0; i < apn; i++) {
     /* the element accessor nests one level per recursion (arr grows), so build
        it in a Buf rather than a fixed buffer that would truncate. */
