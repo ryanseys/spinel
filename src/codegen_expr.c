@@ -489,7 +489,20 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
     emit_expr(c, nd, b);
     return;
   }
-  emit_expr(c, nd, b);
+  {
+    Buf ab; memset(&ab, 0, sizeof ab);
+    emit_expr(c, nd, &ab);
+    /* An arm that compiles to a NoMethodError raise (e.g. `u.details` where u is
+       unresolvable) evaluates to sp_RbVal but never returns; the sibling arm has
+       the concrete result type, so coerce the raise to it -- `(raise, default)`
+       -- to keep the C ternary's two arms the same type (#2949). */
+    if (ab.p && strncmp(ab.p, "sp_raise_nomethod(", 18) == 0 &&
+        res != TY_POLY && res != TY_UNKNOWN && res != TY_VOID) {
+      buf_printf(b, "(%s, %s)", ab.p, default_value(res));
+    }
+    else buf_puts(b, ab.p ? ab.p : "");
+    free(ab.p);
+  }
 }
 
 /* Effect-free simple read whose re-evaluation is safe (and cheap): gates the
