@@ -869,6 +869,7 @@ sp_PolyArray *sp_poly_array_transpose(sp_PolyArray *rows) {
     if (rv.cls_id == SP_BUILTIN_INT_ARRAY)  { rlen = ((sp_IntArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_INT_ARRAY; }
     else if (rv.cls_id == SP_BUILTIN_FLT_ARRAY) { rlen = ((sp_FloatArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_FLT_ARRAY; }
     else if (rv.cls_id == SP_BUILTIN_STR_ARRAY) { rlen = ((sp_StrArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_STR_ARRAY; }
+    else if (rv.cls_id == SP_BUILTIN_POLY_ARRAY) { rlen = ((sp_PolyArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_POLY_ARRAY; }
     if (rlen > ncols) ncols = rlen;
   }
   sp_PolyArray *result = sp_PolyArray_new();
@@ -916,6 +917,22 @@ else if (kind == SP_BUILTIN_STR_ARRAY) {
         sp_StrArray_push(col, val);
       }
       cv.tag = SP_TAG_OBJ; cv.cls_id = SP_BUILTIN_STR_ARRAY; cv.v.p = col;
+    }
+    else if (kind == SP_BUILTIN_POLY_ARRAY) {
+      /* rows are poly arrays (e.g. `map(&:reverse)` yields boxed poly arrays):
+         read each element generically, one column a fresh poly array (#2921). */
+      sp_PolyArray *col = sp_PolyArray_new();
+      SP_GC_ROOT(col);
+      for (mrb_int r = 0; r < nrows; r++) {
+        sp_RbVal rv = rows->data[r];
+        sp_RbVal val = sp_box_nil();
+        if (rv.tag == SP_TAG_OBJ && rv.cls_id == SP_BUILTIN_POLY_ARRAY) {
+          sp_PolyArray *row = (sp_PolyArray *)rv.v.p;
+          if (c < row->len) val = row->data[c];
+        }
+        sp_PolyArray_push(col, val);
+      }
+      cv.tag = SP_TAG_OBJ; cv.cls_id = SP_BUILTIN_POLY_ARRAY; cv.v.p = col;
     }
     sp_PolyArray_push(result, cv);
   }
