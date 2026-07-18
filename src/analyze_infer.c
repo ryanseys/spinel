@@ -2935,8 +2935,12 @@ else {
       /* a literal nonzero Integer is an Integer; a dynamic Integer could be 0
          (Float) or nonzero (Integer), so its result is a runtime-chosen poly. */
       if (atype && sp_streq(atype, "IntegerNode")) return TY_INT;
-      if (infer_type(c, argv[0]) == TY_INT) return TY_POLY;
-      return TY_INT;
+      /* Any dynamic (non-literal) argument -- an Integer var, a poly value, a
+         destructured tuple element -- may be 0 (a Float [0,1)) or nonzero (an
+         Integer), so codegen boxes the result; type it poly to match rather
+         than the old TY_INT default, which left `rand(poly) == 0` comparing a
+         boxed value with an int (#2897). */
+      return TY_POLY;
     }
     if (sp_streq(name, "srand")) return TY_INT;
     if (sp_streq(name, "sleep") && argc <= 1) return TY_INT;
