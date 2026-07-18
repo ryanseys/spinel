@@ -4024,12 +4024,23 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               }
             }
             else if (np_ec > 1) {
-              /* |a, b| flat multi-param: each element */
+              /* |a, b| flat multi-param: each element. A poly-typed param over a
+                 scalar-kind window (an int/float/str array) boxes the element,
+                 else a raw scalar would land in an sp_RbVal slot (#2915). */
+              TyKind et_ec = ty_array_elem(arr_ec);
+              Scope *bsc_ec = comp_scope_of(c, block);
               for (int pj = 0; pj < np_ec; pj++) {
                 const char *pn = block_param_name(c, block, pj); if (!pn) break;
+                LocalVar *plv = bsc_ec ? scope_local(bsc_ec, pn) : NULL;
+                TyKind ppt = plv ? plv->type : TY_POLY;
                 emit_indent(g_pre, g_indent + 1);
-                buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n",
-                           rename_local(pn), kec, ta_ec, ti_ec, pj);
+                buf_printf(g_pre, "lv_%s = ", rename_local(pn));
+                char acc[80]; snprintf(acc, sizeof acc, "sp_%sArray_get(_t%d, _t%d + %d)", kec, ta_ec, ti_ec, pj);
+                if (ppt == TY_POLY && et_ec == TY_INT) buf_printf(g_pre, "sp_box_int(%s)", acc);
+                else if (ppt == TY_POLY && et_ec == TY_FLOAT) buf_printf(g_pre, "sp_box_float(%s)", acc);
+                else if (ppt == TY_POLY && et_ec == TY_STRING) buf_printf(g_pre, "sp_box_str(%s)", acc);
+                else buf_puts(g_pre, acc);
+                buf_puts(g_pre, ";\n");
               }
             }
             else if (np_ec == 1) {
