@@ -2375,7 +2375,7 @@ else {
         buf_printf(b, "(sp_%sArray_length(", k); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
         return 1;
       }
-      if (sp_streq(name, "sum") && argc == 0) {
+      if (sp_streq(name, "sum") && argc == 0 && nt_ref(nt, id, "block") < 0) {
         buf_printf(b, "sp_%sArray_sum(", k); emit_expr(c, recv, b); buf_puts(b, ", 0)");
         return 1;
       }

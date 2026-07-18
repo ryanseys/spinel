@@ -1717,9 +1717,36 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
   TyKind acct = comp_ntype(c, bb[bn - 1]);
-  if (acct != TY_INT && acct != TY_FLOAT && acct != TY_STRING) return 0;
+  if (acct != TY_INT && acct != TY_FLOAT && acct != TY_STRING && acct != TY_POLY) return 0;
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc > 1) return 0;
+  /* A poly block value (e.g. a product of values read out of poly containers,
+     as in a range sum redispatched over an int array) accumulates into a boxed
+     sp_RbVal via sp_poly_add, like the poly-receiver sum path. An empty range
+     leaves the boxed init (0), so `(1...1).sum { ... }` is a well-typed 0. */
+  if (acct == TY_POLY) {
+    int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
+    buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); mrb_int _t%d = sp_%sArray_length(_t%d); sp_RbVal _t%d = ",
+               ta, tn, k, ta, tacc);
+    if (argc == 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_int(0)");
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
+               tacc, ti, ti, tn, ti);
+    if (p0) buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d); ", p0, k, ta, ti);
+    {
+      Buf inner; memset(&inner, 0, sizeof inner);
+      Buf valb; memset(&valb, 0, sizeof valb);
+      Buf *saved_pre = g_pre; g_pre = &inner;
+      emit_boxed(c, bb[bn - 1], &valb);
+      g_pre = saved_pre;
+      if (inner.p) buf_puts(b, inner.p);
+      buf_printf(b, "_t%d = sp_poly_add(_t%d, %s); }", tacc, tacc, valb.p ? valb.p : "sp_box_nil()");
+      free(inner.p); free(valb.p);
+    }
+    buf_printf(b, " _t%d; })", tacc);
+    return 1;
+  }
   /* a float initial value promotes the whole sum to Float, even when the block
      yields integers (matches analyze and CRuby): accumulate in floating point
      rather than truncating the init into an integer accumulator. */
