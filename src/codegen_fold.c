@@ -1041,6 +1041,10 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
 static void flatmap_coerce_from_poly(TyKind dst, const char *src, Buf *out) {
   if (dst == TY_INT || dst == TY_BOOL) buf_printf(out, "sp_poly_to_i(%s)", src);
   else if (dst == TY_FLOAT) buf_printf(out, "sp_poly_to_f(%s)", src);
+  /* a String / Symbol param unboxes the field directly (matching emit_unbox_text);
+     without this a `const char *`/`sp_sym` slot took a raw sp_RbVal (#2929) */
+  else if (dst == TY_STRING) buf_printf(out, "(%s).v.s", src);
+  else if (dst == TY_SYMBOL) buf_printf(out, "(sp_sym)(%s).v.i", src);
   else buf_puts(out, src);  /* poly (or other): pass through */
 }
 
