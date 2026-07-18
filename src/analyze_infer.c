@@ -3900,7 +3900,8 @@ else {
         if (sp_streq(name, "abs") || sp_streq(name, "infinite?") ||
             sp_streq(name, "floor") || sp_streq(name, "ceil") ||
             sp_streq(name, "round") || sp_streq(name, "truncate") ||
-            sp_streq(name, "conjugate") || sp_streq(name, "conj")) return TY_POLY;
+            sp_streq(name, "conjugate") || sp_streq(name, "conj") ||
+            sp_streq(name, "abs2") || sp_streq(name, "magnitude")) return TY_POLY;
         if (sp_streq(name, "bytesize") || sp_streq(name, "ord") ||
             sp_streq(name, "bit_length") ||
             sp_streq(name, "numerator") || sp_streq(name, "denominator") ||

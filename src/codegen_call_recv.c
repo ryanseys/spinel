@@ -8117,7 +8117,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         sp_streq(name, "zero?")     ? "sp_poly_zero_p" :
         sp_streq(name, "positive?") ? "sp_poly_positive_p" :
         sp_streq(name, "negative?") ? "sp_poly_negative_p" :
-        sp_streq(name, "abs")       ? "sp_poly_abs" :
+        sp_streq(name, "abs") || sp_streq(name, "magnitude") ? "sp_poly_abs" :
+        sp_streq(name, "abs2")      ? "sp_poly_abs2" :
         sp_streq(name, "floor")     ? "sp_poly_floor" :
         sp_streq(name, "ceil")      ? "sp_poly_ceil" :
         sp_streq(name, "round")     ? "sp_poly_round" :
