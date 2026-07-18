@@ -11,6 +11,7 @@
 #define SP_CORE_H
 
 #include <stdint.h>
+#include <stddef.h>   /* size_t (sp_snprintf_c_float) */
 
 /* String -> number parsers (cold, I/O-boundary). */
 intptr_t sp_str_to_i_cruby(const char *s);
@@ -19,6 +20,7 @@ intptr_t sp_str_to_i_base(const char *s, intptr_t base);
 intptr_t sp_str_to_i_strict(const char *s);
 intptr_t sp_str_to_i_strict_base(const char *s, intptr_t base);
 double  sp_str_to_f_strict(const char *s);
+int     sp_snprintf_c_float(char *buf, size_t size, const char *fmt, double v);
 
 /* Cold integer-math + String#oct helpers. */
 intptr_t sp_gcd(intptr_t a, intptr_t b);

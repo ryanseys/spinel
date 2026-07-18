@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <errno.h>
+#include <locale.h>
 
 /* Must match sp_types.h: mrb_int is pointer-width (int64 on 64-bit,
    int32 on 32-bit) so this TU's helper ABI agrees with the generated TU. */
@@ -354,6 +355,24 @@ mrb_float sp_str_to_f_strict(const char *s) {
 bad0:
   sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Float(): \"%s\"", s));
   return 0.0;  /* unreachable */
+}
+
+/* Kernel#sprintf's float directives (%f/%e/%g/%a with width/flags) are emitted
+   by faithfully delegating to libc snprintf, which is locale-sensitive for the
+   decimal point. Run that one call under a pinned "C" locale so the output
+   always uses '.', matching Ruby, regardless of the process locale. The number
+   primitives (Float#to_s / to_f) are locale-free via fp_uscale; this is only
+   for the printf-compatible field/flag machinery libc handles best. */
+int sp_snprintf_c_float(char *buf, size_t size, const char *fmt, double v) {
+  static locale_t sp_c_loc = (locale_t)0;
+  if (!sp_c_loc) sp_c_loc = newlocale(LC_ALL_MASK, "C", (locale_t)0);
+  if (sp_c_loc) {
+    locale_t old = uselocale(sp_c_loc);
+    int n = snprintf(buf, size, fmt, v);
+    uselocale(old);
+    return n;
+  }
+  return snprintf(buf, size, fmt, v);
 }
 
 /* Cold integer-math and String#oct helpers, moved out of sp_runtime.h

@@ -3737,7 +3737,9 @@ else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G'
       else if (sp_poly_is_rational(v)) dv = sp_poly_to_f_with_rational(v);
       /* Ruby prints non-finite floats as Inf/-Inf/NaN (C printf lowercases) */
       if (!isfinite(dv)) wn = snprintf(tmp, sizeof(tmp), "%s", isnan(dv) ? "NaN" : dv > 0 ? "Inf" : "-Inf");
-      else wn = snprintf(tmp, sizeof(tmp), fmt_use, dv);
+      /* pinned "C" locale so the decimal point is always '.', not the process
+         locale's separator (the printf field/flag machinery stays libc's) */
+      else wn = sp_snprintf_c_float(tmp, sizeof(tmp), fmt_use, dv);
     }
 else if (conv == 's' || conv == 'p') {
       /* %s is to_s, %p is inspect -- for every tag (symbols, arrays, hashes,
