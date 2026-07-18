@@ -268,8 +268,13 @@ int re_engine_flags(int pf) {
 }
 int re_has_captures(const char *src) {
   if (!src) return 0;
+  int in_class = 0;
   for (const char *p = src; *p; p++) {
     if (*p == '\\') { if (p[1]) p++; continue; }
+    /* a `(` inside a `[...]` character class is a literal paren, not a group
+       (`/[()]/` has no captures) (#2912) */
+    if (in_class) { if (*p == ']') in_class = 0; continue; }
+    if (*p == '[') { in_class = 1; continue; }
     if (*p == '(') {
       if (p[1] != '?') return 1;
       /* (?<name>...) / (?'name'...) are named CAPTURE groups (lookbehinds
