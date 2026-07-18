@@ -5465,6 +5465,26 @@ static void compute_byref_out_params(Compiler *c) {
   free(blocked);
 }
 
+/* Does scope mi's body contain a call to its own method name on implicit or
+   explicit self? The self-recursion test shared by the yield-lowering
+   decisions: such a method must not take the inline path (expansion cannot
+   terminate) -- it stays a real function with a proc-materialized block. */
+static int scope_calls_itself(Compiler *c, int mi) {
+  Scope *m = &c->scopes[mi];
+  if (!m->name || m->body < 0) return 0;
+  for (int id = 0; id < c->nt->count; id++) {
+    if (c->nscope[id] != mi) continue;
+    const char *ty = nt_type(c->nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(c->nt, id, "name");
+    if (!nm || !sp_streq(nm, m->name)) continue;
+    int recv = nt_ref(c->nt, id, "receiver");
+    const char *rty = recv >= 0 ? nt_type(c->nt, recv) : NULL;
+    if (recv < 0 || (rty && sp_streq(rty, "SelfNode"))) return 1;
+  }
+  return 0;
+}
+
 void analyze_program(Compiler *c) {
   comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
   /* scope 0 = top level */
@@ -5683,7 +5703,12 @@ void analyze_program(Compiler *c) {
         const char *ty2 = nt_type(c->nt, id2);
         if (ty2 && sp_streq(ty2, "ReturnNode") && comp_scope_of(c, id2) == m) has_ret = 1;
       }
-      if (!has_ret) m->yields = 1;
+      /* Nor if the method calls itself: inlining a self-recursive block-driving
+         method cannot terminate (the depth-cap diagnostic), while the real
+         (yields=0) function form -- &blk as a materialized sp_Proc * param, the
+         self-call forwarding it -- compiles to plain C recursion and already
+         works for the explicit-return shape above. */
+      if (!has_ret && !scope_calls_itself(c, mi)) m->yields = 1;
     }
   }
   free(blk_call_recv);
@@ -6411,12 +6436,19 @@ void analyze_program(Compiler *c) {
   compute_instantiated(c);
 
   /* Lower self-recursive yield methods: methods that use `yield` AND call
-     themselves recursively. Their implicit block is forwarded as a synthetic
-     __yblk__ sp_Proc * parameter, so the method is emitted (yields=0) and
-     each `yield` in its body calls sp_proc_call(__yblk__, ...). */
+     themselves recursively. Their implicit block is forwarded as a proc
+     parameter -- the declared &block name when the def has one, else a
+     synthetic __yblk__ -- so the method is emitted (yields=0) and each
+     `yield` in its body calls sp_proc_call(<blk>, ...). A declared &block
+     that only does blk.call/&blk-forward never reaches here (the
+     blk_param pass above already kept it yields=0 when self-recursive);
+     this loop covers bodies with literal `yield`s. */
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
-    if (!m->name || !m->reachable || m->blk_param) continue;
+    if (!m->name || !m->reachable) continue;
+    /* An anonymous `&` (blk_param == "") has no name to reference from the
+       lowered body's yield sites; it keeps the inline path's diagnostic. */
+    if (m->blk_param && !m->blk_param[0]) continue;
     if (!m->yields) continue;
     if (m->body < 0) continue;
     int has_yld = 0;
@@ -6426,23 +6458,12 @@ void analyze_program(Compiler *c) {
       if (ty && sp_streq(ty, "YieldNode")) has_yld = 1;
     }
     if (!has_yld) continue;
-    int has_self_call = 0;
-    for (int id = 0; id < c->nt->count && !has_self_call; id++) {
-      if (c->nscope[id] != mi) continue;
-      const char *ty = nt_type(c->nt, id);
-      if (!ty || !sp_streq(ty, "CallNode")) continue;
-      const char *nm = nt_str(c->nt, id, "name");
-      if (!nm || !sp_streq(nm, m->name)) continue;
-      int recv = nt_ref(c->nt, id, "receiver");
-      const char *rty = recv >= 0 ? nt_type(c->nt, recv) : NULL;
-      if (recv < 0 || (rty && sp_streq(rty, "SelfNode"))) has_self_call = 1;
-    }
-    if (!has_self_call) continue;
+    if (!scope_calls_itself(c, mi)) continue;
     m->is_lowered_yield = 1;
     m->yields = 0;
     m->ret = TY_INT;
-    m->blk_param = strdup("__yblk__");
-    LocalVar *yblk = scope_local_intern(m, "__yblk__");
+    if (!m->blk_param) m->blk_param = strdup("__yblk__");
+    LocalVar *yblk = scope_local_intern(m, m->blk_param);
     if (yblk) {
       yblk->type = TY_PROC;
       yblk->is_param = 1;
