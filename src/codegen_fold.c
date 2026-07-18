@@ -2960,6 +2960,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     if (rbt == TY_POLY && acc_ty == TY_INT) { buf_puts(&tail, "sp_poly_to_i("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
     else if (rbt == TY_POLY && acc_ty == TY_FLOAT) { buf_puts(&tail, "sp_poly_to_f("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
     else if (rbt == TY_POLY && acc_ty == TY_STRING) { buf_puts(&tail, "sp_poly_to_s("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
+    else if (rbt == TY_POLY && acc_ty == TY_SYMBOL) { buf_puts(&tail, "(sp_sym)("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ").v.i"); }
     else emit_expr(c, bb[bn - 1], &tail);
     g_pre = saved_pre;
     buf_printf(b, "_t%d = %s; } } ", tacc, tail.p ? tail.p : "0");
