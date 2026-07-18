@@ -577,8 +577,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);\n",
-                 trecv, rb.p ? rb.p : "sp_box_nil()", trecv);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
+                 trecv, rb.p ? rb.p : "sp_box_nil()", name, trecv);
       free(rb.p);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tres, tres);
@@ -599,6 +599,14 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* sort / reject / each_index over a bare poly value that is an array at
+     runtime (an inner array read out of a poly container), following #2904.
+     Coerce to a poly array and run the operation. (#2928) */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "sort") && argc == 0 &&
+      nt_ref(nt, id, "block") < 0) {
+    buf_puts(b, "sp_PolyArray_sort(sp_poly_arr_recv("); emit_expr(c, recv, b); buf_puts(b, ", \"sort\"))");
+    return 1;
+  }
   if (recv >= 0 && ty_is_array(rt)) {
     if (sp_streq(name, "pack") && argc == 1 &&
         (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_STR_ARRAY)) {

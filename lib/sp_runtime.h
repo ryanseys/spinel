@@ -3238,6 +3238,14 @@ static sp_PolyArray *sp_poly_to_poly_array(sp_RbVal v) {
   for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(v, i));
   return r;
 }
+/* Coerce a poly value that a container-read Array method (find/reject/sort/
+   each_index) was called on to a poly array, raising CRuby's NoMethodError when
+   it is not an Array at run time (e.g. the method reached a nil ivar). (#2928) */
+static sp_PolyArray *sp_poly_arr_recv(sp_RbVal v, const char *m) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return sp_poly_to_poly_array(v);
+  sp_raise_nomethod(sp_nomethod_msg(m, v));
+  return NULL;  /* unreachable: sp_raise_nomethod does not return */
+}
 /* The argument vector for `format`/`String#%` from a single poly right-hand
    side: an Array value is spread across the directives, any other value formats
    as a one-element list. Used when the `%` RHS is statically poly so the array

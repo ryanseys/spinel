@@ -875,6 +875,11 @@ TyKind infer_call(Compiler *c, int id) {
       (sp_streq(name, "find") || sp_streq(name, "detect")) &&
       nt_ref(nt, id, "block") >= 0 && !an_user_defines_method(c, name))
     return TY_POLY;
+  /* sort over a poly value that is an array at runtime (a group_by bucket / an
+     inner array): a fresh sorted poly array (#2928). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_defines_method(c, name) &&
+      sp_streq(name, "sort") && nt_ref(nt, id, "block") < 0)
+    return TY_POLY_ARRAY;
   /* Data#with on a poly value (a Data read out of a container) returns a new
      Data instance, boxed poly (#2890). */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "with") &&
