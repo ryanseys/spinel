@@ -2308,6 +2308,12 @@ else if (orecv >= 0 && onm) {
                        : (pt == TY_FLOAT) ? "sp_float_nil()"
                        : (pt == TY_SYMBOL) ? "((sp_sym)-1)" : NULL;
       if (nilv) buf_printf(pb, "(argc > %d) ? args[%d] : %s;\n", k, k, nilv);
+      else if (pt == TY_PROC) {
+        /* a Proc block param (e.g. the accumulator of a proc-composing reduce)
+           rides the mrb_int slot as a stuffed pointer; cast it back rather than
+           assigning mrb_int straight to sp_Proc * (-Wint-conversion). (#2874) */
+        buf_printf(pb, "(argc > %d) ? (sp_Proc *)(uintptr_t)args[%d] : NULL;\n", k, k);
+      }
       else buf_printf(pb, "args[%d];\n", k);
     }
   }

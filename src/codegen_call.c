@@ -964,7 +964,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
          itself, can allocate and collect before the callee reads the value back
          from the (un-scanned) side-channel. Use the type-correct macro. */
       if (at == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
-      else if (proc_slot_is_ptr(at)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
+      else if (proc_slot_is_ptr(at) || at == TY_PROC) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
       free(vb.p);
     }
     for (int k = 0; k < nargs; k++) {
@@ -980,7 +980,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
       TyKind at = comp_ntype(c, argv[k]);
       if (k) buf_puts(b, ", ");
       if (at == TY_POLY) buf_printf(b, "sp_poly_to_i(_t%d)", atmp[k]);
-      else if (proc_slot_is_ptr(at)) buf_printf(b, "(mrb_int)(uintptr_t)_t%d", atmp[k]);
+      else if (proc_slot_is_ptr(at) || at == TY_PROC) buf_printf(b, "(mrb_int)(uintptr_t)_t%d", atmp[k]);
       else if (at == TY_FLOAT) buf_puts(b, "0");  /* float rides the boxed side-channel; the mrb_int slot is dead */
       else buf_printf(b, "_t%d", atmp[k]);
     }
