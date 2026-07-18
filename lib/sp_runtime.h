@@ -5327,6 +5327,17 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
     case SP_BUILTIN_POLY_ARRAY:
       if (key.tag == SP_TAG_INT) sp_PolyArray_set((sp_PolyArray*)v.v.p, key.v.i, val);
       break;
+    /* Str/Float arrays were missing here, so `grid[r][c] = v` on a boxed inner
+       Str/Float array (a nested write reached through a poly index) silently
+       dropped the assignment. */
+    case SP_BUILTIN_STR_ARRAY:
+      if (key.tag == SP_TAG_INT) sp_StrArray_set((sp_StrArray*)v.v.p, key.v.i,
+                                                  val.tag == SP_TAG_STR ? val.v.s : NULL);
+      break;
+    case SP_BUILTIN_FLT_ARRAY:
+      if (key.tag == SP_TAG_INT) sp_FloatArray_set((sp_FloatArray*)v.v.p, key.v.i,
+                                                    val.tag == SP_TAG_FLT ? val.v.f : (mrb_float)val.v.i);
+      break;
     case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash*)v.v.p, key, val); break;
     default: break;
   }
