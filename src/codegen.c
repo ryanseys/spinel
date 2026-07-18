@@ -3217,6 +3217,42 @@ static void emit_obj_to_hash_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: return sp_box_nil();\n  }\n}\n");
 }
 
+/* Symbol-keyed Struct/Data #to_h, installed as sp_obj_to_h_fn. Mirrors the
+   per-struct inline to_h emitter, but keyed by cls_id so a Struct/Data read out
+   of a poly container can answer #to_h at run time (#2906). Data members are
+   ivars like a Struct's, so both are covered. */
+static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
+  if (!g_gen_obj_to_h) return;
+  buf_puts(b, "static sp_RbVal sp_obj_to_h(sp_RbVal v) {\n");
+  buf_puts(b, "  switch (v.cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    if (!(ci->is_struct || ci->is_data) || !ci->instantiated) continue;
+    buf_printf(b, "    case %d: {\n", comp_class_index(c, ci->name));
+    buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
+    buf_puts(b, "      sp_SymPolyHash *h = sp_SymPolyHash_new(); SP_GC_ROOT(h);\n");
+    for (int j = 0; j < ci->nivars; j++) {
+      TyKind mt = ci->ivar_types[j];
+      const char *iv = ci->ivars[j] + 1;  /* member name, sans @ */
+      buf_printf(b, "      sp_SymPolyHash_set(h, sp_sym_intern(\"%s\"), ", iv);
+      if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", iv, iv);
+      else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", iv, iv);
+      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float(o->iv_%s)", iv);
+      else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", iv);
+      else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", iv);
+      else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", iv);
+      else {
+        char fb[128]; snprintf(fb, sizeof fb, "o->iv_%s", iv);
+        Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mt, fb, &bx);
+        buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+      }
+      buf_puts(b, ");\n");
+    }
+    buf_puts(b, "      return sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH);\n    }\n");
+  }
+  buf_puts(b, "    default: return sp_box_nil();\n  }\n}\n");
+}
+
 /* Default Object#inspect: one switch over every user class, walking its
    typed ivars boxed through the marshal box helper into sp_poly_inspect --
    so nested containers, strings (quoted), nil and nested objects (via the
@@ -3952,6 +3988,8 @@ void emit_regex_section(Buf *b) {
     buf_puts(b, "static int sp_poly_is_a(sp_RbVal obj, sp_Class klass);\n");
   if (g_gen_obj_hash)
     buf_puts(b, "static sp_RbVal sp_obj_to_hash(sp_RbVal v);\n");
+  if (g_gen_obj_to_h)
+    buf_puts(b, "static sp_RbVal sp_obj_to_h(sp_RbVal v);\n");
   if (g_gen_obj_hashkey)
     buf_puts(b, "static mrb_int sp_gen_obj_hash(int cls_id, void *p);\n"
                 "static mrb_bool sp_gen_obj_eql(int cls_id, void *a, void *b_);\n");
@@ -3998,6 +4036,8 @@ void emit_regex_section(Buf *b) {
   }
   if (g_gen_obj_hash)
     buf_puts(b, "  sp_obj_to_hash_fn = sp_obj_to_hash;\n");
+  if (g_gen_obj_to_h)
+    buf_puts(b, "  sp_obj_to_h_fn = sp_obj_to_h;\n");
   if (g_re_count > 0) {
     buf_puts(b, "  sp_re_set_error_handler(sp_re_startup_error_handler);\n");
     for (int i = 0; i < g_re_count; i++) {
@@ -4495,6 +4535,11 @@ static void scan_prologue_features(Compiler *c) {
     for (int i = 0; i < c->nclasses; i++)
       if (c->classes[i].is_struct) { g_gen_obj_hash = 1; break; }
   }
+  /* Any instantiated Struct/Data gets the symbol-keyed to_h dispatch, so a
+     Struct/Data read out of a poly container answers #to_h (#2906). */
+  g_gen_obj_to_h = 0;
+  for (int i = 0; i < c->nclasses; i++)
+    if ((c->classes[i].is_struct || c->classes[i].is_data) && c->classes[i].instantiated) { g_gen_obj_to_h = 1; break; }
   /* Runtime-render reach: does any slot in the program carry a type whose
      rendering can call into the symbol runtime (sp_sym_to_s / sp_sym_intern)
      or the class-name table (sp_class_to_s)? A boxed poly value can hold ANY
@@ -5556,7 +5601,7 @@ char *codegen_program(const NodeTable *nt) {
 
   /* sp_re_init is worth emitting only if it would set at least one hook. */
   g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||
-                     g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash || g_gen_obj_hashkey ||
+                     g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash || g_gen_obj_to_h || g_gen_obj_hashkey ||
                      g_gen_obj_valeq;
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any
@@ -5571,6 +5616,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_uses_marshal) emit_marshal_dispatch(c, body);
   if (g_emit_obj_dispatch) emit_obj_inspect_dispatch(c, body);
   emit_obj_to_hash_dispatch(c, body);
+  emit_obj_to_h_dispatch(c, body);
   for (int s = 1; s < c->nscopes; s++) {
     if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
   }

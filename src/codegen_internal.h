@@ -275,6 +275,7 @@ extern int g_emit_class_names; /* emit sp_class_to_s (the class-name table) */
 extern int g_emit_obj_dispatch;/* emit sp_obj_inspect_sw / sp_obj_to_s_sw (user classes exist) */
 extern int g_uses_program_name;/* $0 / $PROGRAM_NAME read somewhere */
 extern int g_gen_obj_hash;  /* a package wants obj reflection + >=1 struct: emit+install sp_obj_to_hash */
+extern int g_gen_obj_to_h;  /* >=1 instantiated Struct/Data: emit+install sym-keyed sp_obj_to_h (poly #to_h) */
 extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_threads;
