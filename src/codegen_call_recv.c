@@ -649,7 +649,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "each_index") &&
       nt_ref(nt, id, "block") >= 0 && argc == 0) {
     int eb = nt_ref(nt, id, "block");
-    const char *ip = block_param_name(c, eb, 0); if (ip) ip = rename_local(ip);
+    const char *ip_orig = block_param_name(c, eb, 0);
+    Scope *eic = comp_scope_of(c, eb);
+    /* An unused index param is pruned by liveness (scope_local NULL, no lv_<name>
+       declared): gate the binding so we never assign to an undeclared C name. */
+    LocalVar *eilv = (ip_orig && eic) ? scope_local(eic, ip_orig) : NULL;
     int body = nt_ref(nt, eb, "body");
     int tself = ++g_tmp, trecv = ++g_tmp, ti = ++g_tmp;
     Buf rb = expr_buf(c, recv);
@@ -662,12 +666,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                trecv, tself, trecv);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
-    if (ip) {
-      Scope *eic = comp_scope_of(c, eb);
-      LocalVar *eilv = eic ? scope_local(eic, ip) : NULL;
-      TyKind eit = eilv ? eilv->type : TY_INT;
+    if (eilv) {
+      const char *ip = rename_local(ip_orig);
       emit_indent(g_pre, g_indent + 1);
-      if (eit == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", ip, ti);
+      if (eilv->type == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", ip, ti);
       else buf_printf(g_pre, "lv_%s = _t%d;\n", ip, ti);
     }
     emit_stmts(c, body, g_pre, g_indent + 1);
