@@ -778,9 +778,10 @@ TyKind infer_call(Compiler *c, int id) {
     if (ty_is_hash(srt) || srt == TY_POLY || srt == TY_UNKNOWN) return TY_POLY_ARRAY;
   }
   /* `poly.members` on a Struct/Data read out of a container: the field-name
-     symbols as a generic Array. */
-  if (recv >= 0 && sp_streq(name, "members") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, "members") && infer_type(c, recv) == TY_POLY)
+     symbols as a generic Array. #deconstruct is the member values (like to_a). */
+  if (recv >= 0 && (sp_streq(name, "members") || sp_streq(name, "deconstruct")) &&
+      argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && infer_type(c, recv) == TY_POLY)
     return TY_POLY_ARRAY;
   /* `poly.reject/select/filter { }` on a value only known to be an array at
      runtime (read out of a poly container): a filtered generic Array. */

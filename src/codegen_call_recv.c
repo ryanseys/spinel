@@ -7969,10 +7969,14 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     /* to_a on a runtime-tagged value: nil -> [], array -> itself, hash -> its
        pairs, anything else CRuby's NoMethodError. Skip when a user class
        defines to_a so its method wins the dispatch. */
-    if (sp_streq(name, "to_a") && nt_ref(nt, id, "block") < 0) {
+    /* to_a / deconstruct on a poly value: for a Struct/Data both are the
+       member values in order (sp_poly_to_a_arr derives them from the to_h
+       hook); for an array/hash it is the elements/pairs. */
+    if ((sp_streq(name, "to_a") || sp_streq(name, "deconstruct")) && argc == 0 &&
+        nt_ref(nt, id, "block") < 0) {
       int has_user_ta = 0;
       for (int kk = 0; kk < c->nclasses && !has_user_ta; kk++)
-        if (comp_method_in_chain(c, kk, "to_a", NULL) >= 0) has_user_ta = 1;
+        if (comp_method_in_chain(c, kk, name, NULL) >= 0) has_user_ta = 1;
       if (!has_user_ta) {
         buf_puts(b, "sp_poly_to_a_arr("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
