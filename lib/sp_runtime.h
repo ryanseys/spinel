@@ -5309,6 +5309,16 @@ static sp_RbVal sp_poly_to_h_m(sp_RbVal v) {
   }
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_h' for %s", sp_poly_class_name(v)));
 }
+/* Data#with on a poly receiver (a Data read out of a container): dispatch by
+   cls_id to a copy-update constructor, `ov` a symbol-keyed hash of the members
+   to override (#2890). */
+static sp_RbVal sp_poly_with_m(sp_RbVal v, sp_RbVal ov) {
+  if (v.tag == SP_TAG_OBJ && sp_obj_with_fn) {
+    sp_RbVal r = sp_obj_with_fn(v, ov);
+    if (r.tag == SP_TAG_OBJ) return r;
+  }
+  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'with' for %s", sp_poly_class_name(v)));
+}
 static sp_RbVal sp_poly_to_r_m(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return sp_box_rational(sp_rational_new(0, 1));
   if (v.tag == SP_TAG_INT) return sp_box_rational(sp_rational_new(v.v.i, 1));

@@ -199,6 +199,8 @@ extern const char *(*sp_poly_inspect_fn)(sp_RbVal);
 extern sp_RbVal (*sp_obj_to_hash_fn)(sp_RbVal);
 /* Symbol-keyed Struct/Data #to_h, for a poly receiver (#2906). */
 extern sp_RbVal (*sp_obj_to_h_fn)(sp_RbVal);
+/* Data#with copy-update for a poly receiver: (value, symbol-keyed overrides). (#2890) */
+extern sp_RbVal (*sp_obj_with_fn)(sp_RbVal, sp_RbVal);
 /* default Object#inspect for user objects: the generated TU installs a
    per-class ivar walk (sp_obj_inspect_sw); sp_poly_inspect's OBJ default
    consults it so nested/boxed objects render like CRuby */

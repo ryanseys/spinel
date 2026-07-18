@@ -276,6 +276,7 @@ extern int g_emit_obj_dispatch;/* emit sp_obj_inspect_sw / sp_obj_to_s_sw (user 
 extern int g_uses_program_name;/* $0 / $PROGRAM_NAME read somewhere */
 extern int g_gen_obj_hash;  /* a package wants obj reflection + >=1 struct: emit+install sp_obj_to_hash */
 extern int g_gen_obj_to_h;  /* >=1 instantiated Struct/Data: emit+install sym-keyed sp_obj_to_h (poly #to_h) */
+extern int g_gen_obj_with;  /* >=1 instantiated Data: emit+install sp_obj_with (poly Data#with) */
 extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_threads;

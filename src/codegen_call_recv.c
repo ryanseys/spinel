@@ -8017,6 +8017,34 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "freeze"))     { buf_puts(b, "sp_poly_freeze("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
   }
+  /* Data#with on a poly receiver (a Data read out of a container): build a
+     symbol-keyed override hash from the keyword args, then dispatch by cls_id
+     to a copy-update constructor (#2890). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "with") && argc == 1 &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
+    int has_user = 0;
+    for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+      if (comp_method_in_chain(c, kk, "with", NULL) >= 0) has_user = 1;
+    if (!has_user) {
+      int en = 0; const int *els = nt_arr(nt, argv[0], "elements", &en);
+      int th = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", th, th);
+      for (int e = 0; e < en; e++) {
+        int key = nt_ref(nt, els[e], "key");
+        const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
+        const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+        int val = nt_ref(nt, els[e], "value");
+        if (!kn || val < 0) continue;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), ", th, kn);
+        emit_boxed(c, val, g_pre); buf_puts(g_pre, ");\n");
+      }
+      buf_puts(b, "sp_poly_with_m("); emit_expr(c, recv, b);
+      buf_printf(b, ", sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH))", th);
+      return 1;
+    }
+  }
   /* poly receiver: String#getbyte (a non-string tag raises NoMethodError).
      A user method or attr reader with the same name wins. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "getbyte")) {

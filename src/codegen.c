@@ -3253,6 +3253,42 @@ static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: return sp_box_nil();\n  }\n}\n");
 }
 
+/* Data#with copy-update, installed as sp_obj_with_fn. cls_id switch over every
+   instantiated Data: construct a fresh instance whose members come from the
+   symbol-keyed override hash `ov` where present, else copied from the receiver.
+   Mirrors the typed Data#with emitter for a poly receiver (#2890). */
+static void emit_obj_with_dispatch(Compiler *c, Buf *b) {
+  if (!g_gen_obj_with) return;
+  buf_puts(b, "static sp_RbVal sp_obj_with(sp_RbVal v, sp_RbVal ov) {\n");
+  buf_puts(b, "  switch (v.cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    if (!ci->is_data || !ci->instantiated) continue;
+    /* A custom `initialize` gives sp_X_new the init's own param signature (not
+       one-per-member), and #with must not re-run it -- skip; poly #with on such
+       a Data falls through to NoMethodError (rare). */
+    int scust = comp_method_in_chain(c, i, "initialize", NULL);
+    if (scust >= 0 && c->scopes[scust].reachable) continue;
+    int idx = comp_class_index(c, ci->name);
+    buf_printf(b, "    case %d: {\n", idx);
+    buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
+    buf_printf(b, "      return sp_box_obj(sp_%s_new(", ci->c_name);
+    for (int j = 0; j < ci->nivars; j++) {
+      TyKind mt = ci->ivar_types[j];
+      const char *iv = ci->ivars[j] + 1;
+      if (j) buf_puts(b, ", ");
+      /* a per-member statement-expr with its OWN found flag: sp_X_new's args
+         evaluate in unspecified order, so a shared flag would race. */
+      buf_printf(b, "({ mrb_bool _f; sp_RbVal _pv = sp_poly_hash_probe(ov, sp_box_sym(sp_sym_intern(\"%s\")), &_f); _f ? ", iv);
+      Buf ub; memset(&ub, 0, sizeof ub); emit_unbox_text(c, mt, "_pv", &ub);
+      buf_puts(b, ub.p ? ub.p : "_pv"); free(ub.p);
+      buf_printf(b, " : o->iv_%s; })", iv);
+    }
+    buf_printf(b, "), %d);\n    }\n", idx);
+  }
+  buf_puts(b, "    default: sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method 'with' for %s\", sp_poly_class_name(v))); return sp_box_nil();\n  }\n}\n");
+}
+
 /* Default Object#inspect: one switch over every user class, walking its
    typed ivars boxed through the marshal box helper into sp_poly_inspect --
    so nested containers, strings (quoted), nil and nested objects (via the
@@ -3990,6 +4026,8 @@ void emit_regex_section(Buf *b) {
     buf_puts(b, "static sp_RbVal sp_obj_to_hash(sp_RbVal v);\n");
   if (g_gen_obj_to_h)
     buf_puts(b, "static sp_RbVal sp_obj_to_h(sp_RbVal v);\n");
+  if (g_gen_obj_with)
+    buf_puts(b, "static sp_RbVal sp_obj_with(sp_RbVal v, sp_RbVal ov);\n");
   if (g_gen_obj_hashkey)
     buf_puts(b, "static mrb_int sp_gen_obj_hash(int cls_id, void *p);\n"
                 "static mrb_bool sp_gen_obj_eql(int cls_id, void *a, void *b_);\n");
@@ -4038,6 +4076,8 @@ void emit_regex_section(Buf *b) {
     buf_puts(b, "  sp_obj_to_hash_fn = sp_obj_to_hash;\n");
   if (g_gen_obj_to_h)
     buf_puts(b, "  sp_obj_to_h_fn = sp_obj_to_h;\n");
+  if (g_gen_obj_with)
+    buf_puts(b, "  sp_obj_with_fn = sp_obj_with;\n");
   if (g_re_count > 0) {
     buf_puts(b, "  sp_re_set_error_handler(sp_re_startup_error_handler);\n");
     for (int i = 0; i < g_re_count; i++) {
@@ -4540,6 +4580,15 @@ static void scan_prologue_features(Compiler *c) {
   g_gen_obj_to_h = 0;
   for (int i = 0; i < c->nclasses; i++)
     if ((c->classes[i].is_struct || c->classes[i].is_data) && c->classes[i].instantiated) { g_gen_obj_to_h = 1; break; }
+  /* A plain (no custom initialize) instantiated Data gets the poly Data#with
+     dispatch; a custom-init Data is skipped there, so don't count it (#2890). */
+  g_gen_obj_with = 0;
+  for (int i = 0; i < c->nclasses; i++) {
+    if (!c->classes[i].is_data || !c->classes[i].instantiated) continue;
+    int sc = comp_method_in_chain(c, i, "initialize", NULL);
+    if (sc >= 0 && c->scopes[sc].reachable) continue;
+    g_gen_obj_with = 1; break;
+  }
   /* Runtime-render reach: does any slot in the program carry a type whose
      rendering can call into the symbol runtime (sp_sym_to_s / sp_sym_intern)
      or the class-name table (sp_class_to_s)? A boxed poly value can hold ANY
@@ -5601,7 +5650,7 @@ char *codegen_program(const NodeTable *nt) {
 
   /* sp_re_init is worth emitting only if it would set at least one hook. */
   g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||
-                     g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash || g_gen_obj_to_h || g_gen_obj_hashkey ||
+                     g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash || g_gen_obj_to_h || g_gen_obj_with || g_gen_obj_hashkey ||
                      g_gen_obj_valeq;
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any
@@ -5617,6 +5666,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_emit_obj_dispatch) emit_obj_inspect_dispatch(c, body);
   emit_obj_to_hash_dispatch(c, body);
   emit_obj_to_h_dispatch(c, body);
+  emit_obj_with_dispatch(c, body);
   for (int s = 1; s < c->nscopes; s++) {
     if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
   }

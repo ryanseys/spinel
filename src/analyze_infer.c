@@ -875,6 +875,12 @@ TyKind infer_call(Compiler *c, int id) {
       (sp_streq(name, "find") || sp_streq(name, "detect")) &&
       nt_ref(nt, id, "block") >= 0 && !an_user_defines_method(c, name))
     return TY_POLY;
+  /* Data#with on a poly value (a Data read out of a container) returns a new
+     Data instance, boxed poly (#2890). */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "with") &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
+      !an_user_defines_method(c, name))
+    return TY_POLY;
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
