@@ -3994,6 +3994,33 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
     }
     buf_puts(b, "; }\n");
   }
+  /* A class with a reachable user-defined `==`: dispatch to it so Array#include?
+     / #index / uniq (all through sp_poly_eq -> this hook) honor value equality.
+     sp_poly_eq only consults the hook when both operands share a cls_id, so `a`
+     and `b` are provably this class -- a poly `==` param takes `b` boxed, a
+     same-class-typed param takes the unboxed pointer; other param shapes are
+     left to pointer identity (#2884). */
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (!ci->instantiated) continue;
+    int defcls = -1;
+    int mi = comp_method_in_chain(c, k, "==", &defcls);
+    if (mi < 0 || !c->scopes[mi].reachable || c->scopes[mi].ret != TY_BOOL) continue;
+    Scope *m = &c->scopes[mi];
+    if (m->nparams < 1) continue;
+    LocalVar *p = scope_local(m, m->pnames[0]);
+    TyKind pt = p ? p->type : TY_POLY;
+    int poly_param = (pt == TY_POLY || pt == TY_UNKNOWN);
+    int obj_param = ty_is_object(pt) && !comp_ty_value_obj(c, pt);
+    if (!poly_param && !obj_param) continue;
+    const char *dcn = c->classes[defcls].c_name;
+    const char *slf = c->classes[defcls].is_value_type ? "*" : "";
+    buf_printf(b, "    case %d: return sp_%s_%s(%s(sp_%s *)a.v.p, ",
+               comp_class_index(c, ci->name), dcn, mc("=="), slf, dcn);
+    if (obj_param) buf_printf(b, "(sp_%s *)b.v.p", c->classes[ty_object_class(pt)].c_name);
+    else buf_puts(b, "b");
+    buf_puts(b, ");\n");
+  }
   buf_puts(b, "    default: break;\n  }\n  return FALSE;\n}\n");
 }
 
@@ -5644,9 +5671,16 @@ char *codegen_program(const NodeTable *nt) {
   for (int k = 0; k < c->nclasses; k++)
     if (class_is_hashkey(c, k) || class_is_valuekey(c, k)) { g_gen_obj_hashkey = 1; break; }
   g_gen_obj_valeq = 0;
-  for (int k = 0; k < c->nclasses; k++)
-    if (c->classes[k].instantiated && (c->classes[k].is_struct || c->classes[k].is_data) &&
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated) continue;
+    /* Struct/Data auto field-wise == (no user override). */
+    if ((c->classes[k].is_struct || c->classes[k].is_data) &&
         comp_method_in_chain(c, k, "==", NULL) < 0) { g_gen_obj_valeq = 1; break; }
+    /* A reachable, bool-returning user == is dispatched so include?/index/uniq
+       honor it (#2884). */
+    int mi = comp_method_in_chain(c, k, "==", NULL);
+    if (mi >= 0 && c->scopes[mi].reachable && c->scopes[mi].ret == TY_BOOL) { g_gen_obj_valeq = 1; break; }
+  }
 
   /* sp_re_init is worth emitting only if it would set at least one hook. */
   g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||

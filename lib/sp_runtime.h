@@ -5030,6 +5030,12 @@ static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
       a.cls_id >= 0) {
     if (a.v.p == b.v.p) return TRUE;
     if (sp_obj_eql_hook) return sp_obj_eql_hook(a.cls_id, a.v.p, b.v.p);
+    /* No eql? hook (so no Struct/Data value key exists to need field-wise eql?):
+       a user object's eql? is identity, NOT its `==`. Falling through to
+       sp_poly_eq would pick up a class's user-defined `==` (which uniq / Set /
+       Hash keys must not use), so a class defining only `==` would wrongly
+       dedupe here (#2884). */
+    return FALSE;
   }
   return sp_poly_eq(a, b);
 }
