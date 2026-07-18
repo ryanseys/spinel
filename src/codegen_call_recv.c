@@ -607,6 +607,28 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_poly_sort("); emit_expr(c, recv, b); buf_puts(b, ")");
     return 1;
   }
+  /* `enum.drop(n)` / `enum.reject|select|filter { }` on an each_with_index-style
+     Enumerator: materialize its pairs to a poly array and re-dispatch as the
+     array form (drop returns a slice; the filters run the block). (#2878) */
+  if (recv >= 0 && rt == TY_ENUMERATOR && g_n_argov < MAX_ARG_OVERRIDE &&
+      ((sp_streq(name, "drop") && argc == 1 && nt_ref(nt, id, "block") < 0) ||
+       ((sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
+        argc == 0 && nt_ref(nt, id, "block") >= 0))) {
+    int ta = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s); SP_GC_ROOT(_t%d);\n",
+               ta, rb.p ? rb.p : "", ta);
+    free(rb.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+    g_n_argov++;
+    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    emit_expr(c, id, b);
+    c->ntype[recv] = sv;
+    g_n_argov--;
+    return 1;
+  }
   /* `poly.reject/select/filter { |x| ... }` where poly is an array read out of
      a container: coerce to a poly array and filter it into a fresh poly array,
      mirroring the find arm above (this TY_POLY receiver would otherwise skip to

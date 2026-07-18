@@ -2226,6 +2226,11 @@ else {
        snapshot, or whatever a stored size value/callable yields -- hence poly. */
     if (sp_streq(name, "size")) return TY_POLY;
     if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "drop") && argc == 1 && nt_ref(nt, id, "block") < 0) return TY_POLY_ARRAY;
+    /* reject/select/filter with a block over the materialized pairs: a generic
+       Array (each_with_index.reject { |v, i| ... }). */
+    if ((sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
+        argc == 0 && nt_ref(nt, id, "block") >= 0) return TY_POLY_ARRAY;
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) return TY_POLY_ARRAY;
     if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) return TY_STRING;
   }
