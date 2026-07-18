@@ -7024,7 +7024,30 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ &&
       (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id)))
     return sp_enum_items_from(v);
+  /* a Struct/Data read out of a container: Struct#to_a is its member values in
+     order, which the symbol-keyed to_h (via the generated hook) preserves. */
+  if (v.tag == SP_TAG_OBJ && sp_obj_to_h_fn) {
+    sp_RbVal h = sp_obj_to_h_fn(v);
+    if (h.tag == SP_TAG_OBJ && h.cls_id == SP_BUILTIN_SYM_POLY_HASH)
+      return sp_SymPolyHash_values((sp_SymPolyHash *)h.v.p);
+  }
   sp_raise_nomethod(sp_nomethod_msg("to_a", v));
+  return NULL;
+}
+/* Struct#members on a boxed value: the field-name symbols in order (the keys of
+   the symbol-keyed to_h). */
+static sp_PolyArray *sp_poly_struct_members(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && sp_obj_to_h_fn) {
+    sp_RbVal h = sp_obj_to_h_fn(v);
+    if (h.tag == SP_TAG_OBJ && h.cls_id == SP_BUILTIN_SYM_POLY_HASH) {
+      sp_IntArray *k = sp_SymPolyHash_keys((sp_SymPolyHash *)h.v.p);
+      SP_GC_ROOT(k);
+      sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+      for (mrb_int i = 0; i < k->len; i++) sp_PolyArray_push(a, sp_box_sym((sp_sym)k->data[k->start + i]));
+      return a;
+    }
+  }
+  sp_raise_nomethod(sp_nomethod_msg("members", v));
   return NULL;
 }
 /* Enumerable#sort on a boxed value (an array or hash read out of a poly

@@ -7969,6 +7969,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* Struct#members on a Struct/Data read out of a container. */
+    if (sp_streq(name, "members") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      int has_user_m = 0;
+      for (int kk = 0; kk < c->nclasses && !has_user_m; kk++)
+        if (comp_method_in_chain(c, kk, "members", NULL) >= 0) has_user_m = 1;
+      if (!has_user_m) {
+        buf_puts(b, "sp_poly_struct_members("); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+    }
     /* Hash#keys / #values on a poly value (e.g. an evidence-free empty `{}` that
        stayed poly). Skip when a user class defines keys/values so its method wins. */
     if (sp_streq(name, "keys") || sp_streq(name, "values")) {
