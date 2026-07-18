@@ -2299,7 +2299,12 @@ else {
        it to the unified scalar result so the temp's declared type matches. */
     else if (lt == TY_UNKNOWN && res == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, left, b); buf_puts(b, ")"); }
     else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, left, b); buf_puts(b, ")"); }
-    else emit_expr(c, left, b);
+    /* The left may be an unresolved call emitting an sp_RbVal raise token
+       (`x.details || "~"`, where details is typed String from the `||` but
+       lowers to sp_raise_nomethod); coerce it to the temp's DECLARED type (res
+       when the left itself is unknown) rather than assigning the raw token. A
+       normal left emits unchanged. */
+    else emit_unresolved_coerced(c, left, lt == TY_UNKNOWN ? res : lt, b);
     buf_puts(b, "; ");
     /* Truthiness of the left, built into its own buffer so the arms can be
        captured before it is committed to `b`. */
