@@ -2802,6 +2802,22 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_ref(nt, id, "receiver", eachn);
       comp_grow_node_arrays(c);
     }
+    /* str.each_char/each_line (blockless, no args) followed by an eager
+       block-consuming Enumerable method -> chars/lines, so the block param
+       types as String (a StrArray element) instead of an opaque enumerator
+       element (#2901). Not for the lazy/enumerator-shaped methods, which keep
+       their own machinery. */
+    else if (nt_ref(nt, id, "block") >= 0 && nt_ref(nt, recv, "arguments") < 0 &&
+             (sp_streq(rn, "each_char") || sp_streq(rn, "each_line")) &&
+             (sp_streq(nm, "map") || sp_streq(nm, "collect") || sp_streq(nm, "select") ||
+              sp_streq(nm, "filter") || sp_streq(nm, "reject") || sp_streq(nm, "flat_map") ||
+              sp_streq(nm, "collect_concat") || sp_streq(nm, "filter_map") ||
+              sp_streq(nm, "min_by") || sp_streq(nm, "max_by") || sp_streq(nm, "sort_by") ||
+              sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "count") ||
+              sp_streq(nm, "sum") || sp_streq(nm, "each_with_index") ||
+              sp_streq(nm, "partition") || sp_streq(nm, "group_by"))) {
+      nt_node_set_str(nt, recv, "name", sp_streq(rn, "each_char") ? "chars" : "lines");
+    }
     else if ((sp_streq(nm, "to_a") || sp_streq(nm, "force")) && sp_streq(rn, "take") &&
              nt_ref(nt, id, "block") < 0) {
       /* X.take(n).to_a == X.first(n) -- and first(n) is what the lazy
