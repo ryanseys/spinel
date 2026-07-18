@@ -1015,6 +1015,12 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b) {
    becomes re+0i (a Float operand marks the real component Float-classed). */
 static void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_COMPLEX) { emit_expr(c, node, b); return; }
+  /* a poly operand (e.g. a Complex read out of a poly array) unboxes at
+     runtime -- a boxed Complex keeps its components, a real number is re+0i */
+  if (comp_ntype(c, node) == TY_POLY) {
+    buf_puts(b, "sp_poly_as_complex("); emit_expr(c, node, b); buf_puts(b, ")");
+    return;
+  }
   /* a Rational operand computes in floats (owner-approved divergence: CRuby
      keeps rational components, spinel's Complex stores machine floats --
      documented in docs/limitations.md) */
@@ -1998,7 +2004,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "inspect")) { buf_puts(b, "sp_complex_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       TyKind cxa = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
       int cx_ok = cxa == TY_COMPLEX || cxa == TY_INT || cxa == TY_FLOAT ||
-                  cxa == TY_RATIONAL;
+                  cxa == TY_RATIONAL || cxa == TY_POLY;
       /* Dividing a Complex by a real scalar divides each component: a Float
          divisor yields Infinity at 0 (IEEE), an Integer divisor raises
          ZeroDivisionError at 0 (integer rules). The conjugate-formula

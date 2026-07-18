@@ -2380,6 +2380,12 @@ static inline sp_Rational sp_poly_as_rational(sp_RbVal v) {
   if (sp_poly_is_rational(v) && v.v.p) return *(sp_Rational *)v.v.p;
   return sp_rational_new(sp_poly_to_i(v), 1);
 }
+/* Unbox a boxed Complex (a real number becomes re+0i). Used to keep a Complex
+   reduce accumulator typed when the block folds through the poly `+`. */
+static inline sp_Complex sp_poly_as_complex(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) return *(sp_Complex *)v.v.p;
+  return (sp_Complex){sp_poly_to_f(v), 0.0, 0};
+}
 /* Coerce to a C double, understanding boxed Rational (sp_poly_to_f does not).
    Used by the Rational+Float arms, where CRuby yields a Float. */
 static inline mrb_float sp_poly_to_f_with_rational(sp_RbVal v) {
