@@ -214,6 +214,17 @@ const char *g_fn_pr_label = NULL;
 const char *g_fn_pr_var = NULL;
 TyKind g_fn_ret_type = TY_UNKNOWN;
 int g_current_scope_is_lowered = 0;
+/* The block-param name of the lowered method currently being emitted (its
+   declared &block name, or "__yblk__" when the lowering synthesized one);
+   NULL outside a lowered-method emission. Read by emit_yblk_ref. */
+const char *g_lowered_blk_name = NULL;
+/* The enclosing lowered context parked across an inline: an inlined callee's
+   own yields splice the call-site block, so emit_inline_call_x clears the
+   lowered pair for the callee body and parks it here; emit_block_invoke
+   restores it around spliced CALLER code (whose yields do belong to the
+   lowered method) -- the same discipline as g_yield_self_fallback. */
+int g_yield_lowered_fallback = 0;
+const char *g_yield_lowered_blk_fallback = NULL;
 /* When a yielding method is inlined and its block is a forwarded REAL proc
    (the caller nil-checks its &block, so the block can't be an inlined literal),
    this holds the C expression for that proc; the inlined `yield` calls it via
@@ -466,11 +477,15 @@ void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
   buf_printf(b, "lv_%s", rename_local(name));
 }
 void emit_yblk_ref(Buf *b) {
-  if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, "__yblk__")) {
-    buf_printf(b, "(sp_Proc *)(uintptr_t)(*(((%s *)_cap)->__yblk__))", g_cap_struct);
+  /* The lowered method's block param: the declared &block name when the def
+     has one, else the synthetic __yblk__. */
+  const char *nm =
+      (g_lowered_blk_name && g_lowered_blk_name[0]) ? g_lowered_blk_name : "__yblk__";
+  if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm)) {
+    buf_printf(b, "(sp_Proc *)(uintptr_t)(*(((%s *)_cap)->%s))", g_cap_struct, nm);
   }
   else {
-    buf_puts(b, "lv___yblk__");
+    buf_printf(b, "lv_%s", nm);
   }
 }
 void emit_tail_lead(Buf *b) {

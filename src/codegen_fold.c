@@ -27,6 +27,33 @@ int resolve_forwarded_block(Compiler *c, int block) {
   return forwards_param ? g_block_id : block;
 }
 
+/* A BlockArgumentNode that survives resolve_forwarded_block has no inline
+   block to splice: it forwards a REAL proc -- a TY_PROC expression (`&block`
+   from a real-function body, e.g. a self-recursive block method), or the
+   caller's own proc param via anonymous `&`. Write that proc expression (or
+   NULL) into b and return 1; return 0 when blk_node isn't that shape (a
+   literal block, for emit_proc_literal). Mirrors the same branch in
+   emit_cmethod_block_arg. */
+static int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (blk_node < 0) return 0;
+  const char *ty = nt_type(nt, blk_node);
+  if (!ty || !sp_streq(ty, "BlockArgumentNode")) return 0;
+  int fe = nt_ref(nt, blk_node, "expression");
+  if (fe >= 0 && comp_ntype(c, fe) == TY_PROC) { emit_expr(c, fe, b); return 1; }
+  if (fe < 0) {
+    /* anonymous `&`: the BlockArgumentNode sits in the caller's body, so its
+       scope is the caller -- forward that method's own proc param */
+    Scope *caller = comp_scope_of(c, blk_node);
+    if (caller && caller->blk_param && caller->blk_param[0] && !caller->yields) {
+      buf_printf(b, "lv_%s", caller->blk_param);
+      return 1;
+    }
+  }
+  buf_puts(b, "NULL");
+  return 1;
+}
+
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -46,7 +73,8 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
     if (blk_node >= 0) {
       int blk_tmp = ++g_tmp;
       Buf pb; memset(&pb, 0, sizeof pb);
-      emit_proc_literal(c, blk_node, &pb);
+      if (!emit_forwarded_proc_arg(c, blk_node, &pb))
+        emit_proc_literal(c, blk_node, &pb);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
       emit_indent(g_pre, g_indent);
@@ -6255,7 +6283,8 @@ else {
   if (needs_blk_arg && blk_node >= 0) {
     blk_tmp = ++g_tmp;
     Buf pb; memset(&pb, 0, sizeof pb);
-    emit_proc_literal(c, blk_node, &pb);
+    if (!emit_forwarded_proc_arg(c, blk_node, &pb))
+      emit_proc_literal(c, blk_node, &pb);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
     emit_indent(g_pre, g_indent);

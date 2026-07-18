@@ -166,8 +166,12 @@ extern const char *g_fn_pr_label;   /* real function's return funnel (see codege
 extern const char *g_fn_pr_var;
 extern TyKind g_fn_ret_type;
 /* Set while emitting a self-recursive yield method (is_lowered_yield=1).
-   Persists into inner proc literal bodies so { yield } forwards __yblk__. */
+   Persists into inner proc literal bodies so { yield } forwards the block
+   param (g_lowered_blk_name, or the synthetic __yblk__). */
 extern int g_current_scope_is_lowered;
+extern const char *g_lowered_blk_name;
+extern int g_yield_lowered_fallback;
+extern const char *g_yield_lowered_blk_fallback;
 extern const char *g_yield_proc_ref;
 extern TyKind g_yield_slot_ty;
 

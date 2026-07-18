@@ -926,6 +926,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   const char *saved_dmn = g_dm_subst_name; int saved_dmnode = g_dm_subst_node;
   g_dm_subst_name = s->dm_subst_name; g_dm_subst_node = s->dm_subst_node;
   int saved_lowered = g_current_scope_is_lowered; g_current_scope_is_lowered = s->is_lowered_yield;
+  const char *saved_lbn = g_lowered_blk_name;
+  g_lowered_blk_name = s->is_lowered_yield ? s->blk_param : NULL;
   /* a method body is a fresh break context: a stray enclosing serial must
      not leak into it (its own wrapped iterators re-establish scopes) */
   const char *saved_bser = g_brk_ser_var; g_brk_ser_var = NULL;
@@ -1017,6 +1019,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_emitting_class_id = saved_emcls;
   g_dm_subst_name = saved_dmn; g_dm_subst_node = saved_dmnode;
   g_current_scope_is_lowered = saved_lowered;
+  g_lowered_blk_name = saved_lbn;
   g_brk_ser_var = saved_bser; g_brk_skip_id = saved_bskip;
   buf_puts(b, "}\n");
 }
@@ -1892,13 +1895,20 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
     }
   }
   /* Lowered self-recursive yield method: a `{ yield }` block forwards the
-     enclosing method's __yblk__ down via capture.  The YieldNode is not a
-     LocalVariableRead so proc_collect_used never picks it up -- force it. */
+     enclosing method's block param (declared &block name or the synthetic
+     __yblk__) down via capture.  The YieldNode is not a LocalVariableRead so
+     proc_collect_used never picks it up -- force it. */
   if (g_current_scope_is_lowered) {
     int pb2 = proc_body_node(c, create);
-    if (pb2 >= 0 && proc_body_has_yield(c, pb2) && !nameset_has(&caps, "__yblk__")) {
-      LocalVar *yblk_lv = scope_local(bs, "__yblk__");
-      if (yblk_lv && yblk_lv->is_cell) nameset_add(&caps, "__yblk__");
+    /* g_lowered_blk_name, not bs->blk_param: for an include-transplanted
+       method comp_scope_of maps body nodes to the SOURCE scope, while the
+       name in force is the emitting copy's -- the same one emit_yblk_ref
+       will reference inside the proc body. */
+    const char *ybn =
+        (g_lowered_blk_name && g_lowered_blk_name[0]) ? g_lowered_blk_name : "__yblk__";
+    if (pb2 >= 0 && proc_body_has_yield(c, pb2) && !nameset_has(&caps, ybn)) {
+      LocalVar *yblk_lv = scope_local(bs, ybn);
+      if (yblk_lv && yblk_lv->is_cell) nameset_add(&caps, ybn);
     }
   }
 
