@@ -2610,6 +2610,17 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           }
         }
       }
+      else if (arm_pt == TY_POLY) {
+        /* poly scrutinee: match at runtime via the boxed-value hash walk (it
+           checks the tag is a hash, every key is present, and each value
+           sub-pattern matches) instead of failing closed on a null cname. */
+        char es[24]; snprintf(es, sizeof es, "_t%d", arm_t);
+        Buf pc = {NULL, 0, 0};
+        emit_pm_hash_cond_poly(c, pat, es, &pc);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "_t%d = (%s);\n", hcond, pc.p ? pc.p : "0");
+        free(pc.p);
+      }
       /* `**nil`: no keys beyond the listed ones */
       {
         int hp_rest = nt_ref(nt, pat, "rest");
@@ -2820,6 +2831,13 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             emit_indent(b, body_indent); buf_puts(b, "}\n");
           }
         }
+      }
+      else if (arm_pt == TY_POLY) {
+        /* poly scrutinee: bind the value targets through the boxed-value hash
+           binder (the condition above already confirmed a matching hash). */
+        Scope *hsc = comp_scope_of(c, id);
+        char es[24]; snprintf(es, sizeof es, "_t%d", arm_t);
+        emit_pm_bind_hash_poly(c, pat, es, body_indent, b, hsc);
       }
     }
     /* IntegerNode/StringNode/SymbolNode/ConstantReadNode: value-only, no binding */
