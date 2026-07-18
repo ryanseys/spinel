@@ -5110,11 +5110,20 @@ static void mark_empty_array_receivers(Compiler *c) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
-    /* product takes no block; everything else on the list is block-gated so
-       the non-block empty-literal folds (sum, inject(:sym), first) keep
-       their dedicated arms */
-    if (nt_ref(nt, id, "block") < 0 && !(nm && sp_streq(nm, "product"))) continue;
-    if (!nm || (!empty_arr_iter_ok(nm) && !sp_streq(nm, "product"))) continue;
+    /* product takes no block; max/min/sample WITH a count arg take no block
+       but return an array (via the PolyArray sort/shuffle path) -- an empty
+       int-array literal there would be passed to sp_PolyArray_* as an
+       sp_IntArray* (#2864). Everything else on the list is block-gated so the
+       non-block empty-literal folds (sum, inject(:sym), first) keep their arms. */
+    int has_block = nt_ref(nt, id, "block") >= 0;
+    int count_form = 0;
+    if (nm && (sp_streq(nm, "max") || sp_streq(nm, "min") || sp_streq(nm, "sample"))) {
+      int an = nt_ref(nt, id, "arguments"); int ac = 0;
+      if (an >= 0) nt_arr(nt, an, "arguments", &ac);
+      count_form = (ac == 1);
+    }
+    if (!has_block && !(nm && sp_streq(nm, "product")) && !count_form) continue;
+    if (!nm || (!empty_arr_iter_ok(nm) && !sp_streq(nm, "product") && !count_form)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || recv >= c->node_cap) continue;
     const char *rty = nt_type(nt, recv);

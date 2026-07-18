@@ -57,6 +57,10 @@ static void sp_time_shift_ns(double secs, int64_t base_sec, int32_t base_ns,
   e -= 53;
   __int128 ns = (__int128)mi * 1000000000;
   if (e > 0) ns = (e > 34) ? (ns < 0 ? INT64_MIN : INT64_MAX) : ns << e;
+  /* Floor toward -inf (arithmetic shift), matching CRuby's #nsec/#usec, which
+     truncate the exact rational. spinel stores nanosecond resolution, so the
+     sub-nanosecond bits CRuby keeps for #to_f round-tripping are lost by
+     design (see docs/limitations.md). */
   else if (e < 0) ns = (-e > 126) ? (ns < 0 ? -1 : 0) : ns >> -e;
   __int128 total = ((__int128)base_sec * 1000000000 + base_ns) + ns;
   int64_t sec = (int64_t)(total / 1000000000);

@@ -357,6 +357,18 @@ Spinel deliberately does not carry -- the same limit as
 `#unicode_normalize!`, and `#unicode_normalized?` are therefore not supported,
 and a call to them is rejected at compile time.
 
+#### `Time` sub-nanosecond precision
+
+Spinel's `Time` stores an `int64` second count and an `int32` nanosecond
+fraction (nanosecond resolution). CRuby keeps the exact rational a `Float` or
+`Rational` argument produces, so it carries bits below one nanosecond.
+`#nsec` / `#usec` agree with CRuby (both truncate to the nanosecond), but two
+things differ: `Time.at(f).to_f` does not always round-trip a `Float` (CRuby
+rounds the exact rational to the nearest double; Spinel reconstructs from the
+nanosecond value, so `Time.at(12345.678).to_f` is `12345.677999999`), and
+`#subsec` returns a nanosecond-resolution `Rational` (`Time.at(2.2).subsec` is
+`(1/5)`) rather than the exact binary fraction of the source `Float`.
+
 #### Aliasing the regexp match globals
 
 CRuby's `English` library aliases the punctuation match globals to readable

@@ -6756,7 +6756,13 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "wday")) buf_printf(b, "sp_time_wday(%s)", r);
     else if (sp_streq(name, "yday")) buf_printf(b, "sp_time_yday(%s)", r);
     else if (sp_streq(name, "to_i") || sp_streq(name, "tv_sec")) buf_printf(b, "(%s).tv_sec", r);
-    else if (sp_streq(name, "to_f")) buf_printf(b, "((mrb_float)(%s).tv_sec + (mrb_float)(%s).tv_nsec / 1e9)", r, r);
+    else if (sp_streq(name, "to_f")) {
+      /* hoist the receiver into a temp: emitting `r` twice would evaluate a
+         side-effecting receiver (`c.utc`, which mutates the local) twice --
+         unsequenced modification (#2865). */
+      int tf = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = (%s); (mrb_float)_t%d.tv_sec + (mrb_float)_t%d.tv_nsec / 1e9; })", tf, r, tf, tf);
+    }
     else if (sp_streq(name, "subsec")) {
       /* CRuby: Integer 0 for a whole second, else the exact Rational */
       int tt = ++g_tmp;
@@ -6824,17 +6830,30 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
                  tt, r, tt, tt);
     }
     else if (sp_streq(name, "deconstruct_keys") && argc == 1) {
-      /* a Hash of the requested keys (or all when the argument is nil). */
-      static const struct { const char *k, *fn; } TK[] = {
-        {"year", "sp_time_year"}, {"month", "sp_time_mon"}, {"mon", "sp_time_mon"},
-        {"day", "sp_time_mday"}, {"mday", "sp_time_mday"}, {"hour", "sp_time_hour"},
-        {"min", "sp_time_min"}, {"sec", "sp_time_sec"}, {"wday", "sp_time_wday"},
-        {"yday", "sp_time_yday"}, {NULL, NULL} };
+      /* a Hash of the requested keys (or all when the argument is nil). Each
+         key's value carries its own boxing (int / bool / string / rational);
+         `%d` in `vfmt` is the time temp id. */
+      static const struct { const char *k, *vfmt; } TK[] = {
+        {"year", "sp_box_int(sp_time_year(_t%d))"}, {"month", "sp_box_int(sp_time_mon(_t%d))"},
+        {"mon", "sp_box_int(sp_time_mon(_t%d))"}, {"day", "sp_box_int(sp_time_mday(_t%d))"},
+        {"mday", "sp_box_int(sp_time_mday(_t%d))"}, {"hour", "sp_box_int(sp_time_hour(_t%d))"},
+        {"min", "sp_box_int(sp_time_min(_t%d))"}, {"sec", "sp_box_int(sp_time_sec(_t%d))"},
+        {"wday", "sp_box_int(sp_time_wday(_t%d))"}, {"yday", "sp_box_int(sp_time_yday(_t%d))"},
+        {"subsec", "(_t%d.tv_nsec == 0 ? sp_box_int(0) : sp_box_rational(sp_rational_new((mrb_int)_t%d.tv_nsec, 1000000000)))"},
+        {"dst", "sp_box_bool(sp_time_isdst(_t%d) != 0)"},
+        {"zone", "sp_box_str(sp_time_zone(_t%d))"}, {NULL, NULL} };
       /* which keys: a literal array selects them; nil (or non-literal) is all */
       int arr = argv[0];
       int is_arr = nt_type(nt, arr) && sp_streq(nt_type(nt, arr), "ArrayNode");
       int tt = ++g_tmp, th = ++g_tmp;
       buf_printf(b, "({ sp_Time _t%d = %s; sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);", tt, r, th, th);
+      /* runtime sp_sym_intern for the key: these symbols are synthesized during
+         body emission, after the static sp_sym_names table is written, so a
+         compile-time id would have no name at run time (rendered as "") (#2866). */
+      #define SG_EMIT_KEY(K, VFMT) do { \
+        buf_printf(b, " sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), ", th, (K)); \
+        buf_printf(b, (VFMT), tt, tt); buf_puts(b, ");"); \
+      } while (0)
       if (is_arr) {
         int en = 0; const int *els = nt_arr(nt, arr, "elements", &en);
         for (int e = 0; e < en; e++) {
@@ -6842,22 +6861,16 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
           const char *sk = (ety && sp_streq(ety, "SymbolNode")) ? nt_str(nt, els[e], "value") : NULL;
           if (!sk) continue;
           for (int t = 0; TK[t].k; t++)
-            if (sp_streq(sk, TK[t].k)) {
-              buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, sp_box_int(%s(_t%d)));",
-                         th, comp_sym_intern(c, sk), TK[t].fn, tt);
-              break;
-            }
+            if (sp_streq(sk, TK[t].k)) { SG_EMIT_KEY(TK[t].k, TK[t].vfmt); break; }
         }
       } else {
-        static const char *const allk[] = {"year","month","day","yday","wday","hour","min","sec",NULL};
+        /* CRuby's full key set, in order */
+        static const char *const allk[] = {"year","month","day","yday","wday","hour","min","sec","subsec","dst","zone",NULL};
         for (int a = 0; allk[a]; a++)
           for (int t = 0; TK[t].k; t++)
-            if (sp_streq(allk[a], TK[t].k)) {
-              buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, sp_box_int(%s(_t%d)));",
-                         th, comp_sym_intern(c, allk[a]), TK[t].fn, tt);
-              break;
-            }
+            if (sp_streq(allk[a], TK[t].k)) { SG_EMIT_KEY(TK[t].k, TK[t].vfmt); break; }
       }
+      #undef SG_EMIT_KEY
       buf_printf(b, " sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH); })", th);
     }
     else if (sp_streq(name, "strftime") && argc == 1) { buf_printf(b, "sp_time_strftime(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
