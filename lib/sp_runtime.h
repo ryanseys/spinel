@@ -2683,6 +2683,26 @@ static mrb_int sp_poly_bit_length(sp_RbVal v) { if (v.tag == SP_TAG_INT) return 
 static sp_RbVal sp_poly_getbyte(sp_RbVal v, mrb_int i) { if (v.tag != SP_TAG_STR) sp_raise_poly_nomethod("getbyte", v); const char *s = v.v.s; if (!s) return sp_box_nil(); mrb_int bl = (mrb_int)sp_str_byte_len(s); if (i < 0) i += bl; if (i < 0 || i >= bl) return sp_box_nil(); return sp_box_int((mrb_int)(unsigned char)s[i]); }
 static sp_RbVal sp_poly_ceil(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_int((mrb_int)ceil(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; sp_raise_poly_nomethod("ceil", v); }
 static sp_RbVal sp_poly_round(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_int((mrb_int)round(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; sp_raise_poly_nomethod("round", v); }
+/* Numeric#round(ndigits): a Float stays Float when n > 0 (rounded to n decimal
+   places) and becomes Integer when n <= 0; an Integer is unchanged for n >= 0
+   and rounded to a power of ten for n < 0. Mirrors the scalar Float#round(n)
+   codegen path, dispatched on the runtime tag. */
+static sp_RbVal sp_poly_round_n(sp_RbVal v, mrb_int n) {
+  if (v.tag == SP_TAG_FLT) {
+    double x = v.v.f;
+    if (n > 0) { double f = pow(10, (double)n); return sp_box_float(isinf(f) ? x : round(x * f) / f); }
+    sp_poly_flo_domain_ck(x);
+    double f = pow(10, (double)(-n));
+    return sp_box_int(isinf(f) ? 0 : (mrb_int)(round(x / f) * f));
+  }
+  if (v.tag == SP_TAG_INT) {
+    if (n >= 0) return v;
+    double f = pow(10, (double)(-n));
+    return sp_box_int(isinf(f) ? 0 : (mrb_int)(round((double)v.v.i / f) * f));
+  }
+  if (v.tag == SP_TAG_BIGINT) return v;  /* n < 0 on a bignum is out of scope */
+  sp_raise_poly_nomethod("round", v);
+}
 static sp_RbVal sp_poly_truncate(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_int((mrb_int)trunc(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; sp_raise_poly_nomethod("truncate", v); }
 /* forward: generic array length/element (defined later in this header) and
    the array-kind predicate for cross-kind value equality. */

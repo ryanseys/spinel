@@ -7827,6 +7827,20 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* Numeric#round(ndigits) on a poly: the digit-taking form the no-arg
+     numeric path cannot express. A user `round` still wins (poly dispatch). */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "round") &&
+      nt_ref(nt, id, "block") < 0) {
+    int has_user_rnd = 0;
+    for (int kk = 0; kk < c->nclasses && !has_user_rnd; kk++)
+      if (comp_method_in_chain(c, kk, "round", NULL) >= 0 ||
+          comp_reader_in_chain(c, kk, "round", NULL)) has_user_rnd = 1;
+    if (!has_user_rnd) {
+      buf_puts(b, "sp_poly_round_n("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+  }
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (sp_streq(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
