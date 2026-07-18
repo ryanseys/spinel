@@ -2159,12 +2159,19 @@ int infer_default_param_types(Compiler *c) {
       if (sc->pdefault[i] < 0) continue;
       TyKind dt = infer_type(c, sc->pdefault[i]);
       /* An empty hash `{}` default returns TY_UNKNOWN from infer_type; treat
-         it as TY_SYM_POLY_HASH since it is used as a kwargs receiver. */
+         it as TY_SYM_POLY_HASH since it is used as a kwargs receiver. An empty
+         `[]` default is likewise a poly-array accumulator (`def f(n, acc = [])`,
+         #2919) -- without a concrete type the param, and any method returning
+         it, stay untyped. */
       if (dt == TY_UNKNOWN) {
         const char *dty = nt_type(c->nt, sc->pdefault[i]);
         if (dty && (sp_streq(dty, "HashNode") || sp_streq(dty, "KeywordHashNode"))) {
           int dn = 0; nt_arr(c->nt, sc->pdefault[i], "elements", &dn);
           if (dn == 0) dt = TY_SYM_POLY_HASH;
+        }
+        else if (dty && sp_streq(dty, "ArrayNode")) {
+          int dn = 0; nt_arr(c->nt, sc->pdefault[i], "elements", &dn);
+          if (dn == 0) dt = TY_POLY_ARRAY;
         }
       }
       if (dt == TY_NIL || dt == TY_UNKNOWN) continue;
