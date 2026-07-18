@@ -112,6 +112,24 @@ mrb_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {
   sp_re_match_post = NULL;
   return -1;
 }
+/* Like sp_re_match, but search from byte offset `pos` in the FULL string so a
+   zero-width anchor (`\b`, a lookbehind) sees the preceding context -- passing
+   `str + pos` instead would make every position look like a string start (the
+   gsub/sub-with-block scan loop bug, #2910). Returns the match start relative
+   to `pos` (so the caller's `str + pos` arithmetic and the `< 0` no-match check
+   are unchanged); sp_re_caps stay full-string-relative for capture extraction. */
+mrb_int sp_re_match_at(mrb_regexp_pattern *pat, const char *str, mrb_int pos) {
+  int64_t slen = (int64_t)strlen(str);
+  int ncaps = 32;
+  int n = re_exec(pat, str, slen, pos, sp_re_caps, ncaps, 0);
+  if (n > 0) { sp_re_last_pat = pat; sp_re_set_captures(str, sp_re_caps, n/2); return sp_re_caps[0] - pos; }
+  for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
+  sp_re_last_str = NULL;
+  sp_re_match_str = NULL;
+  sp_re_match_pre = NULL;
+  sp_re_match_post = NULL;
+  return -1;
+}
 /* MatchData#inspect: CRuby's #<MatchData "full" 1:"g1" ...> (named groups
    render by name; unmatched groups render nil). */
 const char *sp_MatchData_inspect(sp_MatchData *m) {

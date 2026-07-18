@@ -1600,7 +1600,7 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
                tm, ts, tpos, tnd, ts, tpos);
   }
   else {
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = sp_re_match(sp_re_pat_%d, _t%d + _t%d);\n", tm, reidx, ts, tpos);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = sp_re_match_at(sp_re_pat_%d, _t%d, _t%d);\n", tm, reidx, ts, tpos);
   }
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d < 0) { sp_String_append(_t%d, _t%d + _t%d); break; }\n", tm, tout, ts, tpos);
   if (strpat) {
@@ -1608,8 +1608,10 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = _t%d + _t%d;\n", tme, tm, tnl);
   }
   else {
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = sp_re_caps[0];\n", tms);
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = sp_re_caps[1];\n", tme);
+    /* sp_re_match_at leaves sp_re_caps full-string-relative; the scan loop works
+       in offsets from `str + pos`, so rebase both onto pos (#2910). */
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = sp_re_caps[0] - _t%d;\n", tms, tpos);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = sp_re_caps[1] - _t%d;\n", tme, tpos);
   }
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append(_t%d, sp_str_substr(_t%d + _t%d, 0, _t%d));\n", tout, ts, tpos, tms);
   if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_str_substr(_t%d + _t%d, _t%d, _t%d - _t%d);\n", p0, ts, tpos, tms, tme, tms); }

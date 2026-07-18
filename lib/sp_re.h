@@ -51,6 +51,7 @@ void sp_re_push_match_roots(void);
 const char *sp_re_last_paren_match(void);
 void sp_re_set_captures(const char *str, int *caps, int ncaps);
 mrb_int sp_re_match(mrb_regexp_pattern *pat, const char *str);
+mrb_int sp_re_match_at(mrb_regexp_pattern *pat, const char *str, mrb_int pos);
 mrb_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str);
 sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str);
 mrb_bool sp_re_match_p(mrb_regexp_pattern *pat, const char *str);
