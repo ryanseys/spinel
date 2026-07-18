@@ -8061,12 +8061,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
     /* Complex#real / #imaginary on a poly value (a Complex read out of a
        container). A user class defining the same name wins via poly dispatch. */
-    if ((sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag")) && argc == 0) {
+    if ((sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag") ||
+         sp_streq(name, "conjugate") || sp_streq(name, "conj")) && argc == 0) {
       int has_user = 0;
       for (int kk = 0; kk < c->nclasses && !has_user; kk++)
         if (comp_method_in_chain(c, kk, name, NULL) >= 0 || comp_reader_in_chain(c, kk, name, NULL)) has_user = 1;
       if (!has_user) {
-        buf_printf(b, "%s(", sp_streq(name, "real") ? "sp_poly_real" : "sp_poly_imaginary");
+        const char *pfn = sp_streq(name, "real") ? "sp_poly_real"
+                        : (sp_streq(name, "imaginary") || sp_streq(name, "imag")) ? "sp_poly_imaginary"
+                        : "sp_poly_conjugate";
+        buf_printf(b, "%s(", pfn);
         emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
       }
     }

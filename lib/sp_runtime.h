@@ -2663,6 +2663,14 @@ static sp_RbVal sp_poly_imaginary(sp_RbVal v) {
   sp_raise_poly_nomethod("imaginary", v);
 }
 static mrb_bool sp_poly_zero_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i == 0; if (v.tag == SP_TAG_FLT) return v.v.f == 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) == 0; sp_raise_poly_nomethod("zero?", v); }
+/* Complex#conjugate / #conj on a boxed value: negate the imaginary part; a real
+   number (numeric/rational) is its own conjugate. */
+static sp_RbVal sp_poly_conjugate(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX)
+    return sp_box_complex(sp_complex_conjugate(*(sp_Complex *)v.v.p));
+  if (sp_poly_numeric_p(v) || sp_poly_is_rational(v)) return v;
+  sp_raise_poly_nomethod("conjugate", v);
+}
 /* Range#begin / #end on a boxed value (an int-backed sp_Range read out of a
    poly container): the endpoint as an Integer. */
 static mrb_int sp_poly_range_begin(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) return ((sp_Range *)v.v.p)->first; sp_raise_poly_nomethod("begin", v); }
