@@ -604,7 +604,28 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
      Coerce to a poly array and run the operation. (#2928) */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "sort") && argc == 0 &&
       nt_ref(nt, id, "block") < 0) {
-    buf_puts(b, "sp_PolyArray_sort(sp_poly_arr_recv("); emit_expr(c, recv, b); buf_puts(b, ", \"sort\"))");
+    buf_puts(b, "sp_poly_sort("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  }
+  /* `poly.sort_by { |k, v| ... }` where poly is a hash/array read out of a
+     container: materialize its elements (a hash yields [k, v] pairs) as a poly
+     array and re-dispatch as an array sort_by -- the array path's 2-param
+     autosplat destructures each pair, matching the typed Hash#sort_by. (#2935) */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "sort_by") &&
+      nt_ref(nt, id, "block") >= 0 && g_n_argov < MAX_ARG_OVERRIDE) {
+    int ta = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_to_a_arr(%s); SP_GC_ROOT(_t%d);\n",
+               ta, rb.p ? rb.p : "sp_box_nil()", ta);
+    free(rb.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+    g_n_argov++;
+    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    emit_call(c, id, b);
+    c->ntype[recv] = sv;
+    g_n_argov--;
     return 1;
   }
   if (recv >= 0 && ty_is_array(rt)) {

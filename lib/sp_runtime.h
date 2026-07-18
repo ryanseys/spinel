@@ -5405,8 +5405,11 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
     default: return sp_box_int(0);
   }
 }
+static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v);  /* defined below; hash -> pairs */
 static sp_RbVal sp_poly_min(sp_RbVal v) {
   if (v.tag != SP_TAG_OBJ) return sp_box_nil();
+  /* Enumerable#min on a boxed hash: the least [k, v] pair by pair comparison. */
+  if (sp_poly_is_hash_kind(v.cls_id)) return sp_PolyArray_min(sp_poly_to_a_arr(v));
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:  { sp_IntArray *a = (sp_IntArray *)v.v.p; return (a && a->len) ? sp_box_int(sp_IntArray_min(a)) : sp_box_nil(); }
     case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = (sp_FloatArray *)v.v.p; return (a && a->len) ? sp_box_float(sp_FloatArray_min(a)) : sp_box_nil(); }
@@ -5416,6 +5419,7 @@ static sp_RbVal sp_poly_min(sp_RbVal v) {
 }
 static sp_RbVal sp_poly_max(sp_RbVal v) {
   if (v.tag != SP_TAG_OBJ) return sp_box_nil();
+  if (sp_poly_is_hash_kind(v.cls_id)) return sp_PolyArray_max(sp_poly_to_a_arr(v));
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:  { sp_IntArray *a = (sp_IntArray *)v.v.p; return (a && a->len) ? sp_box_int(sp_IntArray_max(a)) : sp_box_nil(); }
     case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = (sp_FloatArray *)v.v.p; return (a && a->len) ? sp_box_float(sp_FloatArray_max(a)) : sp_box_nil(); }
@@ -6979,6 +6983,14 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
     return sp_enum_items_from(v);
   sp_raise_nomethod(sp_nomethod_msg("to_a", v));
   return NULL;
+}
+/* Enumerable#sort on a boxed value (an array or hash read out of a poly
+   container): a Hash sorts its [k, v] pairs like the typed Hash#sort path, an
+   array sorts its elements; any other tag is CRuby's NoMethodError. */
+static sp_PolyArray *sp_poly_sort(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))
+    return sp_PolyArray_sort_pairs(sp_poly_to_a_arr(v));
+  return sp_PolyArray_sort(sp_poly_arr_recv(v, "sort"));
 }
 void sp_Enumerator_scan(void *p);
 /* Blockless Hash#each_value / #each_key: an external Enumerator over the
