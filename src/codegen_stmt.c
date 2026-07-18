@@ -1017,7 +1017,13 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
 
   if (t == TY_STRING && sp_streq(op, "+")) {
     buf_printf(b, "lv_%s = sp_str_concat(lv_%s, ", en, en);
-    emit_expr(c, v, b); buf_puts(b, ");\n");
+    /* a poly RHS (a destructured `[Int, String]` element bound poly) is an
+       sp_RbVal; coerce it to const char* for sp_str_concat (#2875). CRuby's
+       String#+ raises TypeError on a non-string, so this only reaches a value
+       that is a String at run time. */
+    if (comp_ntype(c, v) == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")"); }
+    else emit_expr(c, v, b);
+    buf_puts(b, ");\n");
     return;
   }
   /* Int op-assign routes through the same overflow-checked helpers as the
