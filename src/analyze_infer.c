@@ -855,6 +855,19 @@ TyKind infer_call(Compiler *c, int id) {
       (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
       !an_user_defines_method(c, name))
     return TY_STRING;
+  /* Complex#real / #imaginary on a poly value (a Complex read out of a
+     container): the component is int- or float-classed at runtime, so the
+     static result is poly. Without this the call typed nil and the boxed
+     result was discarded (#2882). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
+      (sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag")) &&
+      !an_user_defines_method(c, name))
+    return TY_POLY;
+  /* String#chars on a poly value (a String read out of a container / pair):
+     an array of single-char strings (#2909). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "chars") &&
+      nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name))
+    return TY_STR_ARRAY;
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;

@@ -2626,6 +2626,25 @@ static inline void sp_poly_flo_domain_ck(mrb_float f) {
 static mrb_bool sp_poly_nan_p(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return isnan(v.v.f) != 0; sp_raise_poly_nomethod("nan?", v); }
 static mrb_bool sp_poly_finite_p(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return isfinite(v.v.f) != 0; if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return TRUE; sp_raise_poly_nomethod("finite?", v); }
 static sp_RbVal sp_poly_infinite(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return isinf(v.v.f) ? sp_box_int(v.v.f > 0 ? 1 : -1) : sp_box_nil(); if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return sp_box_nil(); sp_raise_poly_nomethod("infinite?", v); }
+/* Complex-projection queries on a poly value read out of a container (#2882):
+   a Complex yields its stored component (int- or float-classed per its flags),
+   and any real number is its own real part with a zero imaginary part. */
+static sp_RbVal sp_poly_real(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX) {
+    sp_Complex *c = (sp_Complex *)v.v.p;
+    return sp_complex_comp_v(c->re, c->fl & SP_CPLX_RE_F);
+  }
+  if (sp_poly_numeric_p(v) || sp_poly_is_rational(v)) return v;
+  sp_raise_poly_nomethod("real", v);
+}
+static sp_RbVal sp_poly_imaginary(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX) {
+    sp_Complex *c = (sp_Complex *)v.v.p;
+    return sp_complex_comp_v(c->im, c->fl & SP_CPLX_IM_F);
+  }
+  if (sp_poly_numeric_p(v) || sp_poly_is_rational(v)) return sp_box_int(0);
+  sp_raise_poly_nomethod("imaginary", v);
+}
 static mrb_bool sp_poly_zero_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i == 0; if (v.tag == SP_TAG_FLT) return v.v.f == 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) == 0; sp_raise_poly_nomethod("zero?", v); }
 static mrb_bool sp_poly_positive_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i > 0; if (v.tag == SP_TAG_FLT) return v.v.f > 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) > 0; sp_raise_poly_nomethod("positive?", v); }
 static mrb_bool sp_poly_negative_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return v.v.i < 0; if (v.tag == SP_TAG_FLT) return v.v.f < 0.0; if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)v.v.p) < 0; sp_raise_poly_nomethod("negative?", v); }

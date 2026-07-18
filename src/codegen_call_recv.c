@@ -7887,6 +7887,17 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "to_i")) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
     if (sp_streq(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    /* Complex#real / #imaginary on a poly value (a Complex read out of a
+       container). A user class defining the same name wins via poly dispatch. */
+    if ((sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag")) && argc == 0) {
+      int has_user = 0;
+      for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+        if (comp_method_in_chain(c, kk, name, NULL) >= 0 || comp_reader_in_chain(c, kk, name, NULL)) has_user = 1;
+      if (!has_user) {
+        buf_printf(b, "%s(", sp_streq(name, "real") ? "sp_poly_real" : "sp_poly_imaginary");
+        emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+      }
+    }
     /* String#to_sym interns; Symbol#to_sym is identity; every other tag raises
        CRuby's NoMethodError. A user class defining to_sym wins via poly dispatch. */
     if (sp_streq(name, "to_sym")) {
@@ -7956,6 +7967,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         nt_ref(nt, id, "block") < 0) {
       buf_printf(b, "sp_str_%s(sp_poly_to_s(", sp_streq(name, "bytes") ? "bytes" : "codepoints");
       emit_expr(c, recv, b); buf_puts(b, "))"); return 1;
+    }
+    /* poly.chars -> TY_STR_ARRAY: a String read out of a container or
+       destructured from a pair (`|a, b|`) reaches here poly-typed (#2909). */
+    if (sp_streq(name, "chars") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      int has_user = 0;
+      for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+        if (comp_method_in_chain(c, kk, "chars", NULL) >= 0) has_user = 1;
+      if (!has_user) {
+        buf_puts(b, "sp_str_chars(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, "))"); return 1;
+      }
     }
     if (sp_streq(name, "freeze"))     { buf_puts(b, "sp_poly_freeze("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
   }
