@@ -6413,33 +6413,37 @@ int emit_group_by_expr(Compiler *c, int id, Buf *b) {
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
   g_indent = save_indent;
   TyKind key_t = comp_ntype(c, bb[bn - 1]);
+  /* Capture the key expression AND any setup it spills (an inline method-call
+     key like `group_by { |x| key(x) }` binds the callee's params into g_pre)
+     into private buffers, then splice the setup BEFORE the `sp_RbVal _t = `
+     assignment -- emitting the key straight into g_pre landed the spill
+     mid-declaration (#2902). */
+  Buf kbuf; memset(&kbuf, 0, sizeof kbuf);
+  Buf kpre; memset(&kpre, 0, sizeof kpre);
+  {
+    Buf *saved_pre = g_pre; g_pre = &kpre;
+    int save2 = g_indent; g_indent += 1;
+    emit_expr(c, bb[bn - 1], &kbuf);
+    g_indent = save2;
+    g_pre = saved_pre;
+  }
+  if (kpre.p) buf_puts(g_pre, kpre.p);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_RbVal _t%d = ", tkey);
   if (key_t == TY_INT) {
     /* a nullable-int key carries nil as the SP_INT_NIL sentinel: those
        elements must group under the nil key, not under the sentinel's
        integer value (#2438) */
-    Buf kbuf; memset(&kbuf, 0, sizeof kbuf);
-    int save2 = g_indent; g_indent += 1;
-    emit_expr(c, bb[bn - 1], &kbuf);
-    g_indent = save2;
     buf_printf(g_pre, "sp_box_int_or_nil(%s)", kbuf.p ? kbuf.p : "0");
-    free(kbuf.p);
   }
   else if (key_t != TY_POLY) {
-    Buf kbuf; memset(&kbuf, 0, sizeof kbuf);
-    int save2 = g_indent; g_indent += 1;
-    emit_expr(c, bb[bn - 1], &kbuf);
-    g_indent = save2;
     emit_boxed_text(c, key_t, kbuf.p ? kbuf.p : "0", g_pre);
-    free(kbuf.p);
   }
   else {
-    int save2 = g_indent; g_indent += 1;
-    emit_expr(c, bb[bn - 1], g_pre);
-    g_indent = save2;
+    buf_puts(g_pre, kbuf.p ? kbuf.p : "sp_box_nil()");
   }
   buf_puts(g_pre, ";\n");
+  free(kbuf.p); free(kpre.p);
   /* get-or-create the PolyArray for this key */
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_PolyArray *_t%d;\n", tarr);
