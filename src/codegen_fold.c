@@ -1782,7 +1782,9 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
       Buf inner; memset(&inner, 0, sizeof inner);
       Buf valb; memset(&valb, 0, sizeof valb);
       Buf *saved_pre = g_pre; g_pre = &inner;
-      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], &inner, 0);  /* leading stmts */
+      { int svlm = g_line_map; g_line_map = 0;  /* a #line directive mid stmt-expr is a stray '#' */
+        for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], &inner, 0);  /* leading stmts */
+        g_line_map = svlm; }
       emit_boxed(c, bb[bn - 1], &valb);
       g_pre = saved_pre;
       if (inner.p) buf_puts(b, inner.p);
@@ -1838,7 +1840,9 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     Buf inner; memset(&inner, 0, sizeof inner);
     Buf valb; memset(&valb, 0, sizeof valb);
     Buf *saved_pre = g_pre; g_pre = &inner;
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], &inner, 0);  /* leading stmts */
+    { int svlm = g_line_map; g_line_map = 0;  /* a #line directive mid stmt-expr is a stray '#' */
+      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], &inner, 0);  /* leading stmts */
+      g_line_map = svlm; }
     emit_expr(c, bb[bn - 1], &valb);
     g_pre = saved_pre;
     if (inner.p) buf_puts(b, inner.p);
