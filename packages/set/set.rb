@@ -1,11 +1,12 @@
 # Spinel bundled `set`.
 #
-# A Set backed by an Array. Elements are kept unique by ==-comparison
-# (Array#include?), preserving insertion order. This covers the standard Set
-# surface (construction, iteration, membership, set algebra, comparison,
-# classify/divide/flatten) rather than every CRuby corner. Uniqueness of
-# compound elements (arrays, structs) is only as precise as Array#include?'s
-# element comparison.
+# A Set backed by an Array, preserving insertion order. Elements are kept
+# unique by #eql? (with #hash) like CRuby's Hash-backed Set -- a value object
+# that defines #eql?/#hash is deduplicated and found by #include? even across
+# distinct instances, and 1 and 1.0 are distinct members (1.eql?(1.0) is
+# false). This covers the standard Set surface (construction, iteration,
+# membership, set algebra, comparison, classify/divide/flatten) rather than
+# every CRuby corner.
 
 class Set
   include Enumerable
@@ -27,7 +28,7 @@ class Set
   end
 
   def add(x)
-    @data.push(x) unless @data.include?(x)
+    @data.push(x) unless include?(x)
     self
   end
 
@@ -37,25 +38,25 @@ class Set
 
   # add? returns nil when the element was already present.
   def add?(x)
-    return nil if @data.include?(x)
+    return nil if include?(x)
     @data.push(x)
     self
   end
 
   def delete(x)
-    @data.delete(x)
+    @data.delete_if { |e| e.eql?(x) }
     self
   end
 
   # delete? returns nil when the element was absent.
   def delete?(x)
-    return nil unless @data.include?(x)
-    @data.delete(x)
+    return nil unless include?(x)
+    @data.delete_if { |e| e.eql?(x) }
     self
   end
 
   def include?(x)
-    @data.include?(x)
+    @data.any? { |e| e.eql?(x) }
   end
   alias member? include?
   alias === include?
@@ -95,7 +96,7 @@ class Set
   # anything changed and nil otherwise (CRuby's Set contract).
   def map!
     r = []
-    @data.each { |x| v = yield(x); r.push(v) unless r.include?(v) }
+    @data.each { |x| v = yield(x); r.push(v) unless r.any? { |e| e.eql?(v) } }
     @data = r
     self
   end
@@ -150,7 +151,7 @@ class Set
   end
 
   def subtract(enum)
-    enum.each { |x| @data.delete(x) }
+    enum.each { |x| @data.delete_if { |e| e.eql?(x) } }
     self
   end
 
