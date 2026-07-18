@@ -5410,6 +5410,24 @@ static void sp_poly_hash_pair_i(sp_RbVal h, mrb_int i, sp_RbVal *k, sp_RbVal *v)
     default: *k = sp_box_nil(); *v = sp_box_nil(); return;
   }
 }
+/* i-th iteration element of a poly receiver: for a hash, the boxed [key, value]
+   pair (so a block sees `|pair|` or auto-splats to `|k, val|`, matching CRuby);
+   for anything else, the plain element read. Hash pairs must enumerate by
+   insertion index, not integer-key lookup, which sp_poly_arr_get_hash does
+   (#2873). */
+static sp_RbVal sp_poly_iter_elem(sp_RbVal recv, mrb_int i) {
+  if (recv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(recv.cls_id)) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair_i(recv, i, &k, &v);
+    SP_GC_ROOT_RBVAL(k); SP_GC_ROOT_RBVAL(v);
+    sp_PolyArray *pr = sp_PolyArray_new(); SP_GC_ROOT(pr);
+    sp_PolyArray_push(pr, k);
+    sp_PolyArray_push(pr, v);
+    sp_RbVal out; out.tag = SP_TAG_OBJ; out.cls_id = SP_BUILTIN_POLY_ARRAY; out.v.p = pr;
+    return out;
+  }
+  return sp_poly_arr_get_hash(recv, i);
+}
 /* Probe a boxed key in a hash of any variant; *found distinguishes a missing
    key from a nil value (Hash#== requires presence). A key whose boxed kind
    cannot exist in the variant (an int key in a string-keyed hash) is absent. */

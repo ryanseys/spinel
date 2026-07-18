@@ -4037,7 +4037,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     buf_puts(g_pre, ";\n");
     free(rb2.p);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "mrb_int _t%d = sp_poly_arr_len(_t%d);\n", tn2, trecv2);
+    buf_printf(g_pre, "mrb_int _t%d = sp_poly_length(_t%d);\n", tn2, trecv2);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk2, tres2, rk2);
     emit_indent(g_pre, g_indent);
@@ -4055,13 +4055,23 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     buf_puts(g_pre, "{\n");
     const char *restn2 = block_rest_name(c, block);
     int has_rest2 = restn2 && *restn2;
-    if (p0p) {
+    int np2 = 0; while (block_param_name(c, block, np2)) np2++;
+    if (p0p && np2 >= 2 && !has_rest2 && !block_param_is_multi(c, block, 0)) {
+      /* `|k, val|` over a poly hash: each element is a [key, value] pair, so
+         auto-splat it across the params (only p0 was bound before, leaving val
+         nil and losing every value) (#2873). */
+      int te2 = ++g_tmp;
       emit_indent(g_pre, g_indent + 2);
-      buf_printf(g_pre, "sp_RbVal lv_%s = sp_poly_arr_get_hash(_t%d, _t%d);\n",
+      buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_iter_elem(_t%d, _t%d); SP_GC_ROOT_RBVAL(_t%d);\n",
+                 te2, trecv2, ti2, te2);
+      emit_autosplat_params(c, block, np2, te2, g_indent + 2);
+    } else if (p0p) {
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_RbVal lv_%s = sp_poly_iter_elem(_t%d, _t%d);\n",
                  p0p, trecv2, ti2);
     } else if (!has_rest2) {
       emit_indent(g_pre, g_indent + 2);
-      buf_printf(g_pre, "sp_RbVal lv__dummy = sp_poly_arr_get_hash(_t%d, _t%d); (void)lv__dummy;\n",
+      buf_printf(g_pre, "sp_RbVal lv__dummy = sp_poly_iter_elem(_t%d, _t%d); (void)lv__dummy;\n",
                  trecv2, ti2);
     }
     if (has_rest2) {
