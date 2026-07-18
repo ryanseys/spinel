@@ -766,6 +766,17 @@ TyKind infer_call(Compiler *c, int id) {
          sp_streq(name, "each_pair")))
       return rt;
   }
+  /* `recv.sort_by { }` always returns a new Array. For a typed array receiver
+     it stays that array's type (arm below); for a hash / poly / not-yet-settled
+     receiver it is a generic Array. Without this a hash sort_by whose receiver
+     was still poly when the local was typed settled to poly, and a downstream
+     `.first(n).each` then had no array to iterate (#2876). */
+  if (recv >= 0 && sp_streq(name, "sort_by") && nt_ref(nt, id, "block") >= 0) {
+    /* A hash / poly / not-yet-settled receiver yields a generic Array. A typed
+       array or a Range keep their own element-typed sort path below. */
+    TyKind srt = infer_type(c, recv);
+    if (ty_is_hash(srt) || srt == TY_POLY || srt == TY_UNKNOWN) return TY_POLY_ARRAY;
+  }
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
   /* Object#itself is the receiver, whatever its type -- the scattered per-type
      arms below predate this and remain harmless. */
