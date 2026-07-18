@@ -4570,9 +4570,13 @@ static mrb_int sp_rbval_hash_key(sp_RbVal v) {
       return v.v.s ? (mrb_int)sp_str_hash(v.v.s) : 0;
     case SP_TAG_FLT: { uint64_t b; memcpy(&b, &v.v.f, sizeof(b)); return (mrb_int)b; }
     case SP_TAG_OBJ:
-      if (v.cls_id == SP_BUILTIN_INT_ARRAY) {
-        sp_IntArray *ia = (sp_IntArray *)v.v.p;
-        mrb_int h = 0; if (ia) for (mrb_int i = 0; i < ia->len; i++) h = (h * 31) + ia->data[ia->start+i];
+      /* Arrays hash by value across storage kinds: an IntArray [0, 0] and a
+         PolyArray [0, 0] (e.g. one built by Array#product) are `==` and must
+         hash alike to collide in a Hash, so hash each element through
+         sp_rbval_hash_key rather than the raw IntArray words (#2911). */
+      if (sp_poly_is_array_kind(v.cls_id)) {
+        mrb_int n = sp_poly_length(v), h = 0;
+        for (mrb_int i = 0; i < n; i++) h = (h * 31) + sp_rbval_hash_key(sp_poly_arr_get(v, i));
         return h;
       }
       if (v.cls_id == SP_BUILTIN_METHOD) {
@@ -4637,15 +4641,22 @@ static mrb_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
     case SP_TAG_FLT:
       return a.v.f == b.v.f;
     case SP_TAG_OBJ:
-      if (a.cls_id != b.cls_id) return FALSE;
-      if (a.v.p == b.v.p) return TRUE;
-      if (a.cls_id == SP_BUILTIN_INT_ARRAY) {
-        sp_IntArray *ia = (sp_IntArray *)a.v.p, *ib = (sp_IntArray *)b.v.p;
-        if (!ia || !ib) return ia == ib;
-        if (ia->len != ib->len) return FALSE;
-        for (mrb_int i = 0; i < ia->len; i++) if (ia->data[ia->start+i] != ib->data[ib->start+i]) return FALSE;
+      /* Arrays are eql across storage kinds and element-wise eql (so 1 and 1.0
+         stay distinct): an IntArray [0, 0] key and a PolyArray [0, 0] lookup
+         (e.g. one from Array#product) must collide, so this runs BEFORE the
+         cls_id inequality check below (their kinds differ). Also covers
+         same-kind PolyArray keys. Paired with the value-based array hash
+         above (#2911). */
+      if (sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) {
+        if (a.v.p == b.v.p && a.cls_id == b.cls_id) return TRUE;
+        mrb_int n = sp_poly_length(a);
+        if (n != sp_poly_length(b)) return FALSE;
+        for (mrb_int i = 0; i < n; i++)
+          if (!sp_rbval_eql_key(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i))) return FALSE;
         return TRUE;
       }
+      if (a.cls_id != b.cls_id) return FALSE;
+      if (a.v.p == b.v.p) return TRUE;
       if (a.cls_id == SP_BUILTIN_METHOD) {
         sp_BoundMethod *ma = (sp_BoundMethod *)a.v.p, *mb = (sp_BoundMethod *)b.v.p;
         if (!ma || !mb) return ma == mb;
