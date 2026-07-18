@@ -607,6 +607,74 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_poly_sort("); emit_expr(c, recv, b); buf_puts(b, ")");
     return 1;
   }
+  /* `poly.reject/select/filter { |x| ... }` where poly is an array read out of
+     a container: coerce to a poly array and filter it into a fresh poly array,
+     mirroring the find arm above (this TY_POLY receiver would otherwise skip to
+     the loud NoMethodError). (#2930) */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      (sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter"))) {
+    int fblock = nt_ref(nt, id, "block");
+    const char *bp = block_param_name(c, fblock, 0); if (bp) bp = rename_local(bp);
+    int fbody = nt_ref(nt, fblock, "body");
+    int fbn = 0; const int *fbb = fbody >= 0 ? nt_arr(nt, fbody, "body", &fbn) : NULL;
+    if (fbn >= 1) {
+      int keep_truthy = !sp_streq(name, "reject");  /* select/filter keep truthy */
+      int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
+      Buf rb = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
+                 trecv, rb.p ? rb.p : "sp_box_nil()", name, trecv);
+      free(rb.p);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+      char es[64]; snprintf(es, sizeof es, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
+      int splat = emit_iter_autosplat(c, fblock, TY_POLY_ARRAY, es, g_indent + 1);
+      if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
+      for (int j = 0; j < fbn - 1; j++) emit_stmt(c, fbb[j], g_pre, g_indent + 1);
+      int sv = g_indent; g_indent++;
+      Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, fbb[fbn - 1], &cb); g_indent = sv;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (%s(%s)) sp_PolyArray_push(_t%d, %s);\n",
+                 keep_truthy ? "" : "!", cb.p ? cb.p : "0", tres, es);
+      free(cb.p);
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      buf_printf(b, "_t%d", tres);
+      return 1;
+    }
+  }
+  /* `poly.each_index { |i| ... }` on a poly array read out of a container:
+     iterate the index range, yield each index, and return self. (#2930) */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "each_index") &&
+      nt_ref(nt, id, "block") >= 0 && argc == 0) {
+    int eb = nt_ref(nt, id, "block");
+    const char *ip = block_param_name(c, eb, 0); if (ip) ip = rename_local(ip);
+    int body = nt_ref(nt, eb, "body");
+    int tself = ++g_tmp, trecv = ++g_tmp, ti = ++g_tmp;
+    Buf rb = expr_buf(c, recv);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
+               tself, rb.p ? rb.p : "sp_box_nil()", tself);
+    free(rb.p);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"each_index\"); SP_GC_ROOT(_t%d);\n",
+               trecv, tself, trecv);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+    if (ip) {
+      Scope *eic = comp_scope_of(c, eb);
+      LocalVar *eilv = eic ? scope_local(eic, ip) : NULL;
+      TyKind eit = eilv ? eilv->type : TY_INT;
+      emit_indent(g_pre, g_indent + 1);
+      if (eit == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", ip, ti);
+      else buf_printf(g_pre, "lv_%s = _t%d;\n", ip, ti);
+    }
+    emit_stmts(c, body, g_pre, g_indent + 1);
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    buf_printf(b, "_t%d", tself);
+    return 1;
+  }
   /* `poly.sort_by { |k, v| ... }` where poly is a hash/array read out of a
      container: materialize its elements (a hash yields [k, v] pairs) as a poly
      array and re-dispatch as an array sort_by -- the array path's 2-param

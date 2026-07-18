@@ -777,6 +777,12 @@ TyKind infer_call(Compiler *c, int id) {
     TyKind srt = infer_type(c, recv);
     if (ty_is_hash(srt) || srt == TY_POLY || srt == TY_UNKNOWN) return TY_POLY_ARRAY;
   }
+  /* `poly.reject/select/filter { }` on a value only known to be an array at
+     runtime (read out of a poly container): a filtered generic Array. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      (sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
+      infer_type(c, recv) == TY_POLY)
+    return TY_POLY_ARRAY;
   /* `poly_recv.sum { }` (a group_by bucket, a case-merged local) folds the
      block result with sp_poly_add, so the accumulation is a boxed poly value.
      Concrete typed arrays keep their int/float/string sum arms below. (#2872) */

@@ -970,9 +970,20 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     else
       snprintf(ref3, sizeof ref3, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     if (ivt3 == TY_POLY) {
-      buf_printf(b, "({ if (%ssp_poly_truthy(%s)) %s = ", is_or ? "!" : "", ref3, ref3);
-      emit_boxed(c, v, b);
-      buf_printf(b, "; %s; })", ref3);
+      /* The RHS may spill setup (a map/reject loop that materializes a temp) to
+         g_pre, which would otherwise run unconditionally and defeat the ||=/&&=
+         short-circuit -- and raise if the receiver is nil. Emit the RHS into a
+         local buffer with g_pre redirected, then splice that setup inside the
+         conditional so it runs only when the assignment is taken. */
+      Buf vpre; memset(&vpre, 0, sizeof vpre);
+      Buf vval; memset(&vval, 0, sizeof vval);
+      Buf *saved_pre = g_pre; g_pre = &vpre;
+      emit_boxed(c, v, &vval);
+      g_pre = saved_pre;
+      buf_printf(b, "({ if (%ssp_poly_truthy(%s)) { ", is_or ? "!" : "", ref3);
+      if (vpre.p) buf_puts(b, vpre.p);
+      buf_printf(b, "%s = %s; } %s; })", ref3, vval.p ? vval.p : "sp_box_nil()", ref3);
+      free(vpre.p); free(vval.p);
     }
     else if (ivt3 == TY_BOOL) {
       buf_printf(b, "({ if (%s%s) %s = ", is_or ? "!" : "", ref3, ref3);
