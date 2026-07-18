@@ -3,6 +3,7 @@
    (sp_alloc.h) + libc formatting only. */
 #include "sp_format.h"
 #include "sp_alloc.h"   /* sp_str_alloc_raw, sp_raise_cls, <math.h> for cos/sin/sqrt */
+#include "sp_dtoa.h"    /* sp_format_float (locale-independent %g) */
 #include <stdio.h>
 #include <string.h>
 #include <time.h>       /* gmtime / strftime for sp_Time_inspect */
@@ -19,7 +20,7 @@ static int sp_complex_mag(char *out, size_t sz, mrb_float v, int is_f) {
      integer-print a whole value that fits, else fall through to %g. */
   if (v >= -(mrb_float)INTPTR_MAX && v <= (mrb_float)INTPTR_MAX && v == (mrb_int)v)
     return snprintf(out, sz, "%lld", (long long)v);
-  return snprintf(out, sz, "%g", v);
+  { char fb[32]; sp_format_float(v, fb, sizeof fb, 'g', -2, '\0'); return snprintf(out, sz, "%s", fb); }
 }
 /* Append the imaginary part ("+<mag>i" / "-<mag>i") to buf. MRI inserts a `*`
    before a non-numeric magnitude (Infinity/NaN) so `Infinity*i` stays readable,

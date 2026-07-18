@@ -8,6 +8,7 @@
    format; see sp_marshal.h. */
 #include "sp_marshal.h"   /* sp_gc.h: sp_RbVal, hooks, SP_GC_ROOT, cls_ids */
 #include "sp_alloc.h"     /* sp_str_alloc_raw, sp_str_set_len, sp_str_byte_len, sp_float_to_s */
+#include "sp_dtoa.h"      /* sp_format_float / sp_read_float (locale-independent) */
 #include <string.h>
 #include <math.h>
 
@@ -67,8 +68,9 @@ void sp_mar_sym(sp_mar_buf *b, const char *name) {
    normalized ("1e+02" -> "1e2"); 0.0 is "0", 100.0 is "1e2", 0.1 is "0.1". */
 static const char *sp_mar_float_str(double f, char *buf, size_t bufsz) {
   for (int prec = 1; prec <= 17; prec++) {
-    snprintf(buf, bufsz, "%.*g", prec, f);
-    if (strtod(buf, NULL) == f) break;
+    sp_format_float(f, buf, bufsz, 'g', prec, '\0');   /* locale-independent */
+    double rt = 0.0; sp_read_float(buf, NULL, &rt);
+    if (rt == f) break;
   }
   char *e = strchr(buf, 'e');
   if (e) {                       /* drop '+' and leading exponent zeros */

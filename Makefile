@@ -237,9 +237,13 @@ build/sp_gc.o: lib/sp_gc.c lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_gc.c -o build/sp_gc.o
 
-build/sp_alloc.o: lib/sp_alloc.c lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
+build/sp_alloc.o: lib/sp_alloc.c lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_dtoa.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_alloc.c -o build/sp_alloc.o
+
+build/sp_dtoa.o: lib/sp_dtoa.c lib/sp_dtoa.h lib/sp_types.h
+	@mkdir -p build
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_dtoa.c -o build/sp_dtoa.o
 
 # Bundled carried-C spin packages (Path B): compiled standalone, NOT into the
 # runtime archive, and linked on demand only when the program requires them
@@ -311,7 +315,7 @@ build/sp_cold.o: lib/sp_cold.c $(RT_HDRS)
 
 SP_RT_LIB = lib/libspinel_rt.a
 
-RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_marshal sp_format sp_string sp_inspect sp_array sp_str sp_re sp_random sp_fiber sp_sched sp_io sp_cold
+RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_dtoa sp_marshal sp_format sp_string sp_inspect sp_array sp_str sp_re sp_random sp_fiber sp_sched sp_io sp_cold
 
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS)))
 	ar rcs $@ $^

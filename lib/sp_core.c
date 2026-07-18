@@ -2,6 +2,7 @@
  * libspinel_rt.a. See sp_core.h for the rationale. */
 #include "sp_core.h"
 #include "sp_alloc.h"   /* sp_str_byte_len: embedded-NUL detection in Integer()/Float() */
+#include "sp_dtoa.h"    /* sp_read_float: locale-independent String#to_f / Float() */
 #include <stdlib.h>
 #include <ctype.h>
 #include <errno.h>
@@ -88,7 +89,9 @@ double sp_str_to_f_cruby(const char *s) {
     }
   }
   buf[n] = 0;
-  return strtod(buf, NULL);
+  double d = 0.0;
+  sp_read_float(buf, NULL, &d);   /* locale-independent parse */
+  return d;
 }
 
 /* `String#to_i(base)` with a non-decimal base. Accepts bases 2..36
@@ -327,8 +330,21 @@ mrb_float sp_str_to_f_strict(const char *s) {
     buf[o] = '\0';
     {
       char *endptr;
-      double v = strtod(buf, &endptr);
-      if (endptr == buf || *endptr != '\0') goto bad;
+      double v = 0.0;
+      /* A hex literal (0x...) is validated integral above and has no decimal
+         point, so strtod (which parses hex floats) is safe and locale-neutral;
+         a decimal literal uses the locale-independent sp_read_float. The shape
+         was already validated, so a short read is malformed input. */
+      if (hex) {
+        v = strtod(buf, &endptr);
+        if (endptr == buf || *endptr != '\0') goto bad;
+      } else {
+        /* The buffer is already a complete, validated float literal (a digit
+           appeared, no trailing junk), so sp_read_float's success is enough;
+           its endp is left at the start for all-zero input, so don't gate on
+           it consuming the buffer. */
+        if (!sp_read_float(buf, &endptr, &v)) goto bad;
+      }
       if (buf != sbuf) free(buf);
       return (mrb_float)v;
     }
