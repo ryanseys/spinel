@@ -189,6 +189,15 @@ int infer_param_hash_value(Compiler *c) {
       int seedable = cur == TY_UNKNOWN || cur == TY_POLY ||
                      (ty_is_hash(cur) && ty_hash_val(cur) == TY_POLY);
       if (!seedable || lv->rbs_seeded) continue;
+      /* An int-keyed `p[i] = v` is normally excluded: it is ambiguous with
+         array-element assignment (an int_array RAM param filled by `ram[i]=b`).
+         But when the param is already KNOWN to be a hash (its current type is a
+         hash variant -- e.g. it received a `{}` literal from a caller), there
+         is no array ambiguity, so int keys are valid hash evidence. Narrowing
+         to the int-keyed variant then lets the caller's empty `{}` coerce to a
+         matching hash, so an in-method `p[i]=v` mutates in place instead of a
+         widen that a poly param drops (#2871). */
+      int known_hash = ty_is_hash(cur);
       TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
       int saw = 0, ambiguous = 0;
       for (int id = aw_first(c, sc->pnames[p]); id >= 0; id = aw_next[id]) {
@@ -201,7 +210,7 @@ int infer_param_hash_value(Compiler *c) {
         const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
         if (an < 2) continue;
         TyKind k = infer_type(c, av[0]);
-        if (k != TY_STRING && k != TY_SYMBOL) { ambiguous = 1; break; }
+        if (k != TY_STRING && k != TY_SYMBOL && !(known_hash && k == TY_INT)) { ambiguous = 1; break; }
         kt = ty_unify(kt, k);
         vt = ty_unify(vt, infer_type(c, av[1]));
         saw = 1;

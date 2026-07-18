@@ -5183,6 +5183,32 @@ static void mark_empty_literal_tails(Compiler *c) {
    (a builtin has its own arg handling). Empty `[]` args are deliberately NOT
    marked: POLY_ARRAY would pessimize the common typed-array-seed case, and the
    observed void-return bug is hash-specific. */
+/* True if method scope `mi`'s param `p` is index-assigned (`pname[k] = v`) with
+   a non-string key -- an int or symbol key. The precise body-write widening
+   (#397) only reads string/symbol keys and skips int keys (array-ambiguous), so
+   an int-keyed mutation leaves the param poly, and mutating a poly hash through
+   `[]=` widens it -- dropping the change on the caller's empty `{}` (#2871). */
+static int param_nonstr_index_written(Compiler *c, int mi, int p) {
+  const NodeTable *nt = c->nt;
+  if (mi < 0 || p < 0 || p >= c->scopes[mi].nparams) return 0;
+  const char *pn = c->scopes[mi].pnames[p];
+  if (!pn) return 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "[]=")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || !sp_streq(rn, pn) || comp_scope_of(c, recv) != &c->scopes[mi]) continue;
+    int args = nt_ref(nt, id, "arguments"); int an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 2) continue;
+    TyKind kt = infer_type(c, av[0]);
+    if (kt == TY_INT || kt == TY_SYMBOL) return 1;
+  }
+  return 0;
+}
 static void mark_empty_literal_args(Compiler *c) {
   if (!c->empty_hash_arg) return;
   const NodeTable *nt = c->nt;
@@ -5190,29 +5216,49 @@ static void mark_empty_literal_args(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
-    /* Resolve to a user method that YIELDS: a yield-wrapper builds the seed
-       through its block (`acc = yield(acc, x)`), so the accumulator's key/value
-       types come from the caller's block, not the wrapper body -- the precise
-       body-index-write widening (#397) can't reach them and the param stays
-       UNKNOWN. A wrapper that directly indexes the param (store["k"]=v, no
-       yield) is left to that precise mechanism; only yield-wrappers fall back
-       to the widest hash here. */
+    /* Resolve to a user method. Two shapes need the widest hash for an empty
+       `{}` arg, because the precise body-write widening (#397) can't reach the
+       key/value types: (a) a YIELD-wrapper builds the seed through its block
+       (`acc = yield(acc, x)`); (b) the matching param is index-written with a
+       non-string key (`p[i]=v`), which #397 skips as array-ambiguous, leaving
+       the param poly so a `[]=` widen drops the mutation on the caller's `{}`.
+       A string-keyed direct-index wrapper stays with the precise mechanism. */
     int mi = comp_method_index(c, nm);
     if (mi < 0)
       for (int k = 0; k < c->nclasses && mi < 0; k++) {
         mi = comp_method_in_class(c, k, nm);
         if (mi < 0) mi = comp_cmethod_in_class(c, k, nm);
       }
-    if (mi < 0 || !c->scopes[mi].yields) continue;
+    if (mi < 0) continue;
+    int yields = c->scopes[mi].yields;
     int anode = nt_ref(nt, id, "arguments");
     int an = 0; const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
     for (int j = 0; j < an; j++) {
       int a = args[j];
       if (a < 0 || a >= c->node_cap) continue;
+      int want = yields || param_nonstr_index_written(c, mi, j);
+      if (!want) continue;
       NodeKind ak = nt_kind(nt, a);
       if (ak == NK_HashNode || ak == NK_KeywordHashNode) {
         int en = 0; nt_arr(nt, a, "elements", &en);
         if (en == 0) c->empty_hash_arg[a] = 1;
+      }
+      /* `h = {}; m(h)`: the arg is a local whose value is the empty literal.
+         Mark that write's `{}` so the local (and thus the param) is the widest
+         hash -- the mutation then lands in place on the caller's hash. */
+      else if (ak == NK_LocalVariableReadNode) {
+        const char *ln = nt_str(nt, a, "name");
+        Scope *asc = comp_scope_of(c, a);
+        if (ln && asc && local_all_writes_empty_hash(c, asc, ln)) {
+          for (int w = 0; w < nt->count; w++) {
+            if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+            const char *wn = nt_str(nt, w, "name");
+            if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != asc) continue;
+            int wv = nt_ref(nt, w, "value");
+            if (wv >= 0 && wv < c->node_cap && nt_kind(nt, wv) == NK_HashNode)
+              c->empty_hash_arg[wv] = 1;
+          }
+        }
       }
     }
   }

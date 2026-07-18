@@ -5125,6 +5125,7 @@ static sp_RbVal sp_poly_arr_set(sp_RbVal v, mrb_int idx, sp_RbVal val) {
   }
   return val;
 }
+static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val);   /* fwd: hash []= from widen_and_set */
 /* Like sp_poly_arr_set but widens a typed array to a PolyArray when val does not
    match its element kind (int<-non-int incl. float, flt<-non-float, str<-non-str),
    so the value is stored exactly as CRuby does (e.g. a Float into a former int
@@ -5140,6 +5141,14 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, mrb_int idx, sp_RbVal val)
     SP_GC_ROOT(pa);
     sp_PolyArray_set(pa, idx, val);
     return sp_box_poly_array(pa);
+  }
+  /* `h[i] = v` on a poly value that is actually a HASH (a param widened to poly
+     from an empty `{}`): an integer key is a hash key, not an array index. Set
+     it in place through the hash so the mutation lands on the caller's hash
+     (sp_poly_arr_set treats a hash as no-op) (#2871). */
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) {
+    sp_poly_set_poly(v, sp_box_int(idx), val);
+    return v;
   }
   sp_poly_arr_set(v, idx, val);
   return v;
