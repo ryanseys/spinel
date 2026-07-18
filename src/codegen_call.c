@@ -14621,6 +14621,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, ") <= 0); })");
       return;
     }
+    /* An Integer receiver with a Bignum bound (`50.between?(1, 2 ** 100)`):
+       comparing mrb_int against sp_Bigint* with >=/<= is a pointer comparison.
+       Coerce the receiver and each bound to Bignum and route through
+       sp_bigint_cmp. (#2893) */
+    if (rt == TY_INT &&
+        (comp_ntype(c, argv[0]) == TY_BIGINT || comp_ntype(c, argv[1]) == TY_BIGINT)) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = sp_bigint_new_int(", tv); emit_int_expr(c, recv, b);
+      buf_printf(b, "); (sp_bigint_cmp(_t%d, ", tv);
+      if (comp_ntype(c, argv[0]) == TY_BIGINT) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_printf(b, ") >= 0 && sp_bigint_cmp(_t%d, ", tv);
+      if (comp_ntype(c, argv[1]) == TY_BIGINT) emit_expr(c, argv[1], b);
+      else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
+      buf_puts(b, ") <= 0); })");
+      return;
+    }
     if (ty_is_numeric(rt)) {
       int tv = ++g_tmp;
       buf_puts(b, "({ "); emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", tv); emit_expr(c, recv, b);
@@ -14821,9 +14838,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
-  /* Class.===(obj): equivalent to obj.is_a?(Class). Receiver is a class constant. */
-  if (recv >= 0 && argc == 1 && sp_streq(name, "===") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
+  /* Class.===(obj): equivalent to obj.is_a?(Class). Receiver is a class
+     constant, either a bare `Integer` or a top-level `::Integer` (a
+     ConstantPathNode with no parent), both naming the class in "name". (#2889) */
+  if (recv >= 0 && argc == 1 && sp_streq(name, "===") && nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
+       (sp_streq(nt_type(nt, recv), "ConstantPathNode") && nt_ref(nt, recv, "parent") < 0))) {
     const char *cn = nt_str(nt, recv, "name");
     if (cn) {
       TyKind at2 = comp_ntype(c, argv[0]);
