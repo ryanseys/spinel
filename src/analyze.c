@@ -291,8 +291,11 @@ void compute_instantiated(Compiler *c) {
         if (ci >= 0) c->classes[ci].instantiated = 1;
         /* an unknown constant is a builtin (Array.new, ...) -- not a user arm */
       }
-      else if (comp_ntype(c, recv) == TY_CLASS) {
-        /* `klass.new` on a dynamic Class value: unresolvable -> keep all. */
+      else if (comp_ntype(c, recv) == TY_CLASS || comp_ntype(c, recv) == TY_POLY) {
+        /* `klass.new` on a dynamic Class value -- typed TY_CLASS, or a poly
+           value that is a Class at run time (`REG["c"].new`, #2888): the class
+           is unresolvable at compile time, so keep every class instantiated
+           (its constructor and methods must exist for the runtime dispatch). */
         disable = 1; break;
       }
     }

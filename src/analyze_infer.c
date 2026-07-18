@@ -881,6 +881,11 @@ TyKind infer_call(Compiler *c, int id) {
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
       !an_user_defines_method(c, name))
     return TY_POLY;
+  /* poly.new(args): instantiating a Class value read out of a container yields
+     a fresh object, boxed poly (#2888). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "new") &&
+      nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name))
+    return TY_POLY;
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;

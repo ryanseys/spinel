@@ -11301,6 +11301,51 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
+  /* poly.new(args): the receiver is a Class value read out of a container
+     (`REG["c"].new(2)`). Switch on its runtime cls_id and construct, coercing
+     each argument to the target constructor's parameter type. Only a class whose
+     constructor takes exactly `argc` positional params (all required) gets an
+     arm; any other runtime class lands in the NoMethodError default, matching
+     CRuby's ArgumentError/NoMethodError. (#2888) */
+  if (recv >= 0 && sp_streq(name, "new") && comp_ntype(c, recv) == TY_POLY &&
+      nt_ref(nt, id, "block") < 0) {
+    int kt = ++g_tmp, rt2 = ++g_tmp;
+    int *atmp = argc ? calloc(argc, sizeof(int)) : NULL;
+    buf_printf(b, "({ sp_RbVal _t%d = ", kt); emit_expr(c, recv, b); buf_puts(b, "; ");
+    for (int a = 0; a < argc; a++) {
+      atmp[a] = ++g_tmp;
+      buf_printf(b, "sp_RbVal _t%d = ", atmp[a]); emit_boxed(c, argv[a], b); buf_puts(b, "; ");
+    }
+    buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); switch(_t%d.cls_id){", rt2, kt);
+    for (int ci = 0; ci < c->nclasses; ci++) {
+      if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_struct ||
+          c->classes[ci].is_native_class || !c->classes[ci].instantiated) continue;
+      int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+      int np = initm >= 0 ? c->scopes[initm].nparams : 0;
+      int nreq = initm >= 0 ? c->scopes[initm].nrequired : 0;
+      if (argc != np || nreq != np) continue;  /* only an exact all-required match */
+      buf_printf(b, "case %d: _t%d=", ci, rt2);
+      if (c->classes[ci].is_value_type)
+        buf_printf(b, "sp_box_vobj_%s(sp_%s_new(", c->classes[ci].c_name, c->classes[ci].c_name);
+      else
+        buf_printf(b, "sp_box_obj(sp_%s_new(", c->classes[ci].c_name);
+      Scope *is = initm >= 0 ? &c->scopes[initm] : NULL;
+      for (int j = 0; j < np; j++) {
+        if (j) buf_puts(b, ", ");
+        LocalVar *pp = is ? scope_local(is, is->pnames[j]) : NULL;
+        TyKind pt = (pp && pp->type != TY_UNKNOWN) ? pp->type : TY_POLY;
+        char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[j]);
+        Buf ub; memset(&ub, 0, sizeof ub); emit_unbox_text(c, pt, tn, &ub);
+        buf_puts(b, ub.p ? ub.p : tn); free(ub.p);
+      }
+      if (c->classes[ci].is_value_type) buf_puts(b, ")); break;");
+      else buf_printf(b, "),%d); break;", ci);
+    }
+    buf_printf(b, "default: sp_raise_nomethod(sp_nomethod_msg(\"new\", _t%d)); } _t%d; })", kt, rt2);
+    free(atmp);
+    return;
+  }
+
   /* self.class.new(args) in a leaf-class instance method -> construct the
      enclosing class statically (no subclass can shadow it at runtime). */
   /* Class#allocate: a bare instance with default/nil ivars and no initialize.
