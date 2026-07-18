@@ -36,8 +36,25 @@
    stack at raise time and Exception#backtrace / caller format it into a
    Ruby-style backtrace — no per-method shadow frames needed. Off unless the
    generated main() sets sp_bt_enabled (debug builds), so non-debug behaviour
-   and cost are unchanged. execinfo is POSIX-ish; absent on Windows. */
+   and cost are unchanged. execinfo is not quite POSIX-ish; it's absent on
+   Windows and other platforms. */
+#if defined(__has_include)
+#  if __has_include(<execinfo.h>)
+#    define HAVE_EXECINFO_H 1
+#  endif
+#elif defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)
+#  define HAVE_EXECINFO_H 1
+#endif
+
+#ifdef HAVE_EXECINFO_H
 #include <execinfo.h>
+#else
+/* No execinfo.h: provide no-op shims so the formatting code below compiles
+   and links unchanged. backtrace_symbols returns NULL, which the formatter
+   treats as "nothing to format" -- the backtrace is simply empty. */
+#define backtrace_symbols(buf, n) ((char **)0)
+#define backtrace(buf, sz) 0
+#endif
 #define SP_BT_AVAILABLE 1
 extern int sp_bt_enabled;          /* set to 1 by debug-build main(); defined in lib/sp_cold.c */
 extern const char *sp_bt_srcfile;  /* toplevel .rb path, set by debug main() */

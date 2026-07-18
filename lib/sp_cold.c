@@ -26,6 +26,18 @@
 #include "sp_string.h"
 #include "sp_system.h" /* sp_last_status for backtick */
 
+/* execinfo.h (backtrace_symbols) is a glibc/Apple extension; not all libc
+   implementations ship it. Detect availability by the toolchain macros so we
+   can guard the header inclusion. Where it is missing we still provide
+   no-op struct/macro shims below so the backtrace code compiles unchanged. */
+#if defined(__has_include)
+#  if __has_include(<execinfo.h>)
+#    define HAVE_EXECINFO_H 1
+#  endif
+#elif defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)
+#  define HAVE_EXECINFO_H 1
+#endif
+
 /* Integer#% / Kernel#format "%b"/"%B": binary formatting with Ruby's flag,
    width, precision, and two's-complement-for-negative rules. */
 int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
@@ -928,7 +940,14 @@ sp_PolyArray *sp_str_chars_poly(const char *s) {
    stays in the header next to sp_raise_cls; only the cold symbol->Ruby-frame
    formatting lives here. The two flag globals are defined here so the
    debug-build main() (generated TU) and the header callers share one copy. */
+#ifdef HAVE_EXECINFO_H
 #include <execinfo.h>
+#else
+/* No execinfo.h: provide no-op shims so the formatting code below compiles
+   and links unchanged. backtrace_symbols returns NULL, which the formatter
+   treats as "nothing to format" -- the backtrace is simply empty. */
+#define backtrace_symbols(buf, n) ((char **)0)
+#endif
 int sp_bt_enabled = 0;          /* set to 1 by debug-build main() */
 const char *sp_bt_srcfile = ""; /* toplevel .rb path, set by debug main() */
 static int sp_bt_is_runtime(const char *n) {

@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#if !defined(__APPLE__) && !defined(__FreeBSD__)
+#if defined(__GLIBC__)
 #include <malloc.h>
 #else
 /* Darwin's libc has no malloc_trim; make it a no-op so call sites stay portable. */
