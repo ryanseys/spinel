@@ -2678,6 +2678,11 @@ static sp_RbVal sp_poly_floor(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_f
 static mrb_int sp_poly_bytesize(sp_RbVal v) { if (v.tag == SP_TAG_STR) return v.v.s ? sp_str_bytesize_m(v.v.s) : 0; sp_raise_poly_nomethod("bytesize", v); }
 static mrb_int sp_poly_ord(sp_RbVal v) { if (v.tag == SP_TAG_STR) { if (!v.v.s) sp_raise_cls("ArgumentError", "empty string"); return sp_str_ord(v.v.s); } if (v.tag == SP_TAG_INT) return v.v.i; sp_raise_poly_nomethod("ord", v); }
 static mrb_int sp_poly_bit_length(sp_RbVal v) { if (v.tag == SP_TAG_INT) return sp_int_bit_length(v.v.i); sp_raise_poly_nomethod("bit_length", v); }
+/* Rational#numerator / #denominator on a boxed value: a Rational reports its
+   reduced parts; an Integer is n/1. Both commit to mrb_int (analyze's TY_INT),
+   matching the typed Rational path. */
+static mrb_int sp_poly_numerator(sp_RbVal v) { if (sp_poly_is_rational(v)) return sp_poly_as_rational(v).num; if (v.tag == SP_TAG_INT) return v.v.i; sp_raise_poly_nomethod("numerator", v); }
+static mrb_int sp_poly_denominator(sp_RbVal v) { if (sp_poly_is_rational(v)) return sp_poly_as_rational(v).den; if (v.tag == SP_TAG_INT) return 1; sp_raise_poly_nomethod("denominator", v); }
 /* String#getbyte on a poly value; nil (not 0) for an out-of-range index, per
    CRuby, so the result is boxed. */
 static sp_RbVal sp_poly_getbyte(sp_RbVal v, mrb_int i) { if (v.tag != SP_TAG_STR) sp_raise_poly_nomethod("getbyte", v); const char *s = v.v.s; if (!s) return sp_box_nil(); mrb_int bl = (mrb_int)sp_str_byte_len(s); if (i < 0) i += bl; if (i < 0 || i >= bl) return sp_box_nil(); return sp_box_int((mrb_int)(unsigned char)s[i]); }

@@ -3880,7 +3880,8 @@ else {
             sp_streq(name, "floor") || sp_streq(name, "ceil") ||
             sp_streq(name, "round") || sp_streq(name, "truncate")) return TY_POLY;
         if (sp_streq(name, "bytesize") || sp_streq(name, "ord") ||
-            sp_streq(name, "bit_length")) return TY_INT;
+            sp_streq(name, "bit_length") ||
+            sp_streq(name, "numerator") || sp_streq(name, "denominator")) return TY_INT;
       }
       /* Numeric#round(ndigits) on a boxed value: Float when n > 0, Integer
          when n <= 0 -- either way a boxed poly (sp_poly_round_n). */
