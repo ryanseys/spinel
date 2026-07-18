@@ -214,9 +214,17 @@ const char *g_fn_pr_label = NULL;
 const char *g_fn_pr_var = NULL;
 TyKind g_fn_ret_type = TY_UNKNOWN;
 int g_current_scope_is_lowered = 0;
-/* The current lowered method's block-param name (its declared &block name, or
-   NULL for the synthetic __yblk__); read by emit_yblk_ref. */
+/* The block-param name of the lowered method currently being emitted (its
+   declared &block name, or "__yblk__" when the lowering synthesized one);
+   NULL outside a lowered-method emission. Read by emit_yblk_ref. */
 const char *g_lowered_blk_name = NULL;
+/* The enclosing lowered context parked across an inline: an inlined callee's
+   own yields splice the call-site block, so emit_inline_call_x clears the
+   lowered pair for the callee body and parks it here; emit_block_invoke
+   restores it around spliced CALLER code (whose yields do belong to the
+   lowered method) -- the same discipline as g_yield_self_fallback. */
+int g_yield_lowered_fallback = 0;
+const char *g_yield_lowered_blk_fallback = NULL;
 /* When a yielding method is inlined and its block is a forwarded REAL proc
    (the caller nil-checks its &block, so the block can't be an inlined literal),
    this holds the C expression for that proc; the inlined `yield` calls it via

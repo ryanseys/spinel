@@ -77,3 +77,26 @@ Walker.walk(1, &pr)
 total = 0
 Walker.walk(3) { |n| total += n }
 puts total
+
+# a yield-method inlined INSIDE the recursive method: the callee's own yield
+# splices its call-site block, while a yield in that spliced block still binds
+# the enclosing method's proc (callee even shadows the &block name)
+class SNode
+  def each
+    block = 5
+    yield block
+    nil
+  end
+end
+
+class MixWalker
+  def self.walk(depth, &block)
+    yield depth
+    SNode.new.each do |x|
+      walk(depth - 1, &block) if depth > 0
+    end
+    nil
+  end
+end
+
+MixWalker.walk(1) { |n| puts n + 50 }

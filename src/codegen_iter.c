@@ -180,6 +180,18 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *saved_self_fb = g_yield_self_fallback;
   const char *saved_deref_fb = g_yield_self_deref_fallback;
   int saved_emcls_fb = g_yield_emitting_class_fallback;
+  /* The inlined callee's own yields splice this call site's block; only a
+     yield in spliced CALLER code belongs to an enclosing lowered method.
+     Park the lowered context for emit_block_invoke and clear it for the
+     callee body -- the same discipline as the self/emitting-class pair. */
+  int saved_low_fb = g_yield_lowered_fallback;
+  const char *saved_lbnf = g_yield_lowered_blk_fallback;
+  int saved_low = g_current_scope_is_lowered;
+  const char *saved_lbn = g_lowered_blk_name;
+  g_yield_lowered_fallback = g_current_scope_is_lowered;
+  g_yield_lowered_blk_fallback = g_lowered_blk_name;
+  g_current_scope_is_lowered = 0;
+  g_lowered_blk_name = NULL;
   g_yield_self_fallback = g_self;
   g_yield_self_deref_fallback = g_self_deref;
   /* captured here, BEFORE the receiver-context switch below, so it holds the
@@ -382,6 +394,10 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_self_fallback = saved_self_fb;
   g_yield_self_deref_fallback = saved_deref_fb;
   g_yield_emitting_class_fallback = saved_emcls_fb;
+  g_yield_lowered_fallback = saved_low_fb;
+  g_yield_lowered_blk_fallback = saved_lbnf;
+  g_current_scope_is_lowered = saved_low;
+  g_lowered_blk_name = saved_lbn;
   if (g_inline_depth > 0) g_inline_depth--;
   return 1;
 }
@@ -819,6 +835,12 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     g_self_deref = g_yield_self_deref_fallback;
     g_emitting_class_id = g_yield_emitting_class_fallback;
   }
+  /* ... and the caller's lowered context: a `yield` in this spliced caller
+     code binds the enclosing lowered method's proc, not this inline. */
+  int sv_blow = g_current_scope_is_lowered;
+  const char *sv_blbn = g_lowered_blk_name;
+  g_current_scope_is_lowered = g_yield_lowered_fallback;
+  g_lowered_blk_name = g_yield_lowered_blk_fallback;
   /* A `next` in a yielded block leaves the BLOCK with its value -- but this
      body is spliced inline (no _proc_ function, no loop), so a bare
      `continue` is invalid C. Only when the body owns a `next`, wrap the
@@ -905,6 +927,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   }
   g_self = sv_bself; g_self_deref = sv_bderef;
   g_emitting_class_id = sv_bemcls;
+  g_current_scope_is_lowered = sv_blow;
+  g_lowered_blk_name = sv_blbn;
   g_method_pr_label = sv_bl; g_method_pr_var = sv_bv; g_ret_type = sv_bt;
   g_method_pr_exc_depth = sv_bexc;
   g_brk_ser_var = svser; g_brk_ensure_base = svebase; g_brk_exc_base = svbexc;

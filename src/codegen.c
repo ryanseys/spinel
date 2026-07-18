@@ -1900,7 +1900,12 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
      proc_collect_used never picks it up -- force it. */
   if (g_current_scope_is_lowered) {
     int pb2 = proc_body_node(c, create);
-    const char *ybn = (bs->blk_param && bs->blk_param[0]) ? bs->blk_param : "__yblk__";
+    /* g_lowered_blk_name, not bs->blk_param: for an include-transplanted
+       method comp_scope_of maps body nodes to the SOURCE scope, while the
+       name in force is the emitting copy's -- the same one emit_yblk_ref
+       will reference inside the proc body. */
+    const char *ybn =
+        (g_lowered_blk_name && g_lowered_blk_name[0]) ? g_lowered_blk_name : "__yblk__";
     if (pb2 >= 0 && proc_body_has_yield(c, pb2) && !nameset_has(&caps, ybn)) {
       LocalVar *yblk_lv = scope_local(bs, ybn);
       if (yblk_lv && yblk_lv->is_cell) nameset_add(&caps, ybn);
