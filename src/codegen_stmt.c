@@ -7665,6 +7665,15 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      poly -- needs coercing. (Only for a real return slot, not a begin/rescue
      result var, which stays poly.) */
   else if (!g_result_var && tail_needs_unbox(vty, g_ret_type)) emit_unbox_node(c, g_ret_type, id, b);
+  /* A void tail value (a rescue arm ending in `puts`, or a void-returning
+     method call) feeding a non-poly result slot: the begin/rescue value
+     unified to a nullable pointer, so evaluate the tail for effect and yield
+     NULL (nil), rather than assigning a void expression to the typed temp. A
+     poly slot is already handled by the want_poly boxing above. (#2900) */
+  else if (g_result_var && !g_result_poly && (vty == TY_VOID || vty == TY_NIL) &&
+           sp_streq(ty, "CallNode")) {
+    buf_puts(b, "("); emit_tail_value(c, id, b); buf_puts(b, ", 0)");
+  }
   else emit_tail_value(c, id, b);
   buf_puts(b, ";\n");
 }
