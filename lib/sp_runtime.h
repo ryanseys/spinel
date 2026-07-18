@@ -5038,6 +5038,37 @@ static mrb_bool sp_poly_has_key(sp_RbVal recv, sp_RbVal key) {
    would alias the backing store (and double-free through the finalizer);
    they keep their dedicated copy paths. clone preserves the frozen bit. */
 static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
+  /* Array#dup/#clone on a boxed array (read out of a poly container): a shallow
+     copy of the same kind. A raw struct memcpy (the user-object path below)
+     would share the element buffer, so the copy would alias -- mutating it
+     would corrupt the original. */
+  if (v.tag == SP_TAG_OBJ && v.v.p && sp_poly_is_array_kind(v.cls_id)) {
+    switch (v.cls_id) {
+      case SP_BUILTIN_POLY_ARRAY: v.v.p = sp_PolyArray_dup((sp_PolyArray *)v.v.p); break;
+      case SP_BUILTIN_INT_ARRAY: {
+        sp_IntArray *a = (sp_IntArray *)v.v.p; SP_GC_ROOT(a);
+        sp_IntArray *r = sp_IntArray_new();
+        for (mrb_int i = 0; i < a->len; i++) sp_IntArray_push(r, a->data[a->start + i]);
+        if (keep_frozen && a->frozen) r->frozen = 1;
+        v.v.p = r; break;
+      }
+      case SP_BUILTIN_STR_ARRAY: {
+        sp_StrArray *a = (sp_StrArray *)v.v.p; SP_GC_ROOT(a);
+        sp_StrArray *r = sp_StrArray_new();
+        for (mrb_int i = 0; i < a->len; i++) sp_StrArray_push(r, a->data[i]);
+        if (keep_frozen && a->frozen) r->frozen = 1;
+        v.v.p = r; break;
+      }
+      case SP_BUILTIN_FLT_ARRAY: {
+        sp_FloatArray *a = (sp_FloatArray *)v.v.p; SP_GC_ROOT(a);
+        sp_FloatArray *r = sp_FloatArray_new();
+        for (mrb_int i = 0; i < a->len; i++) sp_FloatArray_push(r, a->data[i]);
+        if (keep_frozen && a->frozen) r->frozen = 1;
+        v.v.p = r; break;
+      }
+    }
+    return v;
+  }
   if (v.tag == SP_TAG_OBJ && v.v.p &&
       (v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT)) {
     sp_gc_hdr *h = (sp_gc_hdr *)((char *)v.v.p - sizeof(sp_gc_hdr));
