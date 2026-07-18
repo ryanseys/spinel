@@ -2335,6 +2335,7 @@ else {
                else if (ty_is_array(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, \
                         lt==TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : lt==TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY" : \
                         lt==TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY" : "SP_BUILTIN_POLY_ARRAY"); \
+               else if (lt == TY_MATCHDATA && is_and) buf_puts((TB), "sp_box_nil()"); /* MatchData has no poly box; in `m && x` the kept-left arm is reached only when m is NULL, i.e. nil (#2896) */ \
                else buf_printf((TB), "_t%d", t); } \
              else buf_printf((TB), "_t%d", t); } \
     } while (0)
