@@ -1761,7 +1761,23 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     if (argc == 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_int(0)");
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
                tacc, ti, ti, tn, ti);
-    if (p0) buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d); ", p0, k, ta, ti);
+    /* A 2+-param block over an array of sub-arrays auto-splats each element
+       into the params (`sum { |v, i| v }` over [v, i] pairs); a single param
+       binds the whole element. Each param is gated on liveness. */
+    {
+      int nps = 0; while (block_param_name(c, block, nps)) nps++;
+      if (nps >= 2 && !block_param_is_multi(c, block, 0)) {
+        int te = ++g_tmp;
+        buf_printf(b, "sp_RbVal _t%d = sp_%sArray_get(_t%d, _t%d); ", te, k, ta, ti);
+        Scope *bsc = comp_scope_of(c, block);
+        for (int pj = 0; pj < nps; pj++) {
+          const char *pn = block_param_name(c, block, pj);
+          LocalVar *plv = (pn && bsc) ? scope_local(bsc, pn) : NULL;
+          if (plv) buf_printf(b, "lv_%s = sp_poly_index_poly(_t%d, sp_box_int(%d)); ", rename_local(pn), te, pj);
+        }
+      }
+      else if (p0) buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d); ", p0, k, ta, ti);
+    }
     {
       Buf inner; memset(&inner, 0, sizeof inner);
       Buf valb; memset(&valb, 0, sizeof valb);

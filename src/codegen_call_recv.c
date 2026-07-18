@@ -609,10 +609,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   }
   /* `enum.drop(n)` / `enum.reject|select|filter { }` on an each_with_index-style
      Enumerator: materialize its pairs to a poly array and re-dispatch as the
-     array form (drop returns a slice; the filters run the block). (#2878) */
+     array form (drop returns a slice; the block forms run the block over each
+     pair). (#2878, #2943) */
   if (recv >= 0 && rt == TY_ENUMERATOR && g_n_argov < MAX_ARG_OVERRIDE &&
       ((sp_streq(name, "drop") && argc == 1 && nt_ref(nt, id, "block") < 0) ||
-       ((sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
+       ((sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter") ||
+         sp_streq(name, "max_by") || sp_streq(name, "min_by") || sp_streq(name, "sort_by") ||
+         sp_streq(name, "sum")) &&
         argc == 0 && nt_ref(nt, id, "block") >= 0))) {
     int ta = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);

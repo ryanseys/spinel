@@ -2236,6 +2236,11 @@ else {
        Array (each_with_index.reject { |v, i| ... }). */
     if ((sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
         argc == 0 && nt_ref(nt, id, "block") >= 0) return TY_POLY_ARRAY;
+    /* block forms over the materialized pairs: sort_by is a reordered Array;
+       max_by/min_by pick one pair (a boxed element); sum { } folds to a poly. */
+    if (sp_streq(name, "sort_by") && argc == 0 && nt_ref(nt, id, "block") >= 0) return TY_POLY_ARRAY;
+    if ((sp_streq(name, "max_by") || sp_streq(name, "min_by") || sp_streq(name, "sum")) &&
+        argc == 0 && nt_ref(nt, id, "block") >= 0) return TY_POLY;
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) return TY_POLY_ARRAY;
     if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) return TY_STRING;
   }
