@@ -6376,6 +6376,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_slice_when_chunk_inspect_expr(c, id, b)) return;
   if (emit_product_inspect_expr(c, id, b)) return;
   if (emit_bsearch_expr(c, id, b)) return;
+  if (emit_sum_block_poly_expr(c, id, b)) return;
   if (emit_sum_block_expr(c, id, b)) return;
   if (emit_transform_hash_expr(c, id, b)) return;
   if (emit_gsub_block_expr(c, id, b)) return;

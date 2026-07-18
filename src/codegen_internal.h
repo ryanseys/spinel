@@ -496,6 +496,7 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b);
 int emit_filter_map_expr(Compiler *c, int id, Buf *b);
 int emit_gsub_block_expr(Compiler *c, int id, Buf *b);
 int emit_sum_block_expr(Compiler *c, int id, Buf *b);
+int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b);
 int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b);
 int emit_product_inspect_expr(Compiler *c, int id, Buf *b);
 int emit_step_array_expr(Compiler *c, int id, Buf *b);

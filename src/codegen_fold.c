@@ -1639,6 +1639,63 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* poly_recv.sum([init]) { |x| f(x) } as an expression: the receiver is a value
+   only known to be an Array at runtime (a group_by bucket, a `case`-merged
+   local), so coerce it to a poly array and fold the (boxed) block result with
+   sp_poly_add, starting from the initial value or Integer 0. The block param is
+   pinned to poly so a user-method call on the element dispatches dynamically
+   (`bucket.sum(&:value)`). (#2872) */
+int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || !sp_streq(name, "sum")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  /* concrete typed arrays keep the tuned integer/float/string path below */
+  if (comp_ntype(c, recv) != TY_POLY) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  if (block_param_is_multi(c, block, 0)) return 0;
+  const char *p0 = block_param_name(c, block, 0);
+  const char *p0r = p0 ? rename_local(p0) : NULL;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc > 1) return 0;
+  /* pin the block param to poly before typing the body, so `x.<user method>`
+     resolves to the runtime dynamic-dispatch path rather than a static one. */
+  Scope *bsc = p0 ? comp_scope_of(c, block) : NULL;
+  LocalVar *blv = (bsc && p0) ? scope_local(bsc, p0) : NULL;
+  TyKind saved = blv ? blv->type : TY_UNKNOWN;
+  if (blv) blv->type = TY_POLY;
+  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+
+  int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_a_arr(", ta);
+  emit_expr(c, recv, b);
+  buf_printf(b, "); SP_GC_ROOT(_t%d); mrb_int _t%d = _t%d->len; sp_RbVal _t%d = ",
+             ta, tn, ta, tacc);
+  if (argc == 1) emit_boxed(c, argv[0], b);
+  else buf_puts(b, "sp_box_int(0)");
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
+             tacc, ti, ti, tn, ti);
+  if (p0r) buf_printf(b, "sp_RbVal lv_%s = _t%d->data[_t%d]; ", p0r, ta, ti);
+  {
+    Buf inner; memset(&inner, 0, sizeof inner);
+    Buf valb; memset(&valb, 0, sizeof valb);
+    Buf *saved_pre = g_pre; g_pre = &inner;
+    emit_boxed(c, bb[bn - 1], &valb);
+    g_pre = saved_pre;
+    if (inner.p) buf_puts(b, inner.p);
+    buf_printf(b, "_t%d = sp_poly_add(_t%d, %s); }", tacc, tacc, valb.p ? valb.p : "sp_box_nil()");
+    free(inner.p); free(valb.p);
+  }
+  buf_printf(b, " _t%d; })", tacc);
+  if (blv) blv->type = saved;
+  return 1;
+}
 /* array.sum([init]) { |x| f(x) } as an expression: sum the block's result
    over every element. Returns 1 if handled. */
 int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
