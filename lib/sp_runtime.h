@@ -3186,6 +3186,30 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
     return sp_box_int(sp_int_shl(x, n));
   }
 }
+/* Fold an operator named by a runtime symbol (`arr.reduce(sym)` where sym is
+   not statically known, e.g. a block param): dispatch the common arithmetic,
+   bitwise, and shift operators on the boxed operands. An unknown operator is a
+   NoMethodError, like sending it. */
+static sp_RbVal sp_poly_binop_sym(sp_RbVal a, sp_sym op, sp_RbVal b) {
+  const char *s = sp_sym_name_fn ? sp_sym_name_fn(op) : "";
+  if (s && s[0] && !s[1]) {
+    switch (s[0]) {
+      case '+': return sp_poly_add(a, b);
+      case '-': return sp_poly_sub(a, b);
+      case '*': return sp_poly_mul(a, b);
+      case '/': return sp_poly_div(a, b);
+      case '%': return sp_poly_mod(a, b);
+      case '&': return sp_poly_band(a, b);
+      case '|': return sp_poly_bor(a, b);
+      case '^': return sp_poly_bxor(a, b);
+      default: break;
+    }
+  }
+  if (s && strcmp(s, "**") == 0) return sp_poly_pow(a, b);
+  if (s && strcmp(s, "<<") == 0) return sp_poly_shl(a, b);
+  if (s && strcmp(s, ">>") == 0) return sp_poly_shr(a, b);
+  return sp_poly_binop_bad(s ? s : "", a, b);
+}
 static mrb_int sp_PolyArray_length(sp_PolyArray *a) { if (!a) return 0; return a->len; }
 /* Helpers for iterating over a poly value that holds a boxed array. */
 static mrb_int sp_poly_arr_len(sp_RbVal a) {

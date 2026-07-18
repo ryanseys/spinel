@@ -2784,6 +2784,38 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
       if (argc == 2) init = argv[0];
     }
   }
+  /* A runtime symbol operator (`arr.reduce(sym)` where sym is not statically
+     known, e.g. a `|sym|` block param): fold with sp_poly_binop_sym over boxed
+     operands, accumulating a boxed poly. */
+  if (!op && block < 0 && argc >= 1 &&
+      (comp_ntype(c, argv[argc - 1]) == TY_SYMBOL || comp_ntype(c, argv[argc - 1]) == TY_POLY)) {
+    int symarg = argv[argc - 1];
+    int rinit = (argc == 2) ? argv[0] : -1;
+    int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, tsy = ++g_tmp;
+    const char *boxfn = et == TY_INT ? "sp_box_int" : et == TY_FLOAT ? "sp_box_float"
+                      : et == TY_STRING ? "sp_box_str" : NULL;
+    buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
+    buf_printf(b, "; mrb_int _t%d = sp_%sArray_length(_t%d); sp_sym _t%d = ", tn, k, ta, tsy);
+    /* a statically-poly operand (a `|sym|` block param over a poly array)
+       carries the symbol in its .v.i slot */
+    if (comp_ntype(c, symarg) == TY_SYMBOL) emit_expr(c, symarg, b);
+    else { buf_puts(b, "(sp_sym)("); emit_expr(c, symarg, b); buf_puts(b, ").v.i"); }
+    buf_printf(b, "; sp_RbVal _t%d = ", tacc);
+    int start;
+    if (rinit >= 0) { emit_boxed(c, rinit, b); start = 0; }
+    else {
+      buf_printf(b, "_t%d > 0 ? ", tn);
+      if (boxfn) buf_printf(b, "%s(sp_%sArray_get(_t%d, 0))", boxfn, k, ta);
+      else buf_printf(b, "sp_%sArray_get(_t%d, 0)", k, ta);
+      buf_puts(b, " : sp_box_nil()"); start = 1;
+    }
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); for (mrb_int _t%d = %d; _t%d < _t%d; _t%d++) _t%d = sp_poly_binop_sym(_t%d, _t%d, ",
+               tacc, ti, start, ti, tn, ti, tacc, tacc, tsy);
+    if (boxfn) buf_printf(b, "%s(sp_%sArray_get(_t%d, _t%d))", boxfn, k, ta, ti);
+    else buf_printf(b, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+    buf_printf(b, "); _t%d; })", tacc);
+    return 1;
+  }
   if (!op) return 0;
 
   const char *ifn = (et == TY_INT) ? int_arith_fn(op) : NULL;

@@ -3448,6 +3448,14 @@ else {
          inject(:op) is the no-init operator form — the sole symbol arg is the
          operator, NOT an init value, so skip the "return argv[0] type" path. */
       if (argc > 0 && argv) {
+        /* A runtime (non-literal) symbol operator -- `reduce(sym)` or
+           `reduce(init, sym)` where sym is a `|sym|` block param -- folds
+           through sp_poly_binop_sym, yielding a boxed poly regardless of the
+           init type. (The block-fold form uses the block, not a sym operator.) */
+        if (nt_ref(nt, id, "block") < 0 && !sym_static_value(c, argv[argc - 1])) {
+          TyKind opt = infer_type(c, argv[argc - 1]);
+          if (opt == TY_SYMBOL || opt == TY_POLY) return TY_POLY;
+        }
         const char *a0ty = nt_type(nt, argv[0]);
         /* a symbol literal, or a local statically holding one (s = :+) */
         int is_sym_op = argc == 1 && sym_static_value(c, argv[0]) != NULL;
