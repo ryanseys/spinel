@@ -33,6 +33,15 @@ static int pure_forwarding_target(Compiler *c, int mi, int depth) {
    declare the method's locals (renamed to avoid clashing with the call
    site), bind params to args, then emit the method body with yield
    expanding to the block. Returns 1 if handled. */
+/* Depth of yielding-method inlining in flight. Legitimate re-entry (a yielded
+   block that calls the same method again, `c.with_state { c.with_state { ... } }`)
+   is bounded by the source's finite nesting, but a method whose OWN body calls
+   itself (`rec` calling `rec`, base case a runtime `n`) inlines without bound
+   and hangs the compiler. Cap the depth: real nesting is shallow, so exceeding
+   the cap means unbounded self-recursion -- report it instead of looping (#2908). */
+#define SP_INLINE_DEPTH_MAX 64
+static int g_inline_depth = 0;
+
 int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -140,6 +149,9 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
 
   int tag = ++g_tmp;
+  if (g_inline_depth >= SP_INLINE_DEPTH_MAX)
+    unsupported_feature(c, id, "a method that yields and calls itself recursively (inlining cannot terminate; no standalone function to fall back to)");
+  g_inline_depth++;
   int saved_nren = g_nren, saved_block = g_block_id;
   int saved_emcls = g_emitting_class_id;
   const char *saved_self = g_self;
@@ -370,6 +382,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_self_fallback = saved_self_fb;
   g_yield_self_deref_fallback = saved_deref_fb;
   g_yield_emitting_class_fallback = saved_emcls_fb;
+  if (g_inline_depth > 0) g_inline_depth--;
   return 1;
 }
 
