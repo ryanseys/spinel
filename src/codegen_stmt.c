@@ -1082,6 +1082,21 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
     emit_expr(c, v, b); buf_puts(b, ");\n");
     return;
   }
+  /* `r += x` on a Rational local: `r = r <op> x` through the same sp_rational_*
+     helpers the binary path uses. Only an Integer/Rational rhs keeps the result
+     a Rational; a Float rhs would change the local's type (CRuby returns a
+     Float) and falls through to the loud reject. */
+  if (t == TY_RATIONAL && (sp_streq(op, "+") || sp_streq(op, "-") ||
+                           sp_streq(op, "*") || sp_streq(op, "/"))) {
+    TyKind vt = comp_ntype(c, v);
+    if (vt == TY_RATIONAL || vt == TY_INT) {
+      const char *fn = op[0] == '+' ? "add" : op[0] == '-' ? "sub" : op[0] == '*' ? "mul" : "div";
+      buf_printf(b, "lv_%s = sp_rational_%s(lv_%s, ", en, fn, en);
+      emit_rat_coerce(c, v, b);
+      buf_puts(b, ");\n");
+      return;
+    }
+  }
   /* `arr += other` is `arr = arr + other` — a fresh concatenation, the same
      helper the binary `+` path uses (codegen_call_recv.c). Covers Int/Float/
      Str/Poly arrays; the RHS must be the same kind, or an empty `[]` literal

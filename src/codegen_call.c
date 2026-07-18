@@ -1002,7 +1002,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
 /* Emit a node as an sp_Rational value: a Rational stays as-is, an Integer is
    lifted to n/1. Used to coerce the other operand of a Rational arithmetic /
    comparison op. */
-static void emit_rat_coerce(Compiler *c, int node, Buf *b) {
+void emit_rat_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_RATIONAL) { emit_expr(c, node, b); return; }
   if (comp_ntype(c, node) == TY_FLOAT) {
     /* the exact rational value of the double, not a truncating int cast */
