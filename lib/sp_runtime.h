@@ -6079,6 +6079,18 @@ SP_NORETURN SP_COLD static void sp_exit_raise(int status) {
   }
   exit(status);
 }
+/* Kernel#abort: write the message to stderr, then raise a rescuable
+   SystemExit with status 1 carrying that message (#3077). */
+SP_NORETURN SP_COLD static void sp_abort_raise(const char *msg) {
+  if (msg) { fputs(msg, stderr); fputc('\n', stderr); }
+  if (sp_exc_top > 0) {
+    sp_Exception *e = sp_exc_new("SystemExit", msg ? msg : "exit");
+    SP_GC_ROOT(e);
+    e->result = sp_box_int((mrb_int)1);
+    sp_raise_exc((volatile sp_Exception *)e);
+  }
+  exit(1);
+}
 /* Exception#exception(msg): a copy of the receiver carrying the new message. */
 static sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {
   sp_Exception *n = sp_exc_dup(e);

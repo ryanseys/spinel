@@ -9410,14 +9410,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
   if (recv < 0 && sp_streq(name, "abort")) {
+    /* abort raises a rescuable SystemExit(1) after writing the message to
+       stderr (#3077) */
     if (argc >= 1) {
       TyKind at2 = comp_ntype(c, argv[0]);
-      buf_puts(b, "({ fputs(");
+      buf_puts(b, "({ sp_abort_raise(");
       if (at2 == TY_STRING) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      buf_puts(b, ", stderr); fputc('\\n', stderr); exit(1); (mrb_int)0; })");
+      buf_puts(b, "); (mrb_int)0; })");
     }
-    else buf_puts(b, "({ exit(1); (mrb_int)0; })");
+    else buf_puts(b, "({ sp_abort_raise((const char *)0); (mrb_int)0; })");
     return;
   }
 

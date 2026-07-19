@@ -643,16 +643,16 @@ else {
     return 1;
   }
   if (sp_streq(name, "abort")) {
+    /* abort raises a rescuable SystemExit(1) after writing to stderr (#3077) */
     emit_indent(b, indent);
     if (argc >= 1) {
-      buf_puts(b, "fputs(");
+      buf_puts(b, "sp_abort_raise(");
       TyKind at = comp_ntype(c, argv[0]);
       if (at == TY_STRING) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      buf_puts(b, ", stderr); fputc('\\n', stderr);\n");
-      emit_indent(b, indent);
+      buf_puts(b, ");\n");
     }
-    buf_puts(b, "exit(1);\n");
+    else buf_puts(b, "sp_abort_raise((const char *)0);\n");
     return 1;
   }
   if (sp_streq(name, "srand")) {
