@@ -5568,6 +5568,11 @@ TyKind infer_uncached(Compiler *c, int id) {
          the STR_POLY hash (mirrors the empty-array-receiver mark) (#2336). */
       if (c->empty_hash_recv && id < c->node_cap && c->empty_hash_recv[id])
         return TY_STR_POLY_HASH;
+      /* an empty literal whose use context fixes a variant (compared against a
+         hash-typed peer) adopts it, so both sides share a representation and
+         the comparison is a real content check (#3040). */
+      if (c->empty_hash_want && id < c->node_cap && ty_is_hash(c->empty_hash_want[id]))
+        return c->empty_hash_want[id];
       /* a bare `{}` passed as a user-method arg (an accumulator seed) is the
          widest hash, so the callee may write any key/value type (#2860). */
       if (c->empty_hash_arg && id < c->node_cap && c->empty_hash_arg[id])

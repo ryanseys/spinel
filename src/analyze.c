@@ -5301,6 +5301,34 @@ static void mark_empty_literal_args(Compiler *c) {
     }
   }
 }
+/* An empty `{}` compared against a hash-typed peer takes that peer's variant,
+   so the two sides share a representation and `==` can compare contents
+   instead of collapsing to a constant false (#3040). The literal carries no
+   keys of its own, so adopting the peer's variant loses nothing. */
+static void mark_empty_hash_cmp_peers(Compiler *c) {
+  if (!c->empty_hash_want) return;
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "==") && !sp_streq(nm, "!=") && !sp_streq(nm, "eql?"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int anode = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+    if (recv < 0 || an != 1) continue;
+    int arg = av[0];
+    for (int side = 0; side < 2; side++) {
+      int lit = side ? arg : recv, peer = side ? recv : arg;
+      if (lit < 0 || lit >= c->node_cap || peer < 0) continue;
+      NodeKind lk = nt_kind(nt, lit);
+      if (lk != NK_HashNode && lk != NK_KeywordHashNode) continue;
+      int en = 0; nt_arr(nt, lit, "elements", &en);
+      if (en != 0) continue;
+      TyKind pt = infer_type(c, peer);
+      if (ty_is_hash(pt)) c->empty_hash_want[lit] = pt;
+    }
+  }
+}
 static void mark_empty_hash_receivers(Compiler *c) {
   if (!c->empty_hash_recv) return;
   const NodeTable *nt = c->nt;
@@ -5659,6 +5687,9 @@ void analyze_program(Compiler *c) {
   mark_empty_hash_receivers(c);
   mark_empty_literal_tails(c);
   mark_empty_literal_args(c);
+  /* after the arg/receiver marks: a bare `{}` with no other context takes its
+     variant from the peer it is compared against (#3040) */
+  mark_empty_hash_cmp_peers(c);
 
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
