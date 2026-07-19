@@ -6273,6 +6273,24 @@ static int class_includes_module_named(Compiler *c, int cid, const char *mod_nam
 
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* An object that does not define #=== inherits Kernel#===, which delegates
+     to #==. Both infer as Bool, so the node's cached type stays right when we
+     re-dispatch under the #== name (#3018). */
+  {
+    const char *enm = nt_str(nt, id, "name");
+    int erecv = nt_ref(nt, id, "receiver");
+    if (enm && sp_streq(enm, "===") && erecv >= 0) {
+      int eac = 0; call_args(nt, id, &eac);
+      TyKind ert = comp_ntype(c, erecv);
+      if (eac == 1 && ty_is_object(ert) &&
+          comp_method_in_chain(c, ty_object_class(ert), "===", NULL) < 0) {
+        nt_node_set_str((NodeTable *)nt, id, "name", "==");
+        emit_call(c, id, b);
+        nt_node_set_str((NodeTable *)nt, id, "name", "===");
+        return;
+      }
+    }
+  }
   /* `obj.extend(Mod)` on a statically-traceable object (its type is a
      synthesized singleton subclass) is done at compile time: the module's
      methods were transplanted into the subclass. The runtime call is a
