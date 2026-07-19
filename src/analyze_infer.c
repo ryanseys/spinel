@@ -1340,6 +1340,13 @@ TyKind infer_call(Compiler *c, int id) {
      method `recv.M { ... }` resolves the same way. */
   int ie_kind = (recv >= 0 && (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec")) &&
                  ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
+  /* a non-object receiver (nil, a scalar) is served by the non-object splice;
+     type it by the block's last-expression the same way (#2956) */
+  if (!ie_kind && recv >= 0 && !ty_is_object(rt) &&
+      (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec"))) {
+    int nblk = nt_ref(nt, id, "block");
+    if (nblk >= 0 && nt_type(nt, nblk) && sp_streq(nt_type(nt, nblk), "BlockNode")) ie_kind = 1;
+  }
   if (!ie_kind && recv >= 0 && ty_is_object(rt) && nt_ref(nt, id, "block") >= 0)
     ie_kind = comp_trampoline_kind(c, ty_object_class(rt), name, NULL) != 0;
   /* receiverless instance_eval/exec inside an instance method resolves to self */

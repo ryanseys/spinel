@@ -11074,6 +11074,65 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   int ie_direct = recv >= 0 && (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec"));
+  /* instance_eval/exec on a non-object receiver (nil, a scalar): the block runs
+     with self = the receiver. The object splice below needs a cls_id/ivar
+     layout, so handle the non-object case directly here -- bind the params
+     (exec: the call args; eval: the receiver) and emit the body, self boxed
+     (a self-using body dispatches through the poly runtime). (#2956) */
+  if (ie_direct && recv >= 0) {
+    int nblk = nt_ref(nt, id, "block");
+    TyKind nrt = comp_ntype(c, recv);
+    if (!ty_is_object(nrt) && nblk >= 0 && nt_type(nt, nblk) &&
+        sp_streq(nt_type(nt, nblk), "BlockNode")) {
+      int nexec = sp_streq(name, "instance_exec");
+      int nbp = nt_ref(nt, nblk, "parameters");
+      int ninner = nbp >= 0 ? nt_ref(nt, nbp, "parameters") : -1;
+      int npnode = ninner >= 0 ? ninner : nbp;
+      int nnp = 0; const int *nreqs = npnode >= 0 ? nt_arr(nt, npnode, "requireds", &nnp) : NULL;
+      int niargs = nt_ref(nt, id, "arguments");
+      int niac = 0; const int *niav = niargs >= 0 ? nt_arr(nt, niargs, "arguments", &niac) : NULL;
+      int nbody = nt_ref(nt, nblk, "body");
+      int nbn = 0; const int *nbb = nbody >= 0 ? nt_arr(nt, nbody, "body", &nbn) : NULL;
+      int tself = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = ", tself); emit_boxed(c, recv, g_pre); buf_puts(g_pre, ";\n");
+      for (int p = 0; p < nnp; p++) {
+        const char *pn = nreqs ? nt_str(nt, nreqs[p], "name") : NULL;
+        if (!pn) continue;
+        LocalVar *plv = scope_local(comp_scope_of(c, nreqs[p]), pn);
+        if (!plv || plv->type == TY_UNKNOWN) continue;   /* unused param */
+        int ppoly = plv->type == TY_POLY;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "lv_%s = ", rename_local(pn));
+        if (nexec) {
+          if (p < niac) { if (ppoly) emit_boxed(c, niav[p], g_pre); else emit_expr(c, niav[p], g_pre); }
+          else emit_ie_param_default(c, plv->type, g_pre);
+        }
+        else { if (ppoly) buf_printf(g_pre, "_t%d", tself); else emit_ie_param_default(c, plv->type, g_pre); }
+        buf_puts(g_pre, ";\n");
+      }
+      TyKind nbt = nbn > 0 ? comp_ntype(c, nbb[nbn - 1]) : TY_NIL;
+      const char *sv_self = g_self, *sv_deref = g_self_deref;
+      char selfb[32]; snprintf(selfb, sizeof selfb, "_t%d", tself);
+      g_self = selfb; g_self_deref = ".";
+      for (int j = 0; j < nbn - 1; j++) emit_stmt(c, nbb[j], g_pre, g_indent);
+      if (nbn == 0) { g_self = sv_self; g_self_deref = sv_deref; buf_puts(b, "sp_box_nil()"); return; }
+      int nscalar = is_scalar_ret(nbt) && nbt != TY_VOID && nbt != TY_NIL && nbt != TY_UNKNOWN;
+      if (nscalar) {
+        int tr = ++g_tmp;
+        emit_indent(g_pre, g_indent); emit_ctype(c, nbt, g_pre); buf_printf(g_pre, " _t%d = ", tr);
+        Buf vb = expr_buf(c, nbb[nbn - 1]); buf_printf(g_pre, "%s;\n", vb.p ? vb.p : "0"); free(vb.p);
+        g_self = sv_self; g_self_deref = sv_deref;
+        buf_printf(b, "_t%d", tr);
+      }
+      else {
+        Buf vb = expr_buf(c, nbb[nbn - 1]);
+        g_self = sv_self; g_self_deref = sv_deref;
+        buf_printf(b, "%s", vb.p ? vb.p : "sp_box_nil()"); free(vb.p);
+      }
+      return;
+    }
+  }
   int ie_tramp = 0;
   /* receiverless instance_eval/exec inside an instance method: self is the
      receiver. Lower it like a direct call with self aliased into the temp. */
