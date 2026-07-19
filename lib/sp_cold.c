@@ -457,10 +457,15 @@ sp_PolyArray *sp_math_lgamma(double x) {
   if (x > 0.0) {
     v = sp_lgamma_pos(x);
   }
+  else if (x == floor(x)) {
+    /* pole at every non-positive integer -- detect it directly, since
+       sin(M_PI * x) is not exactly 0 there in floating point (#3016) */
+    v = INFINITY;
+  }
   else {
     double s = sin(M_PI * x);
-    if (s == 0.0) v = INFINITY;            /* pole at a non-positive integer */
-    else { if (s < 0.0) sign = -1; v = log(M_PI / fabs(s)) - sp_lgamma_pos(1.0 - x); }
+    if (s < 0.0) sign = -1;
+    v = log(M_PI / fabs(s)) - sp_lgamma_pos(1.0 - x);
   }
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
   sp_PolyArray_push(r, sp_box_float(v));
