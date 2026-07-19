@@ -860,7 +860,7 @@ sp_PolyArray *sp_poly_array_transpose(sp_PolyArray *rows) {
   if (!rows || rows->len == 0) return sp_PolyArray_new();
   mrb_int nrows = rows->len;
   /* Determine column count and element kind from first non-empty row. */
-  mrb_int ncols = 0;
+  mrb_int ncols = -1;   /* -1 until the first row fixes it; ragged rows raise (#2979) */
   int16_t kind = 0; /* 0=unknown, SP_BUILTIN_INT_ARRAY, SP_BUILTIN_FLT_ARRAY, SP_BUILTIN_STR_ARRAY */
   for (mrb_int r = 0; r < nrows; r++) {
     sp_RbVal rv = rows->data[r];
@@ -870,8 +870,12 @@ sp_PolyArray *sp_poly_array_transpose(sp_PolyArray *rows) {
     else if (rv.cls_id == SP_BUILTIN_FLT_ARRAY) { rlen = ((sp_FloatArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_FLT_ARRAY; }
     else if (rv.cls_id == SP_BUILTIN_STR_ARRAY) { rlen = ((sp_StrArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_STR_ARRAY; }
     else if (rv.cls_id == SP_BUILTIN_POLY_ARRAY) { rlen = ((sp_PolyArray *)rv.v.p)->len; if(!kind) kind = SP_BUILTIN_POLY_ARRAY; }
-    if (rlen > ncols) ncols = rlen;
+    if (ncols < 0) ncols = rlen;
+    else if (rlen != ncols)
+      sp_raise_cls("IndexError", sp_sprintf("element size differs (%lld should be %lld)",
+                                            (long long)rlen, (long long)ncols));
   }
+  if (ncols < 0) ncols = 0;
   sp_PolyArray *result = sp_PolyArray_new();
   SP_GC_ROOT(result);
   for (mrb_int c = 0; c < ncols; c++) {
