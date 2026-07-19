@@ -6781,6 +6781,8 @@ mrb_int sp_file_size_q(const char *path);
 mrb_bool sp_file_pipe(const char *path);
 mrb_bool sp_file_identical(const char *a, const char *b);
 const char *sp_file_realpath(const char *path);
+mrb_bool sp_file_absolute_path_p(const char *path);
+mrb_int sp_file_chown(const char *path, mrb_int uid, mrb_int gid);
 const char *sp_file_read_len(const char *path, mrb_int n);
 mrb_int sp_file_chmod(mrb_int mode, const char *path);
 mrb_int sp_file_truncate(const char *path, mrb_int n);

@@ -1297,6 +1297,12 @@ const char *sp_file_realpath(const char *path) {
                  sp_sprintf("No such file or directory @ realpath_rec - %s", path ? path : ""));
   return sp_sprintf("%s", buf);
 }
+mrb_bool sp_file_absolute_path_p(const char *path) { return path && path[0] == '/'; }  /* (#2988) */
+mrb_int sp_file_chown(const char *path, mrb_int uid, mrb_int gid) {  /* -1 leaves that id unchanged; returns the path count (#2987) */
+  if (chown(path ? path : "", (uid_t)uid, (gid_t)gid) != 0)
+    sp_raise_cls("Errno::ENOENT", sp_sprintf("No such file or directory - %s", path ? path : ""));
+  return 1;
+}
 const char *sp_file_read_len(const char *path, mrb_int n) {
   FILE *fp = fopen(path ? path : "", "rb");
   if (!fp)

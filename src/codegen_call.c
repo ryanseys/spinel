@@ -12100,6 +12100,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (argc == 2) emit_expr(c, argv[1], b); else buf_puts(b, "(const char *)0");
       buf_puts(b, ")"); return;
     }
+    if (sp_streq(name, "absolute_path?") && argc == 1) {  /* (#2988) */
+      buf_puts(b, "sp_file_absolute_path_p("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "chown") && argc == 3) {  /* File.chown(uid, gid, path); nil id -> -1 (#2987) */
+      buf_puts(b, "sp_file_chown("); emit_expr(c, argv[2], b); buf_puts(b, ", ");
+      for (int ci = 0; ci < 2; ci++) {
+        if (ci) buf_puts(b, ", ");
+        if (nt_type(nt, argv[ci]) && sp_streq(nt_type(nt, argv[ci]), "NilNode")) buf_puts(b, "-1LL");
+        else emit_int_expr(c, argv[ci], b);
+      }
+      buf_puts(b, ")"); return;
+    }
     if ((sp_streq(name, "fnmatch") || sp_streq(name, "fnmatch?")) && argc >= 2) {
       buf_puts(b, "sp_file_fnmatch("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
       emit_expr(c, argv[1], b); buf_puts(b, ")"); return;

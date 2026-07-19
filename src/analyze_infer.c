@@ -2092,8 +2092,10 @@ else {
         return TY_BOOL;
       if (sp_streq(name, "write") || sp_streq(name, "binwrite") || sp_streq(name, "delete") ||
           sp_streq(name, "unlink") || sp_streq(name, "rename") || sp_streq(name, "size") ||
-          sp_streq(name, "size?") || sp_streq(name, "chmod") || sp_streq(name, "truncate"))
+          sp_streq(name, "size?") || sp_streq(name, "chmod") || sp_streq(name, "truncate") ||
+          sp_streq(name, "chown"))
         return TY_INT;
+      if (sp_streq(name, "absolute_path?")) return TY_BOOL;
       if (sp_streq(name, "readable?") || sp_streq(name, "directory?") || sp_streq(name, "file?") ||
           sp_streq(name, "zero?") || sp_streq(name, "empty?") || sp_streq(name, "symlink?") ||
           sp_streq(name, "writable?") || sp_streq(name, "executable?") || sp_streq(name, "pipe?") ||
