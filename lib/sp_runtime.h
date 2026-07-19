@@ -6036,7 +6036,10 @@ static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
   e->cause = NULL;  /* set all fields explicitly; sp_exc_gc_scan reads cause */
   e->result = sp_box_nil();
   e->xname = sp_box_nil();
-  e->xkey = sp_box_nil();
+  /* An Interrupt carries SIGINT as its #signo however it was constructed --
+     including the bare `raise Interrupt` class form (#3039). */
+  e->xkey = (e->cls_name && !strcmp(e->cls_name, "Interrupt"))
+              ? sp_box_int((mrb_int)SIGINT) : sp_box_nil();
   e->xrecv = sp_box_nil();
   /* Launder the message into a GC-heap string: sp_exc_gc_scan marks it via
      the tag byte at msg[-1], which only heap strings carry -- keeping a
