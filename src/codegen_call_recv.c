@@ -759,6 +759,15 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     /* values_at(i, j, ...) -> fresh same-kind array of the picked elements
        (works for typed and poly arrays alike, and range args) */
+    if (sp_streq(name, "values_at") && argc == 0) {
+      /* values_at with no indices is the empty array, of the receiver's kind
+         (matching the inferred type) (#2980) */
+      const char *an0 = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+      if (an0) {
+        buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), sp_%sArray_new())", an0);
+        return 1;
+      }
+    }
     if (sp_streq(name, "values_at") && argc >= 1) {
       const char *an = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
       if (an) {
