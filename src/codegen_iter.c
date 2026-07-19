@@ -1058,10 +1058,49 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
   return 1;
 }
 
+/* Does this call target a user method that yields (so it has no standalone C
+   function -- it is only ever inlined at its call sites)? A compact echo of
+   emit_inline_call_x's own method resolution. (#2948) */
+static int call_targets_yielding_method(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  int mi = -1;
+  if (recv < 0) {
+    mi = comp_method_index(c, name);
+    if (mi < 0) {
+      Scope *encl = comp_scope_of(c, id);
+      if (encl && encl->class_id >= 0) {
+        mi = comp_method_in_chain(c, encl->class_id, name, NULL);
+        if (mi < 0 && encl->is_cmethod) mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
+      }
+    }
+  } else {
+    TyKind rt = comp_ntype(c, recv);
+    const char *rty = nt_type(nt, recv);
+    const char *cn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
+                     ? nt_str(nt, recv, "name") : NULL;
+    int ci = cn ? comp_class_index(c, cn) : -1;
+    if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
+    else if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+  }
+  return mi >= 0 && c->scopes[mi].yields;
+}
+
 int emit_inline_expr(Compiler *c, int id, Buf *b) {
   /* only when a value is actually produced (scalar return) */
   TyKind rt = comp_ntype(c, id);
-  if (!is_scalar_ret(rt)) return 0;
+  if (!is_scalar_ret(rt)) {
+    /* a block-driving call to a yielding method that can't be inlined here (a
+       non-scalar result) has no standalone function to fall back to: the plain
+       call would emit an undefined symbol (invalid C). Fail loud (#2948). */
+    if (nt_ref(c->nt, id, "block") >= 0 && call_targets_yielding_method(c, id))
+      unsupported_feature(c, id,
+        "a block-driving call to a method that yields could not be inlined "
+        "(a yielding method has no standalone function to call)");
+    return 0;
+  }
   return emit_inline_call_x(c, id, b, g_indent + 1, 1);
 }
 

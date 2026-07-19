@@ -5132,6 +5132,26 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     if (emit_output_call(c, id, b, indent)) return;
     if (emit_inline_call(c, id, b, indent)) return;
     if (emit_poly_recv_block_dispatch(c, id, b, indent)) return;
+    /* emit_inline_call is the inliner for a user method that yields; if it
+       declined this block-driving call, no plain-call fallback is valid (a
+       yielding method emits no standalone C function, so the emitted symbol
+       does not exist -> invalid C). Fail loud instead of the silent miscompile
+       (the #2895 diagnostic surviving through an unknown-typed root, #2948). */
+    {
+      const char *ycn = nt_str(nt, id, "name");
+      int yrecv = nt_ref(nt, id, "receiver");
+      if (ycn && yrecv >= 0 && nt_ref(nt, id, "block") >= 0) {
+        TyKind yrt = comp_ntype(c, yrecv);
+        if (ty_is_object(yrt)) {
+          int ycid = ty_object_class(yrt);
+          int ymi = ycid >= 0 ? comp_method_in_chain(c, ycid, ycn, NULL) : -1;
+          if (ymi >= 0 && c->scopes[ymi].yields)
+            unsupported_feature(c, id,
+              "a block-driving call to a method that yields could not be inlined "
+              "(a yielding method has no standalone function to call)");
+        }
+      }
+    }
     if (emit_iteration_stmt(c, id, b, indent)) return;
     /* attr writer: obj.x = v */
     {
