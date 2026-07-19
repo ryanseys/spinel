@@ -2915,7 +2915,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
 
   /* Accumulator type comes from the seed init when provided, else from the element type. */
   TyKind acc_ty = et;
-  int init_empty_arr = 0;
+  int init_empty_arr = 0, init_empty_hash = 0;
   if (init >= 0) {
     TyKind it = comp_ntype(c, init);
     /* an empty array-literal seed accumulates a poly array (mirrors the
@@ -2923,6 +2923,12 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     if (it == TY_UNKNOWN && nt_type(nt, init) && sp_streq(nt_type(nt, init), "ArrayNode")) {
       int sen = 0; nt_arr(nt, init, "elements", &sen);
       if (sen == 0) { it = TY_POLY_ARRAY; init_empty_arr = 1; }
+    }
+    /* an empty `{}` seed accumulates a general (boxed key/value) hash so any
+       key type the block writes fits -- matches each_with_object({}) (#2958) */
+    else if (it == TY_UNKNOWN && nt_type(nt, init) && sp_streq(nt_type(nt, init), "HashNode")) {
+      int sen = 0; nt_arr(nt, init, "elements", &sen);
+      if (sen == 0) { it = TY_POLY_POLY_HASH; init_empty_hash = 1; }
     }
     if (it != TY_UNKNOWN) acc_ty = it;
   }
@@ -2932,7 +2938,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      re-types the params and re-infers the body under the shadow below), and an
      array accumulator never numeric-promotes (the pre-shadow body may have
      typed `a << x` as an int shift). */
-  if (!ty_is_array(acc_ty)) { TyKind bt = comp_ntype(c, bb[bn - 1]); if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt); }
+  if (!ty_is_array(acc_ty) && !ty_is_hash(acc_ty)) { TyKind bt = comp_ntype(c, bb[bn - 1]); if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt); }
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -2942,6 +2948,12 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     /* the empty [] would emit as an IntArray without the poly context; the
        heap accumulator is rooted since block-body pushes may collect */
     buf_printf(b, "sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tacc);
+    start = 0;
+  }
+  else if (init_empty_hash) {
+    /* the empty {} would emit as its default variant; force the general
+       boxed-key/value hash so any key type fits, and root it (#2958) */
+    buf_printf(b, "sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d); ", tacc);
     start = 0;
   }
   else if (init >= 0) { emit_expr(c, init, b); buf_puts(b, "; "); start = 0; }

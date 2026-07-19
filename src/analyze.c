@@ -3772,6 +3772,25 @@ int desugar_enum_method_recv(Compiler *c) {
       }
       /* no rewrite of this node: fall through to the remaining arms */
     }
+    if (nm && sp_streq(nm, "each_with_object")) {
+      /* an empty-hash local passed as the memo becomes a general boxed
+         key/value hash so any key type the block writes fits, matching the
+         inline each_with_object({}) memo (#2969) */
+      int ea = nt_ref(nt, id, "arguments");
+      int eac = 0; const int *eav = ea >= 0 ? nt_arr(nt, ea, "arguments", &eac) : NULL;
+      if (eac >= 1 && eav && nt_type(nt, eav[0]) &&
+          sp_streq(nt_type(nt, eav[0]), "LocalVariableReadNode") &&
+          infer_type(c, eav[0]) == TY_UNKNOWN) {
+        Scope *esc = comp_scope_of(c, eav[0]);
+        const char *evn = nt_str(nt, eav[0], "name");
+        LocalVar *elv = (esc && evn) ? scope_local(esc, evn) : NULL;
+        if (elv && elv->type == TY_UNKNOWN && local_all_writes_empty_hash(c, esc, evn)) {
+          elv->type = TY_POLY_POLY_HASH;
+          changed = 1;
+        }
+      }
+      /* fall through */
+    }
     if (nm && sp_streq(nm, "yield")) {
       /* Proc#yield is exactly #call */
       int yrc = nt_ref(nt, id, "receiver");

@@ -3223,6 +3223,13 @@ else {
         int args = nt_ref(nt, id, "arguments");
         int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
         TyKind acc = (argc > 0 && argv) ? infer_type(c, argv[0]) : elem;
+        /* an empty `{}` seed is a general boxed-key/value hash builder, like
+           each_with_object({}) -- not the element type (#2958) */
+        if (acc == TY_UNKNOWN && argc > 0 && argv && nt_type(nt, argv[0]) &&
+            sp_streq(nt_type(nt, argv[0]), "HashNode")) {
+          int hn = 0; nt_arr(nt, argv[0], "elements", &hn);
+          if (hn == 0) acc = TY_POLY_POLY_HASH;
+        }
         if (acc == TY_UNKNOWN) acc = elem;
         int blk = nt_ref(nt, id, "block");
         if (blk >= 0) {
@@ -3475,6 +3482,12 @@ else {
             int sen = 0; nt_arr(nt, argv[0], "elements", &sen);
             if (sen == 0) it = TY_POLY_ARRAY;
           }
+          /* An empty `{}` seed accumulates a general boxed-key/value hash, like
+             each_with_object({}); the block decides the key/value mix (#2958). */
+          else if (it == TY_UNKNOWN && a0ty && sp_streq(a0ty, "HashNode")) {
+            int sen = 0; nt_arr(nt, argv[0], "elements", &sen);
+            if (sen == 0) it = TY_POLY_POLY_HASH;
+          }
           if (it != TY_UNKNOWN) {
             /* The accumulator is reassigned to the block body each iteration,
                so an int seed folded over floats accumulates float. An array
@@ -3483,7 +3496,7 @@ else {
             int rblk = nt_ref(nt, id, "block");
             int rbody = rblk >= 0 ? nt_ref(nt, rblk, "body") : -1;
             int rbn = 0; const int *rbb = rbody >= 0 ? nt_arr(nt, rbody, "body", &rbn) : NULL;
-            if (rbn > 0 && !ty_is_array(it)) { TyKind bt = infer_type(c, rbb[rbn - 1]); if (ty_is_numeric(bt)) it = ty_promote_numeric(it, bt); }
+            if (rbn > 0 && !ty_is_array(it) && !ty_is_hash(it)) { TyKind bt = infer_type(c, rbb[rbn - 1]); if (ty_is_numeric(bt)) it = ty_promote_numeric(it, bt); }
             return it;
           }
         }
