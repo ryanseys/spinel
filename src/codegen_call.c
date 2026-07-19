@@ -3991,6 +3991,31 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
         int kwh = (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
+        /* a keyword whose name is not a member is an ArgumentError for both Data
+           and keyword_init Structs (#3079); a plain Struct treats a trailing
+           keyword hash as a positional value, so it is exempt. */
+        if (kwh >= 0 && (cls->is_data || cls->kw_init)) {
+          int nke = 0; const int *elke = nt_arr(nt, kwh, "elements", &nke);
+          for (int e = 0; e < nke; e++) {
+            if (!(nt_type(nt, elke[e]) && sp_streq(nt_type(nt, elke[e]), "AssocNode"))) continue;
+            int key = nt_ref(nt, elke[e], "key");
+            const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
+            const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+            if (!kn) continue;
+            char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
+            if (comp_ivar_index(cls, ivn) < 0) {
+              buf_puts(b, "({ ");
+              for (int e2 = 0; e2 < nke; e2++) {
+                if (!(nt_type(nt, elke[e2]) && sp_streq(nt_type(nt, elke[e2]), "AssocNode"))) continue;
+                int vv = nt_ref(nt, elke[e2], "value");
+                if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
+              }
+              buf_printf(b, "sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"unknown keyword: :%s\")[1])); (sp_%s *)0; })",
+                         kn, cls->c_name);
+              return 1;
+            }
+          }
+        }
         /* `X.new(*arr)`: a sole positional splat spreads the array across the
            members at run time -- static arity can't see the count, so it would
            otherwise raise ArgumentError. Data requires an exact count; Struct
