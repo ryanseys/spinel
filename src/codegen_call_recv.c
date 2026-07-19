@@ -6518,6 +6518,15 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         const char *lty = nt_type(nt, wargv[wargc - 1]);
         if (lty && sp_streq(lty, "KeywordHashNode")) wkwh = wargv[wargc - 1];
       }
+      /* a `**hash` double-splat in the keyword hash carries member overrides
+         only known at run time; look each member up in it (#2972) */
+      int wds = -1;
+      if (wkwh >= 0) {
+        int en = 0; const int *els = nt_arr(nt, wkwh, "elements", &en);
+        for (int e = 0; e < en; e++)
+          if (nt_type(nt, els[e]) && sp_streq(nt_type(nt, els[e]), "AssocSplatNode"))
+            wds = nt_ref(nt, els[e], "value");
+      }
       /* Data#with takes keyword arguments only; a positional argument (the only
          arg, or one alongside the keyword hash) is an ArgumentError in CRuby. */
       if (wargc > 0 && (wkwh < 0 || wargc > 1)) {
@@ -6527,6 +6536,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       if (wkwh >= 0) {
         int en = 0; const int *els = nt_arr(nt, wkwh, "elements", &en);
         for (int e = 0; e < en; e++) {
+          if (nt_type(nt, els[e]) && sp_streq(nt_type(nt, els[e]), "AssocSplatNode")) continue;
           int key = nt_ref(nt, els[e], "key");
           const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
           const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
@@ -6543,8 +6553,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         }
       }
       int t = ++g_tmp;
+      int th = wds >= 0 ? ++g_tmp : -1;
       Buf rb = expr_buf(c, recv);
-      buf_printf(b, "({ sp_%s *_t%d = %s; sp_%s_new(", sc->c_name, t, rb.p ? rb.p : "", sc->c_name); free(rb.p);
+      buf_printf(b, "({ sp_%s *_t%d = %s;", sc->c_name, t, rb.p ? rb.p : ""); free(rb.p);
+      if (th >= 0) { buf_printf(b, " sp_RbVal _t%d = ", th); emit_boxed(c, wds, b); buf_puts(b, ";"); }
+      buf_printf(b, " sp_%s_new(", sc->c_name);
       for (int i = 0; i < sc->nivars; i++) {
         if (i) buf_puts(b, ", ");
         int val = wkwh >= 0 ? kwh_lookup(nt, wkwh, sc->ivars[i] + 1) : -1;
@@ -6573,6 +6586,14 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           } else {
             emit_expr(c, val, b);
           }
+        } else if (th >= 0) {
+          /* member not given literally: take it from the **hash if present,
+             else copy from the receiver (#2972) */
+          buf_printf(b, "({ mrb_bool _f = 0; sp_RbVal _v = sp_poly_hash_get_pair_val(_t%d, "
+                        "sp_box_sym(sp_sym_intern(\"%s\")), &_f); _f ? (", th, sc->ivars[i] + 1);
+          if (sc->ivar_types[i] == TY_POLY) buf_puts(b, "_v");
+          else emit_unbox_text(c, sc->ivar_types[i], "_v", b);
+          buf_printf(b, ") : _t%d->iv_%s; })", t, sc->ivars[i] + 1);
         } else {
           buf_printf(b, "_t%d->iv_%s", t, sc->ivars[i] + 1);
         }
