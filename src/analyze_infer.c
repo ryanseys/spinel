@@ -2032,7 +2032,7 @@ else {
           sp_streq(name, "uid") || sp_streq(name, "gid") ||
           sp_streq(name, "euid") || sp_streq(name, "egid") ||
           sp_streq(name, "getsid") || sp_streq(name, "getpgrp")) return TY_INT;
-      if (sp_streq(name, "clock_gettime")) {
+      if (sp_streq(name, "clock_gettime") || sp_streq(name, "clock_getres")) {
         /* an integer unit (:nanosecond/:microsecond/:millisecond/:second) makes
            the result an Integer; the default and float units keep it Float. */
         if (argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode")) {

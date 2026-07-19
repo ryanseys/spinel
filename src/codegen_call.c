@@ -11920,6 +11920,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else buf_puts(b, " / 1e9)");  /* float_second (default) */
       return;
     }
+    if (sp_streq(name, "clock_getres") && argc >= 1) {  /* (#3045) */
+      const char *unit = NULL;
+      if (argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode"))
+        unit = nt_str(nt, argv[1], "value");
+      if (unit && !sp_streq(unit, "nanosecond") && !sp_streq(unit, "microsecond") &&
+          !sp_streq(unit, "millisecond") && !sp_streq(unit, "second") &&
+          !sp_streq(unit, "float_microsecond") && !sp_streq(unit, "float_millisecond") &&
+          !sp_streq(unit, "float_second")) {
+        buf_printf(b, "({ sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"unexpected unit: %s\")[1])); 0.0; })", unit);
+        return;
+      }
+      buf_puts(b, "(sp_process_clock_res_ns("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      if (unit && sp_streq(unit, "nanosecond")) buf_puts(b, ")");
+      else if (unit && sp_streq(unit, "microsecond")) buf_puts(b, " / 1000)");
+      else if (unit && sp_streq(unit, "millisecond")) buf_puts(b, " / 1000000)");
+      else if (unit && sp_streq(unit, "second")) buf_puts(b, " / 1000000000)");
+      else if (unit && sp_streq(unit, "float_microsecond")) buf_puts(b, " / 1e3)");
+      else if (unit && sp_streq(unit, "float_millisecond")) buf_puts(b, " / 1e6)");
+      else buf_puts(b, " / 1e9)");  /* float_second (default) */
+      return;
+    }
   }
 
   /* Integer.sqrt(n) -> integer square root (exact, Newton's method) */

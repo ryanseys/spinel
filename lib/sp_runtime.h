@@ -502,6 +502,13 @@ static inline int64_t sp_process_clock_ns(mrb_int clock_id) {
   return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
+/* Clock resolution in nanoseconds, for Process.clock_getres (#3045). */
+static inline int64_t sp_process_clock_res_ns(mrb_int clock_id) {
+  struct timespec ts;
+  if (clock_getres((clockid_t)clock_id, &ts) != 0) ts.tv_sec = ts.tv_nsec = 0;
+  return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
 /* ---- Encoding runtime ----
    Spinel currently assumes UTF-8 source and string data. Keep Encoding
    as a tiny value type so `__ENCODING__` and `String#encoding` can
