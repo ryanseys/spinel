@@ -4639,6 +4639,32 @@ static sp_SymPolyHash *sp_md_named_captures_sym(sp_MatchData *m) {
   }
   return h;
 }
+/* MatchData#deconstruct_keys(keys): nil returns all named captures; an array
+   returns just the requested keys (in order, missing ones skipped), but the
+   empty hash right away when more keys are asked for than exist (#3015). */
+static sp_SymPolyHash *sp_md_deconstruct_keys(sp_MatchData *m, sp_RbVal keys) {
+  if (keys.tag == SP_TAG_NIL) return sp_md_named_captures_sym(m);
+  sp_SymPolyHash *h = sp_SymPolyHash_new();
+  if (!m) return h;
+  SP_GC_ROOT(h);
+  int nnamed = re_num_named(m->pat);
+  mrb_int klen = sp_poly_length(keys);
+  if (klen > nnamed) return h;
+  for (mrb_int i = 0; i < klen; i++) {
+    sp_RbVal k = sp_poly_arr_get(keys, i);
+    if (k.tag != SP_TAG_SYM) continue;
+    const char *kn = sp_sym_to_s((sp_sym)k.v.i);
+    for (int j = 0; j < nnamed; j++) {
+      int g = -1;
+      const char *nm = re_named_name(m->pat, j, &g);
+      if (nm && strcmp(nm, kn) == 0) {
+        sp_SymPolyHash_set(h, (sp_sym)k.v.i, sp_box_nullable_str(sp_MatchData_aref(m, g)));
+        break;
+      }
+    }
+  }
+  return h;
+}
 /* A `**hash` forwarded into a method with fixed keyword params (and no
    keyword-rest to absorb extras) must carry only declared keys; CRuby raises
    ArgumentError otherwise. `allowed` is a NULL-terminated array of the callee's

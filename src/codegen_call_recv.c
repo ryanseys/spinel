@@ -7247,7 +7247,9 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     /* #deconstruct is the captures array; #deconstruct_keys the named captures
        as a symbol-keyed hash (#2503) */
     else if (sp_streq(name, "deconstruct") && argc == 0) buf_printf(b, "sp_MatchData_captures(%s)", r);
-    else if (sp_streq(name, "deconstruct_keys") && argc == 1) buf_printf(b, "sp_md_named_captures_sym(%s)", r);
+    else if (sp_streq(name, "deconstruct_keys") && argc == 1) {
+      buf_printf(b, "sp_md_deconstruct_keys(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ")");  /* filters by keys (#3015) */
+    }
     else if (sp_streq(name, "regexp") && argc == 0) buf_printf(b, "((mrb_regexp_pattern *)(%s)->pat)", r);   /* #2499 */
     else if (sp_streq(name, "names") && argc == 0) buf_printf(b, "sp_MatchData_names(%s)", r);
     else if (sp_streq(name, "string") && argc == 0) buf_printf(b, "sp_MatchData_string(%s)", r);
