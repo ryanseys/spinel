@@ -16597,6 +16597,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      dead, and CRuby never reaches its NoMethodError, so a runtime-nil stub
      matches observable behaviour (#1434). A concrete user-object receiver still
      errors -- that is a genuine missing method worth catching at compile time. */
+  /* A bare unresolved identifier (Prism variable-call: no receiver, no args, no
+     parens) is CRuby's *runtime* NameError, so a surrounding rescue must be
+     able to catch it -- aborting the build here makes that unwritable (#3037).
+     The same gate switch that governs unresolved calls covers this. */
+  if (recv < 0 && nt_int(nt, id, "vcall", 0) && nt_ref(nt, id, "block") < 0 &&
+      g_gate_raise) {
+    int vac = 0; call_args(nt, id, &vac);
+    if (vac == 0) {
+      const char *vnm = nt_str(nt, id, "name");
+      TyKind vret = comp_ntype(c, id);
+      const char *vcn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
+      buf_printf(b, "(sp_raise_cls(\"NameError\", \"undefined local variable or method '%s' for %s%s\"), %s)",
+                 vnm ? vnm : "?", vcn ? "an instance of " : "main", vcn ? vcn : "",
+                 (is_scalar_ret(vret) && vret != TY_UNKNOWN) ? default_value(vret) : "sp_box_nil()");
+      return;
+    }
+  }
   if (recv >= 0) {
     TyKind grt = comp_ntype(c, recv);
     /* compare_by_identity? on a poly-carried value resolves here, not at the
