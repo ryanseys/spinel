@@ -2211,6 +2211,20 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, ")); _t%d; })", tp);
         return 1;
       }
+      /* coerce/fdiv against a non-numeric arg raises TypeError, not
+         NoMethodError (the numeric cases returned above) (#2964) */
+      if (sp_streq(name, "fdiv") && argc == 1) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+        emit_expr(c, argv[0], b);
+        buf_puts(b, "), (sp_raise_cls(\"TypeError\", \"can't be coerced into Complex\"), (sp_Complex){0,0,0}))");
+        return 1;
+      }
+      if (sp_streq(name, "coerce") && argc == 1) {
+        buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)(");
+        emit_expr(c, argv[0], b);
+        buf_puts(b, "); sp_raise_cls(\"TypeError\", \"can't be coerced into Complex\"); sp_PolyArray_new(); })");
+        return 1;
+      }
       if (cx_ok && argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
         buf_printf(b, "(%ssp_complex_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_complex_coerce(c, argv[0], b); buf_puts(b, "))");
         return 1;

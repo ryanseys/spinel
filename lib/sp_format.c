@@ -170,6 +170,8 @@ sp_Complex sp_complex_pow_c(sp_Complex z, sp_Complex w) {
   return r;
 }
 sp_Complex sp_complex_pow(sp_Complex a, mrb_int e) {
+  if (e < 0 && a.re == 0.0 && a.im == 0.0)
+    sp_raise_cls("ZeroDivisionError", "divided by 0");   /* (#2965) */
   sp_Complex r; r.re = 1; r.im = 0; r.fl = 0;
   mrb_int k = e < 0 ? -e : e;
   for (mrb_int i = 0; i < k; i++) r = sp_complex_mul(r, a);
