@@ -1059,10 +1059,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, " + sp_PolyArray_sum_float("); emit_expr(c, recv, b); buf_puts(b, "))");
         return 1;
       }
-      buf_puts(b, "sp_box_int(");
-      if (init_t == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else { emit_expr(c, argv[0], b); }
-      buf_puts(b, " + sp_PolyArray_sum_int("); emit_expr(c, recv, b); buf_puts(b, "))");
+      /* an Integer (or poly) seed folds via sp_poly_add so Float/Rational/
+         Bignum elements promote the result instead of being dropped by the
+         int-only sum (matches the no-arg poly fold above) (#2959) */
+      buf_puts(b, "sp_poly_add(");
+      if (init_t == TY_POLY) emit_expr(c, argv[0], b);
+      else emit_boxed(c, argv[0], b);
+      buf_puts(b, ", sp_PolyArray_sum_poly("); emit_expr(c, recv, b); buf_puts(b, "))");
       return 1;
     }
     if (rt == TY_POLY_ARRAY && sp_streq(name, "cycle") && argc == 1 && nt_ref(nt, id, "block") < 0) {
@@ -2921,15 +2924,17 @@ else {
       if ((sp_streq(name, "all?") || sp_streq(name, "any?") || sp_streq(name, "none?") ||
            sp_streq(name, "one?") || sp_streq(name, "count")) &&
           argc == 1 && nt_ref(nt, id, "block") < 0) {
-        /* poly_array.all?(v)/one?(v)/any?(v)/none?(v)/count(v) -- also serves a
-           nil pattern (`[nil, nil].all?(nil)`, sp_poly_eq handles NIL) (#2366) */
+        /* poly_array.all?(pat)/one?/any?/none?/count(pat) -- Enumerable's
+           pattern form is `pat === element` (Range cover, Regexp match, Class
+           is_a, else ==); sp_poly_case_eq folds all of these and NIL (#2366,
+           #2960) */
         int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
         Buf ra = expr_buf(c, recv);
         buf_printf(b, "({ sp_PolyArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
         buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b); buf_puts(b, ";");
         buf_printf(b, " mrb_int _t%d = 0;", tc);
         buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)", ti, ti, ta, ti);
-        buf_printf(b, " if (sp_poly_eq(sp_PolyArray_get(_t%d, _t%d), _t%d)) _t%d++;", ta, ti, tv, tc);
+        buf_printf(b, " if (sp_poly_case_eq(_t%d, sp_PolyArray_get(_t%d, _t%d))) _t%d++;", tv, ta, ti, tc);
         if (sp_streq(name, "all?"))        buf_printf(b, " _t%d == sp_PolyArray_length(_t%d); })", tc, ta);
         else if (sp_streq(name, "any?"))   buf_printf(b, " _t%d > 0; })", tc);
         else if (sp_streq(name, "none?"))  buf_printf(b, " _t%d == 0; })", tc);
