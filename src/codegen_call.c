@@ -4335,12 +4335,24 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         /* NameError.new(msg, name) / NoMethodError.new(msg, name): carry the
            missing name for the #name accessor (rooted across the alloc). */
         if (argc >= 2 && (sp_streq(cn, "NameError") || sp_streq(cn, "NoMethodError"))) {
-          int tn2 = ++g_tmp, te2 = ++g_tmp;
+          /* NoMethodError.new(msg, name, args): the third argument is the
+             failed call's argument list, read back by #args (#3042). */
+          int tn2 = ++g_tmp, te2 = ++g_tmp, ta2 = -1;
+          int has_args = argc >= 3 && sp_streq(cn, "NoMethodError");
           buf_printf(b, "({ sp_RbVal _t%d = ", tn2);
           emit_boxed(c, argv[1], b);
-          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Exception *_t%d = sp_exc_new(\"%s\", ", tn2, te2, cn);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tn2);
+          if (has_args) {
+            ta2 = ++g_tmp;
+            buf_printf(b, " sp_RbVal _t%d = ", ta2);
+            emit_boxed(c, argv[2], b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ta2);
+          }
+          buf_printf(b, " sp_Exception *_t%d = sp_exc_new(\"%s\", ", te2, cn);
           emit_expr(c, argv[0], b);
-          buf_printf(b, "); _t%d->xname = _t%d; _t%d; })", te2, tn2, te2);
+          buf_printf(b, "); _t%d->xname = _t%d;", te2, tn2);
+          if (has_args) buf_printf(b, " _t%d->xkey = _t%d;", te2, ta2);
+          buf_printf(b, " _t%d; })", te2);
           return 1;
         }
         /* builtin exception class .new(msg): any object can be the message,
