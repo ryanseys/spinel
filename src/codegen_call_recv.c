@@ -6987,6 +6987,17 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "localtime") && argc == 0 && r_lval)
       buf_printf(b, "(%s = sp_time_localtime(%s))", r, r);
     else if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc")) buf_printf(b, "sp_time_utc(%s)", r);
+    /* getlocal(off)/localtime(off): a fixed UTC offset, given as seconds or a
+       "+HH:MM" string, reinterprets the instant in that zone (#3093) */
+    else if ((sp_streq(name, "localtime") || sp_streq(name, "getlocal")) && argc == 1) {
+      int mutate = sp_streq(name, "localtime") && r_lval;
+      if (mutate) buf_printf(b, "(%s = ", r);
+      buf_printf(b, "sp_time_getlocal_off(%s, ", r);
+      if (comp_ntype(c, argv[0]) == TY_STRING) { buf_puts(b, "sp_time_offset_from_str("); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_int_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      if (mutate) buf_puts(b, ")");
+    }
     else if (sp_streq(name, "localtime") || sp_streq(name, "getlocal")) buf_printf(b, "sp_time_localtime(%s)", r);
     else if (sp_streq(name, "year"))  buf_printf(b, "sp_time_year(%s)", r);
     else if (sp_streq(name, "mon") || sp_streq(name, "month")) buf_printf(b, "sp_time_mon(%s)", r);

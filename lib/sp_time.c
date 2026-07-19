@@ -208,6 +208,33 @@ sp_Time sp_time_localtime(sp_Time t) {
   t.is_utc = 0;
   return t;
 }
+/* Parse a "+HH:MM"/"-HH:MM"/"+HHMM"/"UTC" utc_offset string to seconds (#3093). */
+int32_t sp_time_offset_from_str(const char *s) {
+  const char *sp_sprintf(const char *fmt, ...);  /* generated TU */
+  if (!s || strcmp(s, "UTC") == 0 || strcmp(s, "Z") == 0) return 0;
+  char sign = s[0];
+  if (sign != '+' && sign != '-')
+    sp_raise_cls("ArgumentError", sp_sprintf("\"+HH:MM\" or \"-HH:MM\" expected for utc_offset: %s", s));
+  const char *p = s + 1;
+  int oh = 0, om = 0, os = 0;
+  if (strchr(p, ':')) sscanf(p, "%d:%d:%d", &oh, &om, &os);
+  else {
+    size_t len = strlen(p);
+    if (len >= 2) oh = (p[0] - '0') * 10 + (p[1] - '0');
+    if (len >= 4) om = (p[2] - '0') * 10 + (p[3] - '0');
+  }
+  int32_t off = oh * 3600 + om * 60 + os;
+  return sign == '-' ? -off : off;
+}
+/* Time#getlocal(off)/#localtime(off): reinterpret the instant in a fixed zone
+   `off` seconds east of UTC, without changing the underlying epoch (#3093). */
+sp_Time sp_time_getlocal_off(sp_Time t, int64_t off) {
+  if (off < -86400 || off > 86400)
+    sp_raise_cls("ArgumentError", "utc_offset out of range");
+  t.is_utc = 2;
+  t.utc_off = (int32_t)off;
+  return t;
+}
 
 /* is_utc selects gmtime vs localtime, off is UTC offset in seconds,
    zbuf is the timezone abbreviation (8 bytes). mktime(gmtime(s))-s
