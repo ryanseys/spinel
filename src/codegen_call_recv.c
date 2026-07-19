@@ -483,16 +483,17 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     if (sb_asgn && argc == 2) {
+      /* character-indexed splice, not byte-indexed, for a multibyte receiver (#3084) */
       int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp;
       buf_printf(b, "({ mrb_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
       buf_printf(b, "; mrb_int _t%d = ", tl2); emit_int_expr(c, argv[1], b);
-      buf_printf(b, "; mrb_int _t%d = (mrb_int)strlen(", tn2);
+      buf_printf(b, "; mrb_int _t%d = (mrb_int)sp_str_length(", tn2);
       emit_expr(c, recv, b);
       buf_printf(b, "); const char *_t%d = NULL;"
                     " if (_t%d < 0) _t%d += _t%d;"
                     " if (_t%d >= 0 && _t%d <= _t%d && _t%d > 0) {"
                     " if (_t%d > _t%d - _t%d) _t%d = _t%d - _t%d;"
-                    " _t%d = sp_str_substr(",
+                    " _t%d = sp_str_sub_range(",
                  tr2,
                  ti2, ti2, tn2,
                  ti2, ti2, tn2, tl2,
@@ -501,9 +502,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, recv, b);
       buf_printf(b, ", _t%d, _t%d); ", ti2, tl2);
       emit_expr(c, recv, b);
-      buf_puts(b, " = sp_str_concat(sp_str_substr(");
+      buf_puts(b, " = sp_str_concat(sp_str_sub_range(");
       emit_expr(c, recv, b);
-      buf_printf(b, ", 0, _t%d), sp_str_substr(", ti2);
+      buf_printf(b, ", 0, _t%d), sp_str_sub_range(", ti2);
       emit_expr(c, recv, b);
       buf_printf(b, ", _t%d + _t%d, _t%d - _t%d - _t%d)); } _t%d; })",
                  ti2, tl2, tn2, ti2, tl2, tr2);
