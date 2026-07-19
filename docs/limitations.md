@@ -105,6 +105,12 @@ Limited today, but additively fixable; listed roughly easiest-first.
   is rejected at compile time rather than raising at run time as CRuby does.
   A `<=>` whose result is only `poly`/unknown statically keeps the CRuby
   runtime behavior (an incomparable pair raises `ArgumentError`).
+- **`remove_method` / `undef_method` / `remove_class_variable`** — rejected at
+  compile time. Methods are resolved statically and compiled to direct C calls,
+  and class variables to static storage, so there is no runtime table for these
+  to mutate; a construct would remove nothing. The call is reported rather than
+  silently ignored. (A class that defines its own method by one of these names
+  keeps it.)
 - **Frozen literals** — explicit `.freeze` then mutation raises `FrozenError`,
   matching CRuby. (String literals are *not* implicitly frozen — see below.)
 - **Comparable is keyed on `<=>` presence** — the Comparable operator methods

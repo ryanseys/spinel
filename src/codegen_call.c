@@ -805,6 +805,18 @@ int diagnose_unsupported_call(Compiler *c, int id) {
       "to a per-object method table, which direct C calls have no room for -- the same "
       "limit as define_singleton_method. Define methods in the class body instead "
       "(see docs/limitations.md)" },
+    { "remove_method",
+      "Module#remove_method is not supported by AOT compilation: methods are resolved "
+      "statically and compiled to direct C calls, so there is no runtime method table to "
+      "remove an entry from (see docs/limitations.md)" },
+    { "undef_method",
+      "Module#undef_method is not supported by AOT compilation: methods are resolved "
+      "statically and compiled to direct C calls, so there is no runtime method table to "
+      "undefine an entry in (see docs/limitations.md)" },
+    { "remove_class_variable",
+      "Module#remove_class_variable is not supported by AOT compilation: class variables "
+      "are compiled to static storage, so a variable cannot be removed at run time "
+      "(see docs/limitations.md)" },
     { "set_trace_func",
       "set_trace_func is not supported by AOT compilation: it requires an interpreter "
       "loop to hook, and compiled code has no such loop (see docs/limitations.md)" },

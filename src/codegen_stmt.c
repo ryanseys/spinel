@@ -5049,6 +5049,15 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   }
 
   if (sp_streq(ty, "CallNode")) {
+    /* Reflection-mutation calls (remove_method/undef_method/remove_class_variable)
+       in a class body are otherwise dropped silently; report the documented
+       limit instead of pretending they took effect (#2954, #2955). */
+    {
+      const char *rnm = nt_str(nt, id, "name");
+      if (rnm && (sp_streq(rnm, "remove_method") || sp_streq(rnm, "undef_method") ||
+                  sp_streq(rnm, "remove_class_variable")) &&
+          diagnose_unsupported_call(c, id)) return;
+    }
     /* declarative-only calls emitted as no-ops */
     {
       const char *nm = nt_str(nt, id, "name");
@@ -7258,6 +7267,12 @@ else {
          that resolve to a user-defined method. */
       if (sp_streq(sty, "CallNode") && nt_ref(nt, stmts[k], "receiver") < 0) {
         const char *cn = nt_str(nt, stmts[k], "name");
+        /* reflection-mutation macros can't take effect (methods/class vars are
+           static): report the documented limit rather than skip silently
+           (#2954, #2955). diagnose no-ops when the class defines its own. */
+        if (cn && (sp_streq(cn, "remove_method") || sp_streq(cn, "undef_method") ||
+                   sp_streq(cn, "remove_class_variable")) &&
+            diagnose_unsupported_call(c, stmts[k])) return;
         int is_output = cn && (sp_streq(cn, "puts") || sp_streq(cn, "print") || sp_streq(cn, "p"));
         int is_user = cn && comp_method_index(c, cn) >= 0;
         if (!is_output && !is_user) continue;
