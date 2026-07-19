@@ -2712,7 +2712,11 @@ else {
         buf_printf(b, "sp_%sArray_union(", k); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
         return 1;
       }
-      if (sp_streq(name, "sample") && argc == 0) {
+      if (sp_streq(name, "sample") &&
+          (argc == 0 || (argc == 1 && nt_type(nt, argv[0]) &&
+                         sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")))) {
+        /* sample or sample(random: rng): one element (the RNG kwarg uses the
+           global generator here) (#2970) */
         buf_printf(b, "sp_%sArray_sample(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
@@ -2852,7 +2856,10 @@ else {
         buf_puts(b, "sp_PolyArray_union("); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
         return 1;
       }
-      if (sp_streq(name, "sample") && argc == 0) {
+      if (sp_streq(name, "sample") &&
+          (argc == 0 || (argc == 1 && nt_type(nt, argv[0]) &&
+                         sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")))) {
+        /* sample or sample(random: rng): one element (#2970) */
         buf_puts(b, "sp_PolyArray_sample("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }

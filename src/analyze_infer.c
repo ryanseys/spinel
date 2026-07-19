@@ -3543,8 +3543,12 @@ else {
        subarray; sample(n) likewise. With a comparator block the n-arg form is
        not lowered, so don't type it as an array (that would mis-drive codegen
        into returning a scalar through an array type) -- leave it to reject. */
+    /* sample(random: rng) is the single-element form, not a count -- a sole
+       keyword-hash arg selects one element (falls to the element arm) (#2970) */
+    int sample_kw = sp_streq(name, "sample") && argc == 1 && argv &&
+                    nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode");
     if (((sp_streq(name, "min") || sp_streq(name, "max")) && block < 0 && argc == 1) ||
-        (sp_streq(name, "sample") && argc == 1))
+        (sp_streq(name, "sample") && argc == 1 && !sample_kw))
       return rt;  /* n-arg form -> subarray */
     if (sp_streq(name, "slice") && argc == 2) return rt;
     if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 1)
