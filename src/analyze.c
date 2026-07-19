@@ -5345,10 +5345,13 @@ static void mark_empty_hash_key_ctx(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || recv >= c->node_cap) continue;
     NodeKind rk = nt_kind(nt, recv);
-    if (rk != NK_HashNode && rk != NK_KeywordHashNode) continue;
-    int en = 0; nt_arr(nt, recv, "elements", &en);
-    if (en != 0) continue;
-    if (ty_is_hash(c->empty_hash_want[recv])) continue;   /* an earlier context won */
+    int direct = (rk == NK_HashNode || rk == NK_KeywordHashNode);
+    if (direct) {
+      int en = 0; nt_arr(nt, recv, "elements", &en);
+      if (en != 0) continue;
+      if (ty_is_hash(c->empty_hash_want[recv])) continue;   /* an earlier context won */
+    }
+    else if (rk != NK_LocalVariableReadNode) continue;
     int anode = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
     if (an < 1) continue;
@@ -5357,7 +5360,22 @@ static void mark_empty_hash_key_ctx(Compiler *c) {
     if (kt == TY_SYMBOL) want = TY_SYM_POLY_HASH;
     else if (kt == TY_STRING) want = TY_STR_POLY_HASH;
     else if (kt == TY_INT) want = TY_POLY_POLY_HASH;  /* no Int->poly variant */
-    if (ty_is_hash(want)) c->empty_hash_want[recv] = want;
+    if (!ty_is_hash(want)) continue;
+    if (direct) { c->empty_hash_want[recv] = want; continue; }
+    /* `h = {}; h.fetch(k)`: carry the key context back to the write's literal,
+       so the local takes that variant instead of the StrPolyHash default */
+    const char *ln = nt_str(nt, recv, "name");
+    Scope *sc = comp_scope_of(c, recv);
+    if (!ln || !sc || !local_all_writes_empty_hash(c, sc, ln)) continue;
+    for (int w = 0; w < nt->count; w++) {
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != sc) continue;
+      int wv = nt_ref(nt, w, "value");
+      if (wv >= 0 && wv < c->node_cap && nt_kind(nt, wv) == NK_HashNode &&
+          !ty_is_hash(c->empty_hash_want[wv]))
+        c->empty_hash_want[wv] = want;
+    }
   }
 }
 static void mark_empty_hash_receivers(Compiler *c) {
@@ -6174,7 +6192,12 @@ void analyze_program(Compiler *c) {
     Scope *s = comp_scope_of(c, id);
     LocalVar *lv = nm ? scope_local(s, nm) : NULL;
     if (lv && !lv->rbs_seeded && lv->type == TY_UNKNOWN &&
-        local_all_writes_empty_hash(c, s, nm)) lv->type = TY_STR_POLY_HASH;
+        local_all_writes_empty_hash(c, s, nm)) {
+      /* a use context on this write's literal (an indexing key, a compared
+         peer) picks the variant; otherwise keep the StrPolyHash default */
+      TyKind want = (c->empty_hash_want && v < c->node_cap) ? c->empty_hash_want[v] : TY_UNKNOWN;
+      lv->type = ty_is_hash(want) ? want : TY_STR_POLY_HASH;
+    }
   }
   /* Re-narrow a POLY_ARRAY ivar to IntArray when every element source is now
      (post-fixpoint) int. The monotonic usage pass locks the slot to POLY_ARRAY
