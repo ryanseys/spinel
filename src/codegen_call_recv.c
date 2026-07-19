@@ -5093,12 +5093,25 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_match_str : NULL)", re_lit_index(c, argv[0]), r);
       }
       else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 && re_lit_index(c, argv[0]) >= 0 &&
-               nt_type(c->nt, argv[1]) && sp_streq(nt_type(c->nt, argv[1]), "SymbolNode")) {
-        /* s[/(?<g>...)/, :g] -> the named group, or nil */
+               nt_type(c->nt, argv[1]) &&
+               (sp_streq(nt_type(c->nt, argv[1]), "SymbolNode") ||
+                sp_streq(nt_type(c->nt, argv[1]), "StringNode") ||
+                comp_ntype(c, argv[1]) == TY_STRING)) {
+        /* s[/(?<g>...)/, :g] or s[/(?<g>...)/, "g"] -> the named group, or nil (#3082) */
         int pi = re_lit_index(c, argv[0]);
-        const char *gname = nt_str(c->nt, argv[1], "value");
-        buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_named_capture(sp_re_pat_%d, \"%s\") : NULL)",
-                   pi, r, pi, gname ? gname : "");
+        const char *nty = nt_type(c->nt, argv[1]);
+        if (sp_streq(nty, "SymbolNode")) {
+          const char *gname = nt_str(c->nt, argv[1], "value");
+          buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_named_capture(sp_re_pat_%d, \"%s\") : NULL)",
+                     pi, r, pi, gname ? gname : "");
+        }
+        else {
+          /* a String name (literal or dynamic): evaluate it and look it up */
+          int tnm = ++g_tmp;
+          buf_printf(b, "({ const char *_t%d = ", tnm); emit_str_expr(c, argv[1], b);
+          buf_printf(b, "; sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_named_capture(sp_re_pat_%d, _t%d) : NULL; })",
+                     pi, r, pi, tnm);
+        }
       }
       else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
         /* s[/re/, n] -> capture group n (0 = whole match), or nil */
