@@ -7535,6 +7535,21 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
           }
         }
       }
+      /* an unbounded end has no maximum and an unbounded begin has no minimum
+         -- CRuby raises RangeError rather than reading the infinity sentinel
+         stored in the endpoint (#3065) */
+      if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") && argc == 0) {
+        int lo9 = nt_ref(nt, rn9, "left"), hi9 = nt_ref(nt, rn9, "right");
+        int endless9 = (hi9 < 0 || lazy_endpoint_is_infinite(c, hi9));
+        if (endless9 && lo9 >= 0 && sp_streq(name, "max")) {
+          buf_puts(b, "({ sp_raise_cls(\"RangeError\", \"cannot get the maximum of endless range\"); (mrb_int)0; })");
+          return 1;
+        }
+        if (lo9 < 0 && sp_streq(name, "min")) {
+          buf_puts(b, "({ sp_raise_cls(\"RangeError\", \"cannot get the minimum of beginless range\"); (mrb_int)0; })");
+          return 1;
+        }
+      }
       if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
           (nt_ref(nt, rn9, "right") < 0 ||
            lazy_endpoint_is_infinite(c, nt_ref(nt, rn9, "right"))) &&
