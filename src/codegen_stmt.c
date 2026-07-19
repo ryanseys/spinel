@@ -3290,6 +3290,12 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             /* an exception scrutinee matches by name up its class chain (#2759) */
             buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, cn2);
           }
+          else if (cn2 && pt == TY_BOOL &&
+                   (sp_streq(cn2, "TrueClass") || sp_streq(cn2, "FalseClass"))) {
+            /* a boolean's class (TrueClass vs FalseClass) is a runtime value,
+               not decidable from the static TY_BOOL type (#2966) */
+            buf_printf(b, "(_t%d %s)", t, sp_streq(cn2, "TrueClass") ? "!= 0" : "== 0");
+          }
           else if (cn2) {
             int yes = ty_matches_class(pt, cn2, 0);
             buf_printf(b, "%d", yes > 0 ? 1 : 0);
@@ -3533,6 +3539,11 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else if (cn2 && pt == TY_EXCEPTION) {
           /* an exception scrutinee matches by name up its class chain (#2759) */
           buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, cn2);
+        }
+        else if (cn2 && pt == TY_BOOL &&
+                 (sp_streq(cn2, "TrueClass") || sp_streq(cn2, "FalseClass"))) {
+          /* a boolean's class is a runtime value, not the static TY_BOOL (#2966) */
+          buf_printf(b, "(_t%d %s)", t, sp_streq(cn2, "TrueClass") ? "!= 0" : "== 0");
         }
         else if (cn2) { int yes = ty_matches_class(pt, cn2, 0); buf_printf(b, "%d", yes > 0 ? 1 : 0); }
         else {

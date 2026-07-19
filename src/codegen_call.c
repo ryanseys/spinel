@@ -10542,7 +10542,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       const char *rvt2 = nt_type(nt, recv);
       const char *rcn2 = (rvt2 && (sp_streq(rvt2, "ConstantReadNode") ||
                                    sp_streq(rvt2, "ConstantPathNode"))) ? nt_str(nt, recv, "name") : NULL;
-      if (rcn2 && comp_class_index(c, rcn2) >= 0) {
+      if (rcn2 && (comp_class_index(c, rcn2) >= 0 ||
+                   sp_streq(rcn2, "TrueClass") || sp_streq(rcn2, "FalseClass"))) {
+        /* Module#=== is `arg.is_a?(self)`. TrueClass/FalseClass receivers read
+           the arg's runtime class, so a non-literal boolean matches (#2966).
+           (Only these builtins emit as a usable class value here.) */
         int o = ++g_tmp;
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", o); emit_boxed(c, argv[0], b);
