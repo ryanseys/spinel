@@ -1697,3 +1697,13 @@ uint32_t sp_re_raw_flags(void *vpat) {
   mrb_regexp_pattern *pat = (mrb_regexp_pattern *)vpat;
   return pat ? pat->flags : 0;
 }
+/* Translate the public Regexp option bits (IGNORECASE=1, EXTENDED=2,
+   MULTILINE=4) that Regexp.new's second argument carries into the internal
+   flag bits re_compile expects (#3055). */
+uint32_t sp_re_opts_to_flags(mrb_int o) {
+  uint32_t f = 0;
+  if (o & 1) f |= RE_FLAG_IGNORECASE;
+  if (o & 2) f |= RE_FLAG_EXTENDED;
+  if (o & 4) f |= RE_FLAG_DOTALL;   /* Ruby MULTILINE == "dot matches newline" */
+  return f;
+}

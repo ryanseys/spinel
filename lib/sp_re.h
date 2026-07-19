@@ -73,6 +73,7 @@ const char *sp_re_to_s_str(void *pat);
 mrb_int sp_re_options(void *pat);
 mrb_bool sp_re_casefold_p(void *pat);
 uint32_t sp_re_raw_flags(void *pat);
+uint32_t sp_re_opts_to_flags(mrb_int o);
 const char *sp_MatchData_inspect(sp_MatchData *m);
 const char *re_group_name(const mrb_regexp_pattern *pat, int group);
 mrb_int sp_re_index_from_opt(mrb_regexp_pattern *pat, const char *str, mrb_int start);

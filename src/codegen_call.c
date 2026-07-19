@@ -228,6 +228,23 @@ static void emit_bigint_operand(Compiler *c, int node, Buf *b) {
   buf_puts(b, "sp_bigint_new_int("); emit_expr(c, node, b); buf_puts(b, ")");
 }
 
+/* Emit re_compile's internal-flag argument from Regexp.new/compile's optional
+   second argument: an Integer of public option bits (translated), a truthy
+   value meaning IGNORECASE, or absent meaning no flags (#3055). */
+static void emit_re_opts_flags(Compiler *c, int argc, const int *argv, Buf *out) {
+  if (argc < 2) { buf_puts(out, "0"); return; }
+  TyKind ot = comp_ntype(c, argv[1]);
+  if (ot == TY_INT) {
+    buf_puts(out, "sp_re_opts_to_flags("); emit_int_expr(c, argv[1], out); buf_puts(out, ")");
+  } else if (ot == TY_BOOL) {
+    /* internal RE_FLAG_IGNORECASE == 1 */
+    buf_puts(out, "(("); emit_expr(c, argv[1], out); buf_puts(out, ") ? 1u : 0u)");
+  } else {
+    /* a truthy non-integer means IGNORECASE; nil/false means none */
+    buf_puts(out, "(sp_poly_truthy("); emit_boxed(c, argv[1], out); buf_puts(out, ") ? 1u : 0u)");
+  }
+}
+
 /* `s[i]` on a string with a single non-negative-style int index. Records the
    string receiver and index nodes. Used to fold `s[i] == "c"` into a raw byte
    comparison (no per-access 1-char string allocation). */
@@ -4536,7 +4553,6 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
       if (cn && sp_streq(cn, "Regexp") && argc >= 1) {
         int tp = ++g_tmp, ts = ++g_tmp;
-        int flags = (argc >= 2) ? 1 : 0; /* Regexp::IGNORECASE=1 if 2nd arg truthy */
         /* Regexp.new(/re/): copying an existing Regexp reuses its source text and
            options (a second arg is ignored by CRuby in that case). Reading the
            source via sp_re_source avoids treating the pattern pointer as a
@@ -4562,9 +4578,14 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "const char *_t%d = %s;\n", ts, pv.p ? pv.p : "\"\"");
         free(pv.p);
+        /* the option arg (Integer bits, or a truthy value == IGNORECASE) maps to
+           the internal flag bits (#3055) */
+        Buf flagbuf; memset(&flagbuf, 0, sizeof flagbuf);
+        emit_re_opts_flags(c, argc, argv, &flagbuf);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)strlen(_t%d ? _t%d : \"\"), %d);\n",
-                   tp, ts, ts, ts, flags);
+        buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)strlen(_t%d ? _t%d : \"\"), %s);\n",
+                   tp, ts, ts, ts, flagbuf.p ? flagbuf.p : "0");
+        free(flagbuf.p);
         buf_printf(b, "_t%d", tp);
         return 1;
       }
@@ -10222,7 +10243,6 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     int tp = ++g_tmp, ts = ++g_tmp;
-    int flags = (argc >= 2) ? 1 : 0;
     /* See the Regexp.new path: emit the pattern into a local buffer so an
        interpolated arg's embedded-call arg roots land in g_pre as whole
        statements before this temp's decl, not inside its initializer. */
@@ -10231,9 +10251,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "const char *_t%d = %s;\n", ts, pv.p ? pv.p : "\"\"");
     free(pv.p);
+    Buf flagbuf; memset(&flagbuf, 0, sizeof flagbuf);
+    emit_re_opts_flags(c, argc, argv, &flagbuf);   /* (#3055) */
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)strlen(_t%d ? _t%d : \"\"), %d);\n",
-               tp, ts, ts, ts, flags);
+    buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)strlen(_t%d ? _t%d : \"\"), %s);\n",
+               tp, ts, ts, ts, flagbuf.p ? flagbuf.p : "0");
+    free(flagbuf.p);
     buf_printf(b, "_t%d", tp);
     return;
   }
