@@ -819,6 +819,16 @@ mrb_bool sp_MatchData_eq(sp_MatchData *a, sp_MatchData *b) {
   for (int i = 0; i < a->ncap * 2; i++) if (a->caps[i] != b->caps[i]) return FALSE;
   return TRUE;
 }
+/* A content-based hash over the same fields sp_MatchData_eq compares, so equal
+   MatchData hash alike and different matches (usually) do not (#3014). */
+mrb_int sp_MatchData_hash(sp_MatchData *m) {
+  if (!m) return 0;
+  uint64_t h = 1469598103934665603ULL;   /* FNV-1a */
+  if (m->source) for (const char *p = m->source; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ULL; }
+  h ^= (uint64_t)m->ncap; h *= 1099511628211ULL;
+  for (int i = 0; i < m->ncap * 2; i++) { h ^= (uint64_t)(uint32_t)m->caps[i]; h *= 1099511628211ULL; }
+  return (mrb_int)(h >> 1);   /* non-negative */
+}
 /* MatchData#[range]: the groups selected by a Range of indices (#2532). */
 sp_PolyArray *sp_MatchData_aref_range(sp_MatchData *m, mrb_int beg, mrb_int end, int excl) {
   sp_PolyArray *a = sp_PolyArray_new();

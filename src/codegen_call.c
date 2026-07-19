@@ -15292,6 +15292,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
   if (sp_streq(name, "hash") && recv >= 0 && argc == 0 &&
+      rt != TY_MATCHDATA &&   /* MatchData has a dedicated content hash (#3014) */
       (!ty_is_object(rt) ||
        (comp_method_in_chain(c, ty_object_class(rt), "hash", NULL) < 0 &&
         /* structs keep their dedicated value-based hash arm below */

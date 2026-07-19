@@ -7235,6 +7235,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       if (at == TY_MATCHDATA) { buf_printf(b, "sp_MatchData_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else { buf_printf(b, "((void)(%s), (void)(", r); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)"); }
     }
+    else if (sp_streq(name, "hash") && argc == 0) buf_printf(b, "sp_MatchData_hash(%s)", r);  /* content-based (#3014) */
     else if (sp_streq(name, "named_captures") && argc == 0) buf_printf(b, "sp_md_named_captures(%s)", r);
     /* named_captures(symbolize_names: true): symbol keys (#2530) */
     else if (sp_streq(name, "named_captures") && argc == 1) buf_printf(b, "sp_md_named_captures_sym(%s)", r);
