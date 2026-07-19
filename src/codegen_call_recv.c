@@ -5886,6 +5886,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         int tx = ++g_tmp, tn = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ mrb_float _t%d = (%s); mrb_float _t%d = ", tx, r, tn); emit_expr(c, argv[0], b);
         buf_printf(b, "; if (isnan(_t%d) || isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
+                      /* an infinite dividend has no quotient: FloatDomainError (#3008) */
+                      " if (isinf(_t%d)) sp_raise_cls(\"FloatDomainError\", _t%d > 0 ? \"Infinity\" : \"-Infinity\");"
                       " if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
                       " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                       " if (isinf(_t%d)) {"
@@ -5897,7 +5899,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                       " mrb_int _t%d = (mrb_int)floor(_t%d / _t%d);"
                       " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
                       " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (mrb_float)_t%d * _t%d)); } _t%d; })",
-                   tx, tn, tn,
+                   tx, tn, tx, tx, tn,
                    o, o,
                    tn,
                    tx, tx, tn,
