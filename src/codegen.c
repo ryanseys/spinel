@@ -3807,6 +3807,16 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     if (mi < 0) continue;
     Scope *m = &c->scopes[mi];
     if (m->nparams < 1 || m->rest_idx >= 0) continue;     /* need exactly the one operand */
+    /* a `<=>` returning a container: CRuby's Comparable does `result > 0`,
+       which an Array/Hash result answers with NoMethodError (no `>`); match
+       that instead of comparing a garbage value inline (#2961) */
+    if (ty_is_array(m->ret) || ty_is_hash(m->ret)) {
+      int cid2 = comp_class_index(c, c->classes[k].name);
+      buf_printf(b, "    case %d: *comparable = TRUE; sp_raise_cls(\"NoMethodError\", "
+                    "(&(\"\\xff\" \"undefined method '>' for an instance of %s\")[1])); return 0;\n",
+                 cid2, ty_is_array(m->ret) ? "Array" : "Hash");
+      continue;
+    }
     if (m->ret != TY_INT && m->ret != TY_POLY && m->ret != TY_FLOAT) continue;  /* unusable return -> not-comparable */
     LocalVar *p = scope_local(m, m->pnames[0]);
     TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;

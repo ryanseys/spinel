@@ -4694,7 +4694,8 @@ static int user_cmp_needs_check(Compiler *c, int cid) {
      a non-int as an int (#2559). A pure Integer/Float `<=>` keeps the inline
      path (Float compares as a double correctly). */
   return ret == TY_POLY || ret == TY_NIL ||
-         ret == TY_STRING || ret == TY_SYMBOL || ret == TY_BOOL;
+         ret == TY_STRING || ret == TY_SYMBOL || ret == TY_BOOL ||
+         ty_is_array(ret) || ty_is_hash(ret);
 }
 
 /* Bind `node`'s boxed value to a fresh rooted sp_RbVal temp in g_pre and
