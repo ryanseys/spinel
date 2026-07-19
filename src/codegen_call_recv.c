@@ -6477,7 +6477,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           if (!ety || !sp_streq(ety, "SymbolNode")) { ok = 0; break; }
           char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, els[e], "value"));
           int mi2 = comp_ivar_index(sc, ivn);
-          if (mi2 < 0 || nkey >= 64) { ok = 0; break; }
+          if (nkey >= 64) { ok = 0; break; }
+          if (mi2 < 0) continue;   /* a non-member key is omitted, not an error (#2974) */
           keyed[nkey++] = mi2;
         }
       }
