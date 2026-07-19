@@ -333,10 +333,15 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "fputs(\"[]\\n\", stdout);\n");
     return;
   }
-  /* `p x.class` prints the class name bare (it is a Class, not a String). */
+  /* `p x.class` prints the class name bare (it is a Class, not a String) --
+     unless a member/reader literally named `class` shadows Object#class, in
+     which case `x.class` is a genuine String and `p` quotes it (#2975). */
   if (t == TY_STRING && nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "CallNode") &&
       nt_str(c->nt, arg, "name") && sp_streq(nt_str(c->nt, arg, "name"), "class") &&
-      nt_ref(c->nt, arg, "receiver") >= 0) {
+      nt_ref(c->nt, arg, "receiver") >= 0 &&
+      !({ int _prc = nt_ref(c->nt, arg, "receiver"); TyKind _prt = comp_ntype(c, _prc);
+          ty_is_object(_prt) && ty_object_class(_prt) >= 0 &&
+          comp_reader_in_chain(c, ty_object_class(_prt), "class", NULL); })) {
     emit_indent(b, indent);
     buf_puts(b, "fputs("); emit_expr(c, arg, b); buf_puts(b, ", stdout); putchar('\\n');\n");
     return;

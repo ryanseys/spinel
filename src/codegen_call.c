@@ -4708,6 +4708,17 @@ static int user_cmp_needs_check(Compiler *c, int cid) {
   return ret == TY_POLY || ret == TY_NIL;
 }
 
+/* A user object whose class defines a reader or method named `nm` shadows the
+   builtin of that name (a Data/Struct member `:class`/`:hash`, or a user
+   `def class`): the builtin arm must yield so the user dispatch runs (#2975). */
+static int obj_member_shadows(Compiler *c, TyKind rt, const char *nm) {
+  if (!ty_is_object(rt)) return 0;
+  int cid = ty_object_class(rt);
+  if (cid < 0 || cid >= c->nclasses) return 0;
+  return comp_reader_in_chain(c, cid, nm, NULL) ||
+         comp_method_in_chain(c, cid, nm, NULL) >= 0;
+}
+
 /* The unified `<=>` return type across a Comparable class and its descendants,
    or TY_UNKNOWN if none. Backs both user_cmp_needs_check and the protocol check
    below (a statically non-{Integer,Float,nil} result is a compile-time error). */
@@ -10204,7 +10215,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* x.class -> the class-name string (compile-time for known types) */
-  if (recv >= 0 && sp_streq(name, "class") && argc == 0) {
+  if (recv >= 0 && sp_streq(name, "class") && argc == 0 &&
+      !obj_member_shadows(c, comp_recv_type(c, recv), "class")) {
     TyKind rt = comp_recv_type(c, recv);  /* empty-literal receivers coerce */
     /* When emitting a scope transplanted from a builtin-reopen class (Object/Array/
        Numeric), self is sp_RbVal even if the nscope-based type says otherwise.

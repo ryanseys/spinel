@@ -6437,8 +6437,9 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
       /* non-literal keys: rebuild b is awkward -- fall through loudly */
     }
-    /* #hash: combine the boxed member hashes so equal-valued structs agree */
-    if (sp_streq(name, "hash") && argc == 0) {
+    /* #hash: combine the boxed member hashes so equal-valued structs agree.
+       A member literally named `hash` shadows this with its reader (#2975). */
+    if (sp_streq(name, "hash") && argc == 0 && comp_ivar_index(sc, "@hash") < 0) {
       int tv5 = ++g_tmp, th5 = ++g_tmp;
       Buf rb5 = expr_buf(c, recv);
       buf_printf(b, "({ sp_%s *_t%d = %s; uint64_t _t%d = 1469598103934665603ULL;",

@@ -1665,7 +1665,11 @@ TyKind infer_call(Compiler *c, int id) {
       if (sp_streq(rty0, "ArrayNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) return TY_CLASS; }
       if (sp_streq(rty0, "HashNode") || sp_streq(rty0, "KeywordHashNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) return TY_CLASS; }
     }
-    if (ty_is_object(rt)) return TY_CLASS;
+    /* a member/method literally named `class` (a Data/Struct member) shadows
+       Object#class: fall through to the reader/method dispatch (#2975) */
+    if (ty_is_object(rt) &&
+        !(ty_object_class(rt) >= 0 && comp_reader_in_chain(c, ty_object_class(rt), "class", NULL)))
+      return TY_CLASS;
     if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
         rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
