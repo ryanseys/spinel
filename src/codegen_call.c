@@ -3979,6 +3979,33 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
         int kwh = (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
+        /* `X.new(*arr)`: a sole positional splat spreads the array across the
+           members at run time -- static arity can't see the count, so it would
+           otherwise raise ArgumentError. Data requires an exact count; Struct
+           nil-fills a short array and rejects a long one. (#2971) */
+        {
+          int psplat = (kwh < 0 && argc == 1 && nt_type(nt, argv[0]) &&
+                        sp_streq(nt_type(nt, argv[0]), "SplatNode")) ? nt_ref(nt, argv[0], "expression") : -1;
+          if (psplat >= 0 && ty_is_array(comp_ntype(c, psplat))) {
+            int tsa = ++g_tmp, tln = ++g_tmp;
+            buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_poly_array(", tsa); emit_boxed(c, psplat, b);
+            buf_printf(b, "); SP_GC_ROOT(_t%d); mrb_int _t%d = sp_PolyArray_length(_t%d);", tsa, tln, tsa);
+            if (cls->is_data)
+              buf_printf(b, " if (_t%d != %d) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"wrong number of arguments\")[1]));", tln, cls->nivars);
+            else
+              buf_printf(b, " if (_t%d > %d) sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1]));", tln, cls->nivars);
+            buf_printf(b, " sp_%s_new(", cls->c_name);
+            for (int a = 0; a < cls->nivars; a++) {
+              if (a) buf_puts(b, ", ");
+              char elem[96];
+              snprintf(elem, sizeof elem, "(%d < _t%d ? sp_PolyArray_get(_t%d, %d) : sp_box_nil())", a, tln, tsa, a);
+              if (cls->ivar_types[a] == TY_POLY) buf_puts(b, elem);
+              else emit_unbox_text(c, cls->ivar_types[a], elem, b);
+            }
+            buf_puts(b, "); })");
+            return 1;
+          }
+        }
         /* Data.new validates its arguments strictly (unlike Struct, which
            nil-fills): exact positional count, or a keyword for every member and
            no extras; a mix of positional and keyword is an error. A `**splat`
