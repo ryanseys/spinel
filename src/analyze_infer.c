@@ -2815,6 +2815,7 @@ else {
                 sp_streq(name, "chop") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
                 sp_streq(name, "to_s") || sp_streq(name, "inspect") || sp_streq(name, "succ") ||
                 sp_streq(name, "next") || sp_streq(name, "chr") || sp_streq(name, "encode") ||
+                sp_streq(name, "encode!") || sp_streq(name, "scrub!") ||
                 sp_streq(name, "b") || sp_streq(name, "force_encoding") || sp_streq(name, "scrub") ||
                 sp_streq(name, "squeeze") || sp_streq(name, "tr") || sp_streq(name, "delete"))
               return TY_STRING;
@@ -4520,7 +4521,8 @@ else {
     if (sp_streq(name, "slice!")) return TY_STRING;  /* removed part, or nil */
     if (sp_streq(name, "[]") || sp_streq(name, "slice") || sp_streq(name, "byteslice") ||
         sp_streq(name, "bytesplice") || sp_streq(name, "append_as_bytes") ||
-        sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode")) return TY_STRING;
+        sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode") ||
+        sp_streq(name, "encode!")) return TY_STRING;
     if ((sp_streq(name, "dump") || sp_streq(name, "undump")) && argc == 0) return TY_STRING;
     if (sp_streq(name, "index") && argc == 1) {
       const char *aty = nt_type(nt, argv[0]);
@@ -4541,7 +4543,7 @@ else {
     if (sp_streq(name, "index") || sp_streq(name, "to_i") || sp_streq(name, "count") ||
         sp_streq(name, "oct") || sp_streq(name, "hex") || sp_streq(name, "ord") ||
         sp_streq(name, "bytesize") || sp_streq(name, "setbyte") || sp_streq(name, "getbyte")) return TY_INT;
-    if (sp_streq(name, "scrub") || sp_streq(name, "crypt")) return TY_STRING;
+    if (sp_streq(name, "scrub") || sp_streq(name, "scrub!") || sp_streq(name, "crypt")) return TY_STRING;
     if (sp_streq(name, "sum") && argc <= 1) return TY_INT;
     if (sp_streq(name, "unpack1") && (argc == 1 || argc == 2)) return an_unpack1_lit_type(nt, argv[0]);
     if (sp_streq(name, "rindex")) return TY_INT;
