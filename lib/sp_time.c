@@ -413,6 +413,43 @@ const char *sp_time_iso8601(sp_Time t) {
   return sp_str_dup_external(buf);
 }
 
+/* iso8601 / xmlschema with a fraction-digits argument: like sp_time_iso8601
+   but inserting `digits` truncated fractional-second places (#3094, #3095). */
+const char *sp_time_iso8601_frac(sp_Time t, int64_t digits) {
+  if (digits <= 0) return sp_time_iso8601(t);
+  if (digits > 50) digits = 50;
+  char buf[128];
+  size_t cap = sizeof(buf);
+  time_t s = (time_t)t.tv_sec;
+  struct tm *bt = t.is_utc ? gmtime(&s) : localtime(&s);
+  if (bt == NULL) return sp_str_empty;
+  size_t n = strftime(buf, cap, "%Y-%m-%dT%H:%M:%S", bt);
+  if (n == 0) return sp_str_empty;
+  char fb[16]; snprintf(fb, sizeof fb, "%09ld", (long)t.tv_nsec);
+  if (n + 1 + (size_t)digits < cap) {
+    buf[n++] = '.';
+    for (int64_t i = 0; i < digits; i++) buf[n++] = i < 9 ? fb[i] : '0';
+    buf[n] = 0;
+  }
+  if (t.is_utc) {
+    if (n + 1 < cap) { buf[n++] = 'Z'; buf[n] = 0; }
+  }
+  else if (n + 6 < cap) {
+    struct tm gm = *gmtime(&s);
+    gm.tm_isdst = -1;
+    long offset_sec = (long)(s - mktime(&gm));
+    char sign = offset_sec >= 0 ? '+' : '-';
+    long abs_off = offset_sec < 0 ? -offset_sec : offset_sec;
+    int oh = (int)(abs_off / 3600), om = (int)((abs_off / 60) % 60);
+    buf[n++] = sign;
+    buf[n++] = (char)('0' + (oh / 10)); buf[n++] = (char)('0' + (oh % 10));
+    buf[n++] = ':';
+    buf[n++] = (char)('0' + (om / 10)); buf[n++] = (char)('0' + (om % 10));
+    buf[n] = 0;
+  }
+  return sp_str_dup_external(buf);
+}
+
 const char *sp_time_zone(sp_Time t) {
   char buf[8];
   struct tm b;

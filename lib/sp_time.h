@@ -65,6 +65,7 @@ double sp_time_sub_t(sp_Time a, sp_Time b);
 /* Formatters: return a GC-heap string (from sp_alloc.h), "" on failure. */
 const char *sp_time_strftime(sp_Time t, const char *fmt);
 const char *sp_time_iso8601(sp_Time t);
+const char *sp_time_iso8601_frac(sp_Time t, int64_t digits);
 const char *sp_time_zone(sp_Time t);
 const char *sp_time_inspect_v(sp_Time t);  /* renders fractional seconds */
 const char *sp_time_to_s_v(sp_Time t);     /* whole seconds only (Time#to_s) */

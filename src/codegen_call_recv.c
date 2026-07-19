@@ -7002,7 +7002,10 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "utc_offset") || sp_streq(name, "gmt_offset") || sp_streq(name, "gmtoff")) buf_printf(b, "sp_time_utc_offset(%s)", r);
     else if (sp_streq(name, "inspect")) buf_printf(b, "sp_time_inspect_v(%s)", r);
     else if (sp_streq(name, "to_s")) buf_printf(b, "sp_time_to_s_v(%s)", r);
-    else if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) buf_printf(b, "sp_time_iso8601(%s)", r);
+    else if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) {
+      if (argc == 1) { buf_printf(b, "sp_time_iso8601_frac(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else buf_printf(b, "sp_time_iso8601(%s)", r);
+    }
     else if (sp_streq(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
     else if (sp_streq(name, "class")) buf_puts(b, "((sp_Class){(mrb_int)-1, \"Time\"})");
     else if (sp_streq(name, "getgm")) buf_printf(b, "sp_time_utc(%s)", r);  /* alias for getutc */
