@@ -11884,6 +11884,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
     if (sp_streq(name, "pid") && argc == 0) { buf_puts(b, "((mrb_int)getpid())"); return; }
     if (sp_streq(name, "ppid") && argc == 0) { buf_puts(b, "sp_process_ppid()"); return; }
+    /* real/effective user & group ids (#3043) */
+    if (sp_streq(name, "uid") && argc == 0) { buf_puts(b, "((mrb_int)getuid())"); return; }
+    if (sp_streq(name, "gid") && argc == 0) { buf_puts(b, "((mrb_int)getgid())"); return; }
+    if (sp_streq(name, "euid") && argc == 0) { buf_puts(b, "((mrb_int)geteuid())"); return; }
+    if (sp_streq(name, "egid") && argc == 0) { buf_puts(b, "((mrb_int)getegid())"); return; }
+    if (sp_streq(name, "getpgrp") && argc == 0) { buf_puts(b, "((mrb_int)getpgrp())"); return; }
+    if (sp_streq(name, "getsid") && argc <= 1) {
+      buf_puts(b, "((mrb_int)getsid(");
+      if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "0");
+      buf_puts(b, "))"); return;
+    }
     if (sp_streq(name, "clock_gettime") && argc >= 1) {
       /* honor the clock id, and the unit (default :float_second). An integer
          unit yields an Integer; the float units and the default yield a Float. */

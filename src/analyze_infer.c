@@ -2028,7 +2028,10 @@ else {
       return TY_STR_INT_HASH;
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
-      if (sp_streq(name, "pid") || sp_streq(name, "ppid")) return TY_INT;
+      if (sp_streq(name, "pid") || sp_streq(name, "ppid") ||
+          sp_streq(name, "uid") || sp_streq(name, "gid") ||
+          sp_streq(name, "euid") || sp_streq(name, "egid") ||
+          sp_streq(name, "getsid") || sp_streq(name, "getpgrp")) return TY_INT;
       if (sp_streq(name, "clock_gettime")) {
         /* an integer unit (:nanosecond/:microsecond/:millisecond/:second) makes
            the result an Integer; the default and float units keep it Float. */
