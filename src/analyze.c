@@ -5644,6 +5644,19 @@ void analyze_program(Compiler *c) {
   Scope *top = comp_scope_new(c, NULL, -1);
   top->body = nt_ref(c->nt, c->nt->root_id, "statements");
 
+  /* `&(expr)`: the parentheses carry no meaning for a block argument, but they
+     hide the expression from every shape check downstream (`&blk` as a proc
+     local, a symbol, a literal). Strip them once here (#3054). */
+  {
+    NodeTable *ntm = (NodeTable *)c->nt;
+    for (int id = 0; id < ntm->count; id++) {
+      if (nt_kind(ntm, id) != NK_BlockArgumentNode) continue;
+      int ex = nt_ref(ntm, id, "expression");
+      if (ex < 0) continue;
+      int un = unwrap_parens(c, ex);
+      if (un >= 0 && un != ex) nt_node_set_ref(ntm, id, "expression", un);
+    }
+  }
   rename_shadowing_block_params(c);
   desugar_enum_chain_shapes(c);          /* each_char.with_index / each.with_object */
   desugar_enum_chain_shapes(c);          /* 2nd pass: shapes the 1st created (e.g.
