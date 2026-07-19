@@ -4051,7 +4051,8 @@ else {
         int t = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t);
         emit_expr(c, recv, b);
-        buf_printf(b, "; sp_%sHash_clear(_t%d); _t%d; })", hn, t, t);
+        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash();", t);   /* (#3001) */
+        buf_printf(b, " sp_%sHash_clear(_t%d); _t%d; })", hn, t, t);
         return 1;
       }
       /* no-arg merge -> a copy; no-arg slice -> an empty hash of the same
@@ -4117,8 +4118,11 @@ else {
         return 1;
       }
       if (sp_streq(name, "replace") && argc == 1 && comp_ntype(c, argv[0]) == rt) {
-        buf_printf(b, "sp_%sHash_replace(", hn);
-        emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        int trp = ++g_tmp;
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), trp); emit_expr(c, recv, b);
+        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash();", trp);   /* (#3001) */
+        buf_printf(b, " sp_%sHash_replace(_t%d, ", hn, trp); emit_expr(c, argv[0], b);
+        buf_printf(b, "); _t%d; })", trp);
         return 1;
       }
       /* replace with a DIFFERENT hash variant: the receiver slot has widened to
@@ -4129,7 +4133,8 @@ else {
           ty_is_hash(comp_ntype(c, argv[0]))) {
         int th = ++g_tmp, to = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
         buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash();", th);   /* (#3001) */
+        buf_printf(b, " SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, argv[0], b);
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyPolyHash_clear(_t%d);", to, th);
         buf_printf(b, " mrb_int _t%d = sp_poly_length(_t%d);", tn, to);
         buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {"
@@ -4211,6 +4216,7 @@ else {
           if (!ty_is_hash(comp_ntype(c, argv[ai]))) return 0;
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";");
+        buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash();", tr);   /* (#3001) */
         for (int ai = 0; ai < argc; ai++) {
           int to = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
           buf_printf(b, " sp_RbVal _t%d = ", to); emit_boxed(c, argv[ai], b);
@@ -4235,6 +4241,7 @@ else {
           if (comp_ntype(c, argv[ai]) != rt) return 0;
         int tr = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+        buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash();", tr);   /* (#3001) */
         for (int ai = 0; ai < argc; ai++) {
           int to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
           buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, argv[ai], b); buf_puts(b, ";");
@@ -4266,6 +4273,7 @@ else {
         int blk = nt_ref(nt, id, "block");
         int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+        buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash();", tr);   /* (#3001) */
         buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, argv[0], b); buf_puts(b, ";");
         buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
         buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
@@ -4690,7 +4698,8 @@ else {
         TyKind vt = ty_hash_val(rt);
         int th = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
-        buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
+        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash();", th);   /* (#3001) */
+        buf_printf(b, " %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
         int hd_blk = nt_ref(nt, id, "block");
         if (hd_blk >= 0 && nt_type(nt, hd_blk) && sp_streq(nt_type(nt, hd_blk), "BlockNode")) {
           /* delete(key) { |k| fallback }: the block's value stands in for a
