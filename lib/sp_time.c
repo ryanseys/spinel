@@ -352,6 +352,17 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {
     }
     if (upcase) for (char *q = val; *q; q++) *q = (char)toupper((unsigned char)*q);
     if (downcase) for (char *q = val; *q; q++) *q = (char)(isupper((unsigned char)*q) ? tolower((unsigned char)*q) : toupper((unsigned char)*q));
+    /* the `-` (no-pad) and `_` (space-pad) modifiers rework the default zero
+       padding that C strftime already applied to a numeric field (#3090) */
+    if ((nopad || padsp) && val[0]) {
+      int all_digit = 1;
+      for (char *q = val; *q; q++) if (!isdigit((unsigned char)*q)) { all_digit = 0; break; }
+      if (all_digit) {
+        size_t z = 0; while (val[z] == '0' && val[z + 1] != 0) z++;  /* keep the last digit */
+        if (nopad) memmove(val, val + z, strlen(val) - z + 1);
+        else for (size_t k = 0; k < z; k++) val[k] = ' ';
+      }
+    }
     size_t vl = strlen(val);
     if (width > 0 && !nopad && vl < (size_t)width) {
       char pc = padsp ? ' ' : '0';
