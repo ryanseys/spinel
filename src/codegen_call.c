@@ -2084,6 +2084,23 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return 1;
       }
+      if (argc == 1 && sp_streq(name, "**") && cxa == TY_RATIONAL) {
+        /* a whole-number Rational exponent stays exact (integer pow); a
+           fractional one computes in floats (#2962) */
+        buf_puts(b, "sp_complex_pow_rational("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
+      /* arithmetic against a non-numeric operand raises TypeError, not a
+         compile abort; the numeric cases returned above (#2963) */
+      if (argc == 1 && !cx_ok && (sp_streq(name, "+") || sp_streq(name, "-") ||
+                                  sp_streq(name, "*") || sp_streq(name, "/") ||
+                                  sp_streq(name, "quo") || sp_streq(name, "**"))) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+        emit_expr(c, argv[0], b);
+        buf_puts(b, "), (sp_raise_cls(\"TypeError\", \"can't be coerced into Complex\"), (sp_Complex){0,0,0}))");
+        return 1;
+      }
       /* Complex has no modulo -> NoMethodError, not a compile abort (#2618) */
       if (argc == 1 && (sp_streq(name, "%") || sp_streq(name, "modulo"))) {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");

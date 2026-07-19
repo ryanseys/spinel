@@ -33,6 +33,7 @@ sp_Complex sp_complex_neg(sp_Complex a);
 sp_Complex sp_complex_conjugate(sp_Complex a);
 sp_Complex sp_complex_pow(sp_Complex a, mrb_int e);
 sp_Complex sp_complex_pow_c(sp_Complex z, sp_Complex w);   /* z ** w (general) */
+sp_Complex sp_complex_pow_rational(sp_Complex z, sp_Rational w);  /* z ** Rational (#2962) */
 mrb_float sp_complex_abs(sp_Complex a);
 mrb_float sp_complex_abs2(sp_Complex a);
 mrb_bool sp_complex_eq(sp_Complex a, sp_Complex b);

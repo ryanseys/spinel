@@ -176,6 +176,12 @@ sp_Complex sp_complex_pow(sp_Complex a, mrb_int e) {
   if (e < 0) { sp_Complex one; one.re = 1; one.im = 0; one.fl = 0; r = sp_complex_div(one, r); }
   return r;
 }
+/* Complex ** Rational: a whole-number exponent (den 1) stays exact via the
+   integer power; a fractional exponent computes in floats. (#2962) */
+sp_Complex sp_complex_pow_rational(sp_Complex z, sp_Rational w) {
+  if (w.den == 1) return sp_complex_pow(z, w.num);
+  return sp_complex_pow_c(z, (sp_Complex){sp_rational_to_f(w), 0, SP_CPLX_RE_F | SP_CPLX_IM_F});
+}
 
 /* ---- Rational arithmetic ----
    Intermediate products use a wider type; a result that does not fit back into
