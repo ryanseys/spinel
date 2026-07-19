@@ -13010,13 +13010,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           char _aivn[258]; snprintf(_aivn, sizeof _aivn, "@%s", _abase);
           int _aiv = comp_ivar_index(&c->classes[_adefc < 0 ? _arc : _adefc], _aivn);
           TyKind _aivt = _aiv >= 0 ? c->classes[_adefc < 0 ? _arc : _adefc].ivar_types[_aiv] : TY_UNKNOWN;
-          buf_puts(b, "(("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", _abase);
+          /* materialize the receiver so a frozen instance raises FrozenError
+             before the store, even in value position (#3078) */
+          int _atmp = ++g_tmp;
+          char _aself[32]; snprintf(_aself, sizeof _aself, "_t%d", _atmp);
+          buf_printf(b, "({ sp_%s *_t%d = ", c->classes[_arc].c_name, _atmp); emit_expr(c, recv, b); buf_puts(b, "; ");
+          emit_frozen_obj_guard(c, _arc, _aself, b);
+          buf_printf(b, "_t%d->iv_%s = ", _atmp, _abase);
           if (argc >= 1) {
             if (_aivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
             else emit_expr(c, argv[0], b);
           }
           else buf_puts(b, "0");
-          buf_puts(b, ")");
+          buf_puts(b, "; })");
           return;
         }
       }
