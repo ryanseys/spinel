@@ -2733,7 +2733,10 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
     const char *pfn = pop ? (sp_streq(pop, "+") ? "sp_poly_add"
                            : sp_streq(pop, "-") ? "sp_poly_sub"
                            : sp_streq(pop, "*") ? "sp_poly_mul"
-                           : sp_streq(pop, "/") ? "sp_poly_div" : NULL) : NULL;
+                           : sp_streq(pop, "/") ? "sp_poly_div"
+                           : sp_streq(pop, "&") ? "sp_poly_band"
+                           : sp_streq(pop, "|") ? "sp_poly_bor"
+                           : sp_streq(pop, "^") ? "sp_poly_bxor" : NULL) : NULL;
     if (pfn) {
       int ta = ++g_tmp, tn = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
       buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
