@@ -10,6 +10,9 @@
  * only the low-level headers its dependencies need -- NOT sp_runtime.h, which
  * is a monolithic definition header meant to be compiled once (into the
  * generated program), so including it here would multiply-define the runtime. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   /* statx / STATX_BTIME for File.birthtime on Linux */
+#endif
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
@@ -19,6 +22,7 @@
 #include "sp_array.h"   /* sp_StrArray for Dir.glob */
 #include <dirent.h>
 #include <sys/stat.h>
+#include <fcntl.h>      /* AT_FDCWD for statx */
 #include <errno.h>
 #include "sp_time.h"   /* sp_Time for File.mtime */
 #include "sp_io.h"     /* sp_file_directory prototype */
@@ -529,6 +533,23 @@ sp_Time sp_file_mtime(const char *path) {
 #else
   /* Linux / others with st_mtim */
   return (sp_Time){(int64_t)st.st_mtim.tv_sec, (int32_t)st.st_mtim.tv_nsec, 0};
+#endif
+}
+sp_Time sp_file_birthtime(const char *path) {  /* (#2985) */
+  if (!path) { sp_raise_cls("TypeError", "no implicit conversion of nil into String"); return (sp_Time){0, 0, 0}; }
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+  struct stat st;
+  if (stat(path, &st) == -1) { sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.birthtime - %s", strerror(errno), path)); return (sp_Time){0, 0, 0}; }
+  return (sp_Time){(int64_t)st.st_birthtimespec.tv_sec, (int32_t)st.st_birthtimespec.tv_nsec, 0};
+#elif defined(__linux__) && defined(STATX_BTIME)
+  struct statx stx;
+  if (statx(AT_FDCWD, path, AT_STATX_SYNC_AS_STAT, STATX_BTIME, &stx) == 0 && (stx.stx_mask & STATX_BTIME))
+    return (sp_Time){(int64_t)stx.stx_btime.tv_sec, (int32_t)stx.stx_btime.tv_nsec, 0};
+  sp_raise_cls("NotImplementedError", "birthtime() function is unimplemented on this filesystem");
+  return (sp_Time){0, 0, 0};
+#else
+  sp_raise_cls("NotImplementedError", "birthtime() function is unimplemented");
+  return (sp_Time){0, 0, 0};
 #endif
 }
 

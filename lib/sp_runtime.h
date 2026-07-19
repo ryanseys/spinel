@@ -6788,6 +6788,7 @@ void sp_file_write(const char *path, const char *data);
 sp_Time sp_file_mtime(const char *path);
 sp_Time sp_file_atime(const char *path);
 sp_Time sp_file_ctime(const char *path);
+sp_Time sp_file_birthtime(const char *path);
 /* ---- the File stat/predicate and IO-op surface (#2774-#2778, #2782) ---- */
 const char *sp_file_ftype(const char *path);
 mrb_bool sp_file_writable(const char *path);

@@ -8566,7 +8566,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     /* metadata via the handle's path (#2790) */
     if (argc == 0 && (sp_streq(name, "size") || sp_streq(name, "mtime") ||
                       sp_streq(name, "atime") || sp_streq(name, "ctime") ||
-                      sp_streq(name, "ftype"))) {
+                      sp_streq(name, "birthtime") || sp_streq(name, "ftype"))) {
       buf_printf(b, "sp_file_%s(sp_File_path(%s))", sp_streq(name, "size") ? "size" : name, r);
       free(rb.p); return;
     }
@@ -12112,7 +12112,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "sp_file_identical("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
       emit_expr(c, argv[1], b); buf_puts(b, ")"); return;
     }
-    if ((sp_streq(name, "atime") || sp_streq(name, "ctime")) && argc == 1) {
+    if ((sp_streq(name, "atime") || sp_streq(name, "ctime") || sp_streq(name, "birthtime")) && argc == 1) {
       buf_printf(b, "sp_file_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
     if (sp_streq(name, "realpath") && argc == 1) {

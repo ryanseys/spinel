@@ -2101,7 +2101,8 @@ else {
           sp_streq(name, "writable?") || sp_streq(name, "executable?") || sp_streq(name, "pipe?") ||
           sp_streq(name, "identical?") || sp_streq(name, "fnmatch") || sp_streq(name, "fnmatch?"))
         return TY_BOOL;
-      if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime"))
+      if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime") ||
+          sp_streq(name, "birthtime"))
         return TY_TIME;
       if (sp_streq(name, "readlines") || sp_streq(name, "split")) return TY_STR_ARRAY;
       if (sp_streq(name, "stat")) return TY_IO;   /* the path-carrying stat handle */
@@ -2384,7 +2385,8 @@ else {
       return TY_INT;
     if (sp_streq(name, "getc") || sp_streq(name, "readchar") || sp_streq(name, "readpartial") ||
         sp_streq(name, "sysread") || sp_streq(name, "ftype")) return TY_STRING;
-    if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime")) return TY_TIME;
+    if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime") ||
+        sp_streq(name, "birthtime")) return TY_TIME;
     if (sp_streq(name, "stat")) return TY_IO;
     if (sp_streq(name, "putc") || sp_streq(name, "printf") || sp_streq(name, "ungetc") ||
         sp_streq(name, "pid")) return TY_POLY;
