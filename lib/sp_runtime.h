@@ -3890,10 +3890,31 @@ else if (conv == 's' || conv == 'p') {
       wn = snprintf(tmp, sizeof(tmp), fmt_use, sv);
     }
 else if (conv == 'c') {
-      int cv = 0;
-      if (v.tag == SP_TAG_INT) cv = (int)v.v.i;
-      else if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) cv = (unsigned char)v.v.s[0];
-      wn = snprintf(tmp, sizeof(tmp), fmt_use, cv);
+      /* an Integer is a codepoint (UTF-8 encoded), a String contributes its
+         first whole character -- not a single truncated byte (#3083) */
+      char cbuf[8]; int clen = 0;
+      if (v.tag == SP_TAG_INT) clen = sp_utf8_encode((uint32_t)v.v.i, cbuf);
+      else if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) {
+        clen = sp_utf8_advance(v.v.s);
+        if (clen > 8) clen = 8;
+        memcpy(cbuf, v.v.s, (size_t)clen);
+      }
+      /* the character occupies one column; honor a width and the '-' flag */
+      int left = 0, width = 0;
+      for (size_t fi = 1; fi + 1 < sl; fi++) {
+        char fc = spec[fi];
+        if (fc == '-') left = 1;
+        else if (fc >= '0' && fc <= '9') width = width * 10 + (fc - '0');
+      }
+      int pad = width > 1 ? width - 1 : 0;
+      if ((size_t)(clen + pad) >= sizeof(tmp)) pad = (int)sizeof(tmp) - clen - 1;
+      if (pad < 0) pad = 0;
+      int o2 = 0;
+      if (!left) for (int i = 0; i < pad; i++) tmp[o2++] = ' ';
+      memcpy(tmp + o2, cbuf, (size_t)clen); o2 += clen;
+      if (left) for (int i = 0; i < pad; i++) tmp[o2++] = ' ';
+      tmp[o2] = 0;
+      wn = o2;
     }
 else {
       /* CRuby: an unknown / truncated conversion is a hard error */
