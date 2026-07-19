@@ -4101,16 +4101,23 @@ else {
     }
   }
 
-  /* (range).lazy[.select/reject{blk}].first(n) / .first */
-  if ((sp_streq(name, "first") || sp_streq(name, "last")) &&
-      recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
-    const char *rname = nt_str(nt, recv, "name");
+  /* (range).lazy[.select/reject{blk}].first(n) / .first. The chain may be held
+     in a variable (`p = src.lazy.select{}; p.first(n)`) -- resolve the alias to
+     the chain node so the forced type matches emit_lazy_pipeline_expr (#2932). */
+  if (sp_streq(name, "first") || sp_streq(name, "last")) {
+    int lrecv = recv;
+    if (lrecv >= 0 && nt_type(nt, lrecv) && sp_streq(nt_type(nt, lrecv), "LocalVariableReadNode")) {
+      int a = lazy_alias_chain(c, lrecv);
+      if (a >= 0) lrecv = a;
+    }
+  if (lrecv >= 0 && nt_type(nt, lrecv) && sp_streq(nt_type(nt, lrecv), "CallNode")) {
+    const char *rname = nt_str(nt, lrecv, "name");
     int lazy_src = -1;
     if (rname && sp_streq(rname, "lazy")) {
-      lazy_src = nt_ref(nt, recv, "receiver");
+      lazy_src = nt_ref(nt, lrecv, "receiver");
     }
     else if (rname && (sp_streq(rname, "select") || sp_streq(rname, "reject") || sp_streq(rname, "filter"))) {
-      int inner = nt_ref(nt, recv, "receiver");
+      int inner = nt_ref(nt, lrecv, "receiver");
       if (inner >= 0 && nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "CallNode")) {
         const char *iname = nt_str(nt, inner, "name");
         if (iname && sp_streq(iname, "lazy")) lazy_src = nt_ref(nt, inner, "receiver");
@@ -4123,6 +4130,7 @@ else {
        take->first desugar produces) materializes n boxed elements. */
     if (lazy_src >= 0 && argc == 1 && ty_is_array(lst))
       return TY_POLY_ARRAY;
+  }
   }
 
   /* `<source>.lazy.<ops>.size` -> the propagated source size: nil if any stage

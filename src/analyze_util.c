@@ -207,6 +207,57 @@ const char *sym_static_value(Compiler *c, int node) {
   return (vty && sp_streq(vty, "SymbolNode")) ? nt_str(nt, val, "value") : NULL;
 }
 
+/* A CallNode chain that evaluates to a Lazy (a `.lazy` somewhere in the
+   receiver spine, and a lazy-producing transform -- not a forcing terminal --
+   on top). Such a value has no runtime representation in spinel; it is only
+   ever fused at a forcing site. (#2932) */
+int chain_is_lazy_valued(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || !nt_type(nt, node) || !sp_streq(nt_type(nt, node), "CallNode")) return 0;
+  const char *top = nt_str(nt, node, "name");
+  if (!top) return 0;
+  static const char *const transforms[] = {
+    "lazy", "map", "collect", "select", "filter", "find_all", "reject",
+    "filter_map", "flat_map", "collect_concat", "take", "drop", "take_while",
+    "drop_while", "each_slice", "with_index", "zip", NULL };
+  int ok = 0;
+  for (int i = 0; transforms[i]; i++) if (sp_streq(top, transforms[i])) { ok = 1; break; }
+  if (!ok) return 0;
+  for (int cur = node; cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode");
+       cur = nt_ref(nt, cur, "receiver")) {
+    const char *nm = nt_str(nt, cur, "name");
+    if (nm && sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) return 1;
+  }
+  return 0;
+}
+
+/* If VAR (a LocalVariableReadNode) is a single-plain-write alias for a lazy
+   chain in the same scope, return the chain node so a forcing call on the
+   variable can fuse it as if written inline; else -1. Models sym_static_value.
+   (#2932) */
+int lazy_alias_chain(Compiler *c, int var_read) {
+  const NodeTable *nt = c->nt;
+  if (var_read < 0 || nt_kind(nt, var_read) != NK_LocalVariableReadNode) return -1;
+  const char *vn = nt_str(nt, var_read, "name");
+  if (!vn) return -1;
+  Scope *sc = comp_scope_of(c, var_read);
+  int val = -1;
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind k = nt_kind(nt, w);
+    if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode &&
+        k != NK_LocalVariableAndWriteNode && k != NK_LocalVariableOperatorWriteNode &&
+        k != NK_LocalVariableTargetNode)
+      continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    if (k != NK_LocalVariableWriteNode || comp_scope_of(c, w) != sc || val >= 0)
+      return -1;   /* not a single plain write */
+    val = nt_ref(nt, w, "value");
+  }
+  if (val < 0) return -1;
+  return chain_is_lazy_valued(c, val) ? val : -1;
+}
+
 /* The anonymous struct class synthesized for a `k = Struct.new(:a, :b)`
    VALUE node (the write is the class's def_node), or -1. Lets the value
    type as TY_CLASS and emit as the class object. */

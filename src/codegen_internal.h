@@ -515,6 +515,7 @@ void emit_block_param_assign(Compiler *c, int scope_id, const char *nm, int tidx
 int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b);
 int emit_partition_expr(Compiler *c, int id, Buf *b);
 int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b);
+int lazy_alias_write_suppressible(Compiler *c, int write);  /* lazy-alias write whose uses all force it */
 int emit_lazy_size_expr(Compiler *c, int id, Buf *b);
 int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b);
 int emit_collect_expr(Compiler *c, int id, Buf *b);

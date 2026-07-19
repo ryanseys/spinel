@@ -429,6 +429,8 @@ int        class_var_static_ci(Compiler *c, int node);  /* local holding one cla
 int        anon_struct_ci_for_value(Compiler *c, int val);  /* k = Struct.new(...) value node */
 const char *struct_call_dup_member(Compiler *c, int callnode);  /* first duplicate member sym name, or NULL */
 const char *sym_static_value(Compiler *c, int node);  /* SymbolNode or sole-symbol local */
+int chain_is_lazy_valued(Compiler *c, int node);      /* CallNode chain evaluating to a Lazy */
+int lazy_alias_chain(Compiler *c, int var_read);      /* local holding a lazy chain -> chain node, else -1 */
 int        hash_new_default_arg(Compiler *c, int recv); /* Hash.new(d) literal: d node or -1 */
 /* Class index of a `class_eval`/`module_eval { defs }` reopen, else -1.
    enclosing_class resolves bare/`self.` receivers (the class whose body we are

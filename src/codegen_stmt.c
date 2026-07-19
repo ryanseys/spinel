@@ -767,6 +767,11 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *nm = nt_str(c->nt, id, "name");
   int v = nt_ref(c->nt, id, "value");
   LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+  /* A local holding a lazy chain (`p = src.lazy.select{}`) has no runtime
+     value; when every use forces it (first(n)/to_a/force) each force site
+     fuses the chain via lazy_alias_chain, so skip the broken assignment here
+     (the variable keeps its nil default, unread). (#2932) */
+  if (lazy_alias_write_suppressible(c, id)) return;
   /* `x = y = nil`: emit the inner writes as their own statements (each target
      renders nil for its own slot type), then write nil here too. */
   {

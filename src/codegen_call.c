@@ -1052,6 +1052,50 @@ int lazy_endpoint_is_infinite(Compiler *c, int right) {
   return 0;
 }
 
+/* True when WRITE assigns a lazy chain to a local whose every use forces it
+   through a fusion-capable terminal (`first(n)` / `to_a` / `force`), so the
+   broken assignment can be suppressed and each force site fuses the chain
+   directly. (#2932) */
+int lazy_alias_write_suppressible(Compiler *c, int write) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, write) != NK_LocalVariableWriteNode) return 0;
+  const char *vn = nt_str(nt, write, "name");
+  if (!vn) return 0;
+  Scope *sc = comp_scope_of(c, write);
+  if (!chain_is_lazy_valued(c, nt_ref(nt, write, "value"))) return 0;
+  /* no other write to the same name in this scope */
+  for (int w = 0; w < nt->count; w++) {
+    if (w == write) continue;
+    NodeKind k = nt_kind(nt, w);
+    if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode &&
+        k != NK_LocalVariableAndWriteNode && k != NK_LocalVariableOperatorWriteNode &&
+        k != NK_LocalVariableTargetNode)
+      continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (wn && sp_streq(wn, vn) && comp_scope_of(c, w) == sc) return 0;
+  }
+  /* every read must be the receiver of a fusion-capable forcing terminal */
+  for (int r = 0; r < nt->count; r++) {
+    if (nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
+    const char *rn = nt_str(nt, r, "name");
+    if (!rn || !sp_streq(rn, vn) || comp_scope_of(c, r) != sc) continue;
+    int forced = 0;
+    for (int call = 0; call < nt->count; call++) {
+      if (nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "receiver") != r) continue;
+      const char *cn = nt_str(nt, call, "name");
+      if (cn) {
+        int ac = 0; int ar = nt_ref(nt, call, "arguments");
+        if (ar >= 0) nt_arr(nt, ar, "arguments", &ac);
+        if ((sp_streq(cn, "first") && ac == 1) || sp_streq(cn, "to_a") || sp_streq(cn, "force"))
+          forced = 1;
+      }
+      break;
+    }
+    if (!forced) return 0;
+  }
+  return 1;
+}
+
 /* `<source>.lazy.<ops>.size`: the source size propagated through the chain, no
    iteration. Size-preserving stages (map/collect) keep it; take(n)/drop(n)
    transform it (min / max(0,-)); any element-count-changing stage (select,
@@ -1163,6 +1207,12 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   if (nt_ref(nt, id, "block") >= 0) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
+  /* the chain may be held in a variable (`p = src.lazy.select{}; p.first(n)`);
+     resolve the alias to its lazy chain and fuse it inline (#2932) */
+  if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) {
+    int a = lazy_alias_chain(c, recv);
+    if (a >= 0) recv = a;
+  }
 
   int has_count = 0, count_node = -1;
   {
