@@ -5448,6 +5448,21 @@ static sp_RbVal sp_poly_to_h_m(sp_RbVal v) {
     sp_RbVal h = sp_obj_to_h_fn(v);
     if (h.tag == SP_TAG_OBJ) return h;
   }
+  /* an array of [k, v] pairs -> a symbol-keyed hash (Hash#partition sub-array,
+     Enumerable pair lists; matches the inferred TY_SYM_POLY_HASH) (#2991) */
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
+    mrb_int n = sp_poly_length(v);
+    sp_SymPolyHash *h = sp_SymPolyHash_new();
+    SP_GC_ROOT(h);
+    for (mrb_int i = 0; i < n; i++) {
+      sp_RbVal pair = sp_poly_arr_get(v, i);
+      if (!(pair.tag == SP_TAG_OBJ && sp_poly_is_array_kind(pair.cls_id) && sp_poly_length(pair) == 2))
+        sp_raise_cls("TypeError", "wrong element type (expected a [key, value] pair)");
+      sp_RbVal k = sp_poly_arr_get(pair, 0);
+      sp_SymPolyHash_set(h, (sp_sym)k.v.i, sp_poly_arr_get(pair, 1));
+    }
+    return sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH);
+  }
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_h' for %s", sp_poly_class_name(v)));
 }
 /* Data#with on a poly receiver (a Data read out of a container): dispatch by
