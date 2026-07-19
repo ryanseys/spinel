@@ -11235,6 +11235,28 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           else buf_printf(g_pre, "_t%d", tr);  /* instance_eval yields self */
           buf_puts(g_pre, pdecl ? ";\n" : ");\n");
         }
+        /* a rest param (`*xs`) collects the call-site args past the requireds
+           into a poly array (#2957). Only the plain positional-args form: the
+           auto-splat and trampoline paths distribute their args differently. */
+        int restp = (is_exec && !as_kind && tramp_argc < 0 && pnode >= 0)
+                    ? nt_ref(nt, pnode, "rest") : -1;
+        if (restp >= 0 && nt_type(nt, restp) && sp_streq(nt_type(nt, restp), "RestParameterNode")) {
+          const char *rpn = nt_str(nt, restp, "name");
+          LocalVar *rlv = rpn ? scope_local(comp_scope_of(c, restp), rpn) : NULL;
+          if (rpn && rlv && rlv->type != TY_UNKNOWN) {
+            int rta = ++g_tmp;
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", rta, rta);
+            for (int p = npar; p < iac; p++) {
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", rta);
+              emit_boxed(c, iav[p], g_pre);
+              buf_puts(g_pre, ");\n");
+            }
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(rpn), rta);
+          }
+        }
         /* keyword block params: each binds to its matched `k: v` value, or to
            the default expr when an optional keyword is omitted. */
         int nkw = 0; const int *kws = pnode >= 0 ? nt_arr(nt, pnode, "keywords", &nkw) : NULL;
