@@ -5079,6 +5079,14 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "case -161:return SPL(\"SystemExit\");case -162:return SPL(\"Signal\");");
     buf_puts(&b, "case -163:return SPL(\"Process::Status\");");
     buf_puts(&b, "default:return \"\";} }\n\n");
+    /* Inverse of the table above, for resolving a class carried by NAME back to
+       its builtin id so the id-keyed hierarchy walks work on it (#3022). Cold
+       path only (superclass/ancestors), so a linear scan is fine. */
+    buf_puts(&b, "static mrb_int sp_builtin_id_of_name(const char *n){\n");
+    buf_puts(&b, "  if(!n||!n[0])return SP_CLASS_NIL_ID;\n");
+    buf_puts(&b, "  for(mrb_int i=-100;i>=-163;i--){const char*s=sp_class_to_s((sp_Class){i,NULL});"
+                 "if(s&&s[0]&&!strcmp(s,n))return i;}\n");
+    buf_puts(&b, "  return SP_CLASS_NIL_ID;\n}\n\n");
   }
   /* Threaded-runtime marker: the driver greps for this and links the
      -DSP_THREADS runtime variant (libspinel_rt_mt.a) plus -lpthread instead of
@@ -5110,7 +5118,8 @@ char *codegen_program(const NodeTable *nt) {
     /* A rescued exception's #class carries its name with cls_id 0, which would
        otherwise read as user class 0; resolve those by name first (#3031). */
     buf_puts(&b, "  if(c.name){const char*_p=sp_exc_parent_of_name(c.name);"
-                 "if(_p)return ((sp_Class){-1,_p});}\n");
+                 "if(_p){mrb_int _id=sp_builtin_id_of_name(_p);"
+                 "return _id!=SP_CLASS_NIL_ID?((sp_Class){_id,NULL}):((sp_Class){-1,_p});}}\n");
     buf_puts(&b, "  switch(c.cls_id){\n");
     for (int i = 0; i < c->nclasses; i++) {
       if (is_builtin_reopen(c->classes[i].name)) continue;
@@ -5164,7 +5173,8 @@ char *codegen_program(const NodeTable *nt) {
      cls_id to switch on; resolve its superclass through the exception
      hierarchy rather than defaulting to Object (#3031). */
   buf_puts(&b, "  if(c.name){const char*_p=sp_exc_parent_of_name(c.name);"
-               "if(_p)return ((sp_Class){-1,_p});}\n");
+               "if(_p){mrb_int _id=sp_builtin_id_of_name(_p);"
+               "return _id!=SP_CLASS_NIL_ID?((sp_Class){_id,NULL}):((sp_Class){-1,_p});}}\n");
   buf_puts(&b, "  switch(c.cls_id){\n");
   /* Integer, Float, Complex, Rational -> Numeric -> Object */
   buf_puts(&b, "  case -100:case -101:case -131:case -142: return ((sp_Class){-113});\n"); /* -> Numeric */
