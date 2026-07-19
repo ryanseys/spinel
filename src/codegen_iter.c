@@ -2469,6 +2469,16 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from Float\");\n");
       return 1;
     }
+    {
+      /* a beginless range cannot be enumerated from nil (#3066) */
+      int rn0 = unwrap_parens(c, recv);
+      if (rn0 >= 0 && nt_type(nt, rn0) && sp_streq(nt_type(nt, rn0), "RangeNode") &&
+          nt_ref(nt, rn0, "left") < 0) {
+        emit_indent(b, indent);
+        buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n");
+        return 1;
+      }
+    }
     int rnode = unwrap_parens(c, recv);
     if (rnode >= 0 && nt_type(nt, rnode) && sp_streq(nt_type(nt, rnode), "RangeNode")) {
       int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
