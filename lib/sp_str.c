@@ -249,6 +249,9 @@ else {
 const char*sp_str_chop(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("chop");size_t l=strlen(s);if(l>0){if(l>=2&&s[l-2]=='\r'&&s[l-1]=='\n')l-=2;else{l--;/* back up over any UTF-8 continuation bytes to the char boundary (#3085) */while(l>0&&((unsigned char)s[l]&0xC0)==0x80)l--;}}char*r=sp_str_alloc_raw(l+1);memcpy(r,s,l);r[l]=0;return r;}
 /* String#chr: the first character (a whole UTF-8 char, not a byte), "" for "" (#3083). */
 const char*sp_str_chr(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("chr");if(*s==0)return sp_str_empty;int n=sp_utf8_advance(s);char*r=sp_str_alloc_raw((size_t)n+1);memcpy(r,s,(size_t)n);r[n]=0;return r;}
+/* The character index at byte offset `byteoff`; preserves -1 (no match) and 0.
+   Used to report a regexp match position in characters, not bytes (#3056). */
+mrb_int sp_str_byte_to_char(const char*s,mrb_int byteoff){if(byteoff<=0||!s)return byteoff;mrb_int ci=0;for(mrb_int i=0;i<byteoff&&s[i];ci++)i+=sp_utf8_advance(s+i);return ci;}
 /* Issue #797: NULL guards on receiver + needle for the chunk of
    string functions that read directly into a non-checked strlen. */
 mrb_bool sp_str_include(const char*s,const char*sub){if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)sp_nil_recv("include?");return sp_bytestr(s,sp_str_byte_len(s),sub,sp_str_byte_len(sub))!=NULL;}

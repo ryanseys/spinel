@@ -69,6 +69,7 @@ const char*sp_str_chomp(const char*s);
 const char *sp_str_chomp_sep(const char *s, const char *sep);
 const char*sp_str_chop(const char*s);
 const char*sp_str_chr(const char*s);
+mrb_int sp_str_byte_to_char(const char*s,mrb_int byteoff);
 mrb_bool sp_str_include(const char*s,const char*sub);
 mrb_bool sp_str_start_with(const char*s,const char*p);
 mrb_bool sp_str_end_with(const char*s,const char*suf);

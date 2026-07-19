@@ -5005,9 +5005,11 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "index") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* nullable-int carrier (SP_INT_NIL on miss), matching the inferred
            type -- the poly-boxed form broke a variable-regexp argument */
-        int tmi = ++g_tmp;
-        buf_printf(b, "({ mrb_int _t%d = sp_re_match(sp_re_pat_%d, %s); _t%d < 0 ? SP_INT_NIL : _t%d; })",
-                   tmi, re_lit_index(c, argv[0]), r, tmi, tmi);
+        int tmi = ++g_tmp, tsi = ++g_tmp;
+        /* report the match position in characters, not bytes (#3056) */
+        buf_printf(b, "({ const char *_t%d = %s; mrb_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
+                      " _t%d < 0 ? SP_INT_NIL : sp_str_byte_to_char(_t%d, _t%d); })",
+                   tsi, r, tmi, re_lit_index(c, argv[0]), tsi, tmi, tsi, tmi);
       }
       else if (sp_streq(name, "index") && argc == 1) {
         /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */

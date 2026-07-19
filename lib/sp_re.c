@@ -499,7 +499,7 @@ sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str) {
 }
 mrb_int sp_re_rindex_opt(mrb_regexp_pattern *pat, const char *str)  { mrb_int n = sp_re_rindex(pat, str); return n < 0 ? SP_INT_NIL : n; }
 sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_rindex(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
-sp_RbVal sp_re_index_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+sp_RbVal sp_re_index_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(sp_str_byte_to_char(str, n)); }  /* char offset (#3056) */
 /* String#index(regexp, start): first match at or after char position `start`,
    as a char index -- SP_INT_NIL on miss / out-of-range (a nullable int, matching
    sp_str_index_from_opt's ABI). */
@@ -564,7 +564,7 @@ mrb_int sp_re_rindex_from_opt(mrb_regexp_pattern *pat, const char *str, mrb_int 
   }
   return last < 0 ? SP_INT_NIL : sp_str_count_chars(str, (size_t)last);
 }
-sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(sp_str_byte_to_char(str, n)); }  /* char offset (#3056) */
 /* Value of the named group `name` from the most recent match registers (set by
    sp_re_match / sp_re_match_poly). NULL (nil) when the last match failed, the
    name is unknown, or the group did not participate. Used by `/(?<n>..)/ =~ s`
