@@ -11797,6 +11797,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "sp_signal_list()"); return;
     }
     if (tcn && sp_streq(tcn, "Signal") && sp_streq(name, "signame") && argc == 1) {
+      /* signame takes an Integer; a statically non-Integer argument is a
+         TypeError, not a bogus name or a compile abort (#3075, #3076) */
+      TyKind sa0 = comp_ntype(c, argv[0]);
+      if (sa0 != TY_INT && sa0 != TY_BIGINT && sa0 != TY_POLY && sa0 != TY_UNKNOWN) {
+        buf_puts(b, "((void)("); emit_boxed(c, argv[0], b);
+        buf_puts(b, "), (sp_raise_cls(\"TypeError\", \"no implicit conversion to integer\"), (const char *)0))");
+        return;
+      }
       buf_puts(b, "sp_signal_signame(");
       emit_int_expr(c, argv[0], b);
       buf_puts(b, ")");
