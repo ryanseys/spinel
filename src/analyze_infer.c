@@ -1559,6 +1559,7 @@ TyKind infer_call(Compiler *c, int id) {
       return TY_STRING;
     if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "singleton_class?")) return TY_BOOL;
+    if (argc == 0 && sp_streq(name, "frozen?")) return TY_BOOL;
     /* Module#constants -> sym array, recovered from the AST (#2674) */
     /* Class.const_set(:K, v) stores into the existing constant and yields the
        value; only a literal name whose type matches is emittable (#2675). */

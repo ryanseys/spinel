@@ -10253,6 +10253,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "; sp_class_nil_p(_cl%d); })", _clt);
       return;
     }
+    if (sp_streq(name, "frozen?") && argc == 0) {
+      /* spinel does not freeze class objects; a class is never frozen (#2953) */
+      buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+      return;
+    }
     /* const_defined?(:NAME) with a literal name answers at compile time from
        the (flat) constant and class tables -- constants carry no class
        qualifier in the registry, so this is the same namespace a read
