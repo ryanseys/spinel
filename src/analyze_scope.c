@@ -901,7 +901,8 @@ static void vis_apply_attr(Compiler *c, ClassInfo *cls, int call, int kind) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, call, "name");
   if (!nm) return;
-  int reader = sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_accessor");
+  int reader = sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_accessor") ||
+               sp_streq(nm, "attr");
   int writer = sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor");
   if (!reader && !writer) return;
   int args = nt_ref(nt, call, "arguments");
@@ -970,7 +971,7 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
        attr in a subclass overrides an inherited private/protected method rather
        than resolving up the chain to the ancestor's visibility. */
     if (sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_writer") ||
-        sp_streq(nm, "attr_accessor"))
+        sp_streq(nm, "attr_accessor") || sp_streq(nm, "attr"))
       vis_apply_attr(c, cls, s, cur);
   }
 }
@@ -1416,7 +1417,7 @@ void register_attr_call(Compiler *c, ClassInfo *cls, int s, int singleton) {
   if (!nm) return;
   int accessor = sp_streq(nm, "attr_accessor") ||
                  sp_streq(nm, "attribute") || sp_streq(nm, "attributes");
-  int reader = sp_streq(nm, "attr_reader") || accessor;
+  int reader = sp_streq(nm, "attr_reader") || accessor || sp_streq(nm, "attr");
   int writer = sp_streq(nm, "attr_writer") || accessor;
   if (!reader && !writer) return;
   int args = nt_ref(nt, s, "arguments");

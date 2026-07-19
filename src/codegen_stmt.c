@@ -5046,7 +5046,8 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                              sp_streq(nm, "prepend") || sp_streq(nm, "module_function") ||
                              sp_streq(nm, "private") || sp_streq(nm, "protected") ||
                              sp_streq(nm, "public") || sp_streq(nm, "attr_reader") ||
-                             sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor"))) {
+                             sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor") ||
+                             sp_streq(nm, "attr"))) {
         /* These are class-body declarations handled at analysis time; skip.
            Exception: a visibility call naming a method the class does not
            define raises NameError when the body executes, per CRuby. */
