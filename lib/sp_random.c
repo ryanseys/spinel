@@ -154,7 +154,7 @@ sp_Random *sp_random_default_get(void) {
 /* Random#bytes(n) — n random bytes as a String. Uses sp_str_set_len
    so embedded NULs are preserved and #length reports n. */
 const char *sp_Random_bytes(sp_Random *r, mrb_int n) {
-  if (n < 0) n = 0;
+  if (n < 0) sp_raise_cls("ArgumentError", "negative string size (or size too big)");
   char *b = sp_str_alloc((size_t)n);
   for (mrb_int i = 0; i < n; i++) b[i] = (char)(sp_random_next(r) & 0xff);
   b[n] = 0;
