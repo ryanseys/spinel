@@ -9914,8 +9914,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
       const char *cn = isa_const_name(nt, argv[0]);
       if (cn) {
-        buf_puts(b, "sp_exc_is_a("); emit_expr(c, recv, b);
-        buf_printf(b, ", \"%s\")", cn);
+        /* instance_of? is an exact-class test, not an ancestor walk: an
+           ArgumentError is not instance_of?(StandardError) (#3013) */
+        if (sp_streq(name, "instance_of?")) {
+          buf_puts(b, "(strcmp(sp_exc_class_name("); emit_expr(c, recv, b);
+          buf_printf(b, "), \"%s\") == 0)", cn);
+        } else {
+          buf_puts(b, "sp_exc_is_a("); emit_expr(c, recv, b);
+          buf_printf(b, ", \"%s\")", cn);
+        }
         return;
       }
     }
