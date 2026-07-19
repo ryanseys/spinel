@@ -138,6 +138,13 @@ sp_Time sp_time_with_usec(sp_Time t, int64_t usec) {
   t.tv_nsec = (int32_t)(usec * 1000);
   return t;
 }
+/* a Float microsecond argument carries into the nanosecond field (#3092). */
+sp_Time sp_time_with_usec_f(sp_Time t, double usec) {
+  if (usec < 0 || usec >= 1000000)
+    sp_raise_cls("ArgumentError", "subsecx out of range");
+  t.tv_nsec = (int32_t)(usec * 1000.0);
+  return t;
+}
 
 /* Time.new(String): the fixed CRuby form "YYYY-MM-DD HH:MM:SS[.frac]" with
    an optional " +HH:MM" / " -HH:MM" / " UTC" zone suffix. A date without a

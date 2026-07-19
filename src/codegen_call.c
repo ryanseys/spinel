@@ -3808,7 +3808,9 @@ else {
     }
     buf_puts(b, "sp_time_new_off(");
   }
-else if (argc == 7) buf_printf(b, "sp_time_with_usec(sp_time_new%s(", is_utc ? "_utc" : "");
+else if (argc == 7) buf_printf(b, "%s(sp_time_new%s(",
+                               comp_ntype(c, argv[6]) == TY_FLOAT ? "sp_time_with_usec_f" : "sp_time_with_usec",
+                               is_utc ? "_utc" : "");
 else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
   for (int i = 0; i < 6; i++) {
     if (i) buf_puts(b, ", ");
