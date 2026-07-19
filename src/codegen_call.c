@@ -7172,8 +7172,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; const char *_t%d = _t%d ? sp_str_dup_external(_t%d) : ", tv, tk, tk);
         if (argc >= 2) emit_expr(c, argv[1], b);
         else
-          /* no default: CRuby raises KeyError naming the key */
-          buf_printf(b, "(sp_raise_cls(\"KeyError\", sp_sprintf(\"key not found: \\\"%%s\\\"\", _t%d)), (const char *)0)", tky);
+          /* no default: CRuby raises KeyError naming the key. Route it through
+             sp_raise_key_not_found so the key is staged for #key (#3027). */
+          buf_printf(b, "(sp_raise_key_not_found(sp_box_str(_t%d)), (const char *)0)", tky);
         buf_printf(b, "; _t%d; })", tv);
         return;
       }
