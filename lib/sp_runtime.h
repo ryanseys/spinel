@@ -2644,6 +2644,16 @@ SP_COLD static const char *sp_stage_args_msg(const char *msg, mrb_int n, sp_RbVa
   sp_exc_stage_key(sp_box_poly_array(a));
   return msg;
 }
+/* Like sp_stage_args_msg but also stages the receiver for NoMethodError#receiver
+   when the gate arm knows the receiver value at compile time (#3068). */
+SP_COLD static const char *sp_stage_recv_args_msg(const char *msg, sp_RbVal recv, mrb_int n, sp_RbVal *args) {
+  sp_exc_stage_recv(recv);
+  return sp_stage_args_msg(msg, n, args);
+}
+SP_COLD static const char *sp_stage_recv_msg(const char *msg, sp_RbVal recv) {
+  sp_exc_stage_recv(recv);
+  return msg;
+}
 /* Float#round(half:) tie-breaking: :even is banker's rounding (rint under
    the default FE_TONEAREST), :down rounds ties toward zero. (:up is the
    plain round().) */

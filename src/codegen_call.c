@@ -16650,8 +16650,30 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (gty && (sp_streq(gty, "SplatNode") || sp_streq(gty, "BlockArgumentNode") ||
                         sp_streq(gty, "KeywordHashNode"))) gstage = 0;
           }
+          /* stage the receiver too (NoMethodError#receiver, #3068), but only when
+             it is side-effect-free to re-emit: a bare local/self/ivar/const or a
+             literal. A side-effecting receiver would be double-evaluated. */
+          const char *_rvty = recv >= 0 ? nt_type(nt, recv) : NULL;
+          int recv_stageable = _rvty && (sp_streq(_rvty, "LocalVariableReadNode") ||
+              sp_streq(_rvty, "SelfNode") || sp_streq(_rvty, "InstanceVariableReadNode") ||
+              sp_streq(_rvty, "ConstantReadNode") || sp_streq(_rvty, "GlobalVariableReadNode") ||
+              sp_streq(_rvty, "ClassVariableReadNode") || sp_streq(_rvty, "IntegerNode") ||
+              sp_streq(_rvty, "FloatNode") || sp_streq(_rvty, "StringNode") ||
+              sp_streq(_rvty, "SymbolNode"));
           #define EMIT_GATE_MSG() do { \
-            if (gstage) { \
+            const char *_stagefn = gstage ? "sp_stage_recv_args_msg" : "sp_stage_recv_msg"; \
+            if (recv_stageable) { \
+              buf_printf(b, "%s(\"undefined method '%s' for %s\", ", _stagefn, nm ? nm : "?", rdesc); \
+              emit_boxed(c, recv, b); \
+              if (gstage) { \
+                buf_printf(b, ", %d, (sp_RbVal[]){", gac); \
+                for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed(c, gav[gk], b); } \
+                if (gac == 0) buf_puts(b, "sp_box_nil()"); \
+                buf_puts(b, "}"); \
+              } \
+              buf_puts(b, ")"); \
+            } \
+            else if (gstage) { \
               buf_printf(b, "sp_stage_args_msg(\"undefined method '%s' for %s\", %d, (sp_RbVal[]){", \
                          nm ? nm : "?", rdesc, gac); \
               for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed(c, gav[gk], b); } \
