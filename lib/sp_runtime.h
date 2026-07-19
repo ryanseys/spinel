@@ -6251,6 +6251,10 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
     {"ClosedQueueError",      "StopIteration"},
     {"NoMatchingPatternError", "StandardError"},
     {"NoMatchingPatternKeyError", "NoMatchingPatternError"},
+    {"LocalJumpError",        "StandardError"},   /* (#3025) */
+    {"SystemExit",            "Exception"},
+    {"SystemStackError",      "Exception"},
+    {"NoMemoryError",         "Exception"},
     {NULL, NULL}
   };
   /* find the exception's class chain and check if cn appears in it */

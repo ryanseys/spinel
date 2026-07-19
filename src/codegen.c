@@ -2652,7 +2652,8 @@ int is_exc_name(const char *n) {
     "LoadError", "RegexpError", "StringScanner_Error", "FiberError",
     "UncaughtThrowError", "SyntaxError", "SecurityError", "Interrupt",
     "SignalException", "ThreadError", "ClosedQueueError",
-    "NoMatchingPatternError", "NoMatchingPatternKeyError", "SystemExit", NULL
+    "NoMatchingPatternError", "NoMatchingPatternKeyError", "SystemExit",
+    "LocalJumpError", "ScriptError", NULL   /* (#3023) */
   };
   for (int i = 0; EX[i]; i++) if (sp_streq(n, EX[i])) return 1;
   return 0;
