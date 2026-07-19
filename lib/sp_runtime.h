@@ -6921,6 +6921,8 @@ const char *sp_Dir_path(sp_Dir *d);
 sp_RbVal sp_Dir_close(sp_Dir *d);
 sp_Dir *sp_Dir_rewind(sp_Dir *d);
 mrb_int sp_Dir_tell(sp_Dir *d);
+sp_Dir *sp_Dir_seek(sp_Dir *d, mrb_int pos);
+mrb_int sp_Dir_fileno(sp_Dir *d);
 sp_StrArray *sp_dir_entries(const char *path);
 /* Dir.empty?(path): a directory with no non-dot entries; a non-directory is
    false, a missing path CRuby's Errno::ENOENT (#2823). */

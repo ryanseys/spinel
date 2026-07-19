@@ -2329,8 +2329,10 @@ else {
       return TY_STRING;
     if (sp_streq(name, "children") || sp_streq(name, "entries")) return TY_STR_ARRAY;
     if (sp_streq(name, "tell") || sp_streq(name, "pos")) return TY_INT;
+    if (sp_streq(name, "fileno")) return TY_INT;      /* dirfd (#2967) */
+    if (sp_streq(name, "pos=")) return TY_INT;        /* -> assigned value (#2968) */
     if (sp_streq(name, "close")) return TY_POLY;   /* nil */
-    if (sp_streq(name, "rewind")) return TY_DIR;
+    if (sp_streq(name, "rewind") || sp_streq(name, "seek")) return TY_DIR;
     if (sp_streq(name, "each") || sp_streq(name, "each_child")) {
       int dblk3 = nt_ref(nt, id, "block");
       if (dblk3 >= 0) {

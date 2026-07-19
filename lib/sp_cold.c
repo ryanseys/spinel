@@ -1129,6 +1129,8 @@ const char *sp_Dir_path(sp_Dir *d);
 sp_RbVal sp_Dir_close(sp_Dir *d);
 sp_Dir *sp_Dir_rewind(sp_Dir *d);
 mrb_int sp_Dir_tell(sp_Dir *d);
+sp_Dir *sp_Dir_seek(sp_Dir *d, mrb_int pos);
+mrb_int sp_Dir_fileno(sp_Dir *d);
 sp_StrArray *sp_dir_entries(const char *path);
 mrb_bool sp_dir_empty(const char *path);
 const char *sp_dir_home_user(const char *user);
@@ -1443,6 +1445,8 @@ const char *sp_Dir_path(sp_Dir *d) { return d && d->path ? d->path : sp_str_empt
 sp_RbVal sp_Dir_close(sp_Dir *d) { if (d && d->dp) { closedir(d->dp); d->dp = NULL; } return sp_box_nil(); }
 sp_Dir *sp_Dir_rewind(sp_Dir *d) { if (d && d->dp) rewinddir(d->dp); return d; }
 mrb_int sp_Dir_tell(sp_Dir *d) { return d && d->dp ? (mrb_int)telldir(d->dp) : 0; }
+sp_Dir *sp_Dir_seek(sp_Dir *d, mrb_int pos) { if (d && d->dp) seekdir(d->dp, (long)pos); return d; }
+mrb_int sp_Dir_fileno(sp_Dir *d) { return d && d->dp ? (mrb_int)dirfd(d->dp) : -1; }
 sp_StrArray *sp_dir_entries(const char *path) { return sp_dir_entries_impl(path, 0); }
 mrb_bool sp_dir_empty(const char *path) {
   struct stat st;

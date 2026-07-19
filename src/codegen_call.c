@@ -8368,6 +8368,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "tell") || sp_streq(name, "pos")) && argc == 0) {
       buf_printf(b, "sp_Dir_tell(%s)", dr); free(drb.p); return;
     }
+    if (sp_streq(name, "seek") && argc == 1) {  /* Dir#seek(pos) -> self (#2967) */
+      buf_printf(b, "sp_Dir_seek(%s, ", dr); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      free(drb.p); return;
+    }
+    if (sp_streq(name, "fileno") && argc == 0) { buf_printf(b, "sp_Dir_fileno(%s)", dr); free(drb.p); return; }
+    if (sp_streq(name, "pos=") && argc == 1) {  /* Dir#pos= -> the assigned value (#2968) */
+      int tp = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", tp); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_Dir_seek(%s, _t%d); _t%d; })", dr, tp, tp);
+      free(drb.p); return;
+    }
     if ((sp_streq(name, "children") || sp_streq(name, "entries")) && argc == 0) {
       buf_printf(b, "sp_dir_entries_impl(sp_Dir_path(%s), %d)", dr,
                  sp_streq(name, "children") ? 1 : 0);
