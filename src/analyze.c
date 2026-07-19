@@ -7356,6 +7356,28 @@ void analyze_program(Compiler *c) {
           (!s->name || !sp_streq(s->name, "initialize")))
         c->classes[s->class_id].is_value_type = 0;
     }
+    /* `instance_variable_set` on self mutates the receiver just like `@x = v`;
+       a by-value class would take the write on a copy and silently drop it. */
+    if (sp_streq(ty, "CallNode")) {
+      const char *ivsn = nt_str(c->nt, id, "name");
+      if (ivsn && sp_streq(ivsn, "instance_variable_set")) {
+        int ivr = nt_ref(c->nt, id, "receiver");
+        const char *ivrt = ivr >= 0 ? nt_type(c->nt, ivr) : NULL;
+        if (ivr < 0 || (ivrt && sp_streq(ivrt, "SelfNode"))) {
+          Scope *s = comp_scope_of(c, id);
+          if (s && s->class_id >= 0 && s->class_id < c->nclasses &&
+              (!s->name || !sp_streq(s->name, "initialize")))
+            c->classes[s->class_id].is_value_type = 0;
+        }
+        else {
+          TyKind ivrty = comp_ntype(c, ivr);
+          if (ty_is_object(ivrty)) {
+            int q = ty_object_class(ivrty);
+            if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+          }
+        }
+      }
+    }
     /* unsafe uses that would need a heap pointer / boxing (void* slot) */
     if (sp_streq(ty, "ArrayNode") || sp_streq(ty, "HashNode") ||
         sp_streq(ty, "KeywordHashNode")) {
