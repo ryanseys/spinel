@@ -1614,6 +1614,10 @@ void emit_expr(Compiler *c, int id, Buf *b) {
          C macro so the value is the platform's own clock id, as CRuby's is. */
       if (sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID")) { buf_puts(b, "((mrb_int)CLOCK_PROCESS_CPUTIME_ID)"); return; }
       if (sp_streq(nm, "CLOCK_THREAD_CPUTIME_ID"))  { buf_puts(b, "((mrb_int)CLOCK_THREAD_CPUTIME_ID)"); return; }
+      /* getpriority/setpriority `which` selectors (#3046) */
+      if (sp_streq(nm, "PRIO_PROCESS")) { buf_puts(b, "((mrb_int)PRIO_PROCESS)"); return; }
+      if (sp_streq(nm, "PRIO_PGRP"))    { buf_puts(b, "((mrb_int)PRIO_PGRP)"); return; }
+      if (sp_streq(nm, "PRIO_USER"))    { buf_puts(b, "((mrb_int)PRIO_USER)"); return; }
     }
     if (par_nmc && sp_streq(par_nmc, "Integer") && nm &&
         (sp_streq(nm, "MAX") || sp_streq(nm, "MIN"))) {

@@ -64,6 +64,7 @@ static int sp_bt_n = 0;
 #endif
 #include <unistd.h>
 #include <signal.h>
+#include <sys/resource.h>   /* PRIO_* selectors for Process.getpriority */
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <sys/file.h>
@@ -6796,6 +6797,8 @@ sp_Time sp_file_mtime(const char *path);
 sp_Time sp_file_atime(const char *path);
 sp_Time sp_file_ctime(const char *path);
 sp_Time sp_file_birthtime(const char *path);
+mrb_int sp_process_getpriority(mrb_int which, mrb_int who);
+sp_IntArray *sp_process_groups(void);
 /* ---- the File stat/predicate and IO-op surface (#2774-#2778, #2782) ---- */
 const char *sp_file_ftype(const char *path);
 mrb_bool sp_file_writable(const char *path);

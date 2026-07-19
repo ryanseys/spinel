@@ -2031,7 +2031,9 @@ else {
       if (sp_streq(name, "pid") || sp_streq(name, "ppid") ||
           sp_streq(name, "uid") || sp_streq(name, "gid") ||
           sp_streq(name, "euid") || sp_streq(name, "egid") ||
-          sp_streq(name, "getsid") || sp_streq(name, "getpgrp")) return TY_INT;
+          sp_streq(name, "getsid") || sp_streq(name, "getpgrp") ||
+          (sp_streq(name, "getpriority") && argc == 2)) return TY_INT;
+      if (sp_streq(name, "groups") && argc == 0) return TY_INT_ARRAY;
       if (sp_streq(name, "clock_gettime") || sp_streq(name, "clock_getres")) {
         /* an integer unit (:nanosecond/:microsecond/:millisecond/:second) makes
            the result an Integer; the default and float units keep it Float. */
@@ -5378,7 +5380,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (par_nm && sp_streq(par_nm, "Process")) {
       /* clock ids (codegen emits their integer values) */
       if (nm && (sp_streq(nm, "CLOCK_MONOTONIC") || sp_streq(nm, "CLOCK_REALTIME") ||
-                 sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID") || sp_streq(nm, "CLOCK_THREAD_CPUTIME_ID")))
+                 sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID") || sp_streq(nm, "CLOCK_THREAD_CPUTIME_ID") ||
+                 sp_streq(nm, "PRIO_PROCESS") || sp_streq(nm, "PRIO_PGRP") || sp_streq(nm, "PRIO_USER")))
         return TY_INT;
     }
     if (par_nm && sp_streq(par_nm, "Integer")) {

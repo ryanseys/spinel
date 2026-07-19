@@ -11941,6 +11941,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else buf_puts(b, " / 1e9)");  /* float_second (default) */
       return;
     }
+    if (sp_streq(name, "getpriority") && argc == 2) {  /* (#3046) */
+      buf_puts(b, "sp_process_getpriority("); emit_int_expr(c, argv[0], b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+      return;
+    }
+    if (sp_streq(name, "groups") && argc == 0) {  /* (#3046) */
+      buf_puts(b, "sp_process_groups()"); return;
+    }
   }
 
   /* Integer.sqrt(n) -> integer square root (exact, Newton's method) */

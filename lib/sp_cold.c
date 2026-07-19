@@ -22,6 +22,8 @@
 #include "sp_array.h"   /* sp_StrArray for Dir.glob */
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/resource.h>   /* getpriority for Process.getpriority */
 #include <fcntl.h>      /* AT_FDCWD for statx */
 #include <errno.h>
 #include "sp_time.h"   /* sp_Time for File.mtime */
@@ -551,6 +553,25 @@ sp_Time sp_file_birthtime(const char *path) {  /* (#2985) */
   sp_raise_cls("NotImplementedError", "birthtime() function is unimplemented");
   return (sp_Time){0, 0, 0};
 #endif
+}
+mrb_int sp_process_getpriority(mrb_int which, mrb_int who) {  /* (#3046) */
+  errno = 0;
+  int r = getpriority((int)which, (id_t)who);
+  if (r == -1 && errno != 0)
+    sp_raise_cls(errno == EINVAL ? "Errno::EINVAL" : (errno == ESRCH ? "Errno::ESRCH" : "SystemCallError"),
+                 strerror(errno));
+  return (mrb_int)r;
+}
+sp_IntArray *sp_process_groups(void) {  /* (#3046) */
+  sp_IntArray *a = sp_IntArray_new();
+  int n = getgroups(0, NULL);
+  if (n <= 0) return a;
+  gid_t *buf = (gid_t *)malloc(sizeof(gid_t) * (size_t)n);
+  if (!buf) return a;
+  n = getgroups(n, buf);
+  for (int i = 0; i < n; i++) sp_IntArray_push(a, (mrb_int)buf[i]);
+  free(buf);
+  return a;
 }
 
 mrb_int sp_file_size(const char *path) {
