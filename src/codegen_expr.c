@@ -2664,6 +2664,16 @@ else {
     else unsupported(c, id, "retry (outside rescue)");
     return;
   }
+  /* `next v` in value position -- the tail of a proc/block body, as in
+     `proc { next 5 }`. Leaving the block with a value IS the body's value
+     there, so the expression is just v (a bare `next` yields nil). The
+     early-exit forms are handled by the statement emitter (#3026). */
+  if (sp_streq(ty, "NextNode")) {
+    int nargs = nt_ref(nt, id, "arguments");
+    int nvc = 0; const int *nv = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nvc) : NULL;
+    if (nvc == 1) { emit_expr(c, nv[0], b); return; }
+    if (nvc == 0) { buf_puts(b, "sp_box_nil()"); return; }
+  }
 
   unsupported(c, id, "expression");
 }
