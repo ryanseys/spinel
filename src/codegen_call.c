@@ -9753,6 +9753,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
       return;
     }
+    /* a raised/constructed exception is not frozen in CRuby (#3004) */
+    if (sp_streq(name, "frozen?") && argc == 0) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_bool)0)");
+      return;
+    }
     /* eql? is Object#eql? -- identity, not Exception#== (#2769) */
     if (sp_streq(name, "eql?") && argc == 1) {
       if (comp_ntype(c, argv[0]) == TY_EXCEPTION) {
