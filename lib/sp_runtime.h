@@ -2818,6 +2818,9 @@ static mrb_int sp_poly_spaceship(sp_RbVal a, sp_RbVal b) {
   if (a.tag == b.tag &&
       (a.tag == SP_TAG_NIL || (a.tag == SP_TAG_BOOL && a.v.b == b.v.b)))
     return 0;
+  /* the default Object#<=> answers 0 when the operands are ==, nil otherwise
+     -- so an object compared with itself is 0, not nil (#3017) */
+  if (sp_poly_eq(a, b)) return 0;
   return SP_INT_NIL;
 }
 static mrb_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp < 0; }
