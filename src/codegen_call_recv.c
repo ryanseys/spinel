@@ -7521,6 +7521,15 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
             emit_expr(c, hi9, b); return 1;
           }
           if (argc == 0 && sp_streq(name, "max") && !excl9) { emit_expr(c, hi9, b); return 1; }
+          /* blockless count: the succ-sequence length (#3070). Range#size is
+             nil for a non-numeric range, so it is not served here. */
+          if (argc == 0 && nt_ref(nt, id, "block") < 0 && sp_streq(name, "count")) {
+            int ta9 = ++g_tmp;
+            buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_from_string_range(", ta9);
+            emit_expr(c, lo9, b); buf_puts(b, ", "); emit_expr(c, hi9, b);
+            buf_printf(b, ", %d); (mrb_int)_t%d->len; })", excl9, ta9);
+            return 1;
+          }
           if (argc == 1 && (sp_streq(name, "first") || sp_streq(name, "last"))) {
             int ta9 = ++g_tmp, tn9 = ++g_tmp;
             buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_from_string_range(", ta9);
