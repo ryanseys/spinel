@@ -9357,17 +9357,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "sp_krand_below(%lldLL)", m);
         return;
       }
+      /* A Float bound truncates to an integer (rand(3.5) draws over [0,3)), but
+         a non-finite bound (Infinity/NaN) raises FloatDomainError rather than
+         casting garbage to an integer (#3049); evaluate into a double first so
+         the finiteness check precedes the narrowing cast. */
+      if (comp_ntype(c, av[0]) == TY_FLOAT) {
+        int tf = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ double _t%d = ", tf); emit_float_expr(c, av[0], b);
+        buf_printf(b, "; if (!isfinite(_t%d)) sp_raise_cls(\"FloatDomainError\","
+                      " isnan(_t%d) ? \"NaN\" : \"Infinity\");", tf, tf);
+        buf_printf(b, " mrb_int _t%d = (mrb_int)_t%d; if (_t%d < 0) _t%d = -_t%d;"
+                      " _t%d > 0 ? sp_box_int(sp_krand_below(_t%d))"
+                      " : sp_box_float(sp_krand_float()); })",
+                   tn, tf, tn, tn, tn, tn, tn);
+        return;
+      }
       /* a dynamic Integer argument may be 0 at run time (a Float [0,1)) or
          nonzero (an Integer [0,|n|)), so the result is boxed and chosen at
-         run time (#2549). A Float bound truncates to an integer (rand(3.5)
-         draws over [0,3)); cast explicitly so the narrowing is intentional,
-         not a warning (#2868). */
+         run time (#2549). */
       int tn = ++g_tmp;
-      int a0_flt = comp_ntype(c, av[0]) == TY_FLOAT;
       buf_printf(b, "({ mrb_int _t%d = ", tn);
-      if (a0_flt) buf_puts(b, "(mrb_int)(");
       emit_int_expr(c, av[0], b);
-      if (a0_flt) buf_puts(b, ")");
       buf_printf(b, "; if (_t%d < 0) _t%d = -_t%d; _t%d > 0"
                     " ? sp_box_int(sp_krand_below(_t%d))"
                     " : sp_box_float(sp_krand_float()); })",

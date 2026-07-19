@@ -671,6 +671,16 @@ else {
       buf_puts(b, "sp_raise_cls(\"Errno::EDOM\", \"Domain error - rand\");\n");
       return 1;
     }
+    /* a non-finite Float bound still raises FloatDomainError even when the
+       result is unused (#3049) */
+    if (comp_ntype(c, argv[0]) == TY_FLOAT) {
+      int tf = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "{ double _t%d = ", tf); emit_float_expr(c, argv[0], b);
+      buf_printf(b, "; if (!isfinite(_t%d)) sp_raise_cls(\"FloatDomainError\","
+                    " isnan(_t%d) ? \"NaN\" : \"Infinity\"); }\n", tf, tf);
+      return 1;
+    }
     emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, ");\n");
     return 1;
   }
