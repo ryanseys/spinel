@@ -5381,6 +5381,44 @@ static void mark_empty_hash_key_ctx(Compiler *c) {
     }
   }
 }
+/* `TBL = {}` followed by `TBL[k] = v` elsewhere: an empty literal bound to a
+   constant has no type of its own, so the constant got no runtime slot at all
+   and every read raised "uninitialized constant". Derive the variant from the
+   constant's index-writes (#2879). */
+static void mark_empty_hash_const_writes(Compiler *c) {
+  if (!c->empty_hash_want) return;
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_ConstantWriteNode) continue;
+    const char *cn = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    if (!cn || v < 0 || v >= c->node_cap) continue;
+    if (nt_kind(nt, v) != NK_HashNode && nt_kind(nt, v) != NK_KeywordHashNode) continue;
+    int en = 0; nt_arr(nt, v, "elements", &en);
+    if (en != 0 || ty_is_hash(c->empty_hash_want[v])) continue;
+    TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
+    for (int w = 0; w < nt->count; w++) {
+      if (nt_kind(nt, w) != NK_CallNode) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, "[]=")) continue;
+      int wr = nt_ref(nt, w, "receiver");
+      if (wr < 0 || nt_kind(nt, wr) != NK_ConstantReadNode) continue;
+      const char *rn = nt_str(nt, wr, "name");
+      if (!rn || !sp_streq(rn, cn)) continue;
+      int wa = nt_ref(nt, w, "arguments");
+      int wan = 0; const int *wav = wa >= 0 ? nt_arr(nt, wa, "arguments", &wan) : NULL;
+      if (wan < 2) continue;
+      kt = ty_unify(kt, infer_type(c, wav[0]));
+      vt = ty_unify(vt, infer_type(c, wav[1]));
+    }
+    /* No resolved index-write: the constant still needs a slot, so give it the
+       widest variant rather than leaving it typeless (and unreachable). */
+    TyKind want = (kt == TY_SYMBOL) ? TY_SYM_POLY_HASH
+                : (kt == TY_UNKNOWN) ? TY_POLY_POLY_HASH : ty_hash_of(kt, vt);
+    if (!ty_is_hash(want)) want = (kt == TY_STRING) ? TY_STR_POLY_HASH : TY_POLY_POLY_HASH;
+    c->empty_hash_want[v] = want;
+  }
+}
 static void mark_empty_hash_receivers(Compiler *c) {
   if (!c->empty_hash_recv) return;
   const NodeTable *nt = c->nt;
@@ -5744,6 +5782,7 @@ void analyze_program(Compiler *c) {
      indexed with (#3028, #3029) */
   mark_empty_hash_cmp_peers(c);
   mark_empty_hash_key_ctx(c);
+  mark_empty_hash_const_writes(c);
 
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
