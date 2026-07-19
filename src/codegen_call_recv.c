@@ -4905,7 +4905,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "to_sym") || sp_streq(name, "intern")) buf_printf(b, "sp_sym_intern(%s)", r);
       else if (sp_streq(name, "to_c") && argc == 0) buf_printf(b, "sp_str_to_c(%s)", r);
-      else if (sp_streq(name, "chr") && argc == 0) buf_printf(b, "sp_str_substr(%s, 0, 1)", r);
+      else if (sp_streq(name, "chr") && argc == 0) buf_printf(b, "sp_str_chr(%s)", r);
       else if (sp_streq(name, "length") || sp_streq(name, "size")) {
         if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
             sp_streq(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
