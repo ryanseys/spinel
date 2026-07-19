@@ -5329,6 +5329,37 @@ static void mark_empty_hash_cmp_peers(Compiler *c) {
     }
   }
 }
+/* A bare `{}` indexed or fetched with a statically-typed key takes the variant
+   that key selects, instead of the StrPolyHash fallback that would coerce a
+   Symbol key to a String (#3028) or emit ill-typed C for an Integer one
+   (#3029). Values stay poly: the empty literal says nothing about them. */
+static void mark_empty_hash_key_ctx(Compiler *c) {
+  if (!c->empty_hash_want) return;
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "fetch") && !sp_streq(nm, "[]") &&
+                !sp_streq(nm, "key?") && !sp_streq(nm, "has_key?") &&
+                !sp_streq(nm, "include?") && !sp_streq(nm, "dig"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || recv >= c->node_cap) continue;
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk != NK_HashNode && rk != NK_KeywordHashNode) continue;
+    int en = 0; nt_arr(nt, recv, "elements", &en);
+    if (en != 0) continue;
+    if (ty_is_hash(c->empty_hash_want[recv])) continue;   /* an earlier context won */
+    int anode = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+    if (an < 1) continue;
+    TyKind kt = infer_type(c, av[0]);
+    TyKind want = TY_UNKNOWN;
+    if (kt == TY_SYMBOL) want = TY_SYM_POLY_HASH;
+    else if (kt == TY_STRING) want = TY_STR_POLY_HASH;
+    else if (kt == TY_INT) want = TY_POLY_POLY_HASH;  /* no Int->poly variant */
+    if (ty_is_hash(want)) c->empty_hash_want[recv] = want;
+  }
+}
 static void mark_empty_hash_receivers(Compiler *c) {
   if (!c->empty_hash_recv) return;
   const NodeTable *nt = c->nt;
@@ -5688,8 +5719,10 @@ void analyze_program(Compiler *c) {
   mark_empty_literal_tails(c);
   mark_empty_literal_args(c);
   /* after the arg/receiver marks: a bare `{}` with no other context takes its
-     variant from the peer it is compared against (#3040) */
+     variant from the peer it is compared against (#3040) or from the key it is
+     indexed with (#3028, #3029) */
   mark_empty_hash_cmp_peers(c);
+  mark_empty_hash_key_ctx(c);
 
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
