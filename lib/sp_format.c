@@ -393,6 +393,26 @@ mrb_int sp_rational_round_i(sp_Rational a) {
   }
   return sp_rat_fit(q);
 }
+/* Rational#round(half: :even): ties go to the even neighbor (#3047). */
+mrb_int sp_rational_round_i_even(sp_Rational a) {
+  sp_rat_wide q = a.num / a.den, r = a.num % a.den;
+  if (r != 0) {
+    sp_rat_wide r2 = (r < 0 ? -r : r) * 2;
+    if (r2 > a.den) q += a.num < 0 ? -1 : 1;           /* past the half: round away */
+    else if (r2 == a.den && (q % 2 != 0)) q += a.num < 0 ? -1 : 1;  /* tie: to even */
+  }
+  return sp_rat_fit(q);
+}
+/* Rational#round(half: :down): ties go toward zero (#3047). */
+mrb_int sp_rational_round_i_down(sp_Rational a) {
+  sp_rat_wide q = a.num / a.den, r = a.num % a.den;
+  if (r != 0) {
+    sp_rat_wide r2 = (r < 0 ? -r : r) * 2;
+    if (r2 > a.den) q += a.num < 0 ? -1 : 1;           /* past the half: round away */
+    /* an exact tie keeps the toward-zero truncated quotient */
+  }
+  return sp_rat_fit(q);
+}
 /* Rational#div: floor division to an Integer (CRuby Numeric#div). */
 mrb_int sp_rational_idiv(sp_Rational a, sp_Rational b) {
   if (b.num == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");

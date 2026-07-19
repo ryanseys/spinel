@@ -48,6 +48,8 @@ sp_Rational sp_rational_neg(sp_Rational a);
 sp_Rational sp_rational_abs(sp_Rational a);
 sp_Rational sp_rational_pow(sp_Rational a, mrb_int e);
 mrb_int sp_rational_round_i(sp_Rational a);              /* Rational#round (no digits) */
+mrb_int sp_rational_round_i_even(sp_Rational a);         /* Rational#round(half: :even) */
+mrb_int sp_rational_round_i_down(sp_Rational a);         /* Rational#round(half: :down) */
 mrb_int sp_rational_idiv(sp_Rational a, sp_Rational b);  /* Rational#div (floor) */
 mrb_int sp_rational_floor_i(sp_Rational a);              /* Rational#floor (no digits) */
 mrb_int sp_rational_ceil_i(sp_Rational a);               /* Rational#ceil (no digits) */

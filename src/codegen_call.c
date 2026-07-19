@@ -2477,6 +2477,18 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
            (sp_streq(name, "truncate") && argc == 0))) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return 1; }
       if (sp_streq(name, "round") && argc == 0) { buf_puts(b, "sp_rational_round_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      /* round(half: :even/:down/:up) with no digits: nearest integer with the
+         given tie-breaking (#3047) */
+      if (sp_streq(name, "round") && argc == 1 && nt_type(nt, argv[0]) &&
+          sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
+        int hv = kwh_lookup(nt, argv[0], "half");
+        const char *hm = (hv >= 0 && nt_type(nt, hv) && sp_streq(nt_type(nt, hv), "SymbolNode"))
+                           ? nt_str(nt, hv, "value") : NULL;
+        const char *fn = (hm && sp_streq(hm, "even")) ? "sp_rational_round_i_even"
+                       : (hm && sp_streq(hm, "down")) ? "sp_rational_round_i_down"
+                       : "sp_rational_round_i";
+        buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+      }
       if (sp_streq(name, "floor") && argc == 0) { buf_puts(b, "sp_rational_floor_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "ceil") && argc == 0)  { buf_puts(b, "sp_rational_ceil_i(");  emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "zero?") && argc == 0)     { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num == 0)"); return 1; }

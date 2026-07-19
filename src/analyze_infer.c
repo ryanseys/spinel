@@ -1059,6 +1059,10 @@ TyKind infer_call(Compiler *c, int id) {
       if (argc == 1) {
         if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode"))
           return nt_int(nt, argv[0], "value", 0) > 0 ? TY_RATIONAL : TY_INT;
+        /* round(half: :x) with no digits rounds to an Integer (#3047) */
+        if (sp_streq(name, "round") && nt_type(nt, argv[0]) &&
+            sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
+          return TY_INT;
         return TY_POLY;
       }
       return TY_INT;
