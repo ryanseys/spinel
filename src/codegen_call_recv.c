@@ -233,6 +233,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                          sp_streq(rvt2, "InstanceVariableReadNode"));
       int to = ++g_tmp, tn2 = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b); buf_puts(b, "; (void)_t"); buf_printf(b, "%d; ", to);
+      /* an in-place mutator on a frozen string raises FrozenError (#3003) */
+      buf_printf(b, "if (sp_str_is_frozen_val(_t%d)) sp_raise_frozen_str(_t%d); ", to, to);
       nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
       Buf nb; memset(&nb, 0, sizeof nb);
       emit_expr(c, id, &nb);
@@ -367,7 +369,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                          sp_streq(rvt2, "InstanceVariableReadNode"));
       int to = ++g_tmp, ti2 = ++g_tmp, tn2 = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b);
-      buf_printf(b, "; mrb_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_str_check_mutable(_t%d);", to);   /* frozen -> FrozenError (#3003) */
+      buf_printf(b, " mrb_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
       buf_printf(b, "; if (_t%d < 0) _t%d += (mrb_int)sp_str_length(_t%d) + 1;", ti2, ti2, to);
       buf_printf(b, " const char *_t%d = sp_str_splice_at(_t%d, _t%d, 0, ", tn2, to, ti2);
       emit_str_expr(c, argv[1], b); buf_puts(b, ", 0); ");
@@ -380,7 +383,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
                          sp_streq(rvt2, "InstanceVariableReadNode"));
       int tn2 = ++g_tmp;
-      buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
+      buf_printf(b, "({ sp_str_check_mutable(");   /* frozen -> FrozenError (#3003) */
+      emit_expr(c, recv, b);
       buf_printf(b, "); const char *_t%d = ", tn2); emit_str_expr(c, argv[0], b); buf_puts(b, "; ");
       if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
       buf_printf(b, "_t%d; })", tn2);
@@ -445,7 +449,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
          lvalue receiver; a literal receiver just yields the removed part. */
       int to = ++g_tmp, tb2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b);
-      buf_printf(b, "; mrb_int _t%d = (mrb_int)sp_str_length(_t%d); mrb_int _t%d, _t%d;",
+      buf_printf(b, "; sp_str_check_mutable(_t%d);", to);   /* frozen -> FrozenError (#3003) */
+      buf_printf(b, " mrb_int _t%d = (mrb_int)sp_str_length(_t%d); mrb_int _t%d, _t%d;",
                  tn2, to, tb2, tl2);
       if (comp_ntype(c, argv[0]) == TY_RANGE) {
         int trg = ++g_tmp;
