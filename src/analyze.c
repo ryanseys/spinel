@@ -5243,7 +5243,10 @@ static int param_nonstr_index_written(Compiler *c, int mi, int p) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an < 2) continue;
     TyKind kt = infer_type(c, av[0]);
-    if (kt == TY_INT || kt == TY_SYMBOL) return 1;
+    /* An unresolved key (typically a parameter whose type arrives from the call
+       sites) cannot be assumed String: defaulting the caller's `{}` to the
+       string-keyed variant would drop the callee's write (#2894). */
+    if (kt == TY_INT || kt == TY_SYMBOL || kt == TY_UNKNOWN || kt == TY_POLY) return 1;
   }
   return 0;
 }
