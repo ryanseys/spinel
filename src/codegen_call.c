@@ -8599,6 +8599,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, recv, &rb);
     r = rb.p ? rb.p : "NULL";
     /* metadata via the handle's path (#2790) */
+    /* f.chown(uid, gid) on the handle's path; a nil id leaves it unchanged and
+       the instance form evaluates to 0, not the path count (#3104) */
+    if (sp_streq(name, "chown") && argc == 2) {
+      buf_printf(b, "((void)sp_file_chown(sp_File_path(%s), ", r);
+      for (int ci = 0; ci < 2; ci++) {
+        if (ci) buf_puts(b, ", ");
+        if (nt_type(nt, argv[ci]) && sp_streq(nt_type(nt, argv[ci]), "NilNode")) buf_puts(b, "-1LL");
+        else emit_int_expr(c, argv[ci], b);
+      }
+      buf_puts(b, "), (mrb_int)0)");
+      free(rb.p); return;
+    }
     if (argc == 0 && (sp_streq(name, "size") || sp_streq(name, "mtime") ||
                       sp_streq(name, "atime") || sp_streq(name, "ctime") ||
                       sp_streq(name, "birthtime") || sp_streq(name, "ftype"))) {
@@ -11849,13 +11861,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       /* signame takes an Integer; a statically non-Integer argument is a
          TypeError, not a bogus name or a compile abort (#3075, #3076) */
       TyKind sa0 = comp_ntype(c, argv[0]);
-      if (sa0 != TY_INT && sa0 != TY_BIGINT && sa0 != TY_POLY && sa0 != TY_UNKNOWN) {
+      if (sa0 != TY_INT && sa0 != TY_BIGINT && sa0 != TY_FLOAT &&
+          sa0 != TY_POLY && sa0 != TY_UNKNOWN) {
         buf_puts(b, "((void)("); emit_boxed(c, argv[0], b);
         buf_puts(b, "), (sp_raise_cls(\"TypeError\", \"no implicit conversion to integer\"), (const char *)0))");
         return;
       }
       buf_puts(b, "sp_signal_signame(");
-      emit_int_expr(c, argv[0], b);
+      /* a Float argument truncates toward zero, as CRuby's to_int does (#3105) */
+      if (sa0 == TY_FLOAT) { buf_puts(b, "(mrb_int)("); emit_float_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_int_expr(c, argv[0], b);
       buf_puts(b, ")");
       return;
     }

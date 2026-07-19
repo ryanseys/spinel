@@ -2389,6 +2389,7 @@ else {
     if (sp_streq(name, "fileno") || sp_streq(name, "to_i") || sp_streq(name, "lineno") ||
         sp_streq(name, "lineno=") || sp_streq(name, "pos=") || sp_streq(name, "flock") ||
         sp_streq(name, "fsync") || sp_streq(name, "fdatasync") || sp_streq(name, "getbyte") ||
+        (sp_streq(name, "chown") && argc == 2) ||   /* (#3104) */
         sp_streq(name, "sysseek") || sp_streq(name, "size") || sp_streq(name, "chmod") ||
         sp_streq(name, "mode"))
       return TY_INT;
