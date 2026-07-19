@@ -2052,6 +2052,10 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
         if (inner >= 0) {
           TyKind ht = infer_type(c, inner);
           if (ty_is_hash(ht)) ds_val = ty_hash_val(ht);
+          /* A poly splat source (a hash read out of a poly container, e.g. a
+             `map { |c| f(**c) }` block param) forwards poly values -- bind the
+             callee's keyword params poly, not the source's hash type (#2885). */
+          else if (ht == TY_POLY) ds_val = TY_POLY;
         } else {
           /* Anonymous `**` forwards the enclosing __anon_kwrest (a SymPolyHash
              with poly values). Bind the callee's keyword params as poly rather

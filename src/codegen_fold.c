@@ -5492,6 +5492,18 @@ int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
         buf_printf(g_pre, " _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "");
         free(hb.p);
       }
+      else if (*out_type == TY_POLY) {
+        /* The `**` source is a bare poly value that holds a Hash at run time
+           (e.g. an element read from a poly array, `arr.map { |c| f(**c) }`).
+           Materialize it; per-param values are pulled by a runtime key lookup
+           in emit_ds_param_extract. (#2885) */
+        ds_hash_tmp = ++g_tmp;
+        Buf hb; memset(&hb, 0, sizeof hb);
+        emit_expr(c, inner2, &hb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
+        free(hb.p);
+      }
     } else {
       /* Anonymous `**`: materialize the enclosing __anon_kwrest (SymPolyHash)
          so the per-param extraction and kwrest collection can read it. */
@@ -5517,6 +5529,30 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
   const char *hn = ty_hash_cname(ds_hash_type);
   LocalVar *plv = scope_local(m, m->pnames[i]);
   TyKind pt = plv ? plv->type : TY_INT;
+  if (ds_hash_type == TY_POLY) {
+    /* Bare-poly `**` source (a Hash only known at run time): pull each keyword
+       by a runtime key lookup, unboxing to the param type. (#2885) */
+    Buf ub; memset(&ub, 0, sizeof ub);
+    emit_unbox_text(c, pt, "_v", &ub);
+    if (m->pdefault && m->pdefault[i] >= 0) {
+      Buf db; memset(&db, 0, sizeof db);
+      emit_arg_or_default(c, m, i, -1, &db);
+      buf_printf(out,
+                 "({ mrb_bool _f=0; sp_RbVal _v = sp_poly_hash_get_pair_val(_t%d, "
+                 "sp_box_sym(sp_sym_intern(\"%s\")), &_f); _f ? (%s) : (%s); })",
+                 ds_hash_tmp, m->pnames[i], ub.p ? ub.p : "_v",
+                 db.p ? db.p : default_value(pt));
+      free(db.p);
+    }
+    else {
+      buf_printf(out,
+                 "({ mrb_bool _f=0; sp_RbVal _v = sp_poly_hash_get_pair_val(_t%d, "
+                 "sp_box_sym(sp_sym_intern(\"%s\")), &_f); (void)_f; (%s); })",
+                 ds_hash_tmp, m->pnames[i], ub.p ? ub.p : "_v");
+    }
+    free(ub.p);
+    return;
+  }
   if (hn) {
     /* SymPoly: get returns sp_RbVal, unbox to param type.
        Other sym/str keyed hashes: get returns the value type directly. */
