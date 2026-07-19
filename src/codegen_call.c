@@ -9665,10 +9665,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            the constructor emission and the rescue-arm canonicalization);
            any object can be the message -- non-String coerces via to_s (#2741) */
         const char *rn = (xc >= 0) ? class_ruby_name(c, xc) : NULL;
-        buf_printf(b, "sp_raise_cls(\"%s\", ", rn ? rn : RAISE_EXC_NAME(av[0], cn));
-        if (comp_ntype(c, av[1]) == TY_STRING) emit_expr(c, av[1], b);
-        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, av[1], b); buf_puts(b, ")"); }
-        buf_puts(b, ")");
+        const char *effn = rn ? rn : RAISE_EXC_NAME(av[0], cn);
+        /* `raise SignalException, "INT"` resolves the signal name so #signo and
+           the "SIG<name>" message are carried, matching SignalException.new (#3074) */
+        if (effn && sp_streq(effn, "SignalException")) {
+          buf_puts(b, "sp_raise_exc(sp_signal_exc_new(");
+          emit_boxed(c, av[1], b);
+          buf_puts(b, "))");
+        }
+        else {
+          buf_printf(b, "sp_raise_cls(\"%s\", ", effn);
+          if (comp_ntype(c, av[1]) == TY_STRING) emit_expr(c, av[1], b);
+          else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, av[1], b); buf_puts(b, ")"); }
+          buf_puts(b, ")");
+        }
       }
     }
     else {
