@@ -14501,8 +14501,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     /* Array <=> Array: lexicographic element-wise compare, or nil when an
        element pair is incomparable. Covers every builtin array kind via the
-       boxed accessor. */
-    if (ty_is_array(lrt) && ty_is_array(lat)) {
+       boxed accessor. An empty `[]` literal is TY_UNKNOWN but still an array
+       (`[] <=> []` is 0) (#2984). */
+    int rlit0 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode");
+    int alit0 = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode");
+    if ((ty_is_array(lrt) || (rlit0 && lrt == TY_UNKNOWN)) &&
+        (ty_is_array(lat) || (alit0 && lat == TY_UNKNOWN))) {
       int ta = ++g_tmp, tb = ++g_tmp, tk = ++g_tmp, tr = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
       buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
