@@ -1,11 +1,14 @@
-class Arr
+# A user #<=> returning a non-Integer/nil value (Array/String/...) is a
+# protocol violation rejected at compile time (#2961); this guards that valid
+# Comparable usage still compiles and runs.
+class Money
   include Comparable
-  def <=>(o); [1]; end
+  attr_reader :cents
+  def initialize(c); @cents = c; end
+  def <=>(o); cents <=> o.cents; end
 end
-p (Arr.new < Arr.new  rescue $!.class)
-p (Arr.new > Arr.new  rescue $!.class)
-p (Arr.new == Arr.new rescue $!.class)
-class Num; include Comparable; def <=>(o); "x"; end; end
-p (Num.new < Num.new rescue $!.class)
-class Ok; include Comparable; attr_reader :v; def initialize(v);@v=v;end; def <=>(o); v <=> o.v; end; end
-p [Ok.new(3), Ok.new(1), Ok.new(2)].sort.map(&:v)
+p(Money.new(150) < Money.new(299))
+p(Money.new(300) > Money.new(299))
+p([Money.new(3), Money.new(1), Money.new(2)].sort.map(&:cents))
+p(Money.new(5).between?(Money.new(1), Money.new(9)))
+p(Money.new(150) == Money.new(150))

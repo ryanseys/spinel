@@ -4693,9 +4693,38 @@ static int user_cmp_needs_check(Compiler *c, int cid) {
      raises the Comparable ArgumentError instead of the inline `<op> 0` reading
      a non-int as an int (#2559). A pure Integer/Float `<=>` keeps the inline
      path (Float compares as a double correctly). */
-  return ret == TY_POLY || ret == TY_NIL ||
-         ret == TY_STRING || ret == TY_SYMBOL || ret == TY_BOOL ||
-         ty_is_array(ret) || ty_is_hash(ret);
+  return ret == TY_POLY || ret == TY_NIL;
+}
+
+/* The unified `<=>` return type across a Comparable class and its descendants,
+   or TY_UNKNOWN if none. Backs both user_cmp_needs_check and the protocol check
+   below (a statically non-{Integer,Float,nil} result is a compile-time error). */
+static TyKind user_cmp_ret_type(Compiler *c, int cid) {
+  int def = -1;
+  int mi = comp_method_in_chain(c, cid, "<=>", &def);
+  if (mi < 0) return TY_UNKNOWN;
+  TyKind ret = (TyKind)c->scopes[mi].ret;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!is_descendant(c, k, cid)) continue;
+    int kd = -1;
+    int kmi = comp_method_in_chain(c, k, "<=>", &kd);
+    if (kmi >= 0 && (TyKind)c->scopes[kmi].ret != TY_UNKNOWN)
+      ret = ty_unify(ret, (TyKind)c->scopes[kmi].ret);
+  }
+  return ret;
+}
+
+/* A `<=>` is a protocol method returning Integer | Float | nil. A statically
+   non-conforming result (String/Symbol/Bool/Array/Hash) is a definite
+   violation spinel catches at compile time; poly/unknown stay a runtime check
+   (they may be Integer at run time). Returns the offending type, else
+   TY_UNKNOWN. (#2961) */
+static TyKind user_cmp_invalid_ret(Compiler *c, int cid) {
+  TyKind ret = user_cmp_ret_type(c, cid);
+  if (ret == TY_STRING || ret == TY_SYMBOL || ret == TY_BOOL ||
+      ty_is_array(ret) || ty_is_hash(ret))
+    return ret;
+  return TY_UNKNOWN;
 }
 
 /* Bind `node`'s boxed value to a fresh rooted sp_RbVal temp in g_pre and
@@ -5063,17 +5092,10 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       }
       /* no direct == : use <=> == 0 when the class supports Comparable */
       if (comp_method_in_chain(c, ecid, "<=>", NULL) >= 0) {
-        /* a `<=>` that statically returns a non-numeric non-nil value
-           (String/Symbol/Bool) is never a valid comparison: Comparable#==
-           raises ArgumentError (unlike a nil result, which is just false).
-           Route through the checked comparator so it raises. */
-        int cmi_eq = comp_method_in_chain(c, ecid, "<=>", NULL);
-        TyKind cmpret = cmi_eq >= 0 ? (TyKind)c->scopes[cmi_eq].ret : TY_UNKNOWN;
-        if (cmpret == TY_STRING || cmpret == TY_SYMBOL || cmpret == TY_BOOL) {
-          int ta = hoist_boxed_rooted(c, recv), tb2 = hoist_boxed_rooted(c, argv[0]);
-          buf_printf(b, "(%ssp_poly_cmp_ck(_t%d, _t%d) == 0)", eq ? "" : "!", ta, tb2);
-          return 1;
-        }
+        /* a `<=>` statically returning a non-{Integer,Float,nil} value is a
+           protocol violation, caught at compile time (#2961) */
+        if (user_cmp_invalid_ret(c, ecid) != TY_UNKNOWN)
+          unsupported_feature(c, id, "Comparable operator on an object whose #<=> returns a non-Integer (protocol requires Integer or nil)");
         /* a `<=>` that can return nil: Comparable#== semantics -- identity is
            equal, an incomparable pair is false (never an error) */
         if (user_cmp_needs_check(c, ecid)) {
@@ -14481,6 +14503,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int cid4 = ty_object_class(rt);
       if (comp_method_in_chain(c, cid4, name, NULL) < 0 &&
           comp_method_in_chain(c, cid4, "<=>", NULL) >= 0) {
+        if (user_cmp_invalid_ret(c, cid4) != TY_UNKNOWN)
+          unsupported_feature(c, id, "Comparable operator on an object whose #<=> returns a non-Integer (protocol requires Integer or nil)");
         /* a `<=>` that can return nil: check it -- incomparable raises the
            Comparable ArgumentError instead of comparing a garbage value */
         if (user_cmp_needs_check(c, cid4)) {
@@ -14846,6 +14870,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int cid_b = ty_object_class(rt);
       int defcls_b = -1;
       int mi_b = comp_method_in_chain(c, cid_b, "<=>", &defcls_b);
+      if (mi_b >= 0 && user_cmp_invalid_ret(c, cid_b) != TY_UNKNOWN)
+        unsupported_feature(c, id, "Comparable operator on an object whose #<=> returns a non-Integer (protocol requires Integer or nil)");
       if (mi_b >= 0 && user_cmp_needs_check(c, cid_b)) {
         /* nil-capable `<=>`: checked comparisons (incomparable raises) */
         int ts = hoist_boxed_rooted(c, recv);

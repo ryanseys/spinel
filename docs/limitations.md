@@ -97,6 +97,14 @@ Limited today, but additively fixable; listed roughly easiest-first.
 - **`slice_before` / `slice_after` with a `Proc` pattern** — rejected at
   compile time (a stored-proc `===` call per element); use the block form.
   Range, Class, Regexp, and value patterns are supported.
+- **`Comparable` with a non-conforming `#<=>`** — `<=>` is a protocol method
+  returning `Integer` or `nil` (a `Float` is accepted, compared by sign). A
+  `<=>` whose result type is statically something else (`String`, `Array`,
+  `Hash`, `Symbol`, boolean) is a definite protocol violation: any Comparable
+  operator (`<`, `<=`, `>`, `>=`, `==`, `between?`, `clamp`) on such a receiver
+  is rejected at compile time rather than raising at run time as CRuby does.
+  A `<=>` whose result is only `poly`/unknown statically keeps the CRuby
+  runtime behavior (an incomparable pair raises `ArgumentError`).
 - **Frozen literals** — explicit `.freeze` then mutation raises `FrozenError`,
   matching CRuby. (String literals are *not* implicitly frozen — see below.)
 - **Comparable is keyed on `<=>` presence** — the Comparable operator methods
