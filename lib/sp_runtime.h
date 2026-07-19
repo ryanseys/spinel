@@ -6212,12 +6212,10 @@ static sp_RbVal sp_exc_result(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
   return e ? e->result : sp_box_nil();
 }
-/* Exception#is_a?(ClassName): checks class name and known hierarchy. */
-static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
-  sp_Exception *e = (sp_Exception *)ve;
-  if (!e || !cn) return 0;
-  if (!strcmp(e->cls_name, cn)) return 1;
-  /* Walk the well-known exception hierarchy */
+/* The builtin exception hierarchy, as {class, direct superclass} pairs. Shared
+   by Exception#is_a? and the by-name #superclass lookup (#3031). */
+static const char *sp_exc_parent_of_name(const char *cls) {
+  if (!cls) return NULL;
   static const char *const HIER[][2] = {
     {"RuntimeError",          "StandardError"},
     {"ArgumentError",         "StandardError"},
@@ -6257,14 +6255,21 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
     {"NoMemoryError",         "Exception"},
     {NULL, NULL}
   };
+  for (int i = 0; HIER[i][0]; i++)
+    if (!strcmp(cls, HIER[i][0])) return HIER[i][1];
+  return NULL;
+}
+/* Exception#is_a?(ClassName): checks class name and known hierarchy. */
+static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
+  sp_Exception *e = (sp_Exception *)ve;
+  if (!e || !cn) return 0;
+  if (!strcmp(e->cls_name, cn)) return 1;
   /* find the exception's class chain and check if cn appears in it */
   const char *cls = e->cls_name;
   int used_parent = 0;
   for (int depth = 0; depth < 20 && cls; depth++) {
     if (!strcmp(cls, cn)) return 1;
-    const char *parent = NULL;
-    for (int i = 0; HIER[i][0]; i++)
-      if (!strcmp(cls, HIER[i][0])) { parent = HIER[i][1]; break; }
+    const char *parent = sp_exc_parent_of_name(cls);
     if (!parent) {
       /* unknown (user) class: try user hierarchy first */
       if (sp_user_exc_parent_fn) { parent = sp_user_exc_parent_fn(cls); }

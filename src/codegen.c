@@ -5107,6 +5107,10 @@ char *codegen_program(const NodeTable *nt) {
      Object builtin). Returns ((sp_Class){-116}) for unknown/root. */
   {
     buf_puts(&b, "static sp_Class sp_class_superclass(sp_Class c){\n");
+    /* A rescued exception's #class carries its name with cls_id 0, which would
+       otherwise read as user class 0; resolve those by name first (#3031). */
+    buf_puts(&b, "  if(c.name){const char*_p=sp_exc_parent_of_name(c.name);"
+                 "if(_p)return ((sp_Class){-1,_p});}\n");
     buf_puts(&b, "  switch(c.cls_id){\n");
     for (int i = 0; i < c->nclasses; i++) {
       if (is_builtin_reopen(c->classes[i].name)) continue;
@@ -5156,6 +5160,11 @@ char *codegen_program(const NodeTable *nt) {
   /* nil has no superclass: stay nil rather than falling to the Object default,
      which would resurrect a terminated chain into a cycle (#2654) */
   buf_puts(&b, "  if(sp_class_nil_p(c))return SP_CLASS_NIL;\n");
+  /* A class carried by NAME (a rescued exception's #class) has no builtin
+     cls_id to switch on; resolve its superclass through the exception
+     hierarchy rather than defaulting to Object (#3031). */
+  buf_puts(&b, "  if(c.name){const char*_p=sp_exc_parent_of_name(c.name);"
+               "if(_p)return ((sp_Class){-1,_p});}\n");
   buf_puts(&b, "  switch(c.cls_id){\n");
   /* Integer, Float, Complex, Rational -> Numeric -> Object */
   buf_puts(&b, "  case -100:case -101:case -131:case -142: return ((sp_Class){-113});\n"); /* -> Numeric */
