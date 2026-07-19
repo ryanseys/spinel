@@ -4340,7 +4340,23 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_Thread_spawn_fiber(");
         emit_fiber_new(c, id, b, 0, -1);
         buf_puts(b, ", ");
-        if (argc >= 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_nil()");
+        /* a block with >1 param takes the args positionally: pack them into a
+           poly array the fiber body binds element-by-element (#2976) */
+        int tblk = nt_ref(nt, id, "block");
+        int tbp = tblk >= 0 ? nt_ref(nt, tblk, "parameters") : -1;
+        int tinner = tbp >= 0 ? nt_ref(nt, tbp, "parameters") : -1;
+        int tpn = tinner >= 0 ? tinner : tbp;
+        int treq = 0; if (tpn >= 0) nt_arr(nt, tpn, "requireds", &treq);
+        if (treq > 1) {
+          int tpa = ++g_tmp;
+          buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tpa, tpa);
+          for (int a = 0; a < argc; a++) {
+            buf_printf(b, " sp_PolyArray_push(_t%d, ", tpa); emit_boxed(c, argv[a], b); buf_puts(b, ");");
+          }
+          buf_printf(b, " sp_box_poly_array(_t%d); })", tpa);
+        }
+        else if (argc >= 1) emit_boxed(c, argv[0], b);
+        else buf_puts(b, "sp_box_nil()");
         buf_puts(b, ")");
         return 1;
       }

@@ -1402,15 +1402,25 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   char fname[48];
   snprintf(fname, sizeof fname, "_fiber_body_%d", fid);
 
-  /* Block parameter name (first required, if any) */
+  /* Block parameter names (all requireds). A Thread with multiple args passes
+     them as one poly array in resumed_value, and each param binds to an element
+     (#2976); a single param binds resumed_value directly. */
   const char *bp0 = NULL;
+  const char *bp_names[8]; int nbp = 0;
   int bp_node = nt_ref(nt, blk, "parameters");
   if (bp_node >= 0) {
     int inner = nt_ref(nt, bp_node, "parameters");
     int pn = inner >= 0 ? inner : bp_node;
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
-    if (rn > 0) bp0 = nt_str(nt, reqs[0], "name");
+    for (int i = 0; i < rn && nbp < 8; i++) {
+      const char *pnm = nt_str(nt, reqs[i], "name");
+      if (pnm) bp_names[nbp++] = pnm;
+    }
+    if (nbp > 0) bp0 = bp_names[0];
   }
+  /* multi-param binding only for a plain fiber/thread block (not a generator's
+     yielder, which uses bp0 as `y`) */
+  int multi_bind = !as_gen && nbp > 1;
   int body = nt_ref(nt, blk, "body");
   Scope *encl = comp_scope_of(c, id);
 
@@ -1437,7 +1447,9 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   if (encl) {
     for (int u = 0; u < fib_used.n; u++) {
       const char *nm = fib_used.v[u];
-      if (bp0 && sp_streq(nm, bp0)) continue;
+      int is_bp = 0;
+      for (int bi = 0; bi < nbp; bi++) if (sp_streq(nm, bp_names[bi])) { is_bp = 1; break; }
+      if (is_bp) continue;   /* every block param is bound below, never captured */
       LocalVar *lv = scope_local(encl, nm);
       if (!lv || lv->type == TY_UNKNOWN) continue;
       /* A name defined in the body (including a nested block's param/local) is
@@ -1576,7 +1588,16 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   }
 
   /* Block param: first resume value (or nil on initial resume) */
-  if (bp0) {
+  if (multi_bind) {
+    /* the args were packed into a poly array; bind each param to an element
+       (nil past the end), matching a positional block binding (#2976) */
+    for (int bi = 0; bi < nbp; bi++) {
+      const char *bpn = rename_local(bp_names[bi]);
+      buf_printf(pb, "    sp_RbVal lv_%s = sp_poly_index_poly(_fb->resumed_value, sp_box_int(%d));\n", bpn, bi);
+      buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
+    }
+  }
+  else if (bp0) {
     const char *bpn = rename_local(bp0);
     buf_printf(pb, "    sp_RbVal lv_%s = _fb->resumed_value;\n", bpn);
     buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
@@ -1588,7 +1609,9 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
       LocalVar *lv = &encl->locals[i];
       if (lv->is_param || lv->is_cell) continue;
       if (!lv->name) continue;
-      if (bp0 && sp_streq(lv->name, bp0)) continue;
+      { int is_bp = 0;
+        for (int bi = 0; bi < nbp; bi++) if (sp_streq(lv->name, bp_names[bi])) { is_bp = 1; break; }
+        if (is_bp) continue; }   /* block params declared above */
       if (nameset_has(&caps, lv->name)) continue;
       if (!nameset_has(&fib_locals, lv->name) && !nameset_has(&fib_decls, lv->name)) continue;
       if (lv->type == TY_UNKNOWN) continue;
