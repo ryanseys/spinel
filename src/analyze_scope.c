@@ -1069,6 +1069,39 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
       }
       continue;
     }
+    /* `Data.define(*syms)` / `Struct.new(*syms)`: a splatted member list whose
+       source is a literal symbol array (directly, or a local's sole array-
+       literal write) resolves at compile time to the member names (#2973). */
+    if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "SplatNode")) {
+      int se = nt_ref(nt, argv[a], "expression");
+      int arr = -1;
+      if (se >= 0 && nt_type(nt, se) && sp_streq(nt_type(nt, se), "ArrayNode")) arr = se;
+      else if (se >= 0 && nt_kind(nt, se) == NK_LocalVariableReadNode) {
+        const char *vn = nt_str(nt, se, "name");
+        Scope *scp = comp_scope_of(c, se);
+        for (int w = 0; vn && w < nt->count; w++) {
+          if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+          const char *wn = nt_str(nt, w, "name");
+          if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != scp) continue;
+          int wv = nt_ref(nt, w, "value");
+          if (wv >= 0 && nt_type(nt, wv) && sp_streq(nt_type(nt, wv), "ArrayNode")) arr = wv;
+          else { arr = -1; break; }   /* a non-literal write: not resolvable */
+        }
+      }
+      if (arr >= 0) {
+        int en = 0; const int *els = nt_arr(nt, arr, "elements", &en);
+        for (int e = 0; e < en; e++) {
+          if (!nt_type(nt, els[e]) || !sp_streq(nt_type(nt, els[e]), "SymbolNode")) continue;
+          const char *sm = nt_str(nt, els[e], "value");
+          if (!sm) continue;
+          char siv[256]; snprintf(siv, sizeof siv, "@%s", sm);
+          comp_ivar_intern(cls, siv);
+          comp_add_reader(cls, sm);
+          comp_add_writer(cls, sm);
+        }
+      }
+      continue;
+    }
     if (!nt_type(nt, argv[a]) || !sp_streq(nt_type(nt, argv[a]), "SymbolNode")) continue;
     const char *m = nt_str(nt, argv[a], "value");
     if (!m) continue;
