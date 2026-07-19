@@ -4333,10 +4333,12 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent);
 void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent);
 
-/* A rescue type name that conventionally catches "anything" in tests. */
+/* A rescue type that really does catch every exception. Only Exception does:
+   `rescue StandardError` must let Interrupt/SystemExit/ScriptError through and
+   `rescue RuntimeError` must not swallow its siblings, so both go through the
+   hierarchy-aware matcher instead (#3032). */
 int rescue_is_catchall_name(const char *n) {
-  return n && (sp_streq(n, "StandardError") || sp_streq(n, "Exception") ||
-               sp_streq(n, "RuntimeError"));
+  return n && sp_streq(n, "Exception");
 }
 
 /* Return 1 if the subtree at id contains a RetryNode (not crossing DefNode). */
