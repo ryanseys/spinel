@@ -1039,6 +1039,35 @@ int is_struct_call(Compiler *c, int val) {
 }
 
 /* Register the symbol members of a Struct.new(...) call onto `cls`. */
+/* Resolve a Struct.new / Data.define member argument to its literal symbol
+   name: a SymbolNode directly, or a local variable whose writes in the same
+   scope are all the SAME symbol literal (compile-time const propagation, so a
+   `name = :port; Struct.new(name)` still names the member) (#3112). A local
+   with any non-symbol / conflicting write is unresolvable -> NULL. */
+static const char *resolve_member_symbol(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || !nt_type(nt, node)) return NULL;
+  if (sp_streq(nt_type(nt, node), "SymbolNode")) return nt_str(nt, node, "value");
+  if (nt_kind(nt, node) != NK_LocalVariableReadNode) return NULL;
+  const char *vn = nt_str(nt, node, "name");
+  if (!vn) return NULL;
+  Scope *scp = comp_scope_of(c, node);
+  const char *found = NULL;
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != scp) continue;
+    int wv = nt_ref(nt, w, "value");
+    if (wv < 0 || !nt_type(nt, wv) || !sp_streq(nt_type(nt, wv), "SymbolNode"))
+      return NULL;   /* a non-symbol write: not resolvable */
+    const char *sm = nt_str(nt, wv, "value");
+    if (!sm) return NULL;
+    if (found && !sp_streq(found, sm)) return NULL;  /* conflicting writes */
+    found = sm;
+  }
+  return found;
+}
+
 void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
   const NodeTable *nt = c->nt;
   cls->is_struct = 1;
@@ -1102,8 +1131,8 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
       }
       continue;
     }
-    if (!nt_type(nt, argv[a]) || !sp_streq(nt_type(nt, argv[a]), "SymbolNode")) continue;
-    const char *m = nt_str(nt, argv[a], "value");
+    /* a SymbolNode directly, or a local that const-propagates to one (#3112) */
+    const char *m = resolve_member_symbol(c, argv[a]);
     if (!m) continue;
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", m);
     comp_ivar_intern(cls, ivn);
