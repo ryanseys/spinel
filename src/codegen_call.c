@@ -8841,6 +8841,79 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "getbyte") && argc == 0) {
       buf_printf(b, "sp_File_getbyte(%s)", r); free(rb.p); return;
     }
+    /* fd-backed IO instance methods (#3038) */
+    if (sp_streq(name, "readbyte") && argc == 0) {
+      buf_printf(b, "sp_File_readbyte(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "ungetbyte") && argc == 1) {
+      buf_printf(b, "({ sp_File_ungetbyte(%s, ", r);
+      emit_int_expr(c, argv[0], b); buf_puts(b, "); sp_box_nil(); })");
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "binmode?") && argc == 0) {
+      buf_printf(b, "sp_File_binmode_p(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "to_io") && argc == 0) {
+      buf_printf(b, "(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "close_on_exec?") && argc == 0) {
+      buf_printf(b, "sp_File_close_on_exec_p(%s)", r); free(rb.p); return;
+    }
+    if ((sp_streq(name, "close_on_exec=") || sp_streq(name, "autoclose=")) && argc == 1) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ mrb_bool _t%d = ", tv); emit_cond(c, argv[0], b);
+      buf_printf(b, "; ");
+      /* autoclose is always on for a GC-owned handle, so the setter only has
+         to report back the assigned value (CRuby returns the argument). */
+      if (sp_streq(name, "close_on_exec="))
+        buf_printf(b, "sp_File_set_close_on_exec(%s, _t%d); ", r, tv);
+      else buf_printf(b, "(void)(%s); ", r);
+      buf_printf(b, "_t%d; })", tv);
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "fcntl") && argc >= 1) {
+      buf_printf(b, "sp_File_fcntl(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+      buf_puts(b, ")"); free(rb.p); return;
+    }
+    if (sp_streq(name, "pread") && argc >= 1) {
+      buf_printf(b, "sp_File_pread(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+      buf_puts(b, ")"); free(rb.p); return;
+    }
+    if (sp_streq(name, "pwrite") && argc >= 1) {
+      buf_printf(b, "sp_File_pwrite(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
+      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+      buf_puts(b, ")"); free(rb.p); return;
+    }
+    if (sp_streq(name, "advise") && argc >= 1) {
+      buf_printf(b, "({ sp_File_advise(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
+      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+      buf_puts(b, ", ");
+      if (argc >= 3) emit_int_expr(c, argv[2], b); else buf_puts(b, "0");
+      buf_puts(b, "); sp_box_nil(); })"); free(rb.p); return;
+    }
+    if ((sp_streq(name, "close_read") || sp_streq(name, "close_write")) && argc == 0) {
+      buf_printf(b, "({ sp_File_close_half(%s, %d); sp_box_nil(); })", r,
+                 sp_streq(name, "close_read") ? 1 : 0);
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "reopen") && argc >= 1) {
+      buf_printf(b, "sp_File_reopen(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
+      if (argc >= 2) emit_str_expr(c, argv[1], b); else buf_puts(b, "\"r\"");
+      buf_puts(b, ")"); free(rb.p); return;
+    }
+    /* read_nonblock / write_nonblock: this runtime has no non-blocking mode,
+       so they are the blocking reads/writes CRuby falls back to when data is
+       already available -- the common case for a file-backed handle. */
+    if (sp_streq(name, "read_nonblock") && argc >= 1) {
+      buf_printf(b, "sp_File_readpartial(%s, ", r); emit_int_expr(c, argv[0], b);
+      buf_puts(b, ")"); free(rb.p); return;
+    }
+    if (sp_streq(name, "write_nonblock") && argc == 1) {
+      buf_printf(b, "sp_File_write(%s, ", r); emit_str_expr(c, argv[0], b);
+      buf_puts(b, ")"); free(rb.p); return;
+    }
     if (sp_streq(name, "ungetc") && argc == 1) {
       buf_printf(b, "sp_File_ungetc(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       free(rb.p); return;
@@ -8910,8 +8983,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_File_write(%s, sp_str_format_polyarr(_t%d, _t%d)); sp_box_nil(); })", r, tfp, tfa);
       free(rb.p); return;
     }
-    /* each_char / each_byte (#2794) */
-    if ((sp_streq(name, "each_char") || sp_streq(name, "each_byte")) &&
+    /* each_char / each_byte (#2794) / each_codepoint (#3038) */
+    if ((sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
+         sp_streq(name, "each_codepoint")) &&
         nt_ref(nt, id, "block") >= 0) {
       int blk2 = nt_ref(nt, id, "block");
       const char *bp2 = block_param_name(c, blk2, 0);
@@ -8919,14 +8993,20 @@ void emit_call(Compiler *c, int id, Buf *b) {
       int bdy2 = nt_ref(nt, blk2, "body");
       int bbn2 = 0; const int *bbb2 = bdy2 >= 0 ? nt_arr(nt, bdy2, "body", &bbn2) : NULL;
       int is_byte = sp_streq(name, "each_byte");
+      int is_cp = sp_streq(name, "each_codepoint");
       int rf2 = ++g_tmp, lt2 = ++g_tmp;
       buf_puts(b, "({ ");
       buf_printf(b, "sp_File *_t%d = %s; ", rf2, r);
       if (is_byte)
         buf_printf(b, "mrb_int _t%d; while ((_t%d = sp_File_getbyte(_t%d)) != SP_INT_NIL) {", lt2, lt2, rf2);
+      else if (is_cp)
+        /* each_codepoint yields the ordinal of each character, so read a
+           whole UTF-8 character and decode it (#3038) */
+        buf_printf(b, "const char *_t%dc; mrb_int _t%d; while ((_t%dc = sp_File_getc(_t%d)) != NULL"
+                      " && (_t%d = sp_str_ord(_t%dc), 1)) {", lt2, lt2, lt2, rf2, lt2, lt2);
       else
         buf_printf(b, "const char *_t%d; while ((_t%d = sp_File_getc(_t%d)) != NULL) {", lt2, lt2, rf2);
-      if (bpn2) buf_printf(b, " %s lv_%s = _t%d;", is_byte ? "mrb_int" : "const char *", bpn2, lt2);
+      if (bpn2) buf_printf(b, " %s lv_%s = _t%d;", (is_byte || is_cp) ? "mrb_int" : "const char *", bpn2, lt2);
       for (int k = 0; k < bbn2; k++) emit_stmt(c, bbb2[k], b, 0);
       buf_printf(b, " } (sp_File *)_t%d; })", rf2);
       free(rb.p); return;

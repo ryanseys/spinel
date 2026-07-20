@@ -1276,6 +1276,20 @@ mrb_int sp_File_getbyte(sp_File *f);
 sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v);
 /* IO#readpartial / #sysread: up to n bytes, EOFError at EOF (#2812) */
 const char *sp_File_readpartial(sp_File *f, mrb_int n);
+/* IO#pread(len, offset): read without moving the file position. Inline
+   because it allocates from this TU's string heap (#3038). */
+static inline const char *sp_File_pread(sp_File *f, mrb_int len, mrb_int off) {
+  int fd = (f && f->fp) ? fileno(f->fp) : -1;
+  if (fd < 0) sp_raise_cls("IOError", "closed stream");
+  if (len < 0) len = 0;
+  char *buf = (char *)sp_str_alloc((size_t)len);
+  ssize_t got = pread(fd, buf, (size_t)len, (off_t)off);
+  if (got < 0) sp_raise_cls("IOError", "pread failed");
+  if (got == 0 && len > 0) sp_raise_cls("EOFError", "end of file reached");
+  buf[got] = '\0';
+  sp_str_set_len(buf, (size_t)got);
+  return buf;
+}
 mrb_int sp_File_sysseek(sp_File *f, mrb_int off, mrb_int whence);
 mrb_int sp_File_flock(sp_File *f, mrb_int op);
 mrb_int sp_File_fsync(sp_File *f);

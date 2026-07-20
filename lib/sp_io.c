@@ -15,6 +15,7 @@
 #include <sys/ioctl.h> /* TIOCGWINSZ for #winsize */
 #include <sys/time.h> /* utimes() for File.utime */
 #include <errno.h>
+#include <fcntl.h>   /* fcntl flags for #close_on_exec?, #fcntl */
 
 /* Provided by the generated TU / libspinel_rt.a. */
 extern void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
@@ -28,6 +29,10 @@ sp_File *sp_File_open(const char *path, const char *mode) {
   sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), sp_File_fin, sp_File_scan);
   f->fp = fopen(path ? path : "", mode ? mode : "r");
   if (!f->fp) { sp_raise_cls("Errno::ENOENT", "No such file or directory"); return NULL; }
+  /* CRuby opens with O_CLOEXEC, so #close_on_exec? is true for a file it
+     opened and #fcntl(F_GETFD) reports the flag (#3038). */
+  { int _fd = fileno(f->fp);
+    if (_fd >= 0) { int _fl = fcntl(_fd, F_GETFD); if (_fl >= 0) fcntl(_fd, F_SETFD, _fl | FD_CLOEXEC); } }
   f->path = path;
   f->mode = mode;
   f->lineno = 0;
@@ -259,3 +264,95 @@ mrb_int sp_file_utime(double atime, double mtime, const char *path) {
 mrb_bool sp_file_exist(const char *path) { struct stat st; return path && stat(path, &st) == 0; }
 void sp_file_delete(const char *path) { remove(path); }
 void sp_file_rename(const char *from, const char *to) { rename(from, to); }
+
+/* --- IO instance methods that ride the underlying fd (#3038) ------------- */
+
+/* IO#readbyte: like #getbyte but EOFError at end of file. */
+mrb_int sp_File_readbyte(sp_File *f) {
+  int ch = (f && f->fp) ? fgetc(f->fp) : EOF;
+  if (ch == EOF) sp_raise_cls("EOFError", "end of file reached");
+  return (mrb_int)(unsigned char)ch;
+}
+/* IO#ungetbyte: push one byte back onto the read buffer; returns nil. */
+void sp_File_ungetbyte(sp_File *f, mrb_int byte) {
+  if (f && f->fp) ungetc((int)(unsigned char)byte, f->fp);
+}
+/* IO#binmode?: true only for a handle opened in binary mode. */
+mrb_bool sp_File_binmode_p(sp_File *f) {
+  return f && f->mode && strchr(f->mode, 'b') != NULL;
+}
+/* IO#close_on_exec? / #close_on_exec= via the FD_CLOEXEC descriptor flag. */
+mrb_bool sp_File_close_on_exec_p(sp_File *f) {
+  int fd = (f && f->fp) ? fileno(f->fp) : -1;
+  if (fd < 0) return 0;
+  int fl = fcntl(fd, F_GETFD);
+  return fl >= 0 && (fl & FD_CLOEXEC) != 0;
+}
+void sp_File_set_close_on_exec(sp_File *f, mrb_bool on) {
+  int fd = (f && f->fp) ? fileno(f->fp) : -1;
+  if (fd < 0) return;
+  int fl = fcntl(fd, F_GETFD);
+  if (fl < 0) return;
+  fcntl(fd, F_SETFD, on ? (fl | FD_CLOEXEC) : (fl & ~FD_CLOEXEC));
+}
+/* IO#fcntl(cmd, arg=0): the raw descriptor command. */
+mrb_int sp_File_fcntl(sp_File *f, mrb_int cmd, mrb_int arg) {
+  int fd = (f && f->fp) ? fileno(f->fp) : -1;
+  if (fd < 0) sp_raise_cls("IOError", "closed stream");
+  int r = fcntl(fd, (int)cmd, (long)arg);
+  if (r < 0) sp_file_raise_errno("fcntl", f->path ? f->path : "");
+  return (mrb_int)r;
+}
+/* IO#pwrite(str, offset): write without moving the file position. */
+mrb_int sp_File_pwrite(sp_File *f, const char *s, mrb_int off) {
+  int fd = (f && f->fp) ? fileno(f->fp) : -1;
+  if (fd < 0) sp_raise_cls("IOError", "closed stream");
+  size_t n = s ? strlen(s) : 0;
+  fflush(f->fp);
+  ssize_t put = pwrite(fd, s ? s : "", n, (off_t)off);
+  if (put < 0) sp_file_raise_errno("pwrite", f->path ? f->path : "");
+  return (mrb_int)put;
+}
+/* IO#advise(sym, offset=0, len=0): a hint, and nil either way. POSIX
+   fadvise is Linux-ish; where it is absent the hint is simply dropped. */
+void sp_File_advise(sp_File *f, const char *kind, mrb_int off, mrb_int len) {
+#ifdef POSIX_FADV_NORMAL
+  int fd = (f && f->fp) ? fileno(f->fp) : -1;
+  int a = POSIX_FADV_NORMAL;
+  if (fd < 0 || !kind) return;
+  if (!strcmp(kind, "sequential")) a = POSIX_FADV_SEQUENTIAL;
+  else if (!strcmp(kind, "random")) a = POSIX_FADV_RANDOM;
+  else if (!strcmp(kind, "willneed")) a = POSIX_FADV_WILLNEED;
+  else if (!strcmp(kind, "dontneed")) a = POSIX_FADV_DONTNEED;
+  else if (!strcmp(kind, "noreuse")) a = POSIX_FADV_NOREUSE;
+  posix_fadvise(fd, (off_t)off, (off_t)len, a);
+#else
+  (void)f; (void)kind; (void)off; (void)len;
+#endif
+}
+/* IO#close_read / #close_write. A plain file is not duplex, so half-closing
+   the side it does not have raises; half-closing the side it IS just closes
+   the handle, which is what CRuby does. */
+void sp_File_close_half(sp_File *f, mrb_bool reading) {
+  const char *m = (f && f->mode) ? f->mode : "r";
+  mrb_bool writable = strchr(m, 'w') || strchr(m, 'a') || strchr(m, '+');
+  mrb_bool readable = strchr(m, 'r') || strchr(m, '+');
+  if (reading ? !readable : !writable)
+    sp_raise_cls("IOError", reading ? "closing non-duplex IO for reading"
+                                    : "closing non-duplex IO for writing");
+  if (reading ? writable : readable)
+    sp_raise_cls("IOError", reading ? "closing non-duplex IO for reading"
+                                    : "closing non-duplex IO for writing");
+  if (f && f->fp) { fclose(f->fp); f->fp = NULL; }
+}
+/* IO#reopen(path, mode): rebind the handle to another file. */
+sp_File *sp_File_reopen(sp_File *f, const char *path, const char *mode) {
+  if (!f) return f;
+  FILE *nf = freopen(path ? path : "", mode && mode[0] ? mode : "r", f->fp);
+  if (!nf) sp_file_raise_errno("reopen", path ? path : "");
+  f->fp = nf;
+  f->path = path;
+  f->mode = mode && mode[0] ? mode : "r";
+  f->lineno = 0;
+  return f;
+}

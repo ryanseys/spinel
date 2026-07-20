@@ -2427,6 +2427,15 @@ else {
       return TY_INT;
     if (sp_streq(name, "getc") || sp_streq(name, "readchar") || sp_streq(name, "readpartial") ||
         sp_streq(name, "sysread") || sp_streq(name, "ftype")) return TY_STRING;
+    /* fd-backed IO instance methods (#3038) */
+    if (sp_streq(name, "readbyte") || sp_streq(name, "fcntl") ||
+        sp_streq(name, "pwrite") || sp_streq(name, "write_nonblock")) return TY_INT;
+    if (sp_streq(name, "pread") || sp_streq(name, "read_nonblock")) return TY_STRING;
+    if (sp_streq(name, "binmode?") || sp_streq(name, "close_on_exec?") ||
+        sp_streq(name, "close_on_exec=") || sp_streq(name, "autoclose=")) return TY_BOOL;
+    if (sp_streq(name, "to_io") || sp_streq(name, "reopen")) return TY_IO;
+    if (sp_streq(name, "ungetbyte") || sp_streq(name, "advise") ||
+        sp_streq(name, "close_read") || sp_streq(name, "close_write")) return TY_POLY;
     if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime") ||
         sp_streq(name, "birthtime")) return TY_TIME;
     if (sp_streq(name, "stat")) return TY_IO;
@@ -2435,13 +2444,15 @@ else {
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) return TY_INT_ARRAY;
     if (sp_streq(name, "<<")) return TY_IO;   /* writes, returns self (chainable) */
     if (sp_streq(name, "each_line") || sp_streq(name, "each") ||
-        sp_streq(name, "each_char") || sp_streq(name, "each_byte")) {
+        sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
+        sp_streq(name, "each_codepoint")) {
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0) {
         const char *bp0 = block_param_name(c, blk, 0);
         Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
         LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv) blv->type = sp_streq(name, "each_byte") ? TY_INT : TY_STRING;
+        if (blv) blv->type = (sp_streq(name, "each_byte") ||
+                              sp_streq(name, "each_codepoint")) ? TY_INT : TY_STRING;
       }
       return TY_IO;
     }
