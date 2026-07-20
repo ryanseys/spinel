@@ -5558,6 +5558,12 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[0], b);
         buf_printf(b, "); sp_raise_cls(\"TypeError\", \"not an integer\"); (mrb_int)(%s); })", r);
       }
+      else if (sp_streq(name, "gcd") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+        /* gcd(int, bignum) divides the int receiver, so it always fits an
+           mrb_int; compute via the bigint gcd then narrow (#3006) */
+        buf_printf(b, "sp_bigint_to_int(sp_bigint_gcd(sp_bigint_new_int(%s), ", r);
+        emit_expr(c, argv[0], b); buf_puts(b, "))");
+      }
       else if (sp_streq(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
