@@ -2604,15 +2604,21 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
   if (sp_streq(name, "tap") && recv >= 0) {
     TyKind et = infer_type(c, recv);
-    Scope *tsc = p0 ? comp_scope_of(c, block) : NULL;
-    LocalVar *tlv0 = (tsc && p0) ? scope_local(tsc, p0) : NULL;
+    Scope *tsc = p0_orig ? comp_scope_of(c, block) : NULL;
+    LocalVar *tlv0 = (tsc && p0_orig) ? scope_local(tsc, p0_orig) : NULL;
     TyKind tsaved0 = tlv0 ? tlv0->type : TY_UNKNOWN;
     int use_shadow_t = tlv0 && tlv0->type != et && et != TY_UNKNOWN;
     int tr = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); emit_ctype(c, et, b);
     buf_printf(b, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
-    if (use_shadow_t) {
+    /* An OBJECT-receiver tap whose param widened to poly (it escaped through
+       yield(_1) / a store) cannot be shadowed with a concrete object slot;
+       box the receiver into the poly param instead (#3140). An array/hash
+       receiver keeps its shadow path -- boxing would strip its methods and
+       break `nums.tap { |a| a.sort! }`. */
+    int tap_escapes = tlv0 && tsaved0 == TY_POLY && ty_is_object(et);
+    if (use_shadow_t && !tap_escapes) {
       int tbody_bn = 0; const int *tbody_bb = body >= 0 ? nt_arr(nt, body, "body", &tbody_bn) : NULL;
       tlv0->type = et;
       for (int j = 0; j < tbody_bn; j++) infer_type(c, tbody_bb[j]);
@@ -2624,7 +2630,21 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       tlv0->type = tsaved0;
     }
     else {
-      if (p0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, tr); }
+      if (p0) {
+        emit_indent(b, indent);
+        /* the param's declared slot may be wider than the receiver -- a `_1`
+           that escapes through `yield(_1)` widens to poly, so box the object
+           into it rather than assigning the raw pointer (#3140) */
+        TyKind ptt = tlv0 ? tlv0->type : et;
+        if (ptt == TY_POLY && ty_is_object(et)) {
+          char src[32]; snprintf(src, sizeof src, "_t%d", tr);
+          buf_printf(b, "lv_%s = ", p0);
+          emit_boxed_text(c, et, src, b);
+          buf_puts(b, ";\n");
+        } else {
+          buf_printf(b, "lv_%s = _t%d;\n", p0, tr);
+        }
+      }
       emit_loop_body(c, body, b, indent);
     }
     return 1;
