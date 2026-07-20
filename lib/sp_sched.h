@@ -96,6 +96,7 @@ sp_thread *sp_Thread_list_at(mrb_int i);
 sp_RbVal   sp_Thread_get_name(sp_thread *t);                       /* #name */
 sp_RbVal   sp_Thread_set_name(sp_thread *t, sp_RbVal v);           /* #name= */
 sp_RbVal   sp_Thread_status(sp_thread *t); /* #status: "run"/"sleep"/false/nil */
+const char *sp_Thread_inspect(sp_thread *t); /* #inspect / #to_s */
 sp_RbVal   sp_Thread_tls_get(sp_thread *t, sp_sym k);              /* Thread#[] */
 sp_RbVal   sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v);  /* Thread#[]= */
 mrb_bool   sp_Thread_tls_key(sp_thread *t, sp_sym k);             /* Thread#key? */

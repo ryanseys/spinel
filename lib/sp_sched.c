@@ -1348,3 +1348,18 @@ void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
 
 void sp_CondVar_signal(sp_condvar *cv)    { SCHED_LOCK(); sp_sched_wake_one(&cv->waiters);            SCHED_UNLOCK(); }
 void sp_CondVar_broadcast(sp_condvar *cv) { SCHED_LOCK(); while (sp_sched_wake_one(&cv->waiters)) { }  SCHED_UNLOCK(); }
+
+/* Thread#inspect / #to_s: CRuby's "#<Thread:0xADDR <status>>" shape (the
+   source-location segment CRuby inserts is not carried) (#2977). */
+const char *sp_Thread_inspect(sp_thread *t) {
+  extern const char *sp_sprintf(const char *fmt, ...);
+  const char *st = "dead";
+  if (t) {
+    switch (t->state) {
+      case SP_TH_RUNNING: case SP_TH_RUNNABLE: st = "run"; break;
+      case SP_TH_BLOCKED: st = "sleep"; break;
+      default: st = t->has_exc ? "aborting" : "dead"; break;
+    }
+  }
+  return sp_sprintf("#<Thread:0x%016llx %s>", (unsigned long long)(uintptr_t)t, st);
+}

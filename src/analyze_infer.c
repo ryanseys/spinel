@@ -2213,6 +2213,7 @@ else {
 
   /* TY_THREAD instance methods */
   if (recv >= 0 && rt == TY_THREAD) {
+    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) return TY_STRING;
     if (sp_streq(name, "value")) return TY_POLY;
     if (sp_streq(name, "join") || sp_streq(name, "kill") || sp_streq(name, "exit") ||
         sp_streq(name, "terminate") || sp_streq(name, "raise")) return TY_THREAD;   /* return self */

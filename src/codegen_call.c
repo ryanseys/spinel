@@ -1682,6 +1682,9 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_Thread_set_report(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, "); })");
       return 1;
     }
+    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
+      buf_puts(b, "sp_Thread_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
     if (sp_streq(name, "status") && argc == 0) {
       buf_puts(b, "sp_Thread_status("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
