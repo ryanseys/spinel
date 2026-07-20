@@ -1068,6 +1068,86 @@ static const char *resolve_member_symbol(Compiler *c, int node) {
   return found;
 }
 
+/* Resolve a node to a compile-time list of symbol member names (`out`, up to
+   `cap`), returning the count or -1 when not statically resolvable. Follows
+   a symbol-array literal, a single-array-literal-write local, and the
+   order-preserving/deterministic array transforms whose result is still a
+   fixed symbol list -- so `%i[a b].reverse` and `keys = %i[a b]; keys.reverse`
+   register their members in the right order (#3135). */
+static int resolve_symbol_list(Compiler *c, int node, const char **out, int cap, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || depth > 8) return -1;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return -1;
+  if (sp_streq(ty, "ArrayNode")) {
+    int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
+    if (en > cap) return -1;
+    for (int e = 0; e < en; e++) {
+      if (!nt_type(nt, els[e]) || !sp_streq(nt_type(nt, els[e]), "SymbolNode")) return -1;
+      out[e] = nt_str(nt, els[e], "value");
+      if (!out[e]) return -1;
+    }
+    return en;
+  }
+  if (nt_kind(nt, node) == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, node, "name");
+    Scope *scp = comp_scope_of(c, node);
+    /* A single-write local resolves to its value. A reassigned local
+       (`keys = keys.reverse`) would need node-order dataflow to pick the
+       write that reaches this read, and its RHS reads the same name -- that
+       is copy-propagation territory, out of scope for this static resolver,
+       so a multiply-written local stays unresolved. The transform can still
+       be applied inline at the Struct.new (`Struct.new(*keys.reverse)`). */
+    int src = -1;
+    for (int w = 0; vn && w < nt->count; w++) {
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != scp) continue;
+      if (src >= 0) return -1;
+      src = nt_ref(nt, w, "value");
+    }
+    if (src < 0) return -1;
+    return resolve_symbol_list(c, src, out, cap, depth + 1);
+  }
+  /* a receiverless method on a resolvable symbol list that yields another
+     fixed symbol list: reverse (order flip), sort/sort_by/uniq (deterministic
+     reorder), rotate (fixed shift). The member NAMES and their order are all
+     compile-time known, so the Struct is still statically typed. */
+  if (sp_streq(ty, "CallNode")) {
+    int recv = nt_ref(nt, node, "receiver");
+    if (recv < 0) return -1;
+    const char *mn = nt_str(nt, node, "name");
+    if (!mn) return -1;
+    int args = nt_ref(nt, node, "arguments");
+    int an = 0; if (args >= 0) nt_arr(nt, args, "arguments", &an);
+    int n = resolve_symbol_list(c, recv, out, cap, depth + 1);
+    if (n < 0) return -1;
+    if (sp_streq(mn, "reverse") && an == 0) {
+      for (int i = 0; i < n / 2; i++) { const char *t = out[i]; out[i] = out[n-1-i]; out[n-1-i] = t; }
+      return n;
+    }
+    if (sp_streq(mn, "uniq") && an == 0) {
+      int w = 0;
+      for (int i = 0; i < n; i++) {
+        int dup = 0;
+        for (int j = 0; j < w; j++) if (sp_streq(out[i], out[j])) { dup = 1; break; }
+        if (!dup) out[w++] = out[i];
+      }
+      return w;
+    }
+    if (sp_streq(mn, "sort") && an == 0 && nt_ref(nt, node, "block") < 0) {
+      for (int i = 1; i < n; i++) {
+        const char *k = out[i]; int j = i - 1;
+        while (j >= 0 && strcmp(out[j], k) > 0) { out[j+1] = out[j]; j--; }
+        out[j+1] = k;
+      }
+      return n;
+    }
+    return -1;   /* a transform that does not preserve a fixed symbol list */
+  }
+  return -1;
+}
+
 void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
   const NodeTable *nt = c->nt;
   cls->is_struct = 1;
@@ -1114,31 +1194,15 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
        literal write) resolves at compile time to the member names (#2973). */
     if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "SplatNode")) {
       int se = nt_ref(nt, argv[a], "expression");
-      int arr = -1;
-      if (se >= 0 && nt_type(nt, se) && sp_streq(nt_type(nt, se), "ArrayNode")) arr = se;
-      else if (se >= 0 && nt_kind(nt, se) == NK_LocalVariableReadNode) {
-        const char *vn = nt_str(nt, se, "name");
-        Scope *scp = comp_scope_of(c, se);
-        for (int w = 0; vn && w < nt->count; w++) {
-          if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-          const char *wn = nt_str(nt, w, "name");
-          if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != scp) continue;
-          int wv = nt_ref(nt, w, "value");
-          if (wv >= 0 && nt_type(nt, wv) && sp_streq(nt_type(nt, wv), "ArrayNode")) arr = wv;
-          else { arr = -1; break; }   /* a non-literal write: not resolvable */
-        }
-      }
-      if (arr >= 0) {
-        int en = 0; const int *els = nt_arr(nt, arr, "elements", &en);
-        for (int e = 0; e < en; e++) {
-          if (!nt_type(nt, els[e]) || !sp_streq(nt_type(nt, els[e]), "SymbolNode")) continue;
-          const char *sm = nt_str(nt, els[e], "value");
-          if (!sm) continue;
-          char siv[256]; snprintf(siv, sizeof siv, "@%s", sm);
-          comp_ivar_intern(cls, siv);
-          comp_add_reader(cls, sm);
-          comp_add_writer(cls, sm);
-        }
+      const char *syms[128];
+      int en = se >= 0 ? resolve_symbol_list(c, se, syms, 128, 0) : -1;
+      for (int e = 0; e < en; e++) {
+        const char *sm = syms[e];
+        if (!sm) continue;
+        char siv[256]; snprintf(siv, sizeof siv, "@%s", sm);
+        comp_ivar_intern(cls, siv);
+        comp_add_reader(cls, sm);
+        comp_add_writer(cls, sm);
       }
       continue;
     }
