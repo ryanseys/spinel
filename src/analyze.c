@@ -3271,7 +3271,10 @@ static int desugar_lazy_stateful_stage(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   static const char *const stateful[] = {
-    "uniq", "chunk_while", "slice_when", "with_index", "each_with_index", NULL };
+    "uniq", "chunk_while", "slice_when", "with_index", "each_with_index",
+    /* not stateful, but unfused: over a finite source the eager forms agree
+       (#3127) */
+    "compact", "zip", NULL };
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
