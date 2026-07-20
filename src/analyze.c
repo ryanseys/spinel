@@ -5836,7 +5836,8 @@ void analyze_program(Compiler *c) {
       const char *nm = nt_str(ntm, id, "name");
       if (!nm || (!sp_streq(nm, "instance_variable_get") &&
                   !sp_streq(nm, "instance_variable_set") &&
-                  !sp_streq(nm, "instance_variable_defined?"))) continue;
+                  !sp_streq(nm, "instance_variable_defined?") &&
+                  !sp_streq(nm, "remove_instance_variable"))) continue;
       Scope *s = comp_scope_of(c, id);
       if (!s || s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
       int sid = nt_new_node(ntm, "SelfNode");

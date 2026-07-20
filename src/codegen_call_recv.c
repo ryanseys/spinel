@@ -6894,6 +6894,30 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       else buf_puts(b, "sp_box_nil()");
       return 1;
     }
+    /* remove_instance_variable(:@x) returns the removed value. The fixed object
+       layout can't truly undefine a slot, so a later read still sees the field;
+       an undefined name raises NameError, matching CRuby (#3020). */
+    if (sp_streq(name, "remove_instance_variable") && argc == 1 && nt_type(nt, argv[0]) &&
+        (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+      const char *a0ty = nt_type(nt, argv[0]);
+      const char *sym = sp_streq(a0ty, "SymbolNode")
+                          ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+      int mi = -1;
+      if (sym && sym[0] == '@' && !c->classes[cid].is_struct)
+        for (int i = 0; i < c->classes[cid].nivars; i++)
+          if (sp_streq(c->classes[cid].ivars[i], sym)) { mi = i; break; }
+      if (mi >= 0) {
+        const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
+        buf_puts(b, "("); emit_expr(c, recv, b);
+        buf_printf(b, ")%siv_%s", acc, sym + 1);
+      } else {
+        if (recv >= 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), "); }
+        else buf_puts(b, "(");
+        buf_printf(b, "sp_raise_cls(\"NameError\", \"instance variable %s not defined\"), sp_box_nil())",
+                   sym ? sym : "");
+      }
+      return 1;
+    }
 
     /* attr reader -> field access (recv).iv_x, UNLESS an explicit method of
        the same name overrides it at an equal-or-more-derived class. CRuby:

@@ -2720,7 +2720,8 @@ else {
     /* instance_variable_get(:@x) yields @x's declared type; instance_variable_set
        yields the field type too (C `lvalue = v` evaluates to the lvalue). The
        codegen lowers both to a direct iv_ field access on the known layout. */
-    if ((sp_streq(name, "instance_variable_get") || sp_streq(name, "instance_variable_set")) && argc >= 1) {
+    if ((sp_streq(name, "instance_variable_get") || sp_streq(name, "instance_variable_set") ||
+         sp_streq(name, "remove_instance_variable")) && argc >= 1) {
       const char *a0ty = nt_type(nt, argv[0]);
       if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
         const char *sym = sp_streq(a0ty, "SymbolNode")
