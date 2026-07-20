@@ -295,6 +295,20 @@ __attribute__((noreturn)) void sp_raise_frozen_str(const char *s);              
    marked by the GC (sp_mark_string reads s[-1]), so a bare literal -- whose
    [-1] is out of bounds -- would be UB when it lands at a section edge. */
 static void __attribute__((noinline, cold)) sp_raise_frozen_array(void) { sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Array")[1])); }
+/* Same, but stages the receiver so FrozenError#receiver answers the frozen
+   object itself (identity-preserving boxing of the mutation target) (#3002).
+   sp_exc_stage_recv lives in the generated TU; the ctor transfers the staged
+   value onto the raised exception's xrecv slot. */
+void sp_exc_stage_recv(sp_RbVal v);
+static void __attribute__((noinline, cold)) sp_raise_frozen_array_at(void *a, int cls_id) {
+  sp_exc_stage_recv(sp_box_obj(a, cls_id));
+  sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Array")[1]));
+}
+/* boxed-receiver variant (the mutator holds an sp_RbVal, not the raw ptr) */
+static void __attribute__((noinline, cold)) sp_raise_frozen_array_v(sp_RbVal v) {
+  sp_exc_stage_recv(v);
+  sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Array")[1]));
+}
 
 /* sp_PolyArray: a growable array of boxed values. */
 typedef struct { sp_RbVal *data; mrb_int len; mrb_int cap; mrb_int frozen; } sp_PolyArray;

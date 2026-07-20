@@ -3073,7 +3073,7 @@ static sp_RbVal sp_poly_neg(sp_RbVal a) { if (a.tag == SP_TAG_FLT) return sp_box
 /* Definition of the root-entry marker forward-declared near
    sp_gc_mark_all: a low-bit-tagged slot is an sp_RbVal* root. */
 /* sp_gc_mark_root_entry is an inline helper in sp_gc.h. */
-static sp_RbVal sp_PolyArray_pop(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } return a->data[--a->len]; }
+static sp_RbVal sp_PolyArray_pop(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); } return a->data[--a->len]; }
 /* log(|Gamma(x)|) for x > 0, via the Stirling asymptotic series pushed into
    its accurate region (x >= 12) by the recurrence Gamma(x) = Gamma(x+1)/x. We
    compute it ourselves rather than calling the platform `lgamma_r`, whose
@@ -3086,9 +3086,9 @@ double sp_lgamma_pos(double x);
 /* Math.lgamma(x) -> [log(|gamma(x)|), sign of gamma(x)]. */
 /* sp_math_lgamma: moved to lib/sp_cold.c */
 sp_PolyArray *sp_math_lgamma(double x);
-static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } sp_RbVal v = a->data[0]; memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
+static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); } sp_RbVal v = a->data[0]; memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
 static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); sp_RbVal v = a->data[i]; for (mrb_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
-static void sp_PolyArray_insert(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } mrb_int orig = i; if (i < 0) i += a->len + 1; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld", (long long)orig, (long long)(-(a->len + 1)))); while (i > a->len) sp_PolyArray_push(a, sp_box_nil()); /* CRuby pads with nils past the end */ sp_PolyArray_push(a, sp_box_nil()); for (mrb_int j = a->len - 1; j > i; j--) a->data[j] = a->data[j-1]; a->data[i] = v; }
+static void sp_PolyArray_insert(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } mrb_int orig = i; if (i < 0) i += a->len + 1; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld", (long long)orig, (long long)(-(a->len + 1)))); while (i > a->len) sp_PolyArray_push(a, sp_box_nil()); /* CRuby pads with nils past the end */ sp_PolyArray_push(a, sp_box_nil()); for (mrb_int j = a->len - 1; j > i; j--) a->data[j] = a->data[j-1]; a->data[i] = v; }
 /* Array#delete(v): removes every element sp_poly_eq to v, returns v (or
    nil if not found). Was missing for TY_POLY_ARRAY -- only TY_INT_ARRAY/
    TY_STR_ARRAY had it -- which blocked the array-backed Set package's
@@ -3097,7 +3097,7 @@ static void sp_PolyArray_insert(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a
    sp_poly_eq, which is inline-per-TU in this file, not linkable from the
    separately-compiled cold array library. */
 static sp_RbVal sp_PolyArray_delete(sp_PolyArray *a, sp_RbVal v) {
-  if (a && a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); }
+  if (a && a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); }
   if (!a) return sp_box_nil();
   /* sp_poly_eq can allocate (bigint promotion) and so trigger a collection
      mid-loop; a and v may be reachable only through the call expression. */
@@ -3390,7 +3390,7 @@ static sp_PolyArray *sp_kernel_array(sp_RbVal x) {
   return r;
 }
 /* Issues #770, #789: NULL + bounds guard. Out-of-range set no-ops. */
-static void sp_PolyArray_set(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } mrb_int orig=i; if (i < 0) i += a->len; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len)); if (i >= a->len) return; a->data[i] = v; }
+static void sp_PolyArray_set(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } mrb_int orig=i; if (i < 0) i += a->len; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len)); if (i >= a->len) return; a->data[i] = v; }
 static sp_PolyArray *sp_PolyArray_slice(sp_PolyArray *a, mrb_int start, mrb_int len) { SP_GC_ROOT(a); if (start < 0) start += a->len; if (start < 0) start = 0; sp_PolyArray *b = sp_PolyArray_new(); if (start >= a->len || len <= 0) return b; if (start + len > a->len) len = a->len - start; for (mrb_int i = 0; i < len; i++) sp_PolyArray_push(b, a->data[start + i]); return b; }
 static sp_PolyArray *sp_PolyArray_slice_range(sp_PolyArray *a, mrb_int start, mrb_int end_, mrb_int excl) { if (end_ < 0) end_ += a->len; if (start < 0) start += a->len; mrb_int n = end_ - start + (excl ? 0 : 1); if (n < 0 || start < 0) n = 0; return sp_PolyArray_slice(a, start, n); }
 /* 2-arg slice on a poly receiver: dispatch to the typed slice functions. */
@@ -3450,7 +3450,7 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, mrb_int start, mrb_int len, sp_RbV
      re-check the same conditions but, being pre-satisfied, never raise. The
      order matches CRuby: modify-check first, then negative length, then the
      too-small index. */
-  if (sp_typed_arr_frozen(recv)) sp_raise_frozen_array();
+  if (sp_typed_arr_frozen(recv)) sp_raise_frozen_array_v(recv);
   if (len < 0) sp_raise_cls("IndexError", sp_sprintf("negative length (%lld)", (long long)len));
   if (s < 0) sp_raise_cls("IndexError",
                           sp_sprintf("index %lld too small for array; minimum: %lld", (long long)start, (long long)-alen));
@@ -3520,7 +3520,7 @@ static const char *sp_range_str(sp_Range r) {
    (CRuby uses RangeError here, not the (start,len) form's IndexError). */
 static sp_RbVal sp_poly_splice_range(sp_RbVal recv, sp_Range r, sp_RbVal src) {
   /* frozen precedes range validation (CRuby's modify-check runs first) */
-  if (recv.tag == SP_TAG_OBJ && sp_typed_arr_frozen(recv)) sp_raise_frozen_array();
+  if (recv.tag == SP_TAG_OBJ && sp_typed_arr_frozen(recv)) sp_raise_frozen_array_v(recv);
   mrb_int alen = sp_poly_arr_len(recv);
   mrb_int first = r.first;
   if (first == INTPTR_MIN) first = 0;      /* beginless */
@@ -3545,7 +3545,7 @@ static sp_RbVal sp_poly_splice_range(sp_RbVal recv, sp_Range r, sp_RbVal src) {
 sp_RbVal sp_poly_replace(sp_RbVal recv, sp_RbVal src);
 static sp_PolyArray *sp_PolyArray_slice_bang(sp_PolyArray *a, mrb_int from, mrb_int n) {
   if (!a) return sp_PolyArray_new();
-  if (a->frozen) { sp_raise_frozen_array(); return sp_PolyArray_new(); }
+  if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_PolyArray_new(); }
   if (from < 0) from += a->len;
   if (from < 0) from = 0;
   if (from > a->len) from = a->len;
@@ -3671,7 +3671,7 @@ static sp_PolyArray *sp_PolyArray_flatten_depth(sp_PolyArray *a, mrb_int d) {
    (aliases observe the mutation). */
 static sp_PolyArray *sp_PolyArray_flatten_bang(sp_PolyArray *a) {
   if (!a) return NULL;
-  if (a->frozen) sp_raise_frozen_array();
+  if (a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
   SP_GC_ROOT(a);
   sp_PolyArray *f = sp_PolyArray_flatten(a); SP_GC_ROOT(f);
   a->len = 0;
@@ -4080,8 +4080,8 @@ static sp_PolyArray *sp_PolyArray_from_float_array(sp_FloatArray *a) { sp_PolyAr
 static sp_StrArray *sp_StrArray_from_poly_array(sp_PolyArray *a) { sp_StrArray *r = sp_StrArray_new(); if (!a) return r; SP_GC_ROOT(a); SP_GC_ROOT(r); for (mrb_int i = 0; i < a->len; i++) sp_StrArray_push(r, sp_poly_to_s(a->data[i])); return r; }
 static sp_IntArray *sp_IntArray_from_poly_array(sp_PolyArray *a) { sp_IntArray *r = sp_IntArray_new(); if (!a) return r; SP_GC_ROOT(a); SP_GC_ROOT(r); for (mrb_int i = 0; i < a->len; i++) sp_IntArray_push(r, sp_poly_to_i(a->data[i])); return r; }
 static sp_FloatArray *sp_FloatArray_from_poly_array(sp_PolyArray *a) { sp_FloatArray *r = sp_FloatArray_new(); if (!a) return r; SP_GC_ROOT(a); SP_GC_ROOT(r); for (mrb_int i = 0; i < a->len; i++) sp_FloatArray_push(r, sp_poly_to_f(a->data[i])); return r; }
-static void sp_PolyArray_reverse_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; } for (mrb_int i = 0, j = a->len - 1; i < j; i++, j--) { sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
-static void sp_PolyArray_shuffle_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; } for (mrb_int i = a->len - 1; i > 0; i--) { mrb_int j = sp_krand_below(i + 1); sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
+static void sp_PolyArray_reverse_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } for (mrb_int i = 0, j = a->len - 1; i < j; i++, j--) { sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
+static void sp_PolyArray_shuffle_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } for (mrb_int i = a->len - 1; i > 0; i--) { mrb_int j = sp_krand_below(i + 1); sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
 /* poly.reverse: `reverse` is both Array#reverse and String#reverse, so a poly
    receiver dispatches on the runtime kind -- an array yields a reversed poly
    array, anything else reverses its string form (#2905). */
@@ -4094,7 +4094,7 @@ static sp_RbVal sp_poly_reverse(sp_RbVal v) {
   }
   return sp_box_str(sp_str_reverse(sp_poly_to_s(v)));
 }
-static void sp_PolyArray_rotate_bang(sp_PolyArray*a,mrb_int n){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}if(a->len<=0)return;n=((n%a->len)+a->len)%a->len;if(n==0)return;sp_RbVal*d=a->data;mrb_int lo=0,hi=n-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=n;hi=a->len-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=0;hi=a->len-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}}
+static void sp_PolyArray_rotate_bang(sp_PolyArray*a,mrb_int n){if(!a)return;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}if(a->len<=0)return;n=((n%a->len)+a->len)%a->len;if(n==0)return;sp_RbVal*d=a->data;mrb_int lo=0,hi=n-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=n;hi=a->len-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=0;hi=a->len-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}}
 static sp_PolyArray *sp_PolyArray_shuffle(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_shuffle_bang(b); return b; }
 /* When sort hits an incomparable pair the result is discarded and we raise
    ArgumentError, matching CRuby. The comparator cannot raise (it would longjmp
@@ -4167,7 +4167,7 @@ static sp_RbVal sp_PolyArray_min(sp_PolyArray *a) {
   return best;
 }
 static void sp_PolyArray_sort_bang(sp_PolyArray *a) {
-  if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; }
+  if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; }
   /* Root the array across the sort: the comparator runs sp_poly_cmp, which can
      allocate (e.g. a bigint temp) and trigger GC; without this, a precise sweep
      could collect a (and its elements) mid-sort. This also roots the transient
@@ -4215,7 +4215,7 @@ static sp_PtrArray *sp_PtrArray_sort_obj(sp_PtrArray *a, int cls_id) {
 static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) __attribute__((unused));
 static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) {
   if (!a) return;
-  if (a->frozen) { sp_raise_frozen_array(); return; }
+  if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_PTR_ARRAY); return; }
   SP_GC_ROOT(a);
   sp_PolyArray *p = sp_ptr_array_box(a, cls_id);
   SP_GC_ROOT(p);   /* box's own root is popped on its return; sort_bang runs the user <=> (allocates) */
@@ -4317,7 +4317,7 @@ static sp_RbVal sp_PolyArray_flatten_bangq(sp_PolyArray *a) {
 }
 static sp_RbVal sp_PolyArray_flatten_bangq_depth(sp_PolyArray *a, mrb_int d) {
   if (!a) return sp_box_nil();
-  if (a->frozen) sp_raise_frozen_array();
+  if (a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
   SP_GC_ROOT(a);
   int ch = 0;
   for (mrb_int i = 0; i < a->len && !ch; i++)
@@ -4342,7 +4342,7 @@ static sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {
 }
 /* uniq dedups with eql? (class-strict: 1 and 1.0 both survive), as CRuby. */
 static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
-static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array();return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eql(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
+static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eql(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
 static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[sp_krand_below(a->len)]; }
 
 /* Forward decl: sp_poly_inspect dispatches into sp_PolyArray_inspect
@@ -5397,7 +5397,7 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, mrb_int idx, sp_RbVal val)
       ((v.cls_id == SP_BUILTIN_INT_ARRAY && val.tag != SP_TAG_INT) ||
        (v.cls_id == SP_BUILTIN_FLT_ARRAY && val.tag != SP_TAG_FLT) ||
        (v.cls_id == SP_BUILTIN_STR_ARRAY && val.tag != SP_TAG_STR))) {
-    if (sp_typed_arr_frozen(v)) sp_raise_frozen_array();
+    if (sp_typed_arr_frozen(v)) sp_raise_frozen_array_v(v);
     SP_GC_ROOT_RBVAL(val);
     sp_PolyArray *pa = sp_poly_to_poly_array(v);
     SP_GC_ROOT(pa);
