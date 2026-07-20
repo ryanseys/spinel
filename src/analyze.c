@@ -5881,6 +5881,35 @@ static int scope_calls_itself(Compiler *c, int mi) {
   return 0;
 }
 
+/* Does any `initialize` in ci's chain write @<name>? A ctor that exists but
+   never assigns a given ivar leaves it nil on a fresh instance, same as no
+   ctor at all -- so the nil-backstop below must key on the actual write, not
+   on the mere presence of an initialize (#3136). */
+static int ctor_writes_ivar(Compiler *c, int ci, const char *ivname) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  for (int k = ci; k >= 0; k = c->classes[k].parent) {
+    int mi = comp_method_in_class(c, k, "initialize");
+    if (mi < 0) continue;
+    int def = c->scopes[mi].def_node;
+    if (def < 0) continue;
+    /* scan the whole ctor subtree for a write to this ivar */
+    for (int id = 0; id < nt->count; id++) {
+      if (c->nscope[id] != mi) continue;
+      const char *ty = nt_type(nt, id);
+      if (!ty) continue;
+      if (sp_streq(ty, "InstanceVariableWriteNode") ||
+          sp_streq(ty, "InstanceVariableOperatorWriteNode") ||
+          sp_streq(ty, "InstanceVariableOrWriteNode") ||
+          sp_streq(ty, "InstanceVariableAndWriteNode") ||
+          sp_streq(ty, "InstanceVariableTargetNode")) {
+        const char *wn = nt_str(nt, id, "name");
+        if (wn && sp_streq(wn, ivname)) return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 void analyze_program(Compiler *c) {
   comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
   /* scope 0 = top level */
@@ -6693,6 +6722,7 @@ void analyze_program(Compiler *c) {
       ivar_backstop_changed = 1;
     }
   }
+
   /* An attr_reader/attr_accessor ivar typed via a writer call (scalar type),
      but whose class has no initialize that writes it, starts nil on fresh
      instances. Only widen when there is NO write inside ANY initialize in
@@ -6701,12 +6731,13 @@ void analyze_program(Compiler *c) {
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cl = &c->classes[ci];
     if (cl->is_struct) continue; /* struct members are set by generated ctor */
-    int init_mi = comp_method_in_chain(c, ci, "initialize", NULL);
-    if (init_mi >= 0) continue;
     for (int ri = 0; ri < cl->nreaders; ri++) {
       const char *rname = cl->readers[ri];
       if (!rname) continue;
       char ivname[300]; snprintf(ivname, sizeof ivname, "@%s", rname);
+      /* skip only when THIS ivar is assigned in a ctor; an existing ctor that
+         does not touch it still leaves it nil (#3136) */
+      if (ctor_writes_ivar(c, ci, ivname)) continue;
       int iv = comp_ivar_index(cl, ivname);
       if (iv < 0) continue;
       if (class_ivar_pinned(cl, ivname)) continue;  /* --rbs seed pins the type */
