@@ -7057,6 +7057,22 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       else buf_printf(b, "if (_t%d.tv_nsec >= 500000000) _t%d.tv_sec += 1; _t%d.tv_nsec = 0;", tt, tt, tt);
       buf_printf(b, " _t%d; })", tt);
     }
+    else if ((sp_streq(name, "floor") || sp_streq(name, "ceil") || sp_streq(name, "round")) && argc == 1) {
+      /* round the subsecond part to `ndigits` decimal places (#3089).
+         scale = 10^(9-ndigits); ndigits >= 9 keeps full nanosecond
+         resolution. A carry past 1e9 bumps the second. */
+      int tt = ++g_tmp, td = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = %s; mrb_int _t%d = ", tt, r, td);
+      emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; if (_t%d < 9) { if (_t%d < 0) _t%d = 0;"
+                    " int64_t _sc = 1; for (mrb_int _k = _t%d; _k < 9; _k++) _sc *= 10;"
+                    " int64_t _ns = _t%d.tv_nsec; ", td, td, td, td, tt);
+      if (sp_streq(name, "floor"))     buf_puts(b, "_ns = _ns / _sc * _sc;");
+      else if (sp_streq(name, "ceil")) buf_puts(b, "if (_ns % _sc) _ns = (_ns / _sc + 1) * _sc;");
+      else                             buf_puts(b, "_ns = (_ns + _sc / 2) / _sc * _sc;");
+      buf_printf(b, " if (_ns >= 1000000000) { _t%d.tv_sec += 1; _ns -= 1000000000; }"
+                    " _t%d.tv_nsec = (int32_t)_ns; } _t%d; })", tt, tt, tt);
+    }
     else if (sp_streq(name, "sunday?"))    buf_printf(b, "(sp_time_wday(%s) == 0)", r);
     else if (sp_streq(name, "monday?"))    buf_printf(b, "(sp_time_wday(%s) == 1)", r);
     else if (sp_streq(name, "tuesday?"))   buf_printf(b, "(sp_time_wday(%s) == 2)", r);

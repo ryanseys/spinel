@@ -2441,7 +2441,7 @@ else {
     if (sp_streq(name, "clamp") && argc == 2) return TY_TIME;  /* self or a bound */
     if (sp_streq(name, "to_a") && argc == 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
-    if ((sp_streq(name, "floor") || sp_streq(name, "ceil") || sp_streq(name, "round")) && argc == 0) return TY_TIME;
+    if ((sp_streq(name, "floor") || sp_streq(name, "ceil") || sp_streq(name, "round")) && (argc == 0 || argc == 1)) return TY_TIME;
     if (sp_streq(name, "xmlschema")) return TY_STRING;   /* with or without a fraction-digits arg (#3094) */
     if (sp_streq(name, "deconstruct_keys") && argc == 1) return TY_POLY;  /* boxed Sym=>Int hash */
     if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) return TY_STRING;
