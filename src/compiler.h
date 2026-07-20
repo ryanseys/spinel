@@ -278,6 +278,9 @@ typedef struct {
   char *empty_hash_recv; /* [node_cap] empty `{}` used as a hash block-method receiver -> TY_STR_POLY_HASH */
   char *empty_hash_arg;  /* [node_cap] empty `{}` passed as a user-method arg -> TY_POLY_POLY_HASH */
   TyKind *empty_hash_want; /* [node_cap] variant an empty `{}` should take from its use context (#3040) */
+  int *hash_default_arg_memo; /* [node_cap] hash_new_default_arg(node) memo; INT_MIN = uncomputed */
+  unsigned hash_default_arg_memo_gen; /* scope-index generation the memo was built for */
+  int hash_default_arg_memo_cap;      /* allocated length of hash_default_arg_memo */
   int node_cap;     /* allocated length of ntype/nscope (>= nt->count) */
 
   Scope *scopes;    /* scope[0] = top level */
@@ -453,6 +456,10 @@ int        comp_method_in_class(Compiler *c, int class_id, const char *name);
 /* Freeze/unfreeze the (class_id,name,is_cmethod)->scope lookup index. Frozen
    only while scope shape is fixed (the inference fixpoint); see compiler.c. */
 void       comp_scope_index_set_frozen(int frozen);
+/* Whether the scope-index is currently frozen (scope shape fixed). */
+int        comp_scope_index_is_frozen(void);
+/* Generation counter, bumped on every freeze/unfreeze transition. */
+unsigned   comp_scope_index_gen(void);
 /* Find the class (singleton) method scope for class_id + name, or -1 (no chain). */
 int        comp_cmethod_in_class(Compiler *c, int class_id, const char *name);
 /* Find the class (singleton) method scope, walking the superclass chain. */

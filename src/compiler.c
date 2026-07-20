@@ -80,6 +80,8 @@ void comp_grow_node_arrays(Compiler *c) {
 
 void comp_free(Compiler *c) {
   if (!c) return;
+  free(c->hash_default_arg_memo);
+  c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);
   c->blk_body_map = NULL;
   for (int s = 0; s < c->nscopes; s++) {
@@ -352,7 +354,13 @@ static int *tm_next = NULL, *tm_head = NULL;
    count-keyed cache would go stale. analyze_program freezes the index just
    before the inference fixpoint (where lookups are hottest and scope shape is
    fixed) and unfreezes at entry. While unfrozen, fall back to the linear scan. */
-void comp_scope_index_set_frozen(int f) { sm_frozen = f; sm_nscopes = -1; ci_frozen = f; ci_nclasses = -1; }
+/* Bumped on every freeze/unfreeze transition so consumers that cache a result
+   which is only stable while scope shape is fixed (e.g. hash_new_default_arg's
+   per-node memo) can stamp their cache and discard it when the epoch changes. */
+static unsigned sm_gen = 0;
+void comp_scope_index_set_frozen(int f) { if (sm_frozen != f) sm_gen++; sm_frozen = f; sm_nscopes = -1; ci_frozen = f; ci_nclasses = -1; }
+int comp_scope_index_is_frozen(void) { return sm_frozen; }
+unsigned comp_scope_index_gen(void) { return sm_gen; }
 static void sm_build(Compiler *c) {
   int ns = c->nscopes;
   free(sm_next); free(sm_head); free(tm_next); free(tm_head);

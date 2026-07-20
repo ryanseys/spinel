@@ -5489,6 +5489,12 @@ static int param_nonstr_index_written(Compiler *c, int mi, int p) {
 static void mark_empty_literal_args(Compiler *c) {
   if (!c->empty_hash_arg) return;
   const NodeTable *nt = c->nt;
+  /* This pass does not create or rename scopes, so the scope-shape index is
+     stable across it: freeze so the per-class method lookups below (called for
+     every CallNode * every class) hit the O(1) hash index instead of the
+     unfrozen O(nscopes) linear reverse scan -- the dominant analyze cost on
+     large apps (lobsters: ~72% of compile time was this triple loop). */
+  comp_scope_index_set_frozen(1);
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -5539,6 +5545,7 @@ static void mark_empty_literal_args(Compiler *c) {
       }
     }
   }
+  comp_scope_index_set_frozen(0);
 }
 /* An empty `{}` compared against a hash-typed peer takes that peer's variant,
    so the two sides share a representation and `==` can compare contents

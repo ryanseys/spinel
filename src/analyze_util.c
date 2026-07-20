@@ -301,7 +301,44 @@ int anon_struct_ci_for_value(Compiler *c, int val) {
    return the default-value argument node, or -1. Lets a literal receiver's
    .default / [] / fetch fold to the default when the hash type never
    narrows (no writes ever reach it). */
+static int hash_new_default_arg_compute(Compiler *c, int recv);
+
+/* hash_new_default_arg's result is a pure function of the (static) AST node
+   table plus scope assignments, which are fixed while the scope-index is
+   frozen. The local-variable branch scans every write node in the program, and
+   the function is called for every `x[k]` / `x.default` on an untyped receiver
+   during the inference fixpoint -- O(N) per call, O(N^2) overall. Memoize per
+   receiver node while frozen, discarding the cache when the scope epoch changes
+   (see comp_scope_index_gen); fall back to a direct compute while unfrozen. */
 int hash_new_default_arg(Compiler *c, int recv) {
+  if (recv < 0) return -1;
+  if (!comp_scope_index_is_frozen() || recv >= c->node_cap)
+    return hash_new_default_arg_compute(c, recv);
+  unsigned gen = comp_scope_index_gen();
+  if (!c->hash_default_arg_memo || c->hash_default_arg_memo_cap < c->node_cap) {
+    free(c->hash_default_arg_memo);
+    c->hash_default_arg_memo = malloc((size_t)c->node_cap * sizeof(int));
+    c->hash_default_arg_memo_cap = c->hash_default_arg_memo ? c->node_cap : 0;
+    c->hash_default_arg_memo_gen = gen - 1u; /* force the re-init below */
+  }
+  if (!c->hash_default_arg_memo) return hash_new_default_arg_compute(c, recv);
+  if (c->hash_default_arg_memo_gen != gen) {
+    for (int i = 0; i < c->hash_default_arg_memo_cap; i++) c->hash_default_arg_memo[i] = INT_MIN;
+    c->hash_default_arg_memo_gen = gen;
+  }
+  if (c->hash_default_arg_memo[recv] != INT_MIN) return c->hash_default_arg_memo[recv];
+  /* Mark the slot resolved-but-dynamic (-1) before recomputing: the compute
+     recurses through a local's writes, which can re-enter for this same node
+     via a write cycle (`a = b; b = a`). -1 is the correct conservative result
+     for such a cyclic (non-single-Hash.new) definition and breaks the cycle;
+     the real result overwrites it below. */
+  c->hash_default_arg_memo[recv] = -1;
+  int r = hash_new_default_arg_compute(c, recv);
+  c->hash_default_arg_memo[recv] = r;
+  return r;
+}
+
+static int hash_new_default_arg_compute(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || !nt_type(nt, recv)) return -1;
   /* a local whose every same-scope write is the same Hash.new(d) shape
