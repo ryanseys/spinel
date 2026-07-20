@@ -1262,7 +1262,9 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
     if (is_first) {
       if (ac == 1) { has_count = 1; count_node = av[0]; }
-      else return 0;   /* first with no count: a different handler */
+      /* bare `first` is first(1) unwrapped to the single element (#2994) */
+      else if (ac == 0) has_count = 1;
+      else return 0;
     }
     else if (ac != 0) return 0;
   }
@@ -1397,9 +1399,12 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   }
   int tn = -1;
   if (has_count) {
-    Buf nb = expr_buf(c, count_node);
     tn = ++g_tmp; emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "mrb_int _t%d = %s;\n", tn, nb.p ? nb.p : "0"); free(nb.p);
+    if (count_node >= 0) {
+      Buf nb = expr_buf(c, count_node);
+      buf_printf(g_pre, "mrb_int _t%d = %s;\n", tn, nb.p ? nb.p : "0"); free(nb.p);
+    }
+    else buf_printf(g_pre, "mrb_int _t%d = 1;\n", tn);   /* bare first */
   }
   int thi = -1, tsrc = -1;
   if (src_is_range && !endless) {
@@ -1627,7 +1632,10 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) > 0%s) sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n",
                ops[oi].cnt, cbuf, tres, ops[oi].cnt);
   }
-  buf_printf(b, "_t%d", tres);
+  /* bare `first` yields the element itself, nil when the chain ran dry */
+  if (is_first && count_node < 0)
+    buf_printf(b, "(sp_PolyArray_length(_t%d) ? sp_PolyArray_get(_t%d, 0) : sp_box_nil())", tres, tres);
+  else buf_printf(b, "_t%d", tres);
   return 1;
 }
 

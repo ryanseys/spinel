@@ -4224,8 +4224,10 @@ else {
       }
     }
     TyKind lst = lazy_src >= 0 ? infer_type(c, lazy_src) : TY_UNKNOWN;
+    /* emit_lazy_pipeline_expr collects into a PolyArray; the counted form is
+       that array, the bare form its first (boxed) element (#2994). */
     if (lazy_src >= 0 && lst == TY_RANGE)
-      return (argc == 1) ? TY_POLY_ARRAY : TY_INT;  /* emit_lazy_pipeline_expr -> PolyArray */
+      return (argc == 1) ? TY_POLY_ARRAY : TY_POLY;
     /* An array-source lazy first(n) (e.g. the `arr.lazy.take(n).to_a` that the
        take->first desugar produces) materializes n boxed elements. */
     if (lazy_src >= 0 && argc == 1 &&
@@ -4288,7 +4290,7 @@ else {
        (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
         lazy_alias_chain(c, recv) >= 0)) &&
       nt_ref(nt, id, "block") < 0 &&
-      !(sp_streq(name, "first") && argc != 1) &&
+      !(sp_streq(name, "first") && argc > 1) &&
       !((sp_streq(name, "to_a") || sp_streq(name, "force")) && argc != 0)) {
     int cur = recv, lazy_src = -1, ok = 1, saw_op = 0;
     /* the chain may be held in a variable (#3012); resolve it like the
@@ -4322,12 +4324,14 @@ else {
     }
     if (ok && (saw_op || sp_streq(name, "to_a") || sp_streq(name, "force")) && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
+      /* bare `first` unwraps to the single element, not the collected array */
+      TyKind res = (sp_streq(name, "first") && argc == 0) ? TY_POLY : TY_POLY_ARRAY;
       if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR ||
-          st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY) return TY_POLY_ARRAY;
+          st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY) return res;
       /* an empty array literal has no element type and so types UNKNOWN, but
          the pipeline over it is still well defined -- it yields [] (#2996) */
       if (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&
-          sp_streq(nt_type(nt, lazy_src), "ArrayNode")) return TY_POLY_ARRAY;
+          sp_streq(nt_type(nt, lazy_src), "ArrayNode")) return res;
     }
   }
 
