@@ -2923,9 +2923,32 @@ static int desugar_builtin_method_obj(Compiler *c) {
       if (!binop) continue;
     }
     TyKind rt = infer_type(c, recv);
-    if (rt == TY_UNKNOWN || rt == TY_POLY || rt == TY_VOID || rt == TY_NIL ||
-        ty_is_object(rt) || rt == TY_CLASS || rt == TY_METHOD || rt == TY_PROC)
-      continue;                                       /* user objects: already handled */
+    /* A user-object receiver whose sym is an attr/struct accessor with NO real
+       def has no callable target (accessors inline at the call site), so
+       method(:attr) / method(:attr=) would fail. Synthesize the same __bam_
+       wrapper whose body `__bam_r.attr` (or `__bam_r.attr = __bam_a`) inlines
+       the accessor -- a writer takes the binop-style 2-param shape. A real def
+       is already handled via the resolved-target path (#3110 follow-up). */
+    if (ty_is_object(rt)) {
+      int ocid = ty_object_class(rt);
+      int obj_accessor = 0;
+      if (ocid >= 0 && comp_method_in_chain(c, ocid, sym, NULL) < 0) {
+        size_t sl = strlen(sym);
+        if (sl > 1 && sym[sl - 1] == '=') {
+          char basew[256];
+          if (sl - 1 < sizeof basew) {
+            memcpy(basew, sym, sl - 1); basew[sl - 1] = '\0';
+            if (comp_writer_in_chain(c, ocid, basew, NULL)) { obj_accessor = 1; binop = 1; }
+          }
+        } else if (comp_reader_in_chain(c, ocid, sym, NULL)) {
+          obj_accessor = 1;
+        }
+      }
+      if (!obj_accessor) continue;                    /* real def / non-accessor: handled elsewhere */
+    }
+    else if (rt == TY_UNKNOWN || rt == TY_POLY || rt == TY_VOID || rt == TY_NIL ||
+             rt == TY_CLASS || rt == TY_METHOD || rt == TY_PROC)
+      continue;
     /* the typed-array (kind, op) trampoline path owns these */
     if (ty_is_array(rt) && sp_streq(sym, "push")) continue;
     if (comp_method_index(c, sym) >= 0) continue;     /* a same-named top-level def wins */

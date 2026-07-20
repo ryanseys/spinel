@@ -889,11 +889,12 @@ int method_obj_target_mi(Compiler *c, int node) {
     return mi;
   }
   TyKind rt = infer_type(c, recv);
-  if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), sym, NULL);
-  /* a builtin receiver whose method() was retargeted at a synthesized
-     __bam_* wrapper (desugar_builtin_method_obj): resolve the wrapper */
+  /* a receiver whose method() was retargeted at a synthesized __bam_* wrapper
+     (desugar_builtin_method_obj) -- for an object accessor the wrapper is a
+     TOP-LEVEL def, not in the object's own class chain, so resolve it there. */
   if (sym[0] == '_' && sym[1] == '_' && sym[2] == 'b' && sym[3] == 'a' && sym[4] == 'm')
     return comp_method_index(c, sym);
+  if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), sym, NULL);
   return -1;
 }
 

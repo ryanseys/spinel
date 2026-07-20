@@ -7868,6 +7868,12 @@ void emit_call(Compiler *c, int id, Buf *b) {
         nt_arr(c->nt, pn, "requireds", &n_req);
         nt_arr(c->nt, pn, "optionals", &n_opt);
         nt_arr(c->nt, pn, "posts", &n_post);
+        /* a synthesized __bam_ wrapper's leading __bam_r is the bound receiver,
+           not a real argument: the accessor/method it forwards to has one fewer
+           required param (reader -> 0, writer -> 1) (#3110 follow-up) */
+        if (c->scopes[target].name &&
+            strncmp(c->scopes[target].name, "__bam_", 6) == 0 && n_req > 0)
+          n_req--;
         int rp = nt_ref(c->nt, pn, "rest");
         if (rp >= 0) {
           const char *rty = nt_type(c->nt, rp);
