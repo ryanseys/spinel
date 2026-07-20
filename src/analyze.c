@@ -3151,6 +3151,18 @@ static int desugar_symbol_string_methods(Compiler *c) {
     if (!hit) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || infer_type(c, recv) != TY_SYMBOL) continue;
+    /* Symbol#<=> is defined only between Symbols: reading both sides as text
+       would make :a <=> "a" answer 0 where Ruby answers nil, so leave a
+       non-Symbol operand alone and let codegen emit the nil (#3081). */
+    if (sp_streq(nm, "<=>")) {
+      int cargs = nt_ref(nt, id, "arguments");
+      int cn = 0;
+      const int *cv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cn) : NULL;
+      if (cn == 1 && cv && cv[0] >= 0) {
+        TyKind cat = infer_type(c, cv[0]);
+        if (cat != TY_SYMBOL && cat != TY_POLY && cat != TY_UNKNOWN) continue;
+      }
+    }
     /* symbol-to-symbol comparisons need BOTH sides as text */
     int toa = nt_new_node(nt, "CallNode");
     if (toa < 0) continue;

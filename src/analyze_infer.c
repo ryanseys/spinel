@@ -4045,6 +4045,13 @@ else {
     if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && (argc == 1 || argc == 2)) return TY_STRING;
     if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?") || sp_streq(name, "match?")) && argc == 1)
       return TY_BOOL;
+    /* Symbol#<=> is defined only between Symbols; String included, any other
+       operand is not comparable and the result is nil (#3081) */
+    if (sp_streq(name, "<=>") && argc == 1) {
+      TyKind at = infer_type(c, argv[0]);
+      if (at == TY_SYMBOL) return TY_INT;
+      if (at != TY_POLY && at != TY_UNKNOWN) return TY_NIL;
+    }
     /* casecmp/casecmp? against a non-symbol operand answer nil */
     if (sp_streq(name, "casecmp") && argc == 1)
       return infer_type(c, argv[0]) == TY_SYMBOL ? TY_INT : TY_NIL;

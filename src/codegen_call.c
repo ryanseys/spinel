@@ -14945,6 +14945,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "; (_t%d > _t%d) - (_t%d < _t%d); })", ta, tb, ta, tb);
       return;
     }
+    /* Symbol#<=> is defined only between Symbols; a String (or any other
+       non-Symbol) operand is not comparable and answers nil (#3081). A Symbol
+       receiver can reach here typed as a string (it prints as its name), so
+       ask the inferred receiver type rather than trusting lrt alone. */
+    if ((lrt == TY_SYMBOL || infer_type(c, recv) == TY_SYMBOL) &&
+        lat != TY_SYMBOL && lat != TY_POLY && lat != TY_UNKNOWN) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), (void)("); emit_expr(c, argv[0], b);
+      buf_puts(b, "), SP_INT_NIL)");
+      return;
+    }
     if (lrt == TY_STRING && lat == TY_STRING) {
       int tc = ++g_tmp;
       buf_printf(b, "({ int _t%d = strcmp(", tc); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
