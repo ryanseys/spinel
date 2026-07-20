@@ -1983,6 +1983,8 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
       meta_arity = neg ? -(mandatory + 1) : mandatory;
     }
   }
+  /* the Symbol#to_proc lambda answers -2 whatever it was synthesized with */
+  if (create >= 0 && nt_int(nt, create, "stp_arity", 0)) meta_arity = -2;
 
   /* An explicit `return <expr>` tail is a ReturnNode; its value node is the
      argument. Treating it as the effective tail keeps the body's return ABI

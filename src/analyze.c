@@ -2623,6 +2623,10 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         nt_node_set_ref(nt, id, "receiver", -1);
         nt_node_set_ref(nt, id, "arguments", -1);
         nt_node_set_ref(nt, id, "block", blk);
+        /* Symbol#to_proc always reports arity -2 (a required receiver plus
+           optional arguments), whatever the underlying method takes; the
+           synthesized lambda's own parameter count would say 1 or 2 (#3053) */
+        nt_node_set_int(nt, id, "stp_arity", 1);
         comp_grow_node_arrays(c);
         continue;
       }
@@ -3468,6 +3472,7 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
       nt_node_set_str(nt, id, "name", "lambda");
       nt_node_set_ref(nt, id, "receiver", -1);
       nt_node_set_ref(nt, id, "block", blk2);
+      nt_node_set_int(nt, id, "stp_arity", 1);   /* Symbol#to_proc is -2 (#3053) */
     }
     else
       nt_node_set_ref(nt, id, "block", blk2);
