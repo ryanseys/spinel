@@ -1796,11 +1796,22 @@ int infer_write_types(Compiler *c) {
       if (!caller || caller->class_id < 0) continue;
       int defcls2 = caller->class_id;
       int getter_mi = comp_method_in_chain(c, caller->class_id, mname, &defcls2);
-      if (getter_mi < 0) continue;
-      int last2 = scope_body_last(c, getter_mi);
-      if (last2 < 0 || !nt_type(nt, last2) ||
-          !sp_streq(nt_type(nt, last2), "InstanceVariableReadNode")) continue;
-      const char *inm2 = nt_str(nt, last2, "name");
+      const char *inm2 = NULL;
+      char reader_iv[300];
+      if (getter_mi < 0) {
+        /* no hand-written getter: an attr_reader pushes into its backing
+           ivar @<name> the same way `@<name> << x` does (#3139) */
+        int rdefcls = caller->class_id;
+        if (!comp_reader_in_chain(c, caller->class_id, mname, &rdefcls)) continue;
+        snprintf(reader_iv, sizeof reader_iv, "@%s", mname);
+        inm2 = reader_iv;
+        defcls2 = rdefcls;
+      } else {
+        int last2 = scope_body_last(c, getter_mi);
+        if (last2 < 0 || !nt_type(nt, last2) ||
+            !sp_streq(nt_type(nt, last2), "InstanceVariableReadNode")) continue;
+        inm2 = nt_str(nt, last2, "name");
+      }
       if (!inm2) continue;
       ClassInfo *ci2 = &c->classes[defcls2];
       int iv2 = comp_ivar_index(ci2, inm2);
