@@ -4283,6 +4283,40 @@ int desugar_env_enum(Compiler *c) {
     /* fetch WITH a block rides the snapshot's block-aware Hash#fetch (#2745) */
     if (!is_enum && sp_streq(nm, "fetch") && nt_ref(nt, id, "block") >= 0) is_enum = 1;
     if (!is_enum) continue;
+    /* ENV keys are Strings at the C level: a statically non-String argument to
+       the string-keyed queries is CRuby's TypeError, not a silent miss (#3000).
+       Rewrite the call into the raise before the snapshot desugar. */
+    if (sp_streq(nm, "assoc") || sp_streq(nm, "key") || sp_streq(nm, "slice") ||
+        sp_streq(nm, "values_at")) {
+      int qargs = nt_ref(nt, id, "arguments");
+      int qn = 0; const int *qav = qargs >= 0 ? nt_arr(nt, qargs, "arguments", &qn) : NULL;
+      const char *badc = NULL;
+      for (int k = 0; k < qn && !badc; k++) {
+        TyKind at = infer_type(c, qav[k]);
+        badc = at == TY_SYMBOL ? "Symbol" : at == TY_INT ? "Integer"
+             : at == TY_FLOAT ? "Float" : at == TY_NIL ? "nil"
+             : at == TY_BOOL ? "Boolean" : NULL;
+      }
+      if (badc) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "no implicit conversion of %s into String", badc);
+        int ecn = nt_new_node(nt, "ConstantReadNode");
+        nt_node_set_str(nt, ecn, "name", "TypeError");
+        int emn = nt_new_node(nt, "StringNode");
+        nt_node_set_str(nt, emn, "content", msg);
+        int ea[2] = { ecn, emn };
+        int eargs = nt_new_node(nt, "ArgumentsNode");
+        nt_node_set_arr(nt, eargs, "arguments", ea, 2);
+        nt_node_set_str(nt, id, "name", "raise");
+        nt_node_set_ref(nt, id, "receiver", -1);
+        nt_node_set_ref(nt, id, "arguments", eargs);
+        nt_node_set_ref(nt, id, "block", -1);
+        comp_grow_node_arrays(c);
+        c->nscope[ecn] = c->nscope[emn] = c->nscope[eargs] = c->nscope[id];
+        changed = 1;
+        continue;
+      }
+    }
     int snap = nt_new_node(nt, "CallNode");
     if (snap < 0) continue;
     nt_node_set_str(nt, snap, "name", "__env_to_h");
