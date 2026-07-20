@@ -6744,6 +6744,10 @@ int infer_block_params(Compiler *c) {
              nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "lazy")) {
       int lsrc = nt_ref(nt, recv, "receiver");
       if (lsrc >= 0 && infer_type(c, lsrc) == TY_RANGE) pt = TY_INT;
+      /* an empty `[]` literal source has no element type; the pipeline still
+         binds (and assigns) the parameter, so it needs a boxed slot (#3128) */
+      else if (lsrc >= 0 && nt_type(nt, lsrc) &&
+               sp_streq(nt_type(nt, lsrc), "ArrayNode")) pt = TY_POLY;
     }
     else if ((sp_streq(name, "each") || ty_iter_shape(name) == TY_ITER_MAP ||
               sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter") ||
