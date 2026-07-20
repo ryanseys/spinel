@@ -3144,6 +3144,61 @@ static int expand_literal_splat_args(Compiler *c) {
    pattern slice, comparisons) through the name text: interpose .to_s so the
    string machinery serves them. Symbol-native fast paths (==, to_s, case
    conversions, succ) keep their own arms. */
+/* `arr.lazy.<stage>...`: uniq / chunk_while / slice_when / with_index /
+   each_with_index carry state across elements, so they do not fuse into the
+   lazy loop and the whole chain was rejected as opaque. Over a FINITE source
+   the lazy and eager forms agree (CRuby's lazy uniq.to_a over an endless
+   source never terminates either), so drop the `.lazy` and let the eager
+   array path serve it. An endless range keeps its lazy chain and its
+   (still unsupported) reject. (#2993) */
+static int desugar_lazy_stateful_stage(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  static const char *const stateful[] = {
+    "uniq", "chunk_while", "slice_when", "with_index", "each_with_index", NULL };
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "lazy") || nt_ref(nt, id, "block") >= 0) continue;
+    int src = nt_ref(nt, id, "receiver");
+    if (src < 0) continue;
+    /* only a finite source: a typed array, or an array literal */
+    TyKind st = infer_type(c, src);
+    int finite = ty_is_array(st) ||
+                 (nt_type(nt, src) && sp_streq(nt_type(nt, src), "ArrayNode"));
+    if (!finite) continue;
+    /* does any consumer up the chain need cross-element state? */
+    int node = id, hit = 0;
+    for (int depth = 0; depth < 16 && !hit; depth++) {
+      int call = -1;
+      for (int k = 0; k < nt->count; k++)
+        if (nt_type(nt, k) && sp_streq(nt_type(nt, k), "CallNode") &&
+            nt_ref(nt, k, "receiver") == node) { call = k; break; }
+      if (call < 0) break;
+      const char *cn = nt_str(nt, call, "name");
+      if (!cn) break;
+      for (int i = 0; stateful[i]; i++) if (sp_streq(cn, stateful[i])) { hit = 1; break; }
+      /* with_index attaches to an enumerator, not to the bare array */
+      if (hit && sp_streq(cn, "with_index")) hit = 2;
+      node = call;
+    }
+    if (!hit) continue;
+    /* Rewrite the `lazy` call in place: `each` for the stages that want an
+       enumerator receiver, otherwise splice it out so the consumer reads the
+       source array directly. */
+    if (hit == 2) { nt_node_set_str(nt, id, "name", "each"); }
+    else {
+      for (int k = 0; k < nt->count; k++)
+        if (nt_type(nt, k) && sp_streq(nt_type(nt, k), "CallNode") &&
+            nt_ref(nt, k, "receiver") == id)
+          nt_node_set_ref(nt, k, "receiver", src);
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_symbol_string_methods(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -6139,6 +6194,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
     ch |= desugar_public_send_recv(c);         /* r.public_send(:m, a) -> r.m(a), visibility-stamped */
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
+    ch |= desugar_lazy_stateful_stage(c);      /* arr.lazy.uniq -> arr.uniq (finite source) */
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
     ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */
