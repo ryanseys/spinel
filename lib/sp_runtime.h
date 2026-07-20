@@ -6154,6 +6154,12 @@ static mrb_bool sp_exc_eq(sp_Exception *a, sp_Exception *b) {
   if (a == b) return 1;
   if (!a || !b) return 0;
   if (strcmp(a->cls_name ? a->cls_name : "", b->cls_name ? b->cls_name : "") != 0) return 0;
+  /* Exception#== compares class, the STORED message and the backtrace.
+     UncaughtThrowError alone leaves its stored message nil and renders
+     "uncaught throw :tag" lazily, so Ruby sees two of them as equal whatever
+     the tag. We keep the rendered text in ->msg, so skip it for that class
+     (#3098). Backtraces are empty here by design, see docs/limitations.md. */
+  if (a->cls_name && strcmp(a->cls_name, "UncaughtThrowError") == 0) return 1;
   return strcmp(a->msg ? a->msg : "", b->msg ? b->msg : "") == 0;
 }
 static sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {
