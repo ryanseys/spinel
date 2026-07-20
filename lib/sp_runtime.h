@@ -2342,6 +2342,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
           if (_iof && sp_File_path(_iof)[0] && sp_File_path(_iof)[0] != '<') return SPL("File");
           return SPL("IO");
         }
+        case SP_BUILTIN_TMS: return SPL("Process::Tms");
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
         default: { sp_Class c = {v.cls_id}; return sp_class_to_s(c); }
       }
@@ -2463,6 +2464,14 @@ static sp_Tms sp_process_times(void) {
   t.cutime = (mrb_float)b.tms_cutime / hz;
   t.cstime = (mrb_float)b.tms_cstime / hz;
   return t;
+}
+/* Boxing for the unboxed sp_Tms value (a rescue expression merges it into a
+   nullable slot, #3132): heap-copy like sp_box_frange. */
+static sp_RbVal sp_box_tms(sp_Tms v) __attribute__((unused));
+static sp_RbVal sp_box_tms(sp_Tms v) {
+  sp_Tms *p = (sp_Tms *)sp_gc_alloc(sizeof(sp_Tms), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_TMS);
 }
 /* Class/Module#freeze / #frozen?: a class value is an unboxed {cls_id, name},
    so the frozen flag lives in a global per-class map -- user ids from 0 up,

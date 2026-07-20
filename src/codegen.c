@@ -21,7 +21,8 @@ const char *ty_nullable_builtin_id(TyKind t) {
     case TY_PROC:       return "SP_BUILTIN_PROC";
     case TY_METHOD:     return "SP_BUILTIN_METHOD";
     case TY_DIR:        return "SP_BUILTIN_DIR";
-    case TY_TMS:        return "SP_BUILTIN_TMS";
+    /* TY_TMS is an unboxed VALUE type: it boxes by heap copy (sp_box_tms),
+       never as a nullable pointer (#3132) */
     default:            return NULL;
   }
 }
@@ -63,6 +64,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     case TY_SYMBOL: fn = "sp_box_sym"; break;     case TY_RANGE: fn = "sp_box_range"; break;
     case TY_FLOAT_RANGE: fn = "sp_box_frange"; break;
     case TY_STR_RANGE: fn = "sp_box_srange"; break;
+    case TY_TMS: fn = "sp_box_tms"; break;
     case TY_TIME: fn = "sp_box_time"; break;
     case TY_COMPLEX: fn = "sp_box_complex"; break;  case TY_RATIONAL: fn = "sp_box_rational"; break;
     /* TY_PROC / TY_METHOD are handled by the nullable-builtin box above. */
@@ -430,6 +432,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_RANGE:  fn = "sp_box_range"; break;
     case TY_FLOAT_RANGE: fn = "sp_box_frange"; break;
     case TY_STR_RANGE: fn = "sp_box_srange"; break;
+    case TY_TMS: fn = "sp_box_tms"; break;
     case TY_TIME:   fn = "sp_box_time";  break;
     case TY_COMPLEX:  fn = "sp_box_complex";  break;
     case TY_RATIONAL: fn = "sp_box_rational"; break;
