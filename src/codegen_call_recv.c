@@ -1517,9 +1517,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         int excl = (int)(nt_int(nt, rn, "flags", 0) & 4) ? 1 : 0;
         int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
         buf_printf(b, "sp_%sArray_slice_range(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (lo >= 0) emit_expr(c, lo, b); else buf_puts(b, "0");
+        /* a poly bound (a destructured tuple element, #2923) unboxes here */
+        if (lo >= 0) emit_int_expr(c, lo, b); else buf_puts(b, "0");
         buf_puts(b, ", ");
-        if (hi >= 0) emit_expr(c, hi, b); else buf_puts(b, "-1");
+        if (hi >= 0) emit_int_expr(c, hi, b); else buf_puts(b, "-1");
         buf_printf(b, ", %d)", hi >= 0 ? excl : 0);
         return 1;
       }
