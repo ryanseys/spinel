@@ -729,10 +729,32 @@ else {
         }
       }
     }
+    /* When the program reassigns `$stderr` to a StringIO, redirect warn to it
+       at runtime (gv_stderr is NULL until reassigned, so the default path still
+       writes to the real stderr) (#3113). */
+    LocalVar *serr = comp_gvar(c, "stderr");
+    int redirect = serr && ty_is_object(serr->type) && ty_object_class(serr->type) >= 0 &&
+                   c->classes[ty_object_class(serr->type)].c_name &&
+                   sp_streq(c->classes[ty_object_class(serr->type)].c_name, "StringIO");
     for (int k = 0; k < argc; k++) {
       if (k == kw_idx) continue;
       if (suppress) { emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, ");\n"); continue; }
       TyKind at = comp_ntype(c, argv[k]);
+      if (redirect) {
+        /* stringify into a temp, then branch on the live $stderr redirect */
+        int wt = ++g_tmp;
+        emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", wt);
+        if (at == TY_STRING) emit_expr(c, argv[k], b);
+        else if (at == TY_INT) { buf_puts(b, "sp_int_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
+        else if (at == TY_FLOAT) { buf_puts(b, "sp_float_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
+        else if (at == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
+        else { buf_puts(b, "((void)("); emit_expr(c, argv[k], b); buf_puts(b, "), \"\")"); }
+        buf_puts(b, ";\n");
+        emit_indent(b, indent);
+        buf_printf(b, "if (gv_stderr) { sp_StringIO_write(gv_stderr, _t%d); sp_StringIO_write(gv_stderr, \"\\n\"); }"
+                      " else { fputs(_t%d, stderr); fputc('\\n', stderr); }\n", wt, wt);
+        continue;
+      }
       emit_indent(b, indent); buf_puts(b, "fputs(");
       if (at == TY_STRING) emit_expr(c, argv[k], b);
       else if (at == TY_INT) { buf_puts(b, "sp_int_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
