@@ -2289,6 +2289,18 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     default: return SPL("Object");
   }
 }
+/* Class/Module#freeze / #frozen?: a class value is an unboxed {cls_id, name},
+   so the frozen flag lives in a global per-class map -- user ids from 0 up,
+   builtins (-100..-163) mapped to the top of the range (#3101). */
+static unsigned char sp_class_frozen_map[4096];
+static void sp_class_freeze_id(mrb_int cls_id) {
+  mrb_int ix = cls_id >= 0 ? cls_id : (3900 - cls_id);
+  if (ix >= 0 && ix < 4096) sp_class_frozen_map[ix] = 1;
+}
+static mrb_bool sp_class_frozen_id(mrb_int cls_id) {
+  mrb_int ix = cls_id >= 0 ? cls_id : (3900 - cls_id);
+  return (ix >= 0 && ix < 4096) ? (mrb_bool)sp_class_frozen_map[ix] : 0;
+}
 /* .class as a first-class value: name-backed for every receiver kind, so it
    compares via sp_class_eq (name identity) and prints via sp_class_to_s. */
 static sp_Class sp_poly_class_val(sp_RbVal v) {

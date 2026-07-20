@@ -10657,9 +10657,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "; sp_class_nil_p(_cl%d); })", _clt);
       return;
     }
+    /* Class/Module#freeze flips the per-class runtime flag (a class value is
+       an unboxed {cls_id, name}, so the flag lives in a global map); frozen?
+       reads it back (#3101). */
+    if (sp_streq(name, "freeze") && argc == 0) {
+      int _cft = ++g_tmp;
+      buf_printf(b, "({ sp_Class _cl%d = ", _cft); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_class_freeze_id(_cl%d.cls_id); _cl%d; })", _cft, _cft);
+      return;
+    }
     if (sp_streq(name, "frozen?") && argc == 0) {
-      /* spinel does not freeze class objects; a class is never frozen (#2953) */
-      buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+      int _cft = ++g_tmp;
+      buf_printf(b, "({ sp_Class _cl%d = ", _cft); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_class_frozen_id(_cl%d.cls_id); })", _cft);
       return;
     }
     /* const_defined?(:NAME) with a literal name answers at compile time from
