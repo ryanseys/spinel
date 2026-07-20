@@ -19,6 +19,7 @@ class Set
   def initialize(enum = nil)
     @data = []
     if enum
+      Set.check_enum(enum)
       if block_given?
         enum.each { |x| add(yield(x)) }
       else
