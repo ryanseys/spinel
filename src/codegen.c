@@ -499,7 +499,7 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
     ClassInfo *vc = &c->classes[ty_object_class(t)];
     for (int i = 0; i < vc->nivars; i++)
       if (vc->ivar_types[i] == TY_STRING)
-        buf_printf(b, "    SP_GC_ROOT(lv_%s.iv_%s);\n", lv->name, vc->ivars[i] + 1);
+        buf_printf(b, "    SP_GC_ROOT(lv_%s.iv_%s);\n", lv->name, iv_c(vc->ivars[i] + 1));
   }
   free(cty.p);
 }

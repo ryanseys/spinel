@@ -5422,13 +5422,13 @@ else {
     if (cws2 && cws2->is_cmethod && cws2->class_id >= 0)
       snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[cws2->class_id].name, nm + 1);
     else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && g_ie_class_id >= 0)
-      snprintf(ref2, sizeof ref2, "%s%siv_%s", g_self, g_self_deref, nm + 1);
+      snprintf(ref2, sizeof ref2, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && g_class_body_id >= 0)
       snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[g_class_body_id].name, nm + 1);
     else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && sc2 >= 0)
       snprintf(ref2, sizeof ref2, "civ_Toplevel_%s", nm + 1);
     else
-      snprintf(ref2, sizeof ref2, "%s%siv_%s", g_self, g_self_deref, nm + 1);
+      snprintf(ref2, sizeof ref2, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     if (ivt2 == TY_POLY) {
       emit_indent(b, indent);
       buf_printf(b, "if (%ssp_poly_truthy(%s)) %s = ", is_or ? "!" : "", ref2, ref2);
@@ -5528,7 +5528,7 @@ else {
     /* Ivar write inside instance_eval block: access ivar via receiver pointer. */
     if (cws && cws->class_id < 0 && !cws->is_cmethod && g_ie_class_id >= 0) {
       emit_indent(b, indent);
-      buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, nm + 1);
+      buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(nm + 1));
     }
     /* Ivar write in a class/module body (outside any def): write to the
        module-level civ_ variable. */
@@ -5551,7 +5551,7 @@ else {
       else {
         if (cws && cws->class_id >= 0)
           emit_frozen_obj_guard(c, cws->class_id, g_self ? g_self : "self", b);
-        buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, nm + 1);
+        buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(nm + 1));
       }
     }
     const char *vty = nt_type(nt, v);
@@ -5709,7 +5709,7 @@ else {
              comp_class_index(c, "Toplevel") >= 0)
       snprintf(ref, sizeof ref, "civ_Toplevel_%s", nm + 1);
     else
-      snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, nm + 1);
+      snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     emit_indent(b, indent);
     if (vt == TY_STRING && op && sp_streq(op, "+")) {
       buf_printf(b, "%s = sp_str_concat(%s, ", ref, ref);
@@ -6658,7 +6658,7 @@ else {
             if (rt_scope->is_cmethod)
               buf_printf(b, "civ_%s_%s = ", c->classes[rt_scope->class_id].name, ivnm + 1);
             else
-              buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, ivnm + 1);
+              buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm + 1));
             if (ivt == TY_POLY && elem != TY_POLY) {
               Buf bx; memset(&bx, 0, sizeof bx);
               emit_boxed_text(c, elem, get_expr, &bx);
@@ -6792,7 +6792,7 @@ else {
             if (rt_scope->is_cmethod)
               buf_printf(b, "civ_%s_%s = ", c->classes[rt_scope->class_id].name, ivnm2 + 1);
             else
-              buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, ivnm2 + 1);
+              buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm2 + 1));
             if (ivt2 == TY_POLY && elem != TY_POLY) {
               Buf bx2; memset(&bx2, 0, sizeof bx2);
               emit_boxed_text(c, elem, get_expr2, &bx2);
@@ -6845,7 +6845,7 @@ else {
             if (rt_scope_p->is_cmethod)
               buf_printf(b, "civ_%s_%s = ", c->classes[rt_scope_p->class_id].name, ivnm + 1);
             else
-              buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, ivnm + 1);
+              buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm + 1));
             if (ivt != TY_POLY) {
               Buf bx; memset(&bx, 0, sizeof bx);
               emit_unbox_text(c, ivt, get_expr, &bx);
@@ -7016,7 +7016,7 @@ else {
         if (iv_sc && iv_sc->is_cmethod && iv_cid >= 0)
           buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid].name, ivnm + 1);
         else
-          buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, ivnm + 1);
+          buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm + 1));
         TyKind valt = comp_ntype(c, els[i]);
         if (ivt == TY_POLY && valt != TY_POLY) {
           char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
@@ -7264,7 +7264,7 @@ else {
         if (iv_sc2 && iv_sc2->is_cmethod && iv_cid2 >= 0)
           buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid2].name, rnm_j + 1);
         else
-          buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, rnm_j + 1);
+          buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(rnm_j + 1));
         if (ridx >= 0 && ridx < en) {
           TyKind valt2 = (ridx < en) ? comp_ntype(c, els[ridx]) : TY_UNKNOWN;
           if (ivt2 == TY_POLY && valt2 != TY_POLY) {

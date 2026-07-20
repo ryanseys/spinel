@@ -8,7 +8,12 @@ true
 true
 true
 true
+false
+true
+true
+true
 [:ok?, :count]
 {ok?: true, count: 3}
 "#<data D :ok?=true, count=3>"
 false
+true
