@@ -4308,6 +4308,58 @@ else {
         buf_printf(b, " } _t%d; })", tr);
         return 1;
       }
+      if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
+          rt == TY_POLY_POLY_HASH) {
+        /* merge(other) { |k, o, n| } on a PolyPolyHash (e.g. a reduce({})
+           accumulator). PolyPolyHash is open-addressing: order[i] is a table
+           slot, so the key is keys[order[i]] -- the generic order[i]-as-key
+           path below miscompiles it. `other` can be any boxed hash (an element
+           read out of a poly Array loses its concrete variant), so iterate it
+           through sp_poly_hash_pair. Block params are declared locally here so
+           a merge nested inside a fold (where they are not scope locals) still
+           resolves them (#3100). */
+        int blk = nt_ref(nt, id, "block");
+        const char *bp0 = block_param_name(c, blk, 0);
+        const char *bp1 = block_param_name(c, blk, 1);
+        const char *bp2 = block_param_name(c, blk, 2);
+        int tr = ++g_tmp, tc = ++g_tmp, tj = ++g_tmp, to = ++g_tmp,
+            tn = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
+        buf_printf(b, "({ sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d);", tr, tr);
+        buf_printf(b, " sp_PolyPolyHash *_t%d = ", tc); emit_expr(c, recv, b); buf_puts(b, ";");
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {"
+                      " mrb_int _ix = _t%d->order[_t%d];"
+                      " sp_PolyPolyHash_set(_t%d, _t%d->keys[_ix], _t%d->vals[_ix]); }",
+                   tj, tj, tc, tj, tc, tj, tr, tc, tc);
+        buf_printf(b, " sp_RbVal _t%d = ", to); emit_boxed(c, argv[0], b); buf_puts(b, ";");
+        if (bp0) buf_printf(b, " sp_RbVal lv_%s;", rename_local(bp0));
+        if (bp1) buf_printf(b, " sp_RbVal lv_%s;", rename_local(bp1));
+        if (bp2) buf_printf(b, " sp_RbVal lv_%s;", rename_local(bp2));
+        buf_printf(b, " mrb_int _t%d = sp_poly_length(_t%d);", tn, to);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {", ti, ti, tn, ti);
+        buf_printf(b, " sp_RbVal _t%d, _t%d; sp_poly_hash_pair(_t%d, _t%d, &_t%d, &_t%d);",
+                   tk, tv, to, ti, tk, tv);
+        buf_printf(b, " if (sp_PolyPolyHash_has_key(_t%d, _t%d)) {", tr, tk);
+        if (bp0) buf_printf(b, " lv_%s = _t%d;", rename_local(bp0), tk);
+        if (bp1) buf_printf(b, " lv_%s = sp_PolyPolyHash_get(_t%d, _t%d);", rename_local(bp1), tr, tk);
+        if (bp2) buf_printf(b, " lv_%s = _t%d;", rename_local(bp2), tv);
+        buf_printf(b, " sp_PolyPolyHash_set(_t%d, _t%d, ", tr, tk);
+        {
+          int bbody = nt_ref(nt, blk, "body");
+          int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+          int bval = bn > 0 ? bb[bn - 1] : -1;
+          buf_puts(b, "({ ");
+          for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+          if (bval >= 0) {
+            if (comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
+            else emit_expr(c, bval, b);
+          }
+          else buf_puts(b, "sp_box_nil()");
+          buf_puts(b, "; })");
+        }
+        buf_printf(b, "); } else { sp_PolyPolyHash_set(_t%d, _t%d, _t%d); } }", tr, tk, tv);
+        buf_printf(b, " _t%d; })", tr);
+        return 1;
+      }
       if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
         /* merge(other) { |k, v1, v2| } -- conflict-resolution block. The
            result starts as a copy of the receiver, then each key of `other`
