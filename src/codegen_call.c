@@ -9588,8 +9588,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
     }
     if (cause_node >= 0) {
-      buf_puts(b, "(sp_explicit_cause = (void *)(");
-      emit_expr(c, cause_node, b);
+      /* record that cause: was given (so cause: nil suppresses the implicit
+         cause), then evaluate it -- a nil literal / value carries as NULL (#2990) */
+      int cause_is_nil = nt_type(nt, cause_node) && sp_streq(nt_type(nt, cause_node), "NilNode");
+      buf_puts(b, "(sp_explicit_cause_set = 1, sp_explicit_cause = (void *)(");
+      if (cause_is_nil) buf_puts(b, "0");
+      else emit_expr(c, cause_node, b);
       buf_puts(b, "), ");
     }
     if (ac == 0) {
