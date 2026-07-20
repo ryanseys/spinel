@@ -9875,6 +9875,29 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* exception object methods */
+  /* exception accessors on a POLY receiver (an exception rescued into a
+     union-typed local): runtime unbox-and-delegate, but only when no user
+     class defines the name (which would need the poly method dispatch)
+     (#3120, #3122) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY && argc == 0 &&
+      nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "message") || sp_streq(name, "result") ||
+       sp_streq(name, "key") || sp_streq(name, "receiver"))) {
+    int pu = 0;
+    for (int k = 0; k < c->nclasses && !pu; k++)
+      if (comp_method_in_class(c, k, name) >= 0 ||
+          comp_reader_in_chain(c, k, name, NULL)) pu = 1;
+    if (!pu) {
+      if (sp_streq(name, "name")) g_uses_symbols = 1;  /* may intern a recovered name */
+      /* message infers TY_STRING: unwrap the boxed accessor result */
+      if (sp_streq(name, "message")) buf_puts(b, "sp_poly_to_s(");
+      buf_printf(b, "sp_poly_exc_acc(");
+      emit_expr(c, recv, b);
+      buf_printf(b, ", \"%s\")", name);
+      if (sp_streq(name, "message")) buf_puts(b, ")");
+      return;
+    }
+  }
   if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION) {
     /* equal? is pointer identity; == is CRuby value equality (same class
        and message). */
@@ -16383,7 +16406,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
         else if (decl_type == TY_POLY) emit_boxed(c, argv[1], b);
         else emit_expr(c, argv[1], b);
-        buf_printf(b, "; if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash(); ");
+        buf_printf(b, "; if (sp_gc_is_frozen("); emit_expr(c, recv, b); { buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_expr(c, recv, b); buf_printf(b, ", %s); ", hash_box_cls(rt)); }
         buf_printf(b, "sp_%sHash_set(", hn); emit_expr(c, recv, b); buf_puts(b, ", ");
         if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[0], b);
         else emit_hash_key(c, argv[0], ty_hash_key(rt), b);  /* unbox a poly key to the hash's key type */

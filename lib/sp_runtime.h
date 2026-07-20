@@ -6491,6 +6491,24 @@ static sp_RbVal sp_exc_key_acc(sp_Exception *e) {
   sp_exc_acc_gate(e, "KeyError", "key");
   return e->xkey;
 }
+/* Exception accessors on a POLY receiver (an exception rescued into a
+   union-typed local): unbox and delegate; a non-exception value is CRuby's
+   NoMethodError (#3120, #3122). */
+static sp_RbVal sp_exc_key_acc(sp_Exception *e);
+static sp_RbVal sp_exc_receiver_acc(sp_Exception *e);
+static sp_RbVal sp_exc_name_acc(sp_Exception *e);
+static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
+  if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p))
+    sp_raise_cls("NoMethodError",
+                 sp_sprintf("undefined method '%s' for an instance of %s", which, sp_poly_class_name(v)));
+  sp_Exception *e = (sp_Exception *)v.v.p;
+  if (!strcmp(which, "message")) return sp_box_str(sp_exc_message(e));
+  if (!strcmp(which, "result"))  return sp_exc_result(e);
+  if (!strcmp(which, "key"))     return sp_exc_key_acc(e);
+  if (!strcmp(which, "receiver")) return sp_exc_receiver_acc(e);
+  if (!strcmp(which, "name"))    return sp_exc_name_acc(e);
+  return sp_box_nil();
+}
 static sp_RbVal sp_exc_receiver_acc(sp_Exception *e) {
   if (!(e && (sp_exc_cls_matches(e->cls_name, "NameError") ||
               sp_exc_cls_matches(e->cls_name, "KeyError") ||

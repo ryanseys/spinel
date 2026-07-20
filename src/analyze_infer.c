@@ -887,6 +887,14 @@ TyKind infer_call(Compiler *c, int id) {
       (sp_streq(name, "find") || sp_streq(name, "detect")) &&
       nt_ref(nt, id, "block") >= 0 && !an_user_defines_method(c, name))
     return TY_POLY;
+  /* exception accessors on a poly receiver (an exception rescued into a
+     union-typed local) delegate at runtime; message is a String, the rest
+     carry boxed values (#3120, #3122). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) &&
+      (sp_streq(name, "message") || sp_streq(name, "result") ||
+       sp_streq(name, "key") || sp_streq(name, "receiver")))
+    return sp_streq(name, "message") ? TY_STRING : TY_POLY;
   /* sort over a poly value that is an array at runtime (a group_by bucket / an
      inner array): a fresh sorted poly array (#2928). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_defines_method(c, name) &&
