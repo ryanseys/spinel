@@ -1132,7 +1132,14 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
      statically-scalar return (e.g. `Int`, inferred as a typed IntArray) is not
      forced into a sp_PolyArray and mistyped -- it falls through as before. */
   int poly_ret = !ty_is_array(bret) && comp_ntype(c, id) == TY_POLY_ARRAY;
-  const char *bk = poly_ret ? "Poly" : ((bret == TY_POLY_ARRAY) ? "Poly" : array_kind(bret));
+  /* a statically-scalar block return: flat_map behaves like map, each value
+     landing as one element of the array of that scalar's kind (#3063) */
+  int scalar_ret = !poly_ret && !ty_is_array(bret) && bret != TY_POLY_ARRAY;
+  const char *bk = poly_ret ? "Poly"
+                 : (bret == TY_POLY_ARRAY) ? "Poly"
+                 : scalar_ret ? ({ TyKind _ra = ty_array_of(bret);
+                                   _ra == TY_POLY_ARRAY ? "Poly" : array_kind(_ra); })
+                 : array_kind(bret);
   if (!bk) return 0;
   int np = 0; while (block_param_name(c, block, np)) np++;
   if (np > 1 && rt != TY_POLY_ARRAY) return 0;  /* destructure needs poly elements */
@@ -1183,6 +1190,16 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
     emit_block_value_into(c, block, tbvb, 1, g_indent + 1);
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_PolyArray_flatten_into_n(_t%d, _t%d, 1);\n", tres, tbv);
+  } else if (scalar_ret) {
+    /* a scalar return is one element -- push it directly (map semantics). The
+       result array kind `bk` matches the scalar (Poly for non Int/Float/Str). */
+    int box = sp_streq(bk, "Poly");
+    emit_indent(g_pre, g_indent + 1);
+    if (box) buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tbv, default_value(TY_POLY));
+    else { emit_ctype(c, bret, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tbv, default_value(bret)); }
+    emit_block_value_into(c, block, tbvb, box, g_indent + 1);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", bk, tres, tbv);
   } else {
     int tj = ++g_tmp;
     /* collect the block's value (next-aware) into the per-iteration array temp,
