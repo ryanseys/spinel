@@ -4295,6 +4295,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, ")");
           return 1;
         }
+        /* UncaughtThrowError.new(tag, value) requires both arguments; fewer
+           raises ArgumentError like CRuby (#3088) */
+        if (sp_streq(cn, "UncaughtThrowError") && argc < 2) {
+          buf_printf(b, "((sp_Exception *)(sp_raise_cls(\"ArgumentError\","
+                        " \"wrong number of arguments (given %d, expected 2)\"), NULL))", argc);
+          return 1;
+        }
         /* SystemExit.new(status = true, msg = "exit"): a leading Integer or
            boolean is the status; a String is the message (#2761) */
         if (sp_streq(cn, "SystemExit")) {
