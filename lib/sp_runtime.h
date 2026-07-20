@@ -6038,7 +6038,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   if (!sp_pending_exc_obj && msg && cls && sp_exc_top > 0 &&
       (strcmp(cls, "NoMethodError") == 0 || strcmp(cls, "NameError") == 0) &&
       (strncmp(msg, "undefined method '", 18) == 0 ||
-       strncmp(msg, "undefined local variable or method '", 37) == 0 ||
+       strncmp(msg, "undefined local variable or method '", 36) == 0 ||   /* 36 = prefix len; 37 compared the NUL too (#3121) */
        strncmp(msg, "uninitialized constant ", 23) == 0))   /* const_get / bad const (#3034) */
     sp_pending_exc_obj = sp_exc_recover_named(cls, msg);
   /* the introspection staging (receiver/key/value) rides the carried object */
