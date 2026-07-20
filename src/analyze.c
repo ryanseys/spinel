@@ -3159,6 +3159,50 @@ static int desugar_str_range_methods(Compiler *c) {
   return changed;
 }
 
+/* `SYM.to_proc.call(recv, *args)` is just `recv.SYM(*args)` -- Ruby's
+   Symbol#to_proc proc takes the receiver first and forwards the rest. The
+   synthesized lambda has a fixed parameter count (1, or 2 for a binary
+   operator), so any other shape raised ArgumentError. Rewriting the direct
+   chain sidesteps the proc entirely, and needs no dynamic dispatch. (#3097) */
+static int desugar_sym_to_proc_call(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "call") && !sp_streq(nm, "()") &&
+                !sp_streq(nm, "yield") && !sp_streq(nm, "[]"))) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    int tp = nt_ref(nt, id, "receiver");
+    if (tp < 0 || !nt_type(nt, tp) || !sp_streq(nt_type(nt, tp), "CallNode")) continue;
+    const char *tpn = nt_str(nt, tp, "name");
+    if (!tpn || !sp_streq(tpn, "to_proc")) continue;
+    int symn = nt_ref(nt, tp, "receiver");
+    if (symn < 0) continue;
+    const char *sym = sym_static_value(c, symn);
+    if (!sym || !*sym) continue;
+    int argn = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = argn >= 0 ? nt_arr(nt, argn, "arguments", &an) : NULL;
+    if (!av || an < 1) continue;                /* needs at least the receiver */
+    for (int j = 0; j < an; j++)                /* a splat keeps the proc path */
+      if (nt_type(nt, av[j]) && sp_streq(nt_type(nt, av[j]), "SplatNode")) { an = 0; break; }
+    if (an < 1) continue;
+    int rest = nt_new_node(nt, "ArgumentsNode");
+    if (rest < 0) continue;
+    nt_node_set_arr(nt, rest, "arguments", av + 1, an - 1);
+    nt_node_set_str(nt, id, "name", sym);
+    nt_node_set_ref(nt, id, "receiver", av[0]);
+    nt_node_set_ref(nt, id, "arguments", an > 1 ? rest : -1);
+    comp_grow_node_arrays(c);
+    c->nscope[rest] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_lazy_stateful_stage(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -5783,6 +5827,9 @@ void analyze_program(Compiler *c) {
     }
   }
   rename_shadowing_block_params(c);
+  /* `:m.to_proc.call(r, a)` -> `r.m(a)`, before the to_proc rewrite below
+     turns the receiver into a fixed-arity lambda (#3097). */
+  desugar_sym_to_proc_call(c);
   desugar_enum_chain_shapes(c);          /* each_char.with_index / each.with_object */
   desugar_enum_chain_shapes(c);          /* 2nd pass: shapes the 1st created (e.g.
                                             map(&:sym.to_proc): to_proc->lambda first,
@@ -6212,6 +6259,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
     ch |= desugar_lazy_stateful_stage(c);      /* arr.lazy.uniq -> arr.uniq (finite source) */
     ch |= desugar_str_range_methods(c);        /* ("a".."e").map -> .to_a.map */
+    ch |= desugar_sym_to_proc_call(c);         /* :m.to_proc.call(r, a) -> r.m(a) */
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
     ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */
