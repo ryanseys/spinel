@@ -1115,7 +1115,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else {
-        for (int di = argc - 1; di >= 1; di--) buf_printf(b, "sp_poly_arr_get_hash(");
+        /* each later step goes through the dig-specific helper so a scalar
+           intermediate raises TypeError instead of bit/char-indexing (#2983) */
+        for (int di = argc - 1; di >= 1; di--) buf_printf(b, "sp_poly_dig_step(");
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         for (int di = 1; di < argc; di++) { buf_puts(b, ", "); emit_expr(c, argv[di], b); buf_puts(b, ")"); }
       }

@@ -5103,6 +5103,18 @@ static sp_RbVal sp_poly_arr_get_hash(sp_RbVal a, mrb_int i) {
   }
   return sp_poly_arr_get(a, i);
 }
+/* dig chain step: containers index, nil short-circuits, anything else (an
+   Integer/String/... intermediate with keys remaining) is CRuby's TypeError
+   "<Class> does not have #dig method" (#2983). */
+static sp_RbVal sp_poly_dig_step(sp_RbVal a, mrb_int i) {
+  if (a.tag == SP_TAG_NIL) return sp_box_nil();
+  if (a.tag == SP_TAG_OBJ && a.v.p &&
+      (sp_poly_is_array_kind(a.cls_id) || sp_poly_is_hash_kind(a.cls_id)))
+    return sp_poly_arr_get_hash(a, i);
+  sp_raise_cls("TypeError",
+               sp_sprintf("%s does not have #dig method", sp_poly_class_name(a)));
+  return sp_box_nil();
+}
 /* poly[poly_key]: dispatch on key tag at runtime. */
 static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
   /* heterogeneous-key hash: any key kind (incl. Method) looks up directly. */
