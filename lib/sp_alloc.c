@@ -26,7 +26,7 @@ pthread_mutex_t sp_heap_lock = PTHREAD_MUTEX_INITIALIZER;   /* see sp_alloc.h */
 
 /* Re-tune the object / string GC thresholds from the pre-collect live bytes
    (the heuristic mirrors the original inline code in sp_gc_alloc / sp_str_alloc). */
-static void sp_gc_retune_object(size_t before) {
+void sp_gc_retune_object(size_t before) {
   size_t freed = before - sp_gc_bytes;
   if (freed < before / 4) { sp_gc_threshold = before * 2; }
   else if (sp_gc_bytes > 0) { sp_gc_threshold = sp_gc_bytes * 4; if (sp_gc_threshold < sp_gc_threshold_init) sp_gc_threshold = sp_gc_threshold_init; }
@@ -47,21 +47,16 @@ static void sp_str_retune(size_t before) {
    per-heap inline collection so the single-threaded path stays byte-identical;
    _all retunes both since one stop-the-world sweeps both heaps. */
 void sp_gc_collect_retune(void) {
-  size_t before = sp_gc_bytes;
+  /* the retune hook inside sp_gc_collect adjusts the object threshold */
   sp_gc_collect();
-  sp_gc_retune_object(before);
   sp_gc_enforce_mem_limit();
 }
 void sp_str_collect_retune(void) {
-  size_t before = sp_str_heap_bytes;
+  /* the gated sweep hook inside sp_gc_collect retunes the string threshold */
   sp_gc_collect();
-  sp_str_retune(before);
 }
 void sp_gc_collect_retune_all(void) {
-  size_t ob = sp_gc_bytes, sb = sp_str_heap_bytes;
   sp_gc_collect();
-  sp_gc_retune_object(ob);
-  sp_str_retune(sb);
   sp_gc_enforce_mem_limit();
 }
 /* Either heap over its trigger? Used by sp_stw_collect to skip a redundant
@@ -149,10 +144,60 @@ void sp_str_sweep(void) {
   sp_str_lcache_clear();
 }
 
+/* PolyArray free-list pool (see sp_alloc.h). Bounded so a burst does not pin
+   memory forever; an over-cap or oversized-buffer entry frees normally. The
+   scan/finalize hooks stay valid on recycled headers -- only `next` and the
+   heap-byte accounting change hands. */
+sp_gc_hdr *sp_polyarr_pool_head = NULL;
+long sp_polyarr_pool_count = 0;
+#define SP_POLYARR_POOL_MAX 65536
+#define SP_POLYARR_POOL_KEEP_CAP 64   /* don't retain unusually large buffers */
+void sp_PolyArray_pool_recycle(sp_gc_hdr *h) {
+  sp_PolyArray *a = (sp_PolyArray *)((char *)h + sizeof(sp_gc_hdr));
+  long n;
+#ifdef SP_THREADS
+  n = __atomic_load_n(&sp_polyarr_pool_count, __ATOMIC_RELAXED);
+#else
+  n = sp_polyarr_pool_count;
+#endif
+  if (n >= SP_POLYARR_POOL_MAX || a->cap > SP_POLYARR_POOL_KEEP_CAP) {
+    free(a->data);
+    free(h);
+    return;
+  }
+#ifdef SP_THREADS
+  sp_gc_hdr *old;
+  do { old = __atomic_load_n(&sp_polyarr_pool_head, __ATOMIC_ACQUIRE); h->next = old;
+  } while (!__atomic_compare_exchange_n(&sp_polyarr_pool_head, &old, h,
+                                        0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+  __atomic_fetch_add(&sp_polyarr_pool_count, 1, __ATOMIC_RELAXED);
+#else
+  h->next = sp_polyarr_pool_head;
+  sp_polyarr_pool_head = h;
+  sp_polyarr_pool_count++;
+#endif
+}
+
+/* String sweep, gated on the string heap's own trigger. The object collector
+   used to run the full live-string walk on EVERY collection, making each one
+   O(live strings) -- the dominant cost of allocation-heavy programs (#2922
+   profiling on BabyStark: 2.9s of an 8.0s GC total). Skipping is safe:
+   string marks accumulate, so a dead string at worst survives until the next
+   string sweep (delayed reclamation, not a leak); the sweep itself resets
+   marks for the next cycle. Retuning here (with the collector-side retunes
+   removed) keeps the trigger tracking the live size in one place. */
+static void sp_str_sweep_gated(void) {
+  if (SP_GC_CTR_GET(sp_str_heap_bytes) <= SP_GC_CTR_GET(sp_str_threshold)) return;
+  size_t before = sp_str_heap_bytes;
+  sp_str_sweep();
+  sp_str_retune(before);
+}
+
 /* Wire string sweep into the object collector. Runs before main, so the hook is
    set before the first allocation can trigger a collection. */
 __attribute__((constructor)) static void sp_alloc_install_hooks(void) {
-  sp_gc_str_sweep_hook = sp_str_sweep;
+  sp_gc_str_sweep_hook = sp_str_sweep_gated;
+  sp_gc_obj_retune_hook = sp_gc_retune_object;
 }
 
 /* Float#to_s / #inspect (declared in sp_alloc.h): shortest round-trip decimal.

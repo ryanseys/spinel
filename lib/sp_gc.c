@@ -88,11 +88,52 @@ __attribute__((constructor)) static void sp_gc_debug_env(void){
 
 /* Tag byte preceding `obj`: 0xfe heap-unmarked -> 0xfc; 0xfc/0xff/0xfd/0xf1
  * skipped; else a real GC object reached through its scan hook. */
-void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[-1];if(pm==0xfe){((char*)obj)[-1]=(char)0xfc;return;}if(pm==0xfc||pm==0xff||pm==0xfd||pm==0xf1)return;sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(sp_gc_verify&&!sp_gc_obj_registered(h))sp_gc_verify_fail(obj,h);if(h->marked)return;h->marked=1;if(h->scan){if(sp_gc_mark_stack&&sp_gc_mark_top<SP_GC_MARK_STACK_MAX){sp_gc_mark_stack[sp_gc_mark_top++]=obj;}else{h->scan(obj);}}}
+void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[-1];if(pm==0xfe){((char*)obj)[-1]=(char)0xfc;return;}if(pm==0xfc||pm==0xff||pm==0xfd||pm==0xf1)return;sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(sp_gc_verify&&!sp_gc_obj_registered(h))sp_gc_verify_fail(obj,h);if(h->marked==sp_gc_mark_gen)return;h->marked=sp_gc_mark_gen;if(h->scan){if(sp_gc_mark_stack&&sp_gc_mark_top<SP_GC_MARK_STACK_MAX){sp_gc_mark_stack[sp_gc_mark_top++]=obj;}else{h->scan(obj);}}}
 
 void sp_gc_mark_all(void){if(!sp_gc_mark_stack)sp_gc_mark_stack=(void**)malloc(sizeof(void*)*SP_GC_MARK_STACK_MAX);sp_gc_mark_top=0;if(sp_gc_verify)sp_gc_verify_snapshot();int vd=sp_gc_verify;for(int i=0;i<sp_gc_nroots;i++){void**e=sp_gc_roots[i];if(vd){sp_gc_dbg_phase="root";sp_gc_dbg_ctx=(void*)e;}if((uintptr_t)e&(uintptr_t)3){sp_gc_mark_root_entry(e);}else{void*obj=*e;if(obj)sp_gc_mark(obj);}}if(vd)sp_gc_dbg_phase="fibers";if(sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook();if(vd)sp_gc_dbg_phase="globals";if(sp_gc_mark_globals_hook)sp_gc_mark_globals_hook();while(sp_gc_mark_top>0){void*obj=sp_gc_mark_stack[--sp_gc_mark_top];if(vd){sp_gc_dbg_phase="scan";sp_gc_dbg_ctx=obj;}sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(h->scan)h->scan(obj);}if(vd){sp_gc_dbg_phase="?";sp_gc_dbg_ctx=NULL;}}
 
-void sp_gc_collect(void){int full=(sp_gc_cycle%SP_GC_FULL_INTERVAL==0);sp_gc_cycle++;sp_gc_hdr*hh=sp_gc_old_heap;while(hh){hh->marked=0;hh=hh->next;}sp_gc_mark_all();if(full){sp_gc_hdr**pp=&sp_gc_old_heap;sp_gc_old_bytes=0;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{h->marked=1;sp_gc_old_bytes+=h->size;pp=&h->next;}}}else{hh=sp_gc_old_heap;while(hh){hh->marked=1;hh=hh->next;}}sp_gc_hdr**pp=&sp_gc_heap;sp_gc_bytes=sp_gc_old_bytes;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{h->marked=1;*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;}}if(sp_gc_str_sweep_hook)sp_gc_str_sweep_hook();if(full)malloc_trim(0);}
+unsigned sp_gc_mark_gen = 0;
+/* Object-threshold retune, installed by sp_alloc.c. Running it INSIDE every
+   collection (not only on the object-triggered wrapper) keeps the trigger
+   tracking the live size whichever heap initiated the collect; the old
+   split retunes left one threshold stale and re-triggered immediately. */
+void (*sp_gc_obj_retune_hook)(size_t before) = NULL;
+void sp_gc_collect(void){
+  size_t ob_before = sp_gc_bytes;
+  int full=(sp_gc_cycle%SP_GC_FULL_INTERVAL==0);sp_gc_cycle++;
+  /* new mark generation: every object becomes unmarked without touching it.
+     On the (30-bit) wrap, clear the whole heap once so no stale stamp can
+     alias the reused generation value. */
+  sp_gc_mark_gen=(sp_gc_mark_gen+1)&0x3fffffffu;
+  if(!sp_gc_mark_gen){
+    sp_gc_mark_gen=1;
+    for(sp_gc_hdr*hh=sp_gc_old_heap;hh;hh=hh->next)hh->marked=0;
+    for(sp_gc_hdr*hh=sp_gc_heap;hh;hh=hh->next)hh->marked=0;
+  }
+  sp_gc_mark_all();
+  if(full){
+    sp_gc_hdr**pp=&sp_gc_old_heap;sp_gc_old_bytes=0;
+    while(*pp){sp_gc_hdr*h=*pp;if(h->marked!=sp_gc_mark_gen){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{sp_gc_old_bytes+=h->size;pp=&h->next;}}
+  }
+  /* minor: the old list is not walked at all -- an old object's stale stamp
+     simply reads as unmarked next generation, which is what a fresh unmark
+     pass used to produce. */
+  sp_gc_hdr**pp=&sp_gc_heap;sp_gc_bytes=sp_gc_old_bytes;
+  while(*pp){sp_gc_hdr*h=*pp;if(h->marked!=sp_gc_mark_gen){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;}}
+  /* Sweep the string heap only when IT is over its trigger: the sweep is a
+     full walk of the live string list, and running it on every OBJECT-heap
+     collection made each collection O(live strings) -- the dominant cost of
+     an allocation-heavy run. Skipping is safe: string marks accumulate, so a
+     dead string at worst survives until the next string sweep (delayed
+     reclamation, not a leak), and the sweep itself resets marks for the next
+     cycle. The retune keeps the trigger tracking the live size. */
+  if(sp_gc_str_sweep_hook)sp_gc_str_sweep_hook();
+  /* malloc_trim walks the allocator arena; once per full cycle was ~10% of
+     collection time on allocation-heavy runs. Every 4th full keeps the RSS
+     benefit at a fraction of the cost. */
+  if(full&&(sp_gc_cycle%(SP_GC_FULL_INTERVAL*4))==1)malloc_trim(0);
+  if(sp_gc_obj_retune_hook)sp_gc_obj_retune_hook(ob_before);
+}
 
 /* Issue #1302: optional RSS ceiling via SPINEL_MAX_HEAP_MB; checked only
  * at GC-trigger points against real /proc/self/statm RSS. Default off. */

@@ -315,7 +315,42 @@ static void __attribute__((noinline, cold)) sp_raise_frozen_array_v(sp_RbVal v) 
 typedef struct { sp_RbVal *data; mrb_int len; mrb_int cap; mrb_int frozen; } sp_PolyArray;
 static inline void sp_PolyArray_scan(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; for (mrb_int i = 0; i < a->len; i++) sp_mark_rbval(a->data[i]); }
 static inline void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); SP_GC_CTR_SUB(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; free(a->data); }
-static inline sp_PolyArray *sp_PolyArray_new(void) { sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan); a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); if (!a->data) sp_oom_die(); a->len = 0; { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->size += sizeof(sp_RbVal) * a->cap; SP_GC_CTR_ADD(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); } return a; }
+/* Free-list pool for PolyArray, header AND data buffer kept together. The
+   allocation-heaviest programs (per-point tuple building: BabyStark's
+   constraint evaluation) churn millions of short-lived PolyArrays; recycling
+   them turns the calloc+malloc pair and the sweep-side free into list ops.
+   Pool state lives in sp_alloc.c; the recycle hook runs inside the sweep. */
+extern sp_gc_hdr *sp_polyarr_pool_head;
+extern long sp_polyarr_pool_count;
+void sp_PolyArray_pool_recycle(sp_gc_hdr *h);
+static inline sp_PolyArray *sp_PolyArray_new(void) {
+  sp_gc_hdr *ph;
+#ifdef SP_THREADS
+  do { ph = __atomic_load_n(&sp_polyarr_pool_head, __ATOMIC_ACQUIRE);
+  } while (ph && !__atomic_compare_exchange_n(&sp_polyarr_pool_head, &ph, ph->next,
+                                              0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+  if (ph) __atomic_fetch_sub(&sp_polyarr_pool_count, 1, __ATOMIC_RELAXED);
+#else
+  ph = sp_polyarr_pool_head;
+  if (ph) { sp_polyarr_pool_head = ph->next; sp_polyarr_pool_count--; }
+#endif
+  if (ph) {
+    /* re-link into the live heap (the sweep unhooked it); size still counts
+       header + retained data buffer, so the byte accounting stays exact */
+    ph->marked = 0;
+    ph->recycle = sp_PolyArray_pool_recycle;
+    SP_GC_HEAP_PUSH(ph);
+    SP_GC_CTR_ADD(sp_gc_bytes, ph->size);
+    sp_PolyArray *a = (sp_PolyArray *)((char *)ph + sizeof(sp_gc_hdr));
+    a->len = 0;
+    a->frozen = 0;
+    return a;
+  }
+  sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan);
+  a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); if (!a->data) sp_oom_die(); a->len = 0;
+  { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->recycle = sp_PolyArray_pool_recycle; h->size += sizeof(sp_RbVal) * a->cap; SP_GC_CTR_ADD(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); }
+  return a;
+}
 static inline void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); SP_GC_CTR_SUB(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; a->cap = (a->cap * 2) + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; SP_GC_CTR_ADD(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); } a->data[a->len++] = v; }
 static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); return a->data[i]; }
 #endif /* SP_ALLOC_H */

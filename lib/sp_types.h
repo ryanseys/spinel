@@ -169,7 +169,13 @@ typedef struct{mrb_int num;mrb_int den;}sp_Rational;
 typedef struct{const char *name;}sp_Encoding;
 
 /* ---- GC headers ---- */
-typedef struct sp_gc_hdr { struct sp_gc_hdr *next; void (*finalize)(void *); void (*scan)(void *); size_t size; unsigned marked : 1; unsigned frozen : 1; void (*recycle)(struct sp_gc_hdr *); } sp_gc_hdr;
+/* `marked` is a mark-generation STAMP, not a boolean: an object is live in
+   the current collection iff marked == sp_gc_mark_gen. Bumping the generation
+   at collect entry unmarks the whole heap in O(1), removing the two
+   full-list walks (old unmark + minor re-mark) that made every minor
+   collection O(live) even when the live set was untouched. 0 never equals a
+   generation (the counter skips it), so freshly-calloc'd headers are unmarked. */
+typedef struct sp_gc_hdr { struct sp_gc_hdr *next; void (*finalize)(void *); void (*scan)(void *); size_t size; unsigned marked : 30; unsigned frozen : 1; void (*recycle)(struct sp_gc_hdr *); } sp_gc_hdr;
 /* size/len packed to uint32 (4 GB per-string cap, far beyond any real
    string) so the cached FNV `hash` fits without growing the 24-byte
    header -- i.e. zero per-string RSS cost vs the pre-cache layout.

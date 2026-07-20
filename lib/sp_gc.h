@@ -97,6 +97,9 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
 #define SP_GC_ROOT_STR(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)2))
 #define SP_GC_RESTORE() sp_gc_nroots = _gc_saved
 extern sp_gc_hdr *sp_gc_heap;
+/* Current mark generation (see sp_gc_hdr.marked in sp_types.h). */
+extern unsigned sp_gc_mark_gen;
+extern void (*sp_gc_obj_retune_hook)(size_t before);
 extern size_t sp_gc_bytes;
 extern size_t sp_gc_old_bytes;
 extern int sp_gc_cycle;
