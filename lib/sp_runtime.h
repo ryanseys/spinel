@@ -6634,6 +6634,7 @@ static void __attribute__((noreturn)) sp_brk_throw(mrb_int serial, sp_RbVal v) {
   /* no live scope carries the serial: an escaped/foreign proc's break. An
      inlined block's serial is always live, so this is unreachable for those. */
   sp_exc_stage_key(sp_box_str((&("\xff" "break")[1])));
+  sp_exc_stage_val(v);   /* LocalJumpError#exit_value = the valued break (#3024) */
   sp_raise_cls("LocalJumpError", "break from proc-closure");
 }
 /* GC: the in-flight break values -- ensures between the throw and the landing
