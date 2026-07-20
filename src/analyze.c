@@ -2532,6 +2532,17 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         int native = 0;
         for (int j = 0; range_native[j]; j++)
           if (sp_streq(nm, range_native[j])) { native = 1; break; }
+        /* count is range-native only in its bare form; given a block or an
+           argument it counts matching elements, which rides the string
+           array like every other Enumerable method (#3102). */
+        if (native && sp_streq(nm, "count")) {
+          int cblk = nt_ref(nt, id, "block");
+          int cargs = nt_ref(nt, id, "arguments");
+          int cn = 0;
+          if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cn);
+          if (cn > 0 || (cblk >= 0 && nt_type(nt, cblk) &&
+                         sp_streq(nt_type(nt, cblk), "BlockNode"))) native = 0;
+        }
         if (!native) {
           int toa = nt_new_node(nt, "CallNode");
           if (toa >= 0) {
