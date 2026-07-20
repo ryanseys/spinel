@@ -2419,6 +2419,14 @@ else {
     /* expression arm — assign result to temp (skip diverging exprs like raise) */
     TyKind et = e >= 0 ? comp_ntype(c, e) : TY_UNKNOWN;
     int e_diverges = (et == TY_UNKNOWN || et == TY_VOID);
+    /* A call spinel folds into an unconditional raise carries whatever C type
+       that raise helper returns, which need not match the merged slot (the
+       constant-folded `nil.clone(freeze: false)` yields an int against an
+       sp_Class slot). Control never reaches the assignment, so treat it as
+       diverging and emit it for effect alone. (#3021) */
+    if (!e_diverges && e >= 0 && rt != TY_POLY && et != rt &&
+        !ty_is_numeric(rt) && nt_type(nt, e) && sp_streq(nt_type(nt, e), "CallNode"))
+      e_diverges = 1;
     buf_puts(b, "  ");
     /* the expression arm's own preludes (an inline-spliced body, a rooted
        temp) must land INSIDE the protected region -- with the enclosing
@@ -2490,6 +2498,7 @@ else {
     int t = ++g_tmp;
     char rv[32]; snprintf(rv, sizeof rv, "_t%d", t);
     int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
+    TyKind srt = g_result_ty; g_result_ty = rt;
     if (g_pre) {
       emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
       buf_printf(g_pre, " _t%d = %s;\n", t, default_value(rt));
@@ -2502,10 +2511,10 @@ else {
       emit_ctype(c, rt, b); buf_printf(b, " _t%d = %s;\n", t, default_value(rt));
       emit_begin(c, id, b, 0, rv);
       buf_printf(b, "_t%d; })", t);
-      g_result_poly = sp;
+      g_result_poly = sp; g_result_ty = srt;
       return;
     }
-    g_result_poly = sp;
+    g_result_poly = sp; g_result_ty = srt;
     buf_printf(b, "_t%d", t);
     return;
   }
