@@ -1108,17 +1108,30 @@ int lazy_alias_write_suppressible(Compiler *c, int write) {
     if (nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
     const char *rn = nt_str(nt, r, "name");
     if (!rn || !sp_streq(rn, vn) || comp_scope_of(c, r) != sc) continue;
-    int forced = 0;
-    for (int call = 0; call < nt->count; call++) {
-      if (nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "receiver") != r) continue;
+    /* Walk outward from the read: further lazy transforms keep the chain
+       lazy (`c = arr.lazy; c.map { }.to_a`), so follow them and demand that
+       the OUTERMOST call is a fusion-capable terminal (#3012). */
+    static const char *const lazy_xf[] = {
+      "map", "collect", "select", "filter", "find_all", "reject",
+      "filter_map", "flat_map", "collect_concat", "take", "drop",
+      "take_while", "drop_while", "each_slice", NULL };
+    int forced = 0, node = r;
+    for (int depth = 0; depth < 16; depth++) {
+      int call = -1;
+      for (int k = 0; k < nt->count; k++)
+        if (nt_kind(nt, k) == NK_CallNode && nt_ref(nt, k, "receiver") == node) { call = k; break; }
+      if (call < 0) break;
       const char *cn = nt_str(nt, call, "name");
-      if (cn) {
-        int ac = 0; int ar = nt_ref(nt, call, "arguments");
-        if (ar >= 0) nt_arr(nt, ar, "arguments", &ac);
-        if ((sp_streq(cn, "first") && ac == 1) || sp_streq(cn, "to_a") || sp_streq(cn, "force"))
-          forced = 1;
+      if (!cn) break;
+      int ac = 0; int ar = nt_ref(nt, call, "arguments");
+      if (ar >= 0) nt_arr(nt, ar, "arguments", &ac);
+      if ((sp_streq(cn, "first") && ac == 1) || sp_streq(cn, "to_a") || sp_streq(cn, "force")) {
+        forced = 1; break;
       }
-      break;
+      int is_xf = 0;
+      for (int i = 0; lazy_xf[i]; i++) if (sp_streq(cn, lazy_xf[i])) { is_xf = 1; break; }
+      if (!is_xf) break;
+      node = call;
     }
     if (!forced) return 0;
   }
@@ -1260,6 +1273,13 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
      prelude counter initialised to 0. */
   struct { int kind; int block; int negate; int arg; int cnt; int lim; } ops[16];
   int nops = 0, cur = recv, lazy_src = -1;
+  /* The chain may be held in a variable (`b = arr.lazy.map { }; b.first(2)`).
+     Resolve a single-plain-write local back to the chain it was assigned so
+     the pipeline fuses the same way the inline form does (#3012). */
+  if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+    int a = lazy_alias_chain(c, cur);
+    if (a >= 0) cur = a;
+  }
   while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
     const char *nm = nt_str(nt, cur, "name");
     if (!nm) return 0;
@@ -1302,6 +1322,10 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     ops[nops].arg = -1; ops[nops].cnt = -1; ops[nops].lim = -1;
     nops++;
     cur = nt_ref(nt, cur, "receiver");
+    if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+      int a = lazy_alias_chain(c, cur);
+      if (a >= 0) cur = a;
+    }
   }
   if (lazy_src < 0) return 0;
 

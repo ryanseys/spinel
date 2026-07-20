@@ -4283,11 +4283,20 @@ else {
      filter/take_while...>.{first(n) | take(n) | to_a | force} -> an int array. */
   if ((sp_streq(name, "first") ||
        sp_streq(name, "to_a") || sp_streq(name, "force")) &&
-      recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      recv >= 0 && nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "CallNode") ||
+       (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
+        lazy_alias_chain(c, recv) >= 0)) &&
       nt_ref(nt, id, "block") < 0 &&
       !(sp_streq(name, "first") && argc != 1) &&
       !((sp_streq(name, "to_a") || sp_streq(name, "force")) && argc != 0)) {
     int cur = recv, lazy_src = -1, ok = 1, saw_op = 0;
+    /* the chain may be held in a variable (#3012); resolve it like the
+       first/last arm above does */
+    if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+      int a = lazy_alias_chain(c, cur);
+      if (a >= 0) cur = a;
+    }
     while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
       const char *nm = nt_str(nt, cur, "name");
       if (!nm) { ok = 0; break; }
@@ -4306,6 +4315,10 @@ else {
           !sp_streq(nm, "collect_concat")) { ok = 0; break; }
       saw_op = 1;
       cur = nt_ref(nt, cur, "receiver");
+      if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+        int a = lazy_alias_chain(c, cur);
+        if (a >= 0) cur = a;
+      }
     }
     if (ok && (saw_op || sp_streq(name, "to_a") || sp_streq(name, "force")) && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
