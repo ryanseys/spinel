@@ -5003,9 +5003,9 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ") == 0)");
       return 1;
     }
-    /* Range/float-range `===` is membership, not value equality; both fall
-       through to their dedicated cover handlers. */
-    if (fr && fr != 5 && fr != 6 && fa && fa != 5 && fa != 6) {
+    /* Range / float-range / string-range `===` is membership, not value
+       equality; all three fall through to their dedicated cover handlers. */
+    if (fr && fr != 5 && fr != 6 && fr != 7 && fa && fa != 5 && fa != 6 && fa != 7) {
       if (fr == fa) {
         if (fr == 2) { buf_puts(b, "sp_str_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, " == "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -5273,6 +5273,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         if (fr == 2) { buf_puts(b, eq ? "sp_str_eq(" : "(!sp_str_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
         else if (fr == 5) { buf_puts(b, eq ? "sp_range_eq(" : "(!sp_range_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
         else if (fr == 6) { buf_puts(b, eq ? "sp_frange_eq(" : "(!sp_frange_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
+        else if (fr == 7) { buf_puts(b, eq ? "sp_srange_eq(" : "(!sp_srange_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
         else { buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, " %s ", eq ? "==" : "!="); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         return 1;
       }
@@ -15964,10 +15965,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   if (emit_poly_method_dispatch(c, id, b)) return;
+  /* the distinct value-type ranges (float / string) answer first */
+  if (recv >= 0 && (rt == TY_STR_RANGE || rt == TY_FLOAT_RANGE) &&
+      emit_range_call(c, id, b)) return;
 
   /* string-range literal methods: the int-only sp_Range struct can't hold
      string bounds, so inline strcmp / char-iteration for a literal
      `("a".."z")` receiver. */
+  /* A string-range LITERAL is the distinct sp_StrRange value type now, served
+     by emit_range_call; this arm is left for the shapes that still type as the
+     int TY_RANGE (a mixed or beginless/endless string range). (#3064) */
   if (recv >= 0 && rt == TY_RANGE && nt_type(nt, unwrap_parens(c, recv)) &&
       sp_streq(nt_type(nt, unwrap_parens(c, recv)), "RangeNode")) {
     int rnode = unwrap_parens(c, recv);

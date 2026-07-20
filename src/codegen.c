@@ -62,6 +62,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     case TY_STRING: fn = "sp_box_str"; break;     case TY_BOOL: fn = "sp_box_bool"; break;
     case TY_SYMBOL: fn = "sp_box_sym"; break;     case TY_RANGE: fn = "sp_box_range"; break;
     case TY_FLOAT_RANGE: fn = "sp_box_frange"; break;
+    case TY_STR_RANGE: fn = "sp_box_srange"; break;
     case TY_TIME: fn = "sp_box_time"; break;
     case TY_COMPLEX: fn = "sp_box_complex"; break;  case TY_RATIONAL: fn = "sp_box_rational"; break;
     /* TY_PROC / TY_METHOD are handled by the nullable-builtin box above. */
@@ -428,6 +429,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_SYMBOL: fn = "sp_box_sym";   break;
     case TY_RANGE:  fn = "sp_box_range"; break;
     case TY_FLOAT_RANGE: fn = "sp_box_frange"; break;
+    case TY_STR_RANGE: fn = "sp_box_srange"; break;
     case TY_TIME:   fn = "sp_box_time";  break;
     case TY_COMPLEX:  fn = "sp_box_complex";  break;
     case TY_RATIONAL: fn = "sp_box_rational"; break;
@@ -476,6 +478,7 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
     case TY_SYMBOL: buf_puts(&cty, "sp_sym"); init = "((sp_sym)-1)"; break;
     case TY_RANGE:  buf_puts(&cty, "sp_Range"); init = "{0}"; break;
     case TY_FLOAT_RANGE: buf_puts(&cty, "sp_FloatRange"); init = "{0}"; break;
+    case TY_STR_RANGE: buf_puts(&cty, "sp_StrRange"); init = "{0}"; break;
     case TY_TIME:   buf_puts(&cty, "sp_Time"); init = "{0}"; break;
     case TY_COMPLEX:  buf_puts(&cty, "sp_Complex"); init = "{0}"; break;
     case TY_RATIONAL: buf_puts(&cty, "sp_Rational"); init = "{0}"; break;
@@ -4320,6 +4323,7 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_VOID:                  buf_puts(b, "void"); break;
     case TY_RANGE:                 buf_puts(b, "Range[Integer]"); break;
     case TY_FLOAT_RANGE:           buf_puts(b, "Range[Float]"); break;
+    case TY_STR_RANGE:             buf_puts(b, "Range[String]"); break;
     case TY_TIME:                  buf_puts(b, "Time"); break;
     case TY_REGEX:                 buf_puts(b, "Regexp"); break;
     case TY_MATCHDATA:             buf_puts(b, "MatchData"); break;

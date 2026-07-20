@@ -41,6 +41,7 @@ const char *ty_name(TyKind t) {
     case TY_CONDVAR: return "condvar";
     case TY_RANDOM:  return "random";
     case TY_DIR:     return "dir";
+    case TY_STR_RANGE: return "str_range";
     case TY_TMS:     return "tms";
     case TY_METHOD:  return "method";
     case TY_IO:      return "io";

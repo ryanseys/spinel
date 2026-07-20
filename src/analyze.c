@@ -2420,13 +2420,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
     int rlo = nt_ref(nt, rn, "left");
     const char *rloty = rlo >= 0 ? nt_type(nt, rlo) : NULL;
     if (!rloty || !sp_streq(rloty, "StringNode")) continue;
-    int toa = nt_new_node(nt, "CallNode");
-    if (toa < 0) continue;
-    nt_node_set_str(nt, toa, "name", "to_a");
-    nt_node_set_ref(nt, toa, "receiver", val);
-    nt_node_set_ref(nt, id, "value", toa);
-    comp_grow_node_arrays(c);
-    c->nscope[toa] = c->nscope[id];
+    (void)rn;   /* a string range is its own value type now (#3064) */
   }
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
@@ -2520,40 +2514,6 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       int pbn = 0;
       const int *pbb = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
       rngn = pbn == 1 ? pbb[0] : -1;
-    }
-    if (rngn >= 0 && nt_type(nt, rngn) && sp_streq(nt_type(nt, rngn), "RangeNode")) {
-      int rlo = nt_ref(nt, rngn, "left");
-      const char *rloty = rlo >= 0 ? nt_type(nt, rlo) : NULL;
-      if (rloty && sp_streq(rloty, "StringNode")) {
-        static const char *const range_native[] = {
-          "begin", "end", "first", "last", "min", "max", "to_a", "each",
-          "include?", "member?", "cover?", "size", "count", "step", "===",
-          "each_char", "succ", "==", "!=", "inspect", "to_s", NULL };
-        int native = 0;
-        for (int j = 0; range_native[j]; j++)
-          if (sp_streq(nm, range_native[j])) { native = 1; break; }
-        /* count is range-native only in its bare form; given a block or an
-           argument it counts matching elements, which rides the string
-           array like every other Enumerable method (#3102). */
-        if (native && sp_streq(nm, "count")) {
-          int cblk = nt_ref(nt, id, "block");
-          int cargs = nt_ref(nt, id, "arguments");
-          int cn = 0;
-          if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cn);
-          if (cn > 0 || (cblk >= 0 && nt_type(nt, cblk) &&
-                         sp_streq(nt_type(nt, cblk), "BlockNode"))) native = 0;
-        }
-        if (!native) {
-          int toa = nt_new_node(nt, "CallNode");
-          if (toa >= 0) {
-            nt_node_set_str(nt, toa, "name", "to_a");
-            nt_node_set_ref(nt, toa, "receiver", recv);
-            nt_node_set_ref(nt, id, "receiver", toa);
-            comp_grow_node_arrays(c);
-            continue;
-          }
-        }
-      }
     }
     /* `m(&lambda_literal)`: attach the lambda's block directly as m's block
        (the :sym.to_proc desugar below produces exactly this shape when the
@@ -3151,6 +3111,50 @@ static int expand_literal_splat_args(Compiler *c) {
    source never terminates either), so drop the `.lazy` and let the eager
    array path serve it. An endless range keeps its lazy chain and its
    (still unsupported) reject. (#2993) */
+/* A string range serves only its endpoint/membership face natively; every
+   other method rides the materialized element array. Type-driven, so it also
+   catches a range held in a variable -- which is why it lives in the
+   inference fixpoint rather than the one-shot shape pass (#3064). */
+static int desugar_str_range_methods(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  static const char *const range_native[] = {
+    "begin", "end", "min", "max", "include?", "member?", "cover?", "===",
+    "exclude_end?", "==", "!=", "eql?", "inspect", "to_s", "class",
+    "frozen?", "freeze", "itself", "dup", "clone", "hash",
+    /* to_a IS the materializer: interposing it would recurse */
+    "to_a", "entries",
+    /* Range#size counts integer elements: nil for a string range */
+    "size", NULL };
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (!nm || recv < 0) continue;
+    if (infer_type(c, recv) != TY_STR_RANGE) continue;
+    int argn = nt_ref(nt, id, "arguments");
+    int an = 0;
+    if (argn >= 0) nt_arr(nt, argn, "arguments", &an);
+    int native = 0;
+    for (int j = 0; range_native[j]; j++)
+      if (sp_streq(nm, range_native[j])) { native = 1; break; }
+    /* first/last are the endpoints bare, a prefix/suffix ARRAY with a count */
+    if (!native && an == 0 && (sp_streq(nm, "first") || sp_streq(nm, "last"))) native = 1;
+    if (native) continue;
+    int toa = nt_new_node(nt, "CallNode");
+    if (toa < 0) continue;
+    nt_node_set_str(nt, toa, "name", "to_a");
+    nt_node_set_ref(nt, toa, "receiver", recv);
+    nt_node_set_ref(nt, id, "receiver", toa);
+    comp_grow_node_arrays(c);
+    c->nscope[toa] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_lazy_stateful_stage(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -6202,6 +6206,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_public_send_recv(c);         /* r.public_send(:m, a) -> r.m(a), visibility-stamped */
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
     ch |= desugar_lazy_stateful_stage(c);      /* arr.lazy.uniq -> arr.uniq (finite source) */
+    ch |= desugar_str_range_methods(c);        /* ("a".."e").map -> .to_a.map */
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
     ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */

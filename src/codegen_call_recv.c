@@ -7490,6 +7490,81 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   int argc;
   const int *argv = call_args(nt, id, &argc);
   TyKind rt = comp_recv_type(c, recv);
+  /* String range ("a".."e"): a distinct sp_StrRange receiver. The endpoints
+     answer natively; every traversal materializes the element array (#3064). */
+  if (recv >= 0 && rt == TY_STR_RANGE) {
+    TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+    /* a stale cache reads UNKNOWN; re-infer so a String operand is not
+       mistaken for an uncoverable one */
+    if (argc >= 1 && (a0 == TY_UNKNOWN || a0 == TY_POLY)) a0 = infer_type(c, argv[0]);
+    int tr = ++g_tmp;
+    if (argc == 0 && (sp_streq(name, "begin") || sp_streq(name, "first") ||
+                      sp_streq(name, "min"))) {
+      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d.first; })", tr); return 1;
+    }
+    if (argc == 0 && (sp_streq(name, "end") || sp_streq(name, "last") ||
+                      sp_streq(name, "max"))) {
+      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d.last; })", tr); return 1;
+    }
+    if ((sp_streq(name, "cover?") || sp_streq(name, "include?") ||
+         sp_streq(name, "member?") || sp_streq(name, "===")) && argc == 1) {
+      if (a0 == TY_STRING) {
+        buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_srange_cover(_t%d, ", tr); emit_str_expr(c, argv[0], b);
+        buf_puts(b, "); })"); return 1;
+      }
+      if (a0 == TY_POLY) {
+        buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_RbVal _a%d = ", tr); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; (mrb_bool)(_a%d.tag == SP_TAG_STR &&"
+                      " sp_srange_cover(_t%d, _a%d.v.s)); })", tr, tr, tr);
+        return 1;
+      }
+      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); return 1;
+    }
+    if (sp_streq(name, "exclude_end?") && argc == 0) {
+      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; (mrb_bool)_t%d.excl; })", tr); return 1;
+    }
+    /* Range#size counts integer elements: nil for a string range (CRuby) */
+    if (sp_streq(name, "size") && argc == 0) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_INT_NIL)"); return 1;
+    }
+    if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) {
+      if (a0 == TY_STR_RANGE) {
+        int tr2 = ++g_tmp;
+        buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_StrRange _t%d = ", tr2); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_srange_eq(_t%d, _t%d); })", tr, tr2); return 1;
+      }
+      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); return 1;
+    }
+    if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) {
+      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_srange_to_a(_t%d); })", tr); return 1;
+    }
+    if (sp_streq(name, "to_s") && argc == 0) {
+      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_srange_to_s(_t%d); })", tr); return 1;
+    }
+    if (sp_streq(name, "inspect") && argc == 0) {
+      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_srange_inspect(_t%d); })", tr); return 1;
+    }
+    if (sp_streq(name, "class") && argc == 0) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), ((sp_Class){0, SPL(\"Range\")}))"); return 1;
+    }
+    if (sp_streq(name, "frozen?") && argc == 0) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_bool)1)"); return 1;
+    }
+    if (argc == 0 && (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
+                      sp_streq(name, "dup") || sp_streq(name, "clone"))) {
+      emit_expr(c, recv, b); return 1;
+    }
+  }
   /* Float range (1.0..3.0): a distinct sp_FloatRange receiver. It is not
      iterable, so its face is endpoint reads, membership tests, step, and
      bsearch (the fold handles bsearch; the iteration forms raise earlier). */

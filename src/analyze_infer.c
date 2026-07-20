@@ -671,6 +671,36 @@ TyKind infer_call(Compiler *c, int id) {
   /* A Float range (1.0..3.0) is a distinct type with float endpoints; it is
      not iterable, so its whole method face reduces to endpoint queries,
      membership tests, and the sole materializing method, step. */
+  /* String range ("a".."e"): the endpoints answer natively; every traversal
+     rides the materialized element array (#3064). */
+  if (rt == TY_STR_RANGE) {
+    if (sp_streq(name, "begin") || sp_streq(name, "end") ||
+        sp_streq(name, "min") || sp_streq(name, "max") ||
+        sp_streq(name, "to_s") || sp_streq(name, "inspect"))
+      return argc == 0 ? TY_STRING : TY_STR_ARRAY;
+    if ((sp_streq(name, "first") || sp_streq(name, "last")))
+      return argc == 0 ? TY_STRING : TY_STR_ARRAY;
+    if (sp_streq(name, "cover?") || sp_streq(name, "include?") ||
+        sp_streq(name, "member?") || sp_streq(name, "===") ||
+        sp_streq(name, "==") || sp_streq(name, "eql?") ||
+        sp_streq(name, "exclude_end?") || sp_streq(name, "frozen?") ||
+        sp_streq(name, "nil?") || sp_streq(name, "is_a?") ||
+        sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?") ||
+        sp_streq(name, "equal?"))
+      return TY_BOOL;
+    if (sp_streq(name, "class")) return TY_CLASS;
+    if (sp_streq(name, "hash")) return TY_INT;
+    /* Range#size counts INTEGER elements, so a string range has none: nil
+       (CRuby), not the materialized array's length. */
+    if (sp_streq(name, "size") && argc == 0) return TY_NIL;
+    if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0)
+      return TY_STR_ARRAY;
+    if (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
+        sp_streq(name, "dup") || sp_streq(name, "clone"))
+      return TY_STR_RANGE;
+    /* everything else is served by the element array (see the desugar) */
+    return TY_UNKNOWN;
+  }
   if (rt == TY_FLOAT_RANGE) {
     if (sp_streq(name, "begin") || sp_streq(name, "end") ||
         sp_streq(name, "first") || sp_streq(name, "last") ||
@@ -5245,6 +5275,11 @@ TyKind infer_uncached(Compiler *c, int id) {
        which already serves their (narrow, mostly-raising) method surface. */
     if (lo >= 0 && hi >= 0 && lt == TY_FLOAT && ht == TY_FLOAT)
       return TY_FLOAT_RANGE;
+    /* ("a".."e"): both endpoints strings -> the distinct sp_StrRange, so a
+       range held in a variable stays a Range rather than materializing into
+       its element array (#3064). */
+    if (lo >= 0 && hi >= 0 && lt == TY_STRING && ht == TY_STRING)
+      return TY_STR_RANGE;
     return TY_RANGE;
   }
   /* A splat inside an array literal (`[*0..10]`, `[*arr]`) contributes the

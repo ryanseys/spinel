@@ -189,6 +189,14 @@ x.clamp(lo..)       # works
 rng = (lo..hi)      # compile error: a Range of Ver objects cannot be built
 ```
 
+A `String`-bounded range (`("a".."e")`) is its own value type, so it keeps its
+class, `#to_s` and `#inspect` whether it is used inline or held in a variable.
+Its endpoint and membership methods (`begin`/`end`/`min`/`max`/`cover?`/`===`)
+answer directly; every traversal (`each`, `map`, `to_a`, ...) materializes the
+element array through `String#succ`, so an unbounded string range cannot be
+iterated. `#size` is `nil`, as in CRuby, since a string range has no integer
+element count.
+
 #### Unboxed value types: identity IS the value
 
 `Complex`, `Rational`, and `Range` values are unboxed C structs with no

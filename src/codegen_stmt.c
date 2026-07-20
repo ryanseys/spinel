@@ -109,6 +109,11 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_FloatRange _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_frange_inspect(_t%d), stdout); putchar('\\n'); }\n", tv);
   }
+  else if (t == TY_STR_RANGE) {
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_StrRange _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_srange_inspect(_t%d), stdout); putchar('\\n'); }\n", tv);
+  }
   else if (t == TY_CLASS) {
     int _tc = ++g_tmp;
     buf_printf(b, "{ sp_Class _cl%d = ", _tc); emit_expr(c, arg, b);
@@ -275,6 +280,11 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_FloatRange _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_frange_inspect(_t%d), stdout); }\n", tv);
+  }
+  else if (t == TY_STR_RANGE) {
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_StrRange _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_srange_to_s(_t%d), stdout); }\n", tv);
   }
   else if (ty_is_array(t) || ty_is_hash(t) || t == TY_EXCEPTION || t == TY_TIME) {
     /* print of a collection renders its to_s (== inspect for Array/Hash);
@@ -444,6 +454,11 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_FloatRange _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_frange_inspect(_t%d), stdout); putchar('\\n'); }\n", tv);
+  }
+  else if (t == TY_STR_RANGE) {   /* a String range inspects as "\"a\"..\"e\"" */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_StrRange _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_srange_inspect(_t%d), stdout); putchar('\\n'); }\n", tv);
   }
   else if (t == TY_CLASS) {   /* a Class/Module inspects as its name */
     int cv = ++g_tmp;

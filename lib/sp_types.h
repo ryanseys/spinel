@@ -138,6 +138,12 @@ typedef struct{mrb_int first;mrb_int last;mrb_int excl;mrb_int step;}sp_Range;
    in Ruby (only #step traverses a Float range), so no step/iteration state here.
    beginless/endless ends use -HUGE_VAL / +HUGE_VAL. */
 typedef struct{mrb_float first;mrb_float last;mrb_int excl;}sp_FloatRange;
+/* A String range ("a".."e"): endpoints kept as GC-managed strings so #begin,
+   #end, #to_s and #inspect answer as Ruby does. Every traversal (each/to_a/
+   include?/...) materializes the element array through
+   sp_StrArray_from_string_range, which is how the range behaved before it was
+   a value of its own. */
+typedef struct{const char *first;const char *last;mrb_int excl;}sp_StrRange;
 /* A class value. `name`, when non-NULL, is a rodata class name carried by a
    class whose cls_id table entry may not exist (an exception's class -- the
    Errno:: family and many builtin error classes have no assigned cls_id). It

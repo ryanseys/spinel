@@ -752,6 +752,15 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       buf_printf(b, ", %d)", excl);
       return;
     }
+    /* ("a".."e"): the distinct string range, endpoints kept as strings (#3064) */
+    if (comp_ntype(c, id) == TY_STR_RANGE) {
+      buf_puts(b, "sp_srange_new(");
+      if (left >= 0) emit_str_expr(c, left, b); else buf_puts(b, "sp_str_empty");
+      buf_puts(b, ", ");
+      if (right >= 0) emit_str_expr(c, right, b); else buf_puts(b, "sp_str_empty");
+      buf_printf(b, ", %d)", excl);
+      return;
+    }
     /* sp_Range holds mrb_int bounds, so a Range OBJECT over user objects has
        nowhere to live; emit_int_expr below would hand a pointer to an mrb_int
        parameter and the C compiler would reject it. Comparable#clamp with such
@@ -1895,7 +1904,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
           Buf el; memset(&el, 0, sizeof el); emit_expr(c, inner, &el);
           const char *ep = el.p ? el.p : "NULL";
           emit_indent(g_pre, g_indent);
-          if (it == TY_RANGE) {
+          if (it == TY_RANGE || it == TY_STR_RANGE) {
             /* check if it's a string range (bounds are TY_STRING) */
             int rn = nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "RangeNode") ? inner : -1;
             int rlo = rn >= 0 ? nt_ref(nt, rn, "left") : -1;
@@ -1959,7 +1968,7 @@ else {
         Buf el; memset(&el, 0, sizeof el); emit_expr(c, inner, &el);
         const char *ep = el.p ? el.p : "NULL";
         emit_indent(g_pre, g_indent);
-        if (it == TY_RANGE) {
+        if (it == TY_RANGE || it == TY_STR_RANGE) {
           int rn2 = nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "RangeNode") ? inner : -1;
           int rlo2 = rn2 >= 0 ? nt_ref(nt, rn2, "left") : -1;
           int rexcl2 = rn2 >= 0 ? (int)(nt_int(nt, rn2, "flags", 0) & 4) : 0;

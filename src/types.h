@@ -36,6 +36,7 @@ typedef enum {
   TY_BOOL,
   TY_RANGE,
   TY_FLOAT_RANGE,  /* (1.0..3.0): endpoints are mrb_float (sp_FloatRange) */
+  TY_STR_RANGE,    /* ("a".."e"): endpoints are strings (sp_StrRange) */
   TY_TIME,
   TY_COMPLEX,      /* Cartesian Complex value (sp_Complex: re, im) */
   TY_RATIONAL,     /* Rational value (sp_Rational: num, den) */
