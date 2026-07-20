@@ -134,11 +134,13 @@ class Set
   end
 
   def merge(enum)
+    Set.check_enum(enum)
     enum.each { |x| add(x) }
     self
   end
 
   def replace(enum)
+    Set.check_enum(enum)
     @data = []
     enum.each { |x| add(x) }
     self
@@ -151,12 +153,21 @@ class Set
   end
 
   def subtract(enum)
+    Set.check_enum(enum)
     enum.each { |x| @data.delete_if { |e| e.eql?(x) } }
     self
   end
 
+  # The combining ops reject a non-enumerable operand with ArgumentError rather
+  # than letting the #each/#include? call fail as NoMethodError, matching CRuby.
+  def self.check_enum(x)
+    raise ArgumentError, "value must be enumerable" unless x.respond_to?(:each)
+    x
+  end
+
   # Set operators build fresh sets; the operand only needs #include? /#each.
   def &(other)
+    Set.check_enum(other)
     r = Set.new
     @data.each { |x| r.add(x) if other.include?(x) }
     r
@@ -164,6 +175,7 @@ class Set
   alias intersection &
 
   def |(other)
+    Set.check_enum(other)
     r = Set.new(@data)
     other.each { |x| r.add(x) }
     r
@@ -172,6 +184,7 @@ class Set
   alias + |
 
   def -(other)
+    Set.check_enum(other)
     r = Set.new
     @data.each { |x| r.add(x) unless other.include?(x) }
     r

@@ -2289,6 +2289,95 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     default: return SPL("Object");
   }
 }
+/* respond_to? on a poly value that turns out to hold a BUILTIN. The compile
+   time fold emits a cls_id check against the user classes defining the name,
+   which necessarily answers false for a builtin member of the union -- yet
+   Array really does respond to :each. Answer the core builtin surface here,
+   keyed off the runtime class name so every Array variant shares one list.
+   Deliberately conservative: an unlisted name answers false rather than
+   guessing, which is also what an undispatchable method would do. */
+static mrb_bool sp_str_in_list(const char *m, const char *const *list) {
+  for (int i = 0; list[i]; i++) if (strcmp(m, list[i]) == 0) return 1;
+  return 0;
+}
+static mrb_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
+  static const char *const uni[] = {
+    "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze", "frozen?",
+    "hash", "==", "!=", "equal?", "eql?", "object_id", "respond_to?", "is_a?",
+    "kind_of?", "instance_of?", "itself", "tap", "then", "send", "__send__",
+    "public_send", "method", "methods", "display", "yield_self", NULL };
+  static const char *const enumm[] = {
+    "each", "each_with_index", "each_with_object", "map", "collect", "select",
+    "filter", "reject", "find", "detect", "reduce", "inject", "to_a", "size",
+    "length", "count", "include?", "first", "min", "max", "sort", "sort_by",
+    "sum", "any?", "all?", "none?", "one?", "group_by", "partition", "zip",
+    "flat_map", "each_slice", "each_cons", "take", "drop", "empty?", NULL };
+  static const char *const arrm[] = {
+    "[]", "[]=", "push", "<<", "pop", "shift", "unshift", "concat", "join",
+    "flatten", "compact", "uniq", "reverse", "last", "index", "delete",
+    "delete_at", "delete_if", "insert", "fetch", "sample", "shuffle",
+    "rotate", "slice", "fill", "dig", "+", "-", "*", "&", "|", NULL };
+  static const char *const hashm[] = {
+    "[]", "[]=", "keys", "values", "fetch", "store", "delete", "key?",
+    "has_key?", "member?", "value?", "has_value?", "each_pair", "each_key",
+    "each_value", "merge", "merge!", "update", "to_h", "invert", "dig",
+    "default", "key", "transform_keys", "transform_values", NULL };
+  static const char *const strm[] = {
+    "[]", "[]=", "+", "*", "%", "<=>", "<", ">", "<=", ">=", "=~", "length",
+    "size", "empty?", "upcase", "downcase", "capitalize", "swapcase", "strip",
+    "lstrip", "rstrip", "chomp", "chop", "chars", "bytes", "lines", "split",
+    "sub", "gsub", "sub!", "gsub!", "index", "rindex", "include?",
+    "start_with?", "end_with?", "replace", "concat", "<<", "reverse", "succ",
+    "next", "to_i", "to_f", "to_sym", "to_str", "center", "ljust", "rjust",
+    "tr", "delete", "squeeze", "count", "each_char", "each_line", "slice",
+    "unpack", "encoding", "force_encoding", "bytesize", "ord", "hex", "oct",
+    "match", "match?", "scan", "format", "freeze", NULL };
+  static const char *const numm[] = {
+    "+", "-", "*", "/", "%", "**", "<=>", "<", ">", "<=", ">=", "abs",
+    "to_i", "to_int", "to_f", "to_r", "to_c", "zero?", "positive?",
+    "negative?", "coerce", "divmod", "fdiv", "round", "ceil", "floor",
+    "truncate", "between?", "clamp", "step", NULL };
+  static const char *const intm[] = {
+    "times", "upto", "downto", "succ", "next", "pred", "even?", "odd?",
+    "gcd", "lcm", "digits", "bit_length", "chr", "ord", "pow", "&", "|",
+    "^", "<<", ">>", "~", "integer?", NULL };
+  static const char *const fltm[] = {
+    "nan?", "infinite?", "finite?", "integer?", NULL };
+  static const char *const rngm[] = {
+    "begin", "end", "first", "last", "min", "max", "step", "cover?",
+    "exclude_end?", "to_a", "each", "size", "sum", "include?", "===", NULL };
+  static const char *const symm[] = {
+    "to_proc", "to_sym", "id2name", "name", "length", "size", "succ", "next",
+    "upcase", "downcase", "capitalize", "swapcase", "empty?", "start_with?",
+    "end_with?", "<=>", "[]", NULL };
+  static const char *const procm[] = {
+    "call", "()", "[]", "yield", "arity", "lambda?", "curry", "to_proc",
+    "parameters", "<<", ">>", NULL };
+  static const char *const excm[] = {
+    "message", "to_s", "full_message", "backtrace", "cause", "exception",
+    "name", "key", "receiver", "result", NULL };
+  const char *cn;
+  if (!m) return 0;
+  if (sp_str_in_list(m, uni)) return 1;
+  cn = sp_poly_class_name(v);
+  if (!cn) return 0;
+  if (strcmp(cn, "Array") == 0)
+    return sp_str_in_list(m, enumm) || sp_str_in_list(m, arrm);
+  if (strcmp(cn, "Hash") == 0)
+    return sp_str_in_list(m, enumm) || sp_str_in_list(m, hashm);
+  if (strcmp(cn, "String") == 0) return sp_str_in_list(m, strm);
+  if (strcmp(cn, "Integer") == 0)
+    return sp_str_in_list(m, numm) || sp_str_in_list(m, intm);
+  if (strcmp(cn, "Float") == 0)
+    return sp_str_in_list(m, numm) || sp_str_in_list(m, fltm);
+  if (strcmp(cn, "Range") == 0)
+    return sp_str_in_list(m, enumm) || sp_str_in_list(m, rngm);
+  if (strcmp(cn, "Symbol") == 0) return sp_str_in_list(m, symm);
+  if (strcmp(cn, "Proc") == 0) return sp_str_in_list(m, procm);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION)
+    return sp_str_in_list(m, excm);
+  return 0;
+}
 /* Class/Module#freeze / #frozen?: a class value is an unboxed {cls_id, name},
    so the frozen flag lives in a global per-class map -- user ids from 0 up,
    builtins (-100..-163) mapped to the top of the range (#3101). */

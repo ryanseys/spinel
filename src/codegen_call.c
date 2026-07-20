@@ -14257,7 +14257,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
              false. This mirrors the poly is_a? runtime cls_id check. */
           int tv = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
-          buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && (", tv, tv);
+          buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && (", tv, tv);
           size_t ql = strlen(qm);
           char wbase[256]; wbase[0] = '\0';
           int is_wr = ql > 0 && qm[ql - 1] == '=' && ql - 1 < sizeof wbase;
@@ -14270,7 +14270,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (has) { buf_printf(b, "%s_t%d.cls_id == %d", first ? "" : " || ", tv, k); first = 0; }
           }
           if (first) buf_puts(b, "0");
-          buf_printf(b, "); })");
+          /* a builtin member of the union cannot carry a user method, but it
+             does have its own surface: Array really responds to :each. Ask
+             the runtime rather than answering a flat false here (#3072). */
+          buf_printf(b, ")) || sp_poly_responds_builtin(_t%d, ", tv);
+          buf_puts(b, "\"");
+          emit_c_escaped(b, qm);
+          buf_puts(b, "\"); })");
           return;
         }
         else {
