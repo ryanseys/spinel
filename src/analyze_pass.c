@@ -6470,6 +6470,9 @@ int infer_block_params(Compiler *c) {
           (fbt == TY_INT || fbt == TY_FLOAT) && (fet == TY_INT || fet == TY_FLOAT) &&
           (fbt == TY_FLOAT || fet == TY_FLOAT))
         pt = TY_FLOAT;
+      /* a string-endpoint range ("a".."c") yields String elements (#3103) */
+      else if (fl9 && fbt == TY_STRING && fet == TY_STRING)
+        pt = TY_STRING;
       else
         pt = TY_INT;
       }
