@@ -8259,7 +8259,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "; _t%d->frozen = TRUE; _t%d; })", t, t); return;
   }
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 &&
-      (sp_streq(name, "dup") || sp_streq(name, "clone") || sp_streq(name, "itself"))) {
+      (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
+    /* a distinct shallow copy, not the receiver (d.equal?(pr) is false);
+       clone keeps the frozen flag, dup drops it (#3048) */
+    buf_puts(b, "sp_proc_dup(");
+    emit_expr(c, recv, b);
+    buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
+    return;
+  }
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "itself")) {
     emit_expr(c, recv, b); return;
   }
 
@@ -11292,6 +11300,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           return;
         }
       }
+    }
+    /* Proc#dup/#clone: a distinct shallow copy, not the identity shortcut
+       below (d.equal?(pr) must be false) (#3048) */
+    if (argc0 == 0 && is_dup_clone && recv_t == TY_PROC) {
+      buf_printf(b, "sp_proc_dup(");
+      emit_expr(c, recv, b);
+      buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
+      return;
     }
     if (argc0 == 0 && !freeze_stateful && !ty_is_hash(recv_t) &&
         !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t) || recv_native))) {
