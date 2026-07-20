@@ -2480,8 +2480,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
         for (int i = 0; i < sc->nivars; i++) {
           char fb[300];
-          if (isv) snprintf(fb, sizeof fb, "(_t%d).iv_%s", t, sc->ivars[i] + 1);
-          else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, sc->ivars[i] + 1);
+          if (isv) snprintf(fb, sizeof fb, "(_t%d).iv_%s", t, iv_c(sc->ivars[i] + 1));
+          else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, iv_c(sc->ivars[i] + 1));
           emit_indent(b, indent + 1);
           buf_printf(b, "sp_PolyArray_push(_t%d, ", arm_t);
           emit_boxed_text(c, sc->ivar_types[i], fb, b);
@@ -2514,8 +2514,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
         for (int i = 0; i < sc->nivars; i++) {
           char fb[300];
-          if (isv) snprintf(fb, sizeof fb, "(_t%d).iv_%s", t, sc->ivars[i] + 1);
-          else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, sc->ivars[i] + 1);
+          if (isv) snprintf(fb, sizeof fb, "(_t%d).iv_%s", t, iv_c(sc->ivars[i] + 1));
+          else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, iv_c(sc->ivars[i] + 1));
           emit_indent(b, indent + 1);
           buf_printf(b, "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", arm_t, comp_sym_intern(c, sc->ivars[i] + 1));
           emit_boxed_text(c, sc->ivar_types[i], fb, b);
@@ -5230,10 +5230,10 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                   buf_printf(b, "{ sp_%s *_t%d = ", c->classes[rc].c_name, tw);
                   emit_expr(c, recv, b); buf_puts(b, "; ");
                   emit_frozen_obj_guard(c, rc, twn, b);
-                  buf_printf(b, "_t%d->iv_%s = ", tw, base);
+                  buf_printf(b, "_t%d->iv_%s = ", tw, iv_c(base));
                 }
                 else {
-                  buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", base);
+                  buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", iv_c(base));
                 }
                 if (ivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
                 else emit_expr(c, argv[0], b);
@@ -5265,7 +5265,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                   buf_printf(b, " case %d: ", k);
                   { char tpn[32]; snprintf(tpn, sizeof tpn, "_t%d", tp);
                     emit_frozen_obj_guard(c, k, tpn, b); }
-                  buf_printf(b, "((sp_%s *)_t%d)->iv_%s = ", c->classes[k].c_name, tp, base);
+                  buf_printf(b, "((sp_%s *)_t%d)->iv_%s = ", c->classes[k].c_name, tp, iv_c(base));
                   if (ivt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, src, b);
                   else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
                   else buf_puts(b, src);
@@ -5314,7 +5314,7 @@ else {
                    runtime object isn't that class anyway): a raw assignment
                    between mismatched C types would not compile */
                 if (at_eff != ivt && at_eff != TY_POLY && ivt != TY_POLY) continue;
-                buf_printf(b, " case %d: ((sp_%s *)_t%d.v.p)->iv_%s = ", k, c->classes[k].c_name, tv, base);
+                buf_printf(b, " case %d: ((sp_%s *)_t%d.v.p)->iv_%s = ", k, c->classes[k].c_name, tv, iv_c(base));
                 if (ivt == TY_POLY && at_eff != TY_POLY) emit_boxed_text(c, at_eff, src, b);
                 else if (at_eff == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
                 else buf_puts(b, src);
@@ -5499,7 +5499,7 @@ else {
       emit_boxed(c, v, b); buf_puts(b, "; }\n");
     }
     else if (ivt == TY_BOOL) {
-      buf_printf(b, "if (%s_t%d->iv_%s) _t%d->iv_%s = ", is_or ? "!" : "", tr, attr, tr, attr);
+      buf_printf(b, "if (%s_t%d->iv_%s) _t%d->iv_%s = ", is_or ? "!" : "", tr, iv_c(attr), tr, iv_c(attr));
       emit_expr(c, v, b); buf_puts(b, "; }\n");
     }
     else if (ivt == TY_INT) {
@@ -5510,7 +5510,7 @@ else {
       emit_expr(c, v, b); buf_puts(b, "; }\n");
     }
     else if (!is_or) {  /* &&= on always-truthy type: always assign */
-      buf_printf(b, "_t%d->iv_%s = ", tr, attr); emit_expr(c, v, b); buf_puts(b, "; }\n");
+      buf_printf(b, "_t%d->iv_%s = ", tr, iv_c(attr)); emit_expr(c, v, b); buf_puts(b, "; }\n");
     }
     else { buf_puts(b, "}\n"); }  /* ||= on always-truthy type: no-op, but receiver evaluated */
     return;
@@ -6249,7 +6249,7 @@ else {
         emit_indent(b, indent);
         buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tarr, tarr);
         for (int j = 0; j < sc->nivars; j++) {
-          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", tobj, sc->ivars[j] + 1);
+          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", tobj, iv_c(sc->ivars[j] + 1));
           emit_indent(b, indent);
           buf_printf(b, "sp_PolyArray_push(_t%d, ", tarr);
           emit_boxed_text(c, sc->ivar_types[j], fb, b);
@@ -6347,7 +6347,7 @@ else {
         emit_indent(b, indent);
         buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", thash, thash);
         for (int j = 0; j < sc->nivars; j++) {
-          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", tobj, sc->ivars[j] + 1);
+          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", tobj, iv_c(sc->ivars[j] + 1));
           emit_indent(b, indent);
           buf_printf(b, "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", thash, comp_sym_intern(c, sc->ivars[j] + 1));
           emit_boxed_text(c, sc->ivar_types[j], fb, b);
@@ -6713,7 +6713,7 @@ else {
             else {
               /* attr_writer convention: name matches the backing ivar */
               char base[256]; memcpy(base, setnm, snl - 1); base[snl - 1] = '\0';
-              buf_puts(b, "("); emit_expr(c, crecv, b); buf_printf(b, ")->iv_%s = %s;\n", base, get_expr);
+              buf_puts(b, "("); emit_expr(c, crecv, b); buf_printf(b, ")->iv_%s = %s;\n", iv_c(base), get_expr);
             }
           }
         }
@@ -7046,7 +7046,7 @@ else {
         int iv2 = comp_ivar_index(&c->classes[defc2 < 0 ? rc2 : defc2], ivn2);
         TyKind ivt2 = iv2 >= 0 ? c->classes[defc2 < 0 ? rc2 : defc2].ivar_types[iv2] : TY_UNKNOWN;
         emit_indent(b, indent);
-        buf_puts(b, "("); emit_expr(c, recv_id2, b); buf_printf(b, ")->iv_%s = ", base2);
+        buf_puts(b, "("); emit_expr(c, recv_id2, b); buf_printf(b, ")->iv_%s = ", iv_c(base2));
         TyKind valt2 = comp_ntype(c, els[i]);
         if (ivt2 == TY_POLY && valt2 != TY_POLY) {
           char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);

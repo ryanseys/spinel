@@ -2759,7 +2759,7 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
       if (t == TY_VOID || t == TY_NIL) t = TY_POLY;
       buf_puts(b, "  ");
       emit_ctype(c, t == TY_UNKNOWN ? TY_INT : t, b);
-      buf_printf(b, " iv_%s;\n", ci->ivars[i] + 1);
+      buf_printf(b, " iv_%s;\n", iv_c(ci->ivars[i] + 1));
     }
     buf_puts(b, "};\n");
     return;
@@ -2776,8 +2776,9 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
     if (!is_scalar_ret(t) && t != TY_UNKNOWN) { /* ok */ }
     buf_puts(b, "  ");
     emit_ctype(c, t == TY_UNKNOWN ? TY_INT : t, b);
-    /* ivar name includes '@'; strip it for the field */
-    buf_printf(b, " iv_%s;\n", ci->ivars[i] + 1);
+    /* ivar name includes '@'; strip it for the field (mangled for a member
+       like `verbose?` whose raw name is not a valid C identifier) */
+    buf_printf(b, " iv_%s;\n", iv_c(ci->ivars[i] + 1));
   }
   buf_puts(b, "};\n");
 }
@@ -2814,7 +2815,7 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   }
   for (int i = 0; i < ci->nivars; i++) {
     TyKind t = ci->ivar_types[i];
-    const char *iv = ci->ivars[i] + 1;
+    const char *iv = iv_c(ci->ivars[i] + 1);
     if (t == TY_STRING) buf_printf(b, "  sp_mark_string(o->iv_%s);\n", iv);
     else if (t == TY_POLY) buf_printf(b, "  sp_mark_rbval(o->iv_%s);\n", iv);
     else if (needs_root(t))
@@ -2843,7 +2844,7 @@ static const char *ivar_scalar_nil_init(TyKind t) {
 static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
                                 const char *lead, const char *term) {
   for (int i = 0; i < ci->nivars; i++) {
-    const char *name = ci->ivars[i] + 1;  /* skip leading '@' */
+    const char *name = iv_c(ci->ivars[i] + 1);  /* skip leading '@', mangle to a C field */
     if (ci->ivar_types[i] == TY_POLY)
       buf_printf(b, "%s%siv_%s = sp_box_nil()%s", lead, lv, name, term);
     else {
@@ -2946,7 +2947,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     buf_puts(b, "  SP_GC_ROOT(self);\n");
     buf_printf(b, "  self->cls_id = %d;\n", cid);
     for (int i = 0; i < ci->nivars; i++)
-      buf_printf(b, "  self->iv_%s = a%d;\n", ci->ivars[i] + 1, i);  /* skip leading '@' */
+      buf_printf(b, "  self->iv_%s = a%d;\n", iv_c(ci->ivars[i] + 1), i);  /* skip leading '@' */
     /* Data instances are frozen from construction (CRuby); Struct is mutable. */
     if (ci->is_data) buf_puts(b, "  sp_gc_freeze(self);\n");
     buf_puts(b, "  return self;\n}\n");
@@ -2966,15 +2967,22 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
         buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s %s\"); SP_GC_ROOT(s);\n",
                    ci->is_data ? "data" : "struct", rn);
       for (int i = 0; i < ci->nivars; i++) {
-        buf_printf(b, "  sp_String_append(s, \"%s%s=\");\n", i ? ", " : " ", ci->ivars[i] + 1);
+        /* CRuby shows a non-identifier member as a symbol: `:verbose?=` (a
+           plain identifier stays bare, `name=`) (#3110) */
+        const char *mnm = ci->ivars[i] + 1;
+        int simple = ((mnm[0] >= 'a' && mnm[0] <= 'z') || (mnm[0] >= 'A' && mnm[0] <= 'Z') || mnm[0] == '_');
+        for (const char *q = mnm; simple && *q; q++)
+          if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+                (*q >= '0' && *q <= '9') || *q == '_')) simple = 0;
+        buf_printf(b, "  sp_String_append(s, \"%s%s%s=\");\n", i ? ", " : " ", simple ? "" : ":", mnm);
         TyKind mt = ci->ivar_types[i];
         const char *mcn = ty_is_object(mt) ? obj_str_cname(c, ty_object_class(mt), 1) : NULL;
         if (mcn) {
           /* a struct/data (or user-#inspect) member recurses into its own inspect */
           buf_printf(b, "  sp_String_append(s, self->iv_%s ? sp_%s_inspect((sp_%s *)self->iv_%s) : \"nil\");\n",
-                     ci->ivars[i] + 1, mcn, mcn, ci->ivars[i] + 1);
+                     iv_c(ci->ivars[i] + 1), mcn, mcn, iv_c(ci->ivars[i] + 1));
         } else {
-          Buf ivb; memset(&ivb, 0, sizeof ivb); buf_printf(&ivb, "self->iv_%s", ci->ivars[i] + 1);
+          Buf ivb; memset(&ivb, 0, sizeof ivb); buf_printf(&ivb, "self->iv_%s", iv_c(ci->ivars[i] + 1));
           Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, ci->ivar_types[i], ivb.p, &bx);
           buf_printf(b, "  sp_String_append(s, sp_poly_inspect(%s));\n", bx.p);
           free(bx.p); free(ivb.p);
@@ -3235,14 +3243,15 @@ static void emit_obj_to_hash_dispatch(Compiler *c, Buf *b) {
     buf_puts(b, "      sp_StrPolyHash *h = sp_StrPolyHash_new(); SP_GC_ROOT(h);\n");
     for (int j = 0; j < ci->nivars; j++) {
       TyKind mt = ci->ivar_types[j];
-      const char *iv = ci->ivars[j] + 1;  /* member name, sans @ */
+      const char *iv = ci->ivars[j] + 1;  /* member name, sans @ (hash key) */
+      const char *ivf = iv_c(iv);          /* C field id (mangled member) */
       buf_printf(b, "      sp_StrPolyHash_set(h, SPL(\"%s\"), ", iv);
-      if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", iv, iv);
-      else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", iv, iv);
-      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float(o->iv_%s)", iv);
-      else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", iv);
-      else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", iv);
-      else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", iv);
+      if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf);
+      else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf);
+      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float(o->iv_%s)", ivf);
+      else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", ivf);
+      else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", ivf);
+      else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", ivf);
       else buf_puts(b, "sp_box_nil()");
       buf_puts(b, ");\n");
     }
@@ -3267,16 +3276,17 @@ static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
     buf_puts(b, "      sp_SymPolyHash *h = sp_SymPolyHash_new(); SP_GC_ROOT(h);\n");
     for (int j = 0; j < ci->nivars; j++) {
       TyKind mt = ci->ivar_types[j];
-      const char *iv = ci->ivars[j] + 1;  /* member name, sans @ */
+      const char *iv = ci->ivars[j] + 1;  /* member name, sans @ (sym key) */
+      const char *ivf = iv_c(iv);          /* C field id (mangled member) */
       buf_printf(b, "      sp_SymPolyHash_set(h, sp_sym_intern(\"%s\"), ", iv);
-      if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", iv, iv);
-      else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", iv, iv);
-      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float(o->iv_%s)", iv);
-      else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", iv);
-      else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", iv);
-      else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", iv);
+      if (mt == TY_INT) buf_printf(b, "(o->iv_%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(o->iv_%s))", ivf, ivf);
+      else if (mt == TY_STRING) buf_printf(b, "(o->iv_%s ? sp_box_str(o->iv_%s) : sp_box_nil())", ivf, ivf);
+      else if (mt == TY_FLOAT) buf_printf(b, "sp_box_float(o->iv_%s)", ivf);
+      else if (mt == TY_BOOL) buf_printf(b, "sp_box_bool(o->iv_%s)", ivf);
+      else if (mt == TY_SYMBOL) buf_printf(b, "sp_box_sym(o->iv_%s)", ivf);
+      else if (mt == TY_POLY) buf_printf(b, "o->iv_%s", ivf);
       else {
-        char fb[128]; snprintf(fb, sizeof fb, "o->iv_%s", iv);
+        char fb[128]; snprintf(fb, sizeof fb, "o->iv_%s", ivf);
         Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mt, fb, &bx);
         buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
       }
@@ -3309,14 +3319,15 @@ static void emit_obj_with_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "      return sp_box_obj(sp_%s_new(", ci->c_name);
     for (int j = 0; j < ci->nivars; j++) {
       TyKind mt = ci->ivar_types[j];
-      const char *iv = ci->ivars[j] + 1;
+      const char *iv = ci->ivars[j] + 1;   /* sym key */
+      const char *ivf = iv_c(iv);           /* C field id */
       if (j) buf_puts(b, ", ");
       /* a per-member statement-expr with its OWN found flag: sp_X_new's args
          evaluate in unspecified order, so a shared flag would race. */
       buf_printf(b, "({ mrb_bool _f; sp_RbVal _pv = sp_poly_hash_probe(ov, sp_box_sym(sp_sym_intern(\"%s\")), &_f); _f ? ", iv);
       Buf ub; memset(&ub, 0, sizeof ub); emit_unbox_text(c, mt, "_pv", &ub);
       buf_puts(b, ub.p ? ub.p : "_pv"); free(ub.p);
-      buf_printf(b, " : o->iv_%s; })", iv);
+      buf_printf(b, " : o->iv_%s; })", ivf);
     }
     buf_printf(b, "), %d);\n    }\n", idx);
   }
@@ -3956,7 +3967,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; mrb_int _h = %d;\n",
                comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->nivars + 1);
     for (int i = 0; i < ci->nivars; i++) {
-      char fe[128]; snprintf(fe, sizeof fe, "o->iv_%s", ci->ivars[i] + 1);
+      char fe[128]; snprintf(fe, sizeof fe, "o->iv_%s", iv_c(ci->ivars[i] + 1));
       Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, ci->ivar_types[i], fe, &bx);
       buf_printf(b, "      _h = _h * 31 + sp_rbval_hash_key(%s);\n", bx.p ? bx.p : fe);
       free(bx.p);
@@ -4016,7 +4027,7 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
                comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->c_name);
     if (ci->nivars == 0) buf_puts(b, "1");
     for (int i = 0; i < ci->nivars; i++) {
-      const char *iv = ci->ivars[i] + 1;  /* skip leading '@' */
+      const char *iv = iv_c(ci->ivars[i] + 1);  /* skip leading '@', mangle to a C field */
       Buf ea; memset(&ea, 0, sizeof ea); Buf eb; memset(&eb, 0, sizeof eb);
       char fa[128], fb[128];
       snprintf(fa, sizeof fa, "_a->iv_%s", iv);
@@ -5529,7 +5540,7 @@ char *codegen_program(const NodeTable *nt) {
                        : (is_scalar_ret(t)) ? default_value(t) : "0";
       buf_puts(&b, "static ");
       emit_ctype(c, t, &b);
-      buf_printf(&b, " civ_%s_%s = %s;\n", ci->name, ci->ivars[j] + 1, init);
+      buf_printf(&b, " civ_%s_%s = %s;\n", ci->name, iv_c(ci->ivars[j] + 1), init);
     }
   }
 
@@ -5693,7 +5704,7 @@ char *codegen_program(const NodeTable *nt) {
       ClassInfo *ci = &c->classes[i];
       for (int j = 0; j < ci->nivars; j++) {
         TyKind t = ci->ivar_types[j] == TY_UNKNOWN ? TY_INT : ci->ivar_types[j];
-        const char *iv = ci->ivars[j] + 1;
+        const char *iv = iv_c(ci->ivars[j] + 1);
         if (t == TY_STRING) buf_printf(&mk, "  sp_mark_string(civ_%s_%s);\n", ci->name, iv);
         else if (t == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(civ_%s_%s);\n", ci->name, iv);
         else if (needs_root(t)) buf_printf(&mk, "  if (civ_%s_%s) sp_gc_mark((void *)civ_%s_%s);\n", ci->name, iv, ci->name, iv);

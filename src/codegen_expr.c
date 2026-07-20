@@ -916,7 +916,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     char ref2e[300];
     int fz_cid = -1;  /* instance-path writes guard the frozen bit */
     if (cws && cws->is_cmethod && cid2 >= 0)
-      snprintf(ref2e, sizeof ref2e, "civ_%s_%s", c->classes[cid2].name, nm + 1);
+      snprintf(ref2e, sizeof ref2e, "civ_%s_%s", c->classes[cid2].name, iv_c(nm + 1));
     else if (cid2 < 0 && g_ie_class_id >= 0) {
       snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, nm + 1);
       fz_cid = g_ie_class_id;
@@ -979,7 +979,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (cid3 >= 0) { int iv3 = comp_ivar_index(&c->classes[cid3], nm); if (iv3 >= 0) ivt3 = c->classes[cid3].ivar_types[iv3]; }
     char ref3[300];
     if (cws3 && cws3->is_cmethod && cid3 >= 0)
-      snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, nm + 1);
+      snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, iv_c(nm + 1));
     else
       snprintf(ref3, sizeof ref3, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     if (ivt3 == TY_POLY) {
@@ -1283,7 +1283,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
     Scope *cs = comp_scope_of(c, id);
     if (cs && cs->is_cmethod && cs->class_id >= 0)
-      buf_printf(b, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);  /* module/class-level ivar */
+      buf_printf(b, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));  /* module/class-level ivar */
     else if (cs && cs->class_id < 0 && g_ie_class_id >= 0)
       /* inside instance_eval block: access ivar via receiver pointer */
       buf_printf(b, "%s%siv_%s", g_self, g_self_deref, nm + 1);
@@ -2519,7 +2519,7 @@ else {
     char ref[300];
     Scope *cs = comp_scope_of(c, id);
     if (cs && cs->is_cmethod && cs->class_id >= 0)
-      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);
+      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
     else
       snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     if (g_pre) {

@@ -3093,7 +3093,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (comp_reader_in_chain(c, k, name, &rdcls)) {
           const char *rn3 = comp_resolve_alias(c, k, name);
           char fld[600];
-          snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[rdcls].c_name, tv, rn3);
+          snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[rdcls].c_name, tv, iv_c(rn3));
           char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn3);
           int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
           TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
@@ -5041,7 +5041,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_%s *_t%d = ", sci->c_name, tb2); emit_expr(c, argv[0], b);
         buf_printf(b, "; _t%d == _t%d || (_t%d && _t%d", ta, tb2, ta, tb2);
         for (int j = 0; j < sci->nivars; j++) {
-          const char *ivn = sci->ivars[j] + 1;   /* skip @ */
+          const char *ivn = iv_c(sci->ivars[j] + 1);   /* skip @, mangle to a C field */
           TyKind ivt = sci->ivar_types[j];
           if (ivt == TY_INT || ivt == TY_BOOL || ivt == TY_SYMBOL || ivt == TY_FLOAT)
             buf_printf(b, " && _t%d->iv_%s == _t%d->iv_%s", ta, ivn, tb2, ivn);
@@ -11622,7 +11622,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (dispatch_cid >= 0) {
       if (comp_reader_in_chain(c, dispatch_cid, name, NULL)) {
         const char *rn = comp_resolve_alias(c, dispatch_cid, name);
-        buf_printf(b, "%s%siv_%s", g_self, g_self_deref, rn);
+        buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
         return;
       }
       int mi = comp_method_in_chain(c, dispatch_cid, name, NULL);
@@ -13274,7 +13274,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           char _aself[32]; snprintf(_aself, sizeof _aself, "_t%d", _atmp);
           buf_printf(b, "({ sp_%s *_t%d = ", c->classes[_arc].c_name, _atmp); emit_expr(c, recv, b); buf_puts(b, "; ");
           emit_frozen_obj_guard(c, _arc, _aself, b);
-          buf_printf(b, "_t%d->iv_%s = ", _atmp, _abase);
+          buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
           if (argc >= 1) {
             if (_aivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
             else emit_expr(c, argv[0], b);

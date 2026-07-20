@@ -1178,6 +1178,33 @@ const char *mc(const char *name) {
   buf[j] = '\0';
   return buf;
 }
+/* Mangle an ivar/struct-member name (sans leading '@') to a valid C field
+   identifier, so a Struct/Data member like `verbose?` becomes iv_verbose_p
+   rather than the illegal iv_verbose? (#3110). Same character map as mc(), but
+   a rotating buffer ring so the 2-4 uses of a field name on one buf_printf line
+   don't clobber each other. A no-op for the usual all-identifier ivar names. */
+const char *iv_c(const char *name) {
+  static char bufs[8][256];
+  static int which = 0;
+  char *buf = bufs[(which++) & 7];
+  int j = 0;
+  for (const char *p = name; *p && j < (int)sizeof bufs[0] - 8; p++) {
+    char ch = *p;
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+        (ch >= '0' && ch <= '9') || ch == '_') { buf[j++] = ch; continue; }
+    const char *tok;
+    switch (ch) {
+      case '?': tok = "_p";     break;
+      case '!': tok = "_bang";  break;
+      case '=': tok = "_set";   break;
+      default:  tok = "_";      break;
+    }
+    size_t tl = strlen(tok);
+    memcpy(buf + j, tok, tl); j += (int)tl;
+  }
+  buf[j] = '\0';
+  return buf;
+}
 int scope_is_shadowed(Compiler *c, int s) {
   Scope *sc = &c->scopes[s];
   if (sc->class_id < 0 || !sc->name) return 0;

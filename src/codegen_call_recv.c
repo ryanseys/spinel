@@ -6354,7 +6354,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, ">\", (unsigned long long)(uintptr_t)&_t%d", tv2);
       if (want_ins)
         for (int vi = 0; vi < ci2->nivars; vi++) {
-          char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d.iv_%s", tv2, ci2->ivars[vi] + 1);
+          char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d.iv_%s", tv2, iv_c(iv_c(ci2->ivars[vi] + 1)));
           buf_puts(b, ", sp_poly_inspect(");
           emit_boxed_text(c, ci2->ivar_types[vi], fb2, b);
           buf_puts(b, ")");
@@ -6384,7 +6384,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                  sc->name, t, rb.p ? rb.p : "", rt2, rt2);
       for (int i = 0; i < sc->nivars; i++) {
         buf_printf(b, " sp_PolyArray_push(_t%d, ", rt2);
-        Buf fb; memset(&fb, 0, sizeof fb); buf_printf(&fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+        Buf fb; memset(&fb, 0, sizeof fb); buf_printf(&fb, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
         emit_boxed_text(c, sc->ivar_types[i], fb.p, b); free(fb.p);
         buf_puts(b, ");");
       }
@@ -6418,7 +6418,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         for (int i = 0; i < sc->nivars; i++) {
           if (kp) buf_printf(b, " lv_%s = (sp_sym)%d;", kp, comp_sym_intern(c, sc->ivars[i] + 1));
           if (vp) {
-            char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+            char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
             buf_printf(b, " lv_%s = ", vp); emit_boxed_text(c, sc->ivar_types[i], fb, b); buf_puts(b, ";");
           }
           buf_printf(b, " sp_%sHash_set(_t%d, ", hn, rh);
@@ -6432,7 +6432,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       else {
         for (int i = 0; i < sc->nivars; i++) {
           buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", rh, comp_sym_intern(c, sc->ivars[i] + 1));
-          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
           emit_boxed_text(c, sc->ivar_types[i], fb, b);
           buf_puts(b, ");");
         }
@@ -6454,7 +6454,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           long long ix = nt_int(nt, argv[a4], "value", 0);
           if (ix < 0) ix += sc->nivars;
           if (ix < 0 || ix >= sc->nivars) { ok4 = 0; break; }
-          char fb4[300]; snprintf(fb4, sizeof fb4, "_t%d->iv_%s", tv4, sc->ivars[(int)ix] + 1);
+          char fb4[300]; snprintf(fb4, sizeof fb4, "_t%d->iv_%s", tv4, iv_c(sc->ivars[(int)ix] + 1));
           buf_printf(b, " sp_PolyArray_push(_t%d, ", to4);
           emit_boxed_text(c, sc->ivar_types[(int)ix], fb4, b);
           buf_puts(b, ");");
@@ -6470,7 +6470,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           if (hi4 < 0) hi4 += sc->nivars;
           for (long long ix = lo4; ix <= hi4 && ix < sc->nivars; ix++) {
             if (ix < 0) continue;
-            char fb4[300]; snprintf(fb4, sizeof fb4, "_t%d->iv_%s", tv4, sc->ivars[(int)ix] + 1);
+            char fb4[300]; snprintf(fb4, sizeof fb4, "_t%d->iv_%s", tv4, iv_c(sc->ivars[(int)ix] + 1));
             buf_printf(b, " sp_PolyArray_push(_t%d, ", to4);
             emit_boxed_text(c, sc->ivar_types[(int)ix], fb4, b);
             buf_puts(b, ");");
@@ -6493,7 +6493,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                  sc->c_name, tv5, rb5.p ? rb5.p : "", th5);
       free(rb5.p);
       for (int i5 = 0; i5 < sc->nivars; i5++) {
-        char fb5[300]; snprintf(fb5, sizeof fb5, "_t%d->iv_%s", tv5, sc->ivars[i5] + 1);
+        char fb5[300]; snprintf(fb5, sizeof fb5, "_t%d->iv_%s", tv5, iv_c(sc->ivars[i5] + 1));
         buf_printf(b, " _t%d = (_t%d ^ (uint64_t)sp_rbval_hash_key(", th5, th5);
         emit_boxed_text(c, sc->ivar_types[i5], fb5, b);
         buf_puts(b, ")) * 1099511628211ULL;");
@@ -6540,7 +6540,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         for (int e = 0; e < nkey; e++) {
           int i = keyed[e];
           buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", rh, comp_sym_intern(c, sc->ivars[i] + 1));
-          char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+          char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
           emit_boxed_text(c, sc->ivar_types[i], fb2, b);
           buf_puts(b, ");");
         }
@@ -6642,9 +6642,9 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                         "sp_box_sym(sp_sym_intern(\"%s\")), &_f); _f ? (", th, sc->ivars[i] + 1);
           if (sc->ivar_types[i] == TY_POLY) buf_puts(b, "_v");
           else emit_unbox_text(c, sc->ivar_types[i], "_v", b);
-          buf_printf(b, ") : _t%d->iv_%s; })", t, sc->ivars[i] + 1);
+          buf_printf(b, ") : _t%d->iv_%s; })", t, iv_c(sc->ivars[i] + 1));
         } else {
-          buf_printf(b, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+          buf_printf(b, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
         }
       }
       buf_puts(b, "); })");
@@ -6684,7 +6684,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
             }
             if (nmi < 0) { all = 0; break; }
             size_t pl = strlen(path);
-            snprintf(path + pl, sizeof path - pl, "->iv_%s", cur->ivars[cmi] + 1);
+            snprintf(path + pl, sizeof path - pl, "->iv_%s", iv_c(cur->ivars[cmi] + 1));
             cur = nx; cmi = nmi; di++;
           }
           if (all && di == argc && argc >= 2) {
@@ -6698,7 +6698,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         }
         int t = ++g_tmp;
         Buf rb = expr_buf(c, recv);
-        char fld[300]; snprintf(fld, sizeof fld, "_t%d->iv_%s", t, sc->ivars[mi] + 1);
+        char fld[300]; snprintf(fld, sizeof fld, "_t%d->iv_%s", t, iv_c(sc->ivars[mi] + 1));
         TyKind mt = sc->ivar_types[mi];
         buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->c_name, t, rb.p ? rb.p : ""); free(rb.p);
         if (argc == 1) buf_puts(b, fld);
@@ -6736,7 +6736,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         int t = ++g_tmp;
         Buf rb = expr_buf(c, recv);
         buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->c_name, t, rb.p ? rb.p : ""); free(rb.p);
-        buf_printf(b, "_t%d->iv_%s; })", t, sc->ivars[mi] + 1);
+        buf_printf(b, "_t%d->iv_%s; })", t, iv_c(sc->ivars[mi] + 1));
         return 1;
       }
       /* general: generate chain of comparisons */
@@ -6750,7 +6750,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         for (int i = 0; i < sc->nivars; i++) {
           buf_printf(b, " if(sp_rbval_eql_key(_t%d,sp_box_sym((sp_sym)%d))||sp_rbval_eql_key(_t%d,sp_box_int(%dLL))){",
                      tk, comp_sym_intern(c, sc->ivars[i]+1), tk, (long long)i);
-          char fld2[300]; snprintf(fld2, sizeof fld2, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+          char fld2[300]; snprintf(fld2, sizeof fld2, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
           emit_boxed_text(c, sc->ivar_types[i], fld2, b);
           buf_printf(b, ";} else");
         }
@@ -6874,13 +6874,13 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         const char *acc = is_val ? "." : "->";
         if (is_set) {
           buf_puts(b, "(("); emit_expr(c, recv, b);
-          buf_printf(b, ")%siv_%s = ", acc, sym + 1);
+          buf_printf(b, ")%siv_%s = ", acc, iv_c(sym + 1));
           if (mt == TY_POLY) emit_boxed(c, argv[1], b); else emit_expr(c, argv[1], b);
           buf_puts(b, ")");
         }
         else {
           buf_puts(b, "("); emit_expr(c, recv, b);
-          buf_printf(b, ")%siv_%s", acc, sym + 1);
+          buf_printf(b, ")%siv_%s", acc, iv_c(sym + 1));
         }
         return 1;
       }
@@ -6909,7 +6909,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       if (mi >= 0) {
         const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
         buf_puts(b, "("); emit_expr(c, recv, b);
-        buf_printf(b, ")%siv_%s", acc, sym + 1);
+        buf_printf(b, ")%siv_%s", acc, iv_c(sym + 1));
       } else {
         if (recv >= 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), "); }
         else buf_puts(b, "(");
@@ -6937,7 +6937,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       if (reader_wins) {
         const char *rn2 = comp_resolve_alias(c, cid, name);
         buf_puts(b, "("); emit_expr(c, recv, b);
-        buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", rn2);
+        buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", iv_c(rn2));
         return 1;
       }
     }
@@ -8068,7 +8068,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         if (iv < 0) continue;
         TyKind t = c->classes[k].ivar_types[iv];
         char fld[320];
-        snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].c_name, tv, sym + 1);
+        snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].c_name, tv, iv_c(sym + 1));
         buf_printf(b, " case %d: _ivg%d = ", k, tv);
         emit_boxed_text(c, t, fld, b);
         buf_puts(b, "; break;");

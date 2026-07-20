@@ -478,6 +478,7 @@ int unwrap_parens(Compiler *c, int id);
 const char *int_arith_fn(const char *op);
 const char *bigint_arith_fn(const char *op);
 const char *mc(const char *name);
+const char *iv_c(const char *name);  /* ivar/member name -> valid C field id (#3110) */
 int scope_is_shadowed(Compiler *c, int s);
 int scope_has_callable_symbol(Compiler *c, int s);
 int struct_kwarg_value(Compiler *c, int kwh, const char *name);
