@@ -8967,7 +8967,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")"); free(rb.p); return;
     }
     if (sp_streq(name, "advise") && argc >= 1) {
-      buf_printf(b, "({ sp_File_advise(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
+      buf_printf(b, "({ sp_File_advise(%s, ", r);
+      /* the advice is a Symbol (:normal, :sequential, ...); read its name */
+      if (comp_ntype(c, argv[0]) == TY_SYMBOL) {
+        buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else emit_str_expr(c, argv[0], b);
+      buf_puts(b, ", ");
       if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
       buf_puts(b, ", ");
       if (argc >= 3) emit_int_expr(c, argv[2], b); else buf_puts(b, "0");
