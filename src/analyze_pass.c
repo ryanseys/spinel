@@ -3652,12 +3652,55 @@ int desugar_builtin_class_var_recv(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
+
+  /* Index every LocalVariableWriteNode by variable name once, so resolving a
+     receiver's static class scans only the writes of THAT name instead of the
+     whole node table per receiver. Turns the pass from O(receivers * N) into
+     O(N) -- the quadratic that stalled the lobsters tree (#3115). Inlines the
+     old builtin_class_var_static_name resolution over the index. */
+  int nbuckets = 16;
+  while (nbuckets < n0) nbuckets <<= 1;
+  int *head = malloc((size_t)nbuckets * sizeof(int));
+  int *wnext = malloc((size_t)(n0 > 0 ? n0 : 1) * sizeof(int));
+  if (!head || !wnext) { free(head); free(wnext); return 0; }
+  for (int i = 0; i < nbuckets; i++) head[i] = -1;
+  unsigned mask = (unsigned)nbuckets - 1;
+  for (int w = 0; w < n0; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn) continue;
+    unsigned h = 5381;
+    for (const char *p = wn; *p; p++) h = h * 33u + (unsigned char)*p;
+    h &= mask;
+    wnext[w] = head[h];
+    head[h] = w;
+  }
+
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
-    const char *cn = builtin_class_var_static_name(c, recv);
-    if (!cn) continue;
+    const char *vn = nt_str(nt, recv, "name");
+    if (!vn) continue;
+    Scope *sc = comp_scope_of(c, recv);
+    unsigned h = 5381;
+    for (const char *p = vn; *p; p++) h = h * 33u + (unsigned char)*p;
+    h &= mask;
+    /* every write of this local in this scope must assign the SAME builtin (or
+       user-class) constant, else the local is dynamic and does not retarget */
+    const char *cn = NULL;
+    int bail = 0;
+    for (int w = head[h]; w >= 0; w = wnext[w]) {
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+      int val = nt_ref(nt, w, "value");
+      const char *vcn = (val >= 0 && nt_kind(nt, val) == NK_ConstantReadNode)
+                        ? nt_str(nt, val, "name") : NULL;
+      if (!vcn || !(is_builtin_class_name(vcn) || comp_class_index(c, vcn) >= 0)) { bail = 1; break; }
+      if (cn && !sp_streq(cn, vcn)) { bail = 1; break; }
+      cn = vcn;
+    }
+    if (bail || !cn) continue;
     int cr = nt_new_node(nt, "ConstantReadNode");
     if (cr < 0) continue;
     nt_node_set_str(nt, cr, "name", cn);
@@ -3666,6 +3709,7 @@ int desugar_builtin_class_var_recv(Compiler *c) {
     nt_node_set_ref(nt, id, "receiver", cr);
     changed = 1;
   }
+  free(head); free(wnext);
   return changed;
 }
 
