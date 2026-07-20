@@ -4812,6 +4812,16 @@ int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
 
 /* all?/any?/none?/one? with a block: loop, count the truthy block results,
    and reduce to the predicate. Returns 1 if handled. */
+/* Emit `if (<truthy(cond)>) _t<cnt>++;` for a predicate loop (#3141). */
+static void emit_pred_cond(Buf *b, int pred_kind, const char *cond, int cnt) {
+  /* pred_kind: 0=bool as-is, 1=always truthy (eval for effect), 2=never, 3=poly */
+  switch (pred_kind) {
+    case 1: buf_printf(b, "{ (void)(%s); _t%d++; }\n", cond, cnt); break;
+    case 2: buf_printf(b, "(void)(%s);\n", cond); break;
+    case 3: buf_printf(b, "if (sp_poly_truthy(%s)) _t%d++;\n", cond, cnt); break;
+    default: buf_printf(b, "if (%s) _t%d++;\n", cond, cnt); break;
+  }
+}
 int emit_predicate_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4833,10 +4843,17 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
   int bn = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
-  /* the block's last expression is the C condition: require a bool. A bare
-     `if (value)` would mis-handle Ruby truthiness for other types (0 / 0.0
-     are truthy in Ruby but false in C), so leave those unsupported. */
-  if (comp_ntype(c, bb[bn - 1]) != TY_BOOL) return 0;
+  /* The block's last expression is the loop condition. A bool emits as-is; a
+     type that is ALWAYS truthy in Ruby (int/float/string/symbol/object -- even
+     0 and 0.0 are truthy) emits as constant true after evaluating for effect;
+     nil is constant false; a poly value routes through sp_poly_truthy. This is
+     the Ruby truthiness a bare `if (value)` would get wrong (#3141). */
+  TyKind bvt = comp_ntype(c, bb[bn - 1]);
+  enum { PRED_BOOL, PRED_ALWAYS, PRED_NEVER, PRED_POLY } pred_kind;
+  if (bvt == TY_BOOL) pred_kind = PRED_BOOL;
+  else if (bvt == TY_NIL || bvt == TY_VOID) pred_kind = PRED_NEVER;
+  else if (bvt == TY_POLY || bvt == TY_UNKNOWN) pred_kind = PRED_POLY;
+  else pred_kind = PRED_ALWAYS;   /* int/float/string/sym/object/... : always truthy */
 
   const char *p0raw = block_param_name(c, block, 0);
   const char *p0 = p0raw ? rename_local(p0raw) : NULL;
@@ -4876,7 +4893,7 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
     emit_expr(c, bb[bn - 1], &vb);
     g_indent = saveIndentP;
     emit_indent(g_pre, bodyIndentP);
-    buf_printf(g_pre, "if (%s) _t%d++;\n", vb.p ? vb.p : "0", tcnt);
+    emit_pred_cond(g_pre, pred_kind, vb.p ? vb.p : "0", tcnt);
     free(vb.p);
     emit_indent(g_pre, g_indent);
     buf_puts(g_pre, "}\n");
@@ -4909,8 +4926,21 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
   int bodyIndent = g_indent + 1;
   char es_pr[64]; snprintf(es_pr, sizeof es_pr, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
   if (!emit_iter_autosplat(c, block, rt, es_pr, bodyIndent) && p0) {
+    /* the block param's declared type may be wider than the array's element
+       type -- a numbered `_1` shared across differently-typed blocks widens
+       to poly -- so box the element when the slot is poly (#3141). */
+    Scope *pbs = comp_scope_of(c, block);
+    LocalVar *pblv = (pbs && p0raw) ? scope_local(pbs, p0raw) : NULL;
+    TyKind pbt = pblv ? pblv->type : ty_array_elem(rt);
     emit_indent(g_pre, bodyIndent);
-    buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
+    if (pbt == TY_POLY && ty_array_elem(rt) != TY_POLY) {
+      /* poly slot fed by a concrete element: box it */
+      buf_printf(g_pre, "lv_%s = ", p0);
+      emit_boxed_text(c, ty_array_elem(rt), es_pr, g_pre);
+      buf_puts(g_pre, ";\n");
+    } else {
+      buf_printf(g_pre, "lv_%s = %s;\n", p0, es_pr);
+    }
   }
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, bodyIndent);
   int saveIndent = g_indent;
@@ -4919,7 +4949,7 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
   emit_expr(c, bb[bn - 1], &vb);
   g_indent = saveIndent;
   emit_indent(g_pre, bodyIndent);
-  buf_printf(g_pre, "if (%s) _t%d++;\n", vb.p ? vb.p : "0", tcnt);
+  emit_pred_cond(g_pre, pred_kind, vb.p ? vb.p : "0", tcnt);
   free(vb.p);
   emit_indent(g_pre, g_indent);
   buf_puts(g_pre, "}\n");
