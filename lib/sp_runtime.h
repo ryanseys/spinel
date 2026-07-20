@@ -5977,7 +5977,8 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   if (!sp_pending_exc_obj && msg && cls && sp_exc_top > 0 &&
       (strcmp(cls, "NoMethodError") == 0 || strcmp(cls, "NameError") == 0) &&
       (strncmp(msg, "undefined method '", 18) == 0 ||
-       strncmp(msg, "undefined local variable or method '", 37) == 0))
+       strncmp(msg, "undefined local variable or method '", 37) == 0 ||
+       strncmp(msg, "uninitialized constant ", 23) == 0))   /* const_get / bad const (#3034) */
     sp_pending_exc_obj = sp_exc_recover_named(cls, msg);
   /* the introspection staging (receiver/key/value) rides the carried object */
   if (sp_pending_exc_flags && msg && cls && sp_exc_top > 0)
@@ -6108,11 +6109,24 @@ static sp_Exception *sp_exc_dup(sp_Exception *e) {
 /* Build the carried NameError/NoMethodError with #name recovered from the
    message's first quoted token (see sp_raise_cls, #2758). */
 static void *sp_exc_recover_named(const char *cls, const char *msg) {
+  char nb[128];
   const char *q1 = strchr(msg, '\'');
   const char *q2 = q1 ? strchr(q1 + 1, '\'') : NULL;
-  if (!q2 || q2 <= q1 + 1 || (size_t)(q2 - q1) > 128) return NULL;
-  char nb[128]; size_t n = (size_t)(q2 - q1 - 1);
-  memcpy(nb, q1 + 1, n); nb[n] = 0;
+  if (q2 && q2 > q1 + 1 && (size_t)(q2 - q1) <= 128) {
+    size_t n = (size_t)(q2 - q1 - 1);
+    memcpy(nb, q1 + 1, n); nb[n] = 0;
+  }
+  else {
+    /* "uninitialized constant NAME": the name is the unquoted trailing token,
+       the constant the message reports as missing (#3034) */
+    const char *pfx = "uninitialized constant ";
+    if (strncmp(msg, pfx, 23) != 0) return NULL;
+    const char *p = msg + 23;
+    size_t n = 0;
+    while (p[n] && (isalnum((unsigned char)p[n]) || p[n] == '_' || p[n] == ':') && n < 127) n++;
+    if (n == 0) return NULL;
+    memcpy(nb, p, n); nb[n] = 0;
+  }
   sp_Exception *e = sp_exc_new(cls, msg);   /* launders msg into the GC heap */
   SP_GC_ROOT(e);
   e->xname = sp_box_sym(sp_sym_intern(nb));

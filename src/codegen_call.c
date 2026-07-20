@@ -14211,7 +14211,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          CRuby qualifies "uninitialized constant" by a named module receiver
          (M::Missing) but not by Object/top-level; "wrong constant name" is never
          qualified. Qualify when the receiver is a constant other than Object. */
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_raise_cls(\"NameError\", ");
+      /* stage the receiver (the module const_get was sent to) so #receiver is
+         it, not nil; #name is recovered from the message (#3034) */
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), sp_exc_stage_recv("); emit_boxed(c, recv, b);
+      buf_puts(b, "), sp_raise_cls(\"NameError\", ");
       if (cg_qm[0] >= 'A' && cg_qm[0] <= 'Z') {
         /* Qualify by the receiver's full Ruby name when it resolves to a known
            class/module (M, or nested M::N); a builtin like Object resolves to no
