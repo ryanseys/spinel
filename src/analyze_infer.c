@@ -2105,13 +2105,19 @@ else {
       if (sp_streq(name, "write") || sp_streq(name, "binwrite") || sp_streq(name, "delete") ||
           sp_streq(name, "unlink") || sp_streq(name, "rename") || sp_streq(name, "size") ||
           sp_streq(name, "size?") || sp_streq(name, "chmod") || sp_streq(name, "truncate") ||
-          sp_streq(name, "chown"))
-        return TY_INT;
+          sp_streq(name, "chown") || sp_streq(name, "symlink") || sp_streq(name, "link") ||
+          sp_streq(name, "mkfifo") || sp_streq(name, "umask") || sp_streq(name, "utime") ||
+          sp_streq(name, "world_readable?") || sp_streq(name, "world_writable?"))
+        return TY_INT;   /* world_*? are nullable int (bits or nil) */
+      if (sp_streq(name, "readlink")) return TY_STRING;
       if (sp_streq(name, "absolute_path?")) return TY_BOOL;
       if (sp_streq(name, "readable?") || sp_streq(name, "directory?") || sp_streq(name, "file?") ||
           sp_streq(name, "zero?") || sp_streq(name, "empty?") || sp_streq(name, "symlink?") ||
           sp_streq(name, "writable?") || sp_streq(name, "executable?") || sp_streq(name, "pipe?") ||
-          sp_streq(name, "identical?") || sp_streq(name, "fnmatch") || sp_streq(name, "fnmatch?"))
+          sp_streq(name, "identical?") || sp_streq(name, "fnmatch") || sp_streq(name, "fnmatch?") ||
+          sp_streq(name, "owned?") || sp_streq(name, "grpowned?") || sp_streq(name, "setuid?") ||
+          sp_streq(name, "setgid?") || sp_streq(name, "sticky?") || sp_streq(name, "socket?") ||
+          sp_streq(name, "blockdev?") || sp_streq(name, "chardev?"))
         return TY_BOOL;
       if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime") ||
           sp_streq(name, "birthtime"))

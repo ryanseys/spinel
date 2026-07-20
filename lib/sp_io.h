@@ -47,6 +47,22 @@ mrb_bool sp_file_directory(const char *path);
 mrb_bool sp_file_file(const char *path);
 mrb_bool sp_file_exist(const char *path);
 mrb_bool sp_file_symlink(const char *path);
+mrb_bool sp_file_owned(const char *path);
+mrb_bool sp_file_grpowned(const char *path);
+mrb_bool sp_file_setuid(const char *path);
+mrb_bool sp_file_setgid(const char *path);
+mrb_bool sp_file_sticky(const char *path);
+mrb_bool sp_file_socket(const char *path);
+mrb_bool sp_file_blockdev(const char *path);
+mrb_bool sp_file_chardev(const char *path);
+mrb_int sp_file_world_readable(const char *path);
+mrb_int sp_file_world_writable(const char *path);
+mrb_int sp_file_do_symlink(const char *oldp, const char *newp);
+mrb_int sp_file_do_link(const char *oldp, const char *newp);
+mrb_int sp_file_umask(mrb_int mask, int have_arg);
+mrb_int sp_file_mkfifo(const char *path, mrb_int mode);
+mrb_int sp_file_utime(double atime, double mtime, const char *path);
+const char *sp_file_readlink(const char *path);  /* defined in sp_cold.c */
 void sp_file_delete(const char *path);
 void sp_file_rename(const char *from, const char *to);
 

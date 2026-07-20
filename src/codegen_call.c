@@ -12382,6 +12382,56 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "symlink?") && argc == 1) {
       buf_puts(b, "sp_file_symlink("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
+    /* POSIX ownership / type predicates and helpers (#3005) */
+    {
+      static const struct { const char *m; const char *fn; } fpred[] = {
+        {"owned?", "sp_file_owned"}, {"grpowned?", "sp_file_grpowned"},
+        {"setuid?", "sp_file_setuid"}, {"setgid?", "sp_file_setgid"},
+        {"sticky?", "sp_file_sticky"}, {"socket?", "sp_file_socket"},
+        {"blockdev?", "sp_file_blockdev"}, {"chardev?", "sp_file_chardev"},
+        {"world_readable?", "sp_file_world_readable"},
+        {"world_writable?", "sp_file_world_writable"},
+      };
+      for (size_t fi = 0; fi < sizeof(fpred)/sizeof(fpred[0]); fi++) {
+        if (sp_streq(name, fpred[fi].m) && argc == 1) {
+          buf_printf(b, "%s(", fpred[fi].fn); emit_expr(c, argv[0], b); buf_puts(b, ")");
+          return;
+        }
+      }
+    }
+    if ((sp_streq(name, "symlink") || sp_streq(name, "link")) && argc == 2) {
+      buf_printf(b, "sp_file_do_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_expr(c, argv[1], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "readlink") && argc == 1) {
+      buf_puts(b, "sp_file_readlink("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "mkfifo") && (argc == 1 || argc == 2)) {
+      buf_puts(b, "sp_file_mkfifo("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      if (argc == 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0666");
+      buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "umask") && (argc == 0 || argc == 1)) {
+      buf_puts(b, "sp_file_umask(");
+      if (argc == 1) { emit_int_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
+      else buf_puts(b, "0, 0)");
+      return;
+    }
+    if (sp_streq(name, "utime") && argc >= 3) {
+      /* File.utime(atime, mtime, *paths): set the times on every path, return
+         the count. Time args carry .tv_sec; numeric args are seconds. */
+      buf_puts(b, "({ double _ua = ");
+      if (comp_ntype(c, argv[0]) == TY_TIME) { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ").tv_sec"); }
+      else { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_puts(b, "; double _um = ");
+      if (comp_ntype(c, argv[1]) == TY_TIME) { buf_puts(b, "(double)("); emit_expr(c, argv[1], b); buf_puts(b, ").tv_sec"); }
+      else { buf_puts(b, "(double)("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      buf_puts(b, "; ");
+      for (int k = 2; k < argc; k++) {
+        buf_puts(b, "sp_file_utime(_ua, _um, "); emit_expr(c, argv[k], b); buf_puts(b, "); ");
+      }
+      buf_printf(b, "(mrb_int)%d; })", argc - 2); return;
+    }
     if (sp_streq(name, "file?") && argc == 1) {
       buf_puts(b, "(!sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ") && sp_file_exist("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
     }

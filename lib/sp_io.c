@@ -13,10 +13,13 @@
 #include <unistd.h>   /* pipe, isatty */
 #include <sys/stat.h> /* stat() for the File predicates */
 #include <sys/ioctl.h> /* TIOCGWINSZ for #winsize */
+#include <sys/time.h> /* utimes() for File.utime */
+#include <errno.h>
 
 /* Provided by the generated TU / libspinel_rt.a. */
 extern void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 extern SP_NORETURN void sp_raise_cls(const char *cls, const char *msg);
+extern const char *sp_sprintf(const char *fmt, ...);
 
 static void sp_File_fin(void *p) { sp_File *f = (sp_File *)p; if (f->fp) { fclose(f->fp); f->fp = NULL; } }
 static void sp_File_scan(void *p) { sp_File *f = (sp_File *)p; if (f->path) sp_mark_string(f->path); if (f->mode) sp_mark_string(f->mode); }
@@ -169,6 +172,85 @@ mrb_bool sp_file_file(const char *path) {
 mrb_bool sp_file_symlink(const char *path) {
   struct stat st;
   return path && lstat(path, &st) == 0 && S_ISLNK(st.st_mode);
+}
+
+/* map errno to the matching Errno:: class the way sp_cold.c's File ops do */
+SP_NORETURN static void sp_file_raise_errno(const char *op, const char *path) {
+  sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" :
+               errno == EACCES ? "Errno::EACCES" :
+               errno == EEXIST ? "Errno::EEXIST" :
+               errno == EPERM  ? "Errno::EPERM"  : "SystemCallError",
+               sp_sprintf("%s @ %s - %s", strerror(errno), op, path ? path : ""));
+}
+
+mrb_bool sp_file_owned(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && st.st_uid == geteuid();
+}
+mrb_bool sp_file_grpowned(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && st.st_gid == getegid();
+}
+mrb_bool sp_file_setuid(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && (st.st_mode & S_ISUID) != 0;
+}
+mrb_bool sp_file_setgid(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && (st.st_mode & S_ISGID) != 0;
+}
+mrb_bool sp_file_sticky(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && (st.st_mode & S_ISVTX) != 0;
+}
+mrb_bool sp_file_socket(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && S_ISSOCK(st.st_mode);
+}
+mrb_bool sp_file_blockdev(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && S_ISBLK(st.st_mode);
+}
+mrb_bool sp_file_chardev(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && S_ISCHR(st.st_mode);
+}
+/* world_readable? / world_writable?: the permission bits (0..0777) when the
+   other-read / other-write bit is set, else nil (SP_INT_NIL) (#3005) */
+mrb_int sp_file_world_readable(const char *path) {
+  struct stat st;
+  if (!(path && stat(path, &st) == 0 && (st.st_mode & S_IROTH))) return SP_INT_NIL;
+  return (mrb_int)(st.st_mode & 0777);
+}
+mrb_int sp_file_world_writable(const char *path) {
+  struct stat st;
+  if (!(path && stat(path, &st) == 0 && (st.st_mode & S_IWOTH))) return SP_INT_NIL;
+  return (mrb_int)(st.st_mode & 0777);
+}
+mrb_int sp_file_do_symlink(const char *oldp, const char *newp) {
+  if (symlink(oldp, newp) != 0) sp_file_raise_errno("symlink", newp);
+  return 0;
+}
+mrb_int sp_file_do_link(const char *oldp, const char *newp) {
+  if (link(oldp, newp) != 0) sp_file_raise_errno("link", newp);
+  return 0;
+}
+mrb_int sp_file_umask(mrb_int mask, int have_arg) {
+  if (have_arg) return (mrb_int)umask((mode_t)mask);
+  mode_t cur = umask(0);   /* read is destructive; restore immediately */
+  umask(cur);
+  return (mrb_int)cur;
+}
+mrb_int sp_file_mkfifo(const char *path, mrb_int mode) {
+  if (mkfifo(path, (mode_t)mode) != 0) sp_file_raise_errno("mkfifo", path);
+  return 0;
+}
+mrb_int sp_file_utime(double atime, double mtime, const char *path) {
+  struct timeval tv[2];
+  tv[0].tv_sec = (time_t)atime; tv[0].tv_usec = (long)((atime - (double)(time_t)atime) * 1e6);
+  tv[1].tv_sec = (time_t)mtime; tv[1].tv_usec = (long)((mtime - (double)(time_t)mtime) * 1e6);
+  if (utimes(path, tv) != 0) sp_file_raise_errno("utime", path);
+  return 1;
 }
 
 mrb_bool sp_file_exist(const char *path) { FILE *f = fopen(path, "r"); if (f) { fclose(f); return TRUE; } return FALSE; }

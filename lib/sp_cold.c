@@ -208,6 +208,23 @@ const char *sp_file_expand_path(const char *path, const char *base) {
   return out;
 }
 
+/* File.readlink(path): the symlink target as a fresh spinel string (#3005) */
+const char *sp_file_readlink(const char *path) {
+  char buf[4096];
+  ssize_t n = readlink(path ? path : "", buf, sizeof(buf) - 1);
+  if (n < 0) {
+    sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" :
+                 errno == EINVAL ? "Errno::EINVAL" : "SystemCallError",
+                 sp_sprintf("%s @ readlink - %s", strerror(errno), path ? path : ""));
+    return "";
+  }
+  char *out = sp_str_alloc((size_t)n + 1);
+  memcpy(out, buf, (size_t)n);
+  out[n] = 0;
+  sp_str_set_len(out, (size_t)n);
+  return out;
+}
+
 /* ---- String#to_c parse + Dir.glob (cold; moved from sp_runtime.h) ---- */
 
 sp_Complex sp_str_to_c(const char *s) {
