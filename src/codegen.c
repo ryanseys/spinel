@@ -21,6 +21,7 @@ const char *ty_nullable_builtin_id(TyKind t) {
     case TY_PROC:       return "SP_BUILTIN_PROC";
     case TY_METHOD:     return "SP_BUILTIN_METHOD";
     case TY_DIR:        return "SP_BUILTIN_DIR";
+    case TY_TMS:        return "SP_BUILTIN_TMS";
     default:            return NULL;
   }
 }
@@ -478,6 +479,7 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
     case TY_TIME:   buf_puts(&cty, "sp_Time"); init = "{0}"; break;
     case TY_COMPLEX:  buf_puts(&cty, "sp_Complex"); init = "{0}"; break;
     case TY_RATIONAL: buf_puts(&cty, "sp_Rational"); init = "{0}"; break;
+    case TY_TMS:    buf_puts(&cty, "sp_Tms"); init = "{0}"; break;
     case TY_STRING: buf_puts(&cty, "const char *"); init = "(&(\"\\xff\")[1])"; ptr = 1; break;
     case TY_POLY:   buf_puts(&cty, "sp_RbVal"); init = "sp_box_nil()"; break;
     case TY_CLASS:  buf_puts(&cty, "sp_Class"); init = "((sp_Class){-1})"; break;
@@ -4332,6 +4334,7 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_CONDVAR:               buf_puts(b, "Thread::ConditionVariable"); break;
     case TY_RANDOM:                buf_puts(b, "Random"); break;
     case TY_DIR:                   buf_puts(b, "Dir"); break;
+    case TY_TMS:                   buf_puts(b, "Process::Tms"); break;
     case TY_METHOD:                buf_puts(b, "Method"); break;
     case TY_IO:                    buf_puts(b, "IO"); break;
     case TY_ARGF:                  buf_puts(b, "ARGF"); break;
@@ -5091,7 +5094,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "case -157:return SPL(\"NoMatchingPatternError\");case -158:return SPL(\"NoMatchingPatternKeyError\");");
     buf_puts(&b, "case -159:return SPL(\"EOFError\");case -160:return SPL(\"Math::DomainError\");");
     buf_puts(&b, "case -161:return SPL(\"SystemExit\");case -162:return SPL(\"Signal\");");
-    buf_puts(&b, "case -163:return SPL(\"Process::Status\");");
+    buf_puts(&b, "case -163:return SPL(\"Process::Status\");case -164:return SPL(\"Process::Tms\");");
     buf_puts(&b, "default:return \"\";} }\n\n");
     /* Inverse of the table above, for resolving a class carried by NAME back to
        its builtin id so the id-keyed hierarchy walks work on it (#3022). Cold

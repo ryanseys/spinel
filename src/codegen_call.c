@@ -10758,6 +10758,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     else if (rt == TY_DIR) cn = "Dir";
+    else if (rt == TY_TMS) cn = "Process::Tms";
     else if (rt == TY_IO) {
       /* a stat handle is a File::Stat (#2841); a path-backed handle is a
          File; a raw stream (STDOUT, pipe end) is an IO (#2797) */
@@ -12377,6 +12378,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
     if (sp_streq(name, "pid") && argc == 0) { buf_puts(b, "((mrb_int)getpid())"); return; }
+    if (sp_streq(name, "times") && argc == 0) { buf_puts(b, "sp_process_times()"); return; }
     if (sp_streq(name, "ppid") && argc == 0) { buf_puts(b, "sp_process_ppid()"); return; }
     /* real/effective user & group ids (#3043) */
     if (sp_streq(name, "uid") && argc == 0) { buf_puts(b, "((mrb_int)getuid())"); return; }
@@ -15571,6 +15573,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
   /* Symbol#encoding: US-ASCII when the name is pure ASCII, UTF-8 otherwise */
+  if (recv >= 0 && rt == TY_TMS && argc == 0 &&
+      (sp_streq(name, "utime") || sp_streq(name, "stime") ||
+       sp_streq(name, "cutime") || sp_streq(name, "cstime"))) {
+    buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ").%s", name);
+    return;
+  }
   if (recv >= 0 && rt == TY_SYMBOL && argc == 0 && sp_streq(name, "encoding")) {
     int te = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = sp_sym_to_s(", te);

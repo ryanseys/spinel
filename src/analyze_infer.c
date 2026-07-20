@@ -1709,7 +1709,8 @@ TyKind infer_call(Compiler *c, int id) {
         rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
         rt == TY_MATCHDATA || rt == TY_REGEX ||
         rt == TY_COMPLEX || rt == TY_RATIONAL || rt == TY_CURRY ||
-        rt == TY_FIBER || rt == TY_ENUMERATOR || ty_is_array(rt) || ty_is_hash(rt))
+        rt == TY_FIBER || rt == TY_ENUMERATOR || rt == TY_TMS ||
+        ty_is_array(rt) || ty_is_hash(rt))
       return TY_CLASS;
   }
 
@@ -2058,6 +2059,7 @@ else {
       return TY_STR_INT_HASH;
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
+      if (sp_streq(name, "times") && argc == 0) return TY_TMS;
       if (sp_streq(name, "pid") || sp_streq(name, "ppid") ||
           sp_streq(name, "uid") || sp_streq(name, "gid") ||
           sp_streq(name, "euid") || sp_streq(name, "egid") ||
@@ -2255,6 +2257,10 @@ else {
     if (sp_streq(name, "wait") || sp_streq(name, "signal") || sp_streq(name, "broadcast")) return TY_CONDVAR;
   }
 
+  /* Process::Tms accessors: four cumulative CPU times, all Float (#3044) */
+  if (recv >= 0 && rt == TY_TMS && argc == 0 &&
+      (sp_streq(name, "utime") || sp_streq(name, "stime") ||
+       sp_streq(name, "cutime") || sp_streq(name, "cstime"))) return TY_FLOAT;
   /* TY_ENUMERATOR instance methods */
   if (recv >= 0 && rt == TY_ENUMERATOR) {
     if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;

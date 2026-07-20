@@ -735,6 +735,7 @@ int builtin_class_id(const char *name) {
   if (sp_streq(name, "SystemExit"))  return -161;
   if (sp_streq(name, "Signal"))      return -162;
   if (sp_streq(name, "Process::Status")) return -163;
+  if (sp_streq(name, "Process::Tms")) return -164;
   return 0;
 }
 const char *c_type_name(TyKind t) {
@@ -776,6 +777,7 @@ const char *c_type_name(TyKind t) {
     case TY_CONDVAR:      return "sp_condvar *";
     case TY_RANDOM:       return "sp_Random *";
     case TY_DIR:          return "sp_Dir *";
+    case TY_TMS:          return "sp_Tms";
     case TY_METHOD:       return "sp_BoundMethod *";
     case TY_IO:           return "sp_File *";
     case TY_ARGF:         return "sp_Argf *";
@@ -853,6 +855,7 @@ const char *default_value(TyKind t) {
     case TY_CONDVAR: return "NULL";
     case TY_RANDOM:  return "NULL";
     case TY_DIR:     return "NULL";
+    case TY_TMS:     return "((sp_Tms){0})";
     case TY_METHOD:  return "NULL";
     case TY_IO:      return "NULL";
     case TY_ARGF:    return "NULL";

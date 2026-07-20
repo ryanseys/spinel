@@ -30,6 +30,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <pwd.h>
+#include <sys/times.h>   /* struct tms for Process.times */
 
 /* Opt-in native backtrace (spinel --debug). In a -g, non-inlined build the
    sp_<method> symbols are present, so sp_raise_cls can snapshot the live C
@@ -2393,6 +2394,21 @@ static mrb_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION)
     return sp_str_in_list(m, excm);
   return 0;
+}
+/* Process.times -> Process::Tms: four cumulative CPU times in seconds.
+   An unboxed value like sp_Range/sp_Class -- there is nothing to mutate. */
+typedef struct { mrb_float utime, stime, cutime, cstime; } sp_Tms;
+static sp_Tms sp_process_times(void) {
+  sp_Tms t;
+  struct tms b;
+  double hz = (double)sysconf(_SC_CLK_TCK);
+  if (hz <= 0) hz = 100.0;
+  if (times(&b) == (clock_t)-1) { t.utime = t.stime = t.cutime = t.cstime = 0.0; return t; }
+  t.utime  = (mrb_float)b.tms_utime  / hz;
+  t.stime  = (mrb_float)b.tms_stime  / hz;
+  t.cutime = (mrb_float)b.tms_cutime / hz;
+  t.cstime = (mrb_float)b.tms_cstime / hz;
+  return t;
 }
 /* Class/Module#freeze / #frozen?: a class value is an unboxed {cls_id, name},
    so the frozen flag lives in a global per-class map -- user ids from 0 up,

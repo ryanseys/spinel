@@ -261,6 +261,7 @@ const char *sp_float_to_s(mrb_float f);
 #define SP_BUILTIN_INT_INT_HASH  (-34)
 #define SP_BUILTIN_BASIC_OBJECT  (-37)  /* a bare BasicObject.new instance */
 #define SP_BUILTIN_DIR           (-38)  /* an open directory handle (sp_Dir *) */
+#define SP_BUILTIN_TMS           (-39)  /* Process.times -> Process::Tms */
 
 static inline sp_RbVal sp_box_int(mrb_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;  r.cls_id = 0; r.v.i = v; return r; }
 /* A NULL char* IS Ruby nil throughout the string paths (the nullable-string
