@@ -7742,6 +7742,12 @@ int infer_return_types(Compiler *c) {
        (backprop_hash_return_types), don't collapse it back to UNKNOWN -- that
        would re-emit a void C signature the caller can't assign (#1680). */
     if (r == TY_UNKNOWN && ty_is_hash(sc->ret) && scope_tail_empty_hash(c, s) >= 0) continue;
+    /* A void body-recompute must not downgrade an established return: an
+       abstract/raising body infers TY_VOID every pass, while the slot's real
+       type comes from descendant-override dispatch unification (or a caller
+       backprop). Re-deriving VOID here would flip the slot every iteration
+       and the fixpoint never converges. */
+    if (r == TY_VOID && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID) continue;
     if (r != sc->ret) { sc->ret = r; changed = 1; }
     /* For a method with a &block param, record the value type its block yields
        (unified across all call sites). Blocks passed to it are emitted returning
