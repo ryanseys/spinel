@@ -942,8 +942,7 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
     if (comp_ntype(c, recv) == TY_FLOAT_RANGE && (rleft < 0 || rright < 0)) return 0;  /* variable float range: not yet */
     TyKind blt9 = rleft >= 0 ? infer_type(c, rleft) : TY_NIL;
     TyKind brt9 = rright >= 0 ? infer_type(c, rright) : TY_NIL;
-    if ((blt9 == TY_INT || blt9 == TY_FLOAT) && (brt9 == TY_INT || brt9 == TY_FLOAT) &&
-        infer_type(c, bb[bn - 1]) != TY_INT) {
+    if ((blt9 == TY_INT || blt9 == TY_FLOAT) && (brt9 == TY_INT || brt9 == TY_FLOAT)) {
       int flo = ++g_tmp, fhi = ++g_tmp, fres = ++g_tmp, fi = ++g_tmp, fmid = ++g_tmp;
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "double _t%d = ", flo); emit_float_expr(c, rleft, g_pre); buf_puts(g_pre, ";\n");
@@ -960,15 +959,51 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
       int save = g_indent; g_indent++;
       Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = save;
       TyKind bt = infer_type(c, bb[bn - 1]);
-      emit_indent(g_pre, g_indent + 1);
-      if (bt == TY_POLY)
-        buf_printf(g_pre, "if (sp_poly_truthy(%s)) { _t%d = _t%d; _t%d = _t%d; }\n",
-                   cb.p ? cb.p : "sp_box_nil()", fres, fmid, fhi, fmid);
-      else
+      if (bt == TY_INT || bt == TY_FLOAT) {
+        /* find-any (CRuby: a Numeric block is `target <=> x`): 0 found,
+           positive means the target sorts after the probe, negative before.
+           No exact 0 within the bisection is a miss (nil) (#3067). */
+        int fcmp = ++g_tmp;
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "double _t%d = (double)(%s);\n", fcmp, cb.p ? cb.p : "0");
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "if (_t%d == 0.0) { _t%d = _t%d; break; }\n", fcmp, fres, fmid);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "else if (_t%d > 0.0) { _t%d = _t%d; }\n", fcmp, flo, fmid);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "else { _t%d = _t%d; }\n", fhi, fmid);
+      }
+      else if (bt == TY_POLY) {
+        /* mixed block: an Integer/Float value is find-any, any other truthy
+           value is find-minimum, nil/false searches up (#3067) */
+        int fv = ++g_tmp;
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", fv, cb.p ? cb.p : "sp_box_nil()");
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "if (_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_FLT) {\n", fv, fv);
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "double _c = sp_poly_to_f(_t%d);\n", fv);
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "if (_c == 0.0) { _t%d = _t%d; break; }\n", fres, fmid);
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "else if (_c > 0.0) { _t%d = _t%d; }\n", flo, fmid);
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "else { _t%d = _t%d; }\n", fhi, fmid);
+        emit_indent(g_pre, g_indent + 1);
+        buf_puts(g_pre, "}\n");
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = _t%d; _t%d = _t%d; }\n",
+                   fv, fres, fmid, fhi, fmid);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "else { _t%d = _t%d; }\n", flo, fmid);
+      }
+      else {
+        emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d; }\n",
                    cb.p ? cb.p : "0", fres, fmid, fhi, fmid);
-      emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "else { _t%d = _t%d; }\n", flo, fmid);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "else { _t%d = _t%d; }\n", flo, fmid);
+      }
       free(cb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
       buf_printf(b, "_t%d", fres);
