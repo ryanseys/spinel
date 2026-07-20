@@ -2548,6 +2548,20 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
                        : "sp_rational_round_i";
         buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
       }
+      /* round(0, half: ...) is the same integer rounding: a zero digit count
+         changes nothing (#3047) */
+      if (sp_streq(name, "round") && argc == 2 && nt_type(nt, argv[1]) &&
+          sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") &&
+          nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
+          nt_int(nt, argv[0], "value", -1) == 0) {
+        int hv2 = kwh_lookup(nt, argv[1], "half");
+        const char *hm2 = (hv2 >= 0 && nt_type(nt, hv2) && sp_streq(nt_type(nt, hv2), "SymbolNode"))
+                            ? nt_str(nt, hv2, "value") : NULL;
+        const char *fn2 = (hm2 && sp_streq(hm2, "even")) ? "sp_rational_round_i_even"
+                        : (hm2 && sp_streq(hm2, "down")) ? "sp_rational_round_i_down"
+                        : "sp_rational_round_i";
+        buf_printf(b, "%s(", fn2); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+      }
       if (sp_streq(name, "floor") && argc == 0) { buf_puts(b, "sp_rational_floor_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "ceil") && argc == 0)  { buf_puts(b, "sp_rational_ceil_i(");  emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "zero?") && argc == 0)     { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num == 0)"); return 1; }
