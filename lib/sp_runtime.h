@@ -7864,7 +7864,11 @@ static sp_Proc *sp_proc_compose(sp_Proc *outer, sp_Proc *inner) {
   sp_ProcCompose *c = (sp_ProcCompose *)sp_gc_alloc(sizeof(sp_ProcCompose), NULL, sp_proc_compose_scan);
   c->outer = outer;
   c->inner = inner;
-  return sp_proc_new_meta((void *)sp_proc_compose_fn, c, sp_proc_compose_scan, 1, TRUE, 1, NULL, NULL);
+  /* CRuby (4.0): the composed proc's lambda? follows the FIRST-CALLED proc
+     (the receiver for >>, the argument for <<) -- our inner; arity is -1
+     regardless (#3051). */
+  return sp_proc_new_meta((void *)sp_proc_compose_fn, c, sp_proc_compose_scan,
+                          -1, inner ? inner->lambda_p : FALSE, 1, NULL, NULL);
 }
 /* Proc#curry: an immutable argument accumulator over an sp_Proc target.
    `proc.curry` makes an empty accumulator; each `[arg]` returns a fresh

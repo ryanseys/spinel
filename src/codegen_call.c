@@ -2312,7 +2312,11 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     if (crt == TY_CURRY && argc == 0 && sp_streq(name, "lambda?")) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), TRUE)");
+      /* curry preserves the source proc's lambda-ness (#3052) */
+      int tcl = ++g_tmp;
+      buf_printf(b, "({ sp_Curry *_t%d = ", tcl); emit_expr(c, recv, b);
+      buf_printf(b, "; (mrb_bool)(_t%d && _t%d->target ? _t%d->target->lambda_p : 0); })",
+                 tcl, tcl, tcl);
       return 1;
     }
     if (crt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()")) && argc >= 1) {
