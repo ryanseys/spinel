@@ -5555,8 +5555,14 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "[]") && argc == 1) {
         /* clamped: a literal-folded out-of-range index was an undefined C
-           shift (right answer on x86's masked shifts, garbage elsewhere) */
-        buf_printf(b, "sp_int_bit((%s), ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+           shift (right answer on x86's masked shifts, garbage elsewhere).
+           A Bignum index is far past the receiver's width, so the bit is the
+           sign bit: 0 for a non-negative receiver, 1 for a negative one. */
+        if (comp_ntype(c, argv[0]) == TY_BIGINT) {
+          buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
+          buf_printf(b, "); (mrb_int)((%s) < 0 ? 1 : 0); })", r);
+        }
+        else { buf_printf(b, "sp_int_bit((%s), ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       }
       else if (sp_streq(name, "bit_length") && argc == 0) buf_printf(b, "sp_int_bit_length(%s)", r);
       else if (sp_streq(name, "fdiv") && argc == 1) { buf_printf(b, "((mrb_float)(%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }
@@ -5637,6 +5643,11 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[0], b); buf_puts(b, "))");
       }
       else if (sp_streq(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      /* lcm(bignum) is at least as large as the argument, so it stays big */
+      else if (sp_streq(name, "lcm") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+        buf_printf(b, "sp_bigint_lcm(sp_bigint_new_int(%s), ", r);
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
       else if (sp_streq(name, "modulo") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
@@ -5704,6 +5715,32 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                 comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY)) {
         buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
       }
+      /* clamp(lo, hi) with a Bignum bound: an mrb_int receiver is inside any
+         Bignum bound on that side, so only the mrb_int side can bind (#3006) */
+      else if (sp_streq(name, "clamp") && argc == 2 &&
+               (comp_ntype(c, argv[0]) == TY_BIGINT || comp_ntype(c, argv[1]) == TY_BIGINT)) {
+        int tlo = comp_ntype(c, argv[0]) == TY_BIGINT, thi = comp_ntype(c, argv[1]) == TY_BIGINT;
+        buf_puts(b, "({ ");
+        if (tlo) { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
+        if (thi) { buf_puts(b, "(void)("); emit_expr(c, argv[1], b); buf_puts(b, "); "); }
+        if (tlo && thi) buf_printf(b, "(mrb_int)(%s); })", r);
+        else if (tlo) {
+          /* a Bignum LOW bound is above every mrb_int receiver... unless it is
+             negative, in which case the receiver already exceeds it */
+          int tb2 = ++g_tmp;
+          buf_printf(b, "sp_Bigint *_t%d = ", tb2); emit_expr(c, argv[0], b);
+          buf_printf(b, "; sp_bigint_cmp(_t%d, sp_bigint_new_int(%s)) > 0"
+                        " ? sp_bigint_to_int(_t%d) : (mrb_int)(%s); })", tb2, r, tb2, r);
+        }
+        else {
+          int tb2 = ++g_tmp;
+          buf_printf(b, "sp_Bigint *_t%d = ", tb2); emit_expr(c, argv[1], b);
+          buf_printf(b, "; sp_bigint_cmp(_t%d, sp_bigint_new_int(%s)) < 0"
+                        " ? sp_bigint_to_int(_t%d) : sp_int_clamp_ck(%s, ", tb2, r, tb2, r);
+          emit_expr(c, argv[0], b);
+          buf_printf(b, ", %s); })", r);
+        }
+      }
       else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
         /* int.clamp(float_range): the clamped-to bound is the Float endpoint (a
@@ -5737,6 +5774,15 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_int_clamp_range_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "digits") && argc == 0) buf_printf(b, "sp_int_digits(%s, 10)", r);
+      /* digits(base) with a Bignum base: every digit of an mrb_int receiver is
+         below such a base, so the answer is the receiver itself (#3006) */
+      else if (sp_streq(name, "digits") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+        int tdb = ++g_tmp;
+        buf_printf(b, "({ (void)("); emit_expr(c, argv[0], b);
+        buf_printf(b, "); if ((%s) < 0) sp_raise_cls(\"Math::DomainError\", \"out of domain\");", r);
+        buf_printf(b, " sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);", tdb, tdb);
+        buf_printf(b, " sp_IntArray_push(_t%d, %s); _t%d; })", tdb, r, tdb);
+      }
       else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) &&
                argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
@@ -5758,6 +5804,12 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "((mrb_int)ceil((double)(%s) / (", r); emit_expr(c, argv[0], b); buf_puts(b, ")))");  /* (#2425) */
       }
       else if (sp_streq(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      /* pow(exp, mod) with a Bignum modulus: the result is bounded by the
+         modulus but the intermediates are not, so run it in bigint (#3006) */
+      else if (sp_streq(name, "pow") && argc == 2 && comp_ntype(c, argv[1]) == TY_BIGINT) {
+        buf_printf(b, "sp_bigint_powmod(sp_bigint_new_int(%s), ", r);
+        emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
       /* pow with a literal negative exponent is the exact Rational
          1 / base**|exp| (matching **'s CRuby behavior) */

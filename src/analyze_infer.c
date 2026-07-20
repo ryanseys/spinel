@@ -4773,10 +4773,19 @@ else {
     int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
     int isf = (rt == TY_FLOAT) || (sc >= 1 && infer_type(c, sv[0]) == TY_FLOAT) ||
               (sc >= 2 && infer_type(c, sv[1]) == TY_FLOAT);
+    /* a Bignum limit or step walks the sequence boxed (#3006) */
+    for (int sk = 0; sk < sc; sk++)
+      if (infer_type(c, sv[sk]) == TY_BIGINT) return TY_POLY_ARRAY;
     return isf ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
   }
   /* integer receiver methods */
   if (recv >= 0 && rt == TY_INT) {
+    /* pow(exp, mod) with a Bignum modulus stays in bigint; lcm with a Bignum
+       argument is at least that large (#3006) */
+    if (sp_streq(name, "pow") && argc == 2 && infer_type(c, argv[1]) == TY_BIGINT)
+      return TY_BIGINT;
+    if (sp_streq(name, "lcm") && argc == 1 && infer_type(c, argv[0]) == TY_BIGINT)
+      return TY_BIGINT;
     if (sp_streq(name, "ceil") || sp_streq(name, "floor") ||
         sp_streq(name, "round") || sp_streq(name, "truncate")) return TY_INT;  /* no precision arg -> self */
     if (sp_streq(name, "divmod") && argc == 1) return TY_INT_ARRAY;  /* [quotient, remainder] */

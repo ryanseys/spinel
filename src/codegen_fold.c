@@ -2680,11 +2680,17 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   if (sc < 1) return 0;
   /* Rational receiver: walk the exact sequence through the poly numeric tower
      and collect the boxed Rational/Integer values into a PolyArray (#2566). */
-  if (rt == TY_RATIONAL) {
+  /* A Bignum limit or step does not fit the mrb_int loop below; walk the
+     sequence boxed, exactly as a Rational receiver does (#3006). */
+  int bn_bound = 0;
+  for (int sk = 0; sk < sc; sk++) if (comp_ntype(c, sv[sk]) == TY_BIGINT) bn_bound = 1;
+  if (rt == TY_RATIONAL || bn_bound) {
     int trr = ++g_tmp, tcc = ++g_tmp, tll = ++g_tmp, tss = ++g_tmp, tdd = ++g_tmp;
     buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", trr, trr);
-    buf_printf(b, " sp_RbVal _t%d = sp_box_rational(", tcc); emit_expr(c, recv, b);
-    buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d);", tcc);
+    buf_printf(b, " sp_RbVal _t%d = ", tcc);
+    if (rt == TY_RATIONAL) { buf_puts(b, "sp_box_rational("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+    else emit_boxed(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tcc);
     buf_printf(b, " sp_RbVal _t%d = ", tll); emit_boxed(c, sv[0], b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tll);
     buf_printf(b, " sp_RbVal _t%d = ", tss);
