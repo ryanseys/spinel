@@ -6204,6 +6204,8 @@ typedef struct sp_Exception_s {
   sp_RbVal xkey;               /* KeyError#key / UncaughtThrowError#tag / LocalJumpError#reason /
                                   NoMethodError#args; nil otherwise */
   sp_RbVal xrecv;              /* KeyError/NameError/NoMethodError/FrozenError#receiver; nil otherwise */
+  mrb_bool has_recv;           /* was a receiver actually recorded? nil is a legal
+                                  receiver (nil.foo), so the box cannot say (#3036) */
 } sp_Exception;
 /* Registered by the generated program to provide user exception hierarchy. */
 static const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
@@ -6230,6 +6232,7 @@ static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
   e->xkey = (e->cls_name && !strcmp(e->cls_name, "Interrupt"))
               ? sp_box_int((mrb_int)SIGINT) : sp_box_nil();
   e->xrecv = sp_box_nil();
+  e->has_recv = 1;   /* cleared by the explicit NameError.new(msg, name) emit */
   /* Launder the message into a GC-heap string: sp_exc_gc_scan marks it via
      the tag byte at msg[-1], which only heap strings carry -- keeping a
      raise site's rodata literal would under-read one byte before it. */
@@ -6299,7 +6302,7 @@ static void *sp_exc_recover_named(const char *cls, const char *msg) {
 static void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {
   sp_Exception *e = (sp_Exception *)obj;
   if (!e) e = sp_exc_new(cls, msg);
-  if (sp_pending_exc_flags & 1) e->xrecv = sp_pending_exc_recv;
+  if (sp_pending_exc_flags & 1) { e->xrecv = sp_pending_exc_recv; e->has_recv = 1; }
   if (sp_pending_exc_flags & 2) e->xkey = sp_pending_exc_key;
   if (sp_pending_exc_flags & 4) e->result = sp_pending_exc_val;
   return e;
@@ -6609,6 +6612,9 @@ static sp_RbVal sp_exc_receiver_acc(sp_Exception *e) {
               sp_exc_cls_matches(e->cls_name, "KeyError") ||
               sp_exc_cls_matches(e->cls_name, "FrozenError"))))
     sp_exc_acc_gate(e, "NameError", "receiver");
+  /* an explicitly built NameError.new(msg, name) never recorded one, and
+     CRuby raises rather than answering nil -- nil is a legal receiver (#3036) */
+  if (e && !e->has_recv) sp_raise_cls("ArgumentError", "no receiver is available");
   return e->xrecv;
 }
 static sp_RbVal sp_exc_args_acc(sp_Exception *e) {

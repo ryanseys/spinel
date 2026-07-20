@@ -4374,7 +4374,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             }
             if (recv_v >= 0) {
               buf_printf(b, " _t%d->xrecv = ", te3);
-              emit_boxed(c, recv_v, b); buf_puts(b, ";");
+              emit_boxed(c, recv_v, b);
+              buf_printf(b, "; _t%d->has_recv = 1;", te3);
             }
             buf_printf(b, " _t%d; })", te3);
             return 1;
@@ -4399,6 +4400,9 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, " sp_Exception *_t%d = sp_exc_new(\"%s\", ", te2, cn);
           emit_expr(c, argv[0], b);
           buf_printf(b, "); _t%d->xname = _t%d;", te2, tn2);
+          /* NameError.new(msg, name) records no receiver, and #receiver
+             raises rather than answering nil for it (#3036) */
+          buf_printf(b, " _t%d->has_recv = 0;", te2);
           if (has_args) buf_printf(b, " _t%d->xkey = _t%d;", te2, ta2);
           buf_printf(b, " _t%d; })", te2);
           return 1;
