@@ -5711,10 +5711,15 @@ static int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
          to that param, not the keyword-rest. A positional param of the
          same name does not consume it. */
       if (callee_has_kwarg(c, m, kname3)) continue;
+      /* Render the boxed value into a side buffer first: an Array/Hash literal
+         value drains its own construction (`_tN = ..._new(); push...`) into
+         g_pre, which must land BEFORE -- not inside -- the set line (#3111). */
+      Buf vb3; memset(&vb3, 0, sizeof vb3);
+      emit_boxed(c, val3, &vb3);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), ", krhash, kname3);
-      emit_boxed(c, val3, g_pre);
-      buf_puts(g_pre, ");\n");
+      buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), %s);\n",
+                 krhash, kname3, vb3.p ? vb3.p : "sp_box_nil()");
+      free(vb3.p);
     }
     /* Keys merged from a `**hash` that name an explicit keyword param are
        consumed by that param, so drop them from the keyword-rest. Only
