@@ -1627,9 +1627,13 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "if (_t%d_e > 0.5) _t%d_e = 0.5;\n", tn, tn);
     emit_indent(b, indent);
-    buf_printf(b, "mrb_int _t%d = (mrb_int)floor((_t%d-_t%d)/_t%d + _t%d_e);\n", tn, tl, tb, ts, tn);
+    /* keep the bound as a float: NaN begin/limit/step makes `i <= NaN` false
+       (0 iterations, matching CRuby) and an out-of-range begin gives a
+       negative/+inf bound naturally, instead of UB from casting NaN to int
+       (#3010) */
+    buf_printf(b, "mrb_float _t%d = floor((_t%d-_t%d)/_t%d + _t%d_e);\n", tn, tl, tb, ts, tn);
     emit_indent(b, indent);
-    buf_printf(b, "for (mrb_int _t%d = 0; _t%d <= _t%d; _t%d++) {\n", ti, ti, tn, ti);
+    buf_printf(b, "for (mrb_int _t%d = 0; (mrb_float)_t%d <= _t%d; _t%d++) {\n", ti, ti, tn, ti);
     if (p0) { char fp_expr[64]; snprintf(fp_expr, sizeof fp_expr, "_t%d + _t%d * _t%d", tb, ti, ts); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, fp_expr, b, indent + 1); }
     { char rs_es[64]; snprintf(rs_es, sizeof rs_es, "_t%d + _t%d * _t%d", tb, ti, ts);
       int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
