@@ -770,6 +770,18 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     {
       TyKind lt = left >= 0 ? comp_ntype(c, left) : TY_UNKNOWN;
       TyKind rt2 = right >= 0 ? comp_ntype(c, right) : TY_UNKNOWN;
+      /* sp_Range's bounds are mrb_int, so a Bignum bound has nowhere to live;
+         emit_int_expr below would hand a pointer to an mrb_int parameter and
+         the C compiler would reject it with a warning-shaped diagnostic far
+         from the cause. Name the limitation instead. (#3058) */
+      if (lt == TY_BIGINT || rt2 == TY_BIGINT) {
+        unsupported_feature(c, id,
+          "a Range with a Bignum bound cannot be built: a Range is an unboxed "
+          "value with mrb_int bounds, so it has nowhere to hold one. Comparing "
+          "against the bounds directly (`x >= lo && x < hi`) needs no Range and "
+          "does work (see docs/limitations.md)");
+        return;
+      }
       if (ty_is_object(lt) || ty_is_object(rt2)) {
         const char *ocn = NULL;
         int oci = ty_is_object(lt) ? ty_object_class(lt) : ty_object_class(rt2);

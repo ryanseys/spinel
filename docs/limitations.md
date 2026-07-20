@@ -187,6 +187,7 @@ x.clamp(lo, hi)     # works
 x.clamp(..hi)       # works (one-sided)
 x.clamp(lo..)       # works
 rng = (lo..hi)      # compile error: a Range of Ver objects cannot be built
+rng = (0..2**70)    # compile error: a Bignum bound does not fit mrb_int
 ```
 
 A `String`-bounded range (`("a".."e")`) is its own value type, so it keeps its
