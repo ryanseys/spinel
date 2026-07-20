@@ -5187,6 +5187,23 @@ static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
   }
   return v;
 }
+/* clone(freeze: ...) on a boxed value. An immutable immediate (nil/bool/int/
+   float/sym/bigint) can't be unfrozen, so `freeze: false` raises ArgumentError
+   like CRuby; `freeze: true`/nil returns it (already frozen). A mutable value
+   copies, keeping the frozen flag only when freeze isn't explicitly false.
+   fz: 0 = false, 1 = true, -1 = nil/default (#3033). */
+static inline sp_RbVal sp_poly_freeze(sp_RbVal v);  /* fwd */
+static inline sp_RbVal sp_poly_clone_freeze(sp_RbVal v, int fz) {
+  int immutable = v.tag != SP_TAG_OBJ && v.tag != SP_TAG_STR;
+  if (immutable) {
+    if (fz == 0)
+      sp_raise_cls("ArgumentError", sp_sprintf("can't unfreeze %s", sp_poly_class_name(v)));
+    return v;
+  }
+  sp_RbVal r = sp_poly_dup(v, fz != 0);
+  if (fz == 1) return sp_poly_freeze(r);
+  return r;
+}
 /* Object#freeze on a boxed value: heap objects flip the GC-header bit
    (sp_gc_is_frozen reports it back), heap strings flip the string marker,
    every immutable tag (int/float/sym/nil/bool/...) is already frozen. */

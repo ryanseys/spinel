@@ -11175,6 +11175,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
       return;
     }
+    /* clone(freeze: <literal>) on a poly receiver: the immutability of the
+       runtime value decides whether `freeze: false` raises, so dispatch on the
+       tag at runtime (#3033) */
+    if (argc0 == 1 && is_dup_clone && sp_streq(name, "clone") && recv_t == TY_POLY) {
+      int cargs = nt_ref(nt, id, "arguments");
+      int cn = 0; const int *cv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cn) : NULL;
+      if (cn == 1 && cv && nt_type(nt, cv[0]) && sp_streq(nt_type(nt, cv[0]), "KeywordHashNode")) {
+        int fval = kwh_lookup(nt, cv[0], "freeze");
+        const char *fvt = fval >= 0 ? nt_type(nt, fval) : NULL;
+        if (fvt && (sp_streq(fvt, "FalseNode") || sp_streq(fvt, "TrueNode") || sp_streq(fvt, "NilNode"))) {
+          int fz = sp_streq(fvt, "FalseNode") ? 0 : sp_streq(fvt, "TrueNode") ? 1 : -1;
+          buf_puts(b, "sp_poly_clone_freeze("); emit_expr(c, recv, b);
+          buf_printf(b, ", %d)", fz);
+          return;
+        }
+      }
+    }
     if (argc0 == 0 && !freeze_stateful && !ty_is_hash(recv_t) &&
         !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t) || recv_native))) {
       emit_expr(c, recv, b); return;
