@@ -1858,7 +1858,9 @@ else {
           return (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci));
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
         if (ucnew >= 0) return (TyKind)c->scopes[ucnew].ret;
-        return ty_object(ci);
+        /* a reopened builtin (`class String; def ...`) keeps its builtin
+           representation: `String.new` is a String, not a user object (#3109) */
+        if (!(cn && is_builtin_reopen(cn))) return ty_object(ci);
       }
       if (cn && is_builtin_exception_name(cn)) return TY_EXCEPTION;
       /* ::Array.new / ::String.new / ::StringIO.new etc. */
@@ -1888,7 +1890,8 @@ else {
           return (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci));
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
         if (ucnew >= 0) return (TyKind)c->scopes[ucnew].ret;
-        return ty_object(ci);
+        /* a reopened builtin keeps its builtin representation (#3109) */
+        if (!(cn && is_builtin_reopen(cn))) return ty_object(ci);
       }
       if (cn && is_builtin_exception_name(cn)) return TY_EXCEPTION;
       if (cn && sp_streq(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));

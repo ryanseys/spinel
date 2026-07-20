@@ -3995,8 +3995,14 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       int ci = sp_streq(rty, "LocalVariableReadNode") ? class_var_static_ci(c, recv)
              : sp_streq(rty, "CallNode") ? anon_struct_ci_for_value(c, recv)
                                                       : comp_class_index(c, nt_str(nt, recv, "name"));
+      /* a reopened builtin (`class String; def ...`) with no user-defined
+         self.new keeps its builtin constructor: fall past the user-ctor logic
+         to the builtin cn handler below (#3109) */
+      int reopen_builtin_new = ci >= 0 && sp_streq(rty, "ConstantReadNode") &&
+                               is_builtin_reopen(nt_str(nt, recv, "name")) &&
+                               comp_cmethod_in_chain(c, ci, "new", NULL) < 0;
       /* native (C-backed) class: the declared constructor (see emit_native_ctor) */
-      if (emit_native_ctor(c, id, ci, argc, argv, b)) return 1;
+      if (!reopen_builtin_new && emit_native_ctor(c, id, ci, argc, argv, b)) return 1;
       if (ci >= 0 && c->classes[ci].is_struct) {
         /* Struct.new members: positional args, or keyword args mapping each
            member by name; each coerced to the member ivar type. */
@@ -4163,7 +4169,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return 1;
       }
-      if (ci >= 0) {
+      if (ci >= 0 && !reopen_builtin_new) {
         /* user exception subclass: use the generated constructor */
         if (class_is_exc_subclass(c, ci)) {
           int initm = comp_method_in_chain(c, ci, "initialize", NULL);
