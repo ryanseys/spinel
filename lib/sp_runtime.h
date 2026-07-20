@@ -6997,6 +6997,7 @@ static void sp_proc_return(mrb_int id, sp_RbVal v) {
     }
   }
   sp_exc_stage_key(sp_box_str((&("\xff" "return")[1])));
+  sp_exc_stage_val(v);   /* LocalJumpError#exit_value carries the returned value (#3024) */
   sp_raise_cls("LocalJumpError", "unexpected return");
 }
 /* Pop home nodes whose method an exception has unwound past (recorded exc_top now
