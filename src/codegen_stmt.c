@@ -7603,9 +7603,11 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     emit_stmt_inner(c, id, b, indent);
     return;
   }
-  /* `raise` diverges -- no value to return; emit as a plain statement. */
+  /* `raise` / `throw` diverge -- no value to return; emit as a plain statement
+     (throw unwinds to its catch, so it never falls through with a value; #3087). */
   if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "receiver") < 0 &&
-      nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "raise")) {
+      nt_str(nt, id, "name") &&
+      (sp_streq(nt_str(nt, id, "name"), "raise") || sp_streq(nt_str(nt, id, "name"), "throw"))) {
     emit_indent(b, indent); emit_expr(c, id, b); buf_puts(b, ";\n");
     return;
   }
