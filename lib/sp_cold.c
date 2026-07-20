@@ -1208,17 +1208,21 @@ const char *sp_dir_home_user(const char *user);
 sp_StrArray *sp_dir_children(const char *path);
 
 const char *sp_File_gets_sep(sp_File *f, const char *sep, mrb_int limit, mrb_bool chomp) {
+  if (f && f->is_sock) sp_sock_wait_readable(f);
   if (!f || !f->fp) return NULL;
   size_t sl = sep ? strlen(sep) : 0;
   /* fast path: the default "\n" separator with no limit reads via fgets
      (the byte-wise loop below costs a call per character) */
   if (sl == 1 && sep[0] == '\n' && limit <= 0) {
-    char buf[65536];
-    if (!fgets(buf, (int)sizeof buf, f->fp)) return NULL;
+    /* heap scratch: a 64KB stack local overruns the 64KB fiber stack */
+    char *buf = (char *)malloc(65536);
+    if (!buf) return NULL;
+    if (!fgets(buf, 65536, f->fp)) { free(buf); return NULL; }
     size_t n = strlen(buf);
     if (chomp && n && buf[n - 1] == '\n') n--;
     char *r = sp_str_alloc(n);
     memcpy(r, buf, n); r[n] = 0;
+    free(buf);
     sp_str_set_len(r, n);
     f->lineno++;
     return r;

@@ -1233,11 +1233,17 @@ static inline void sp_str_check_mutable(const char *s) {
 #include "sp_io.h"
 static inline const char *sp_File_gets(sp_File *f) {
   if (!f || !f->fp) return NULL;
-  char buf[65536];
-  if (!fgets(buf, (int)sizeof(buf), f->fp)) return NULL;
+  if (f->is_sock) sp_sock_wait_readable(f);
+  /* heap scratch, NOT a stack buffer: a green thread runs on a 64KB fiber
+     stack (SP_FIBER_STACK_SIZE), which a 64KB local overran straight into
+     the guard page -- `Thread.new { f.gets }` was an instant segfault. */
+  char *buf = (char *)malloc(65536);
+  if (!buf) return NULL;
+  if (!fgets(buf, 65536, f->fp)) { free(buf); return NULL; }
   size_t n = strlen(buf);
   char *r = sp_str_alloc(n);
   memcpy(r, buf, n);
+  free(buf);
   f->lineno++;
   return r;
 }
@@ -1313,6 +1319,7 @@ static mrb_int sp_io_copy_stream(const char *src, const char *dst) {
 }
 static inline const char *sp_File_read(sp_File *f) {
   if (!f || !f->fp) return sp_str_empty;
+  if (f->is_sock) sp_sock_wait_readable(f);
   long pos = ftell(f->fp);
   if (pos >= 0 && fseek(f->fp, 0, SEEK_END) == 0) {
     long end = ftell(f->fp);
@@ -1351,6 +1358,7 @@ static inline const char *sp_File_read(sp_File *f) {
    string of the bytes actually read. */
 static inline const char *sp_File_read_n(sp_File *f, mrb_int n) {
   if (!f || !f->fp) return NULL;
+  if (f->is_sock) sp_sock_wait_readable(f);
   if (n < 0) return sp_File_read(f);
   if (n == 0) return sp_str_empty;
   char *r = sp_str_alloc((size_t)n);
@@ -2449,6 +2457,30 @@ static sp_RbVal sp_float_numerator(mrb_float f) __attribute__((unused));
 static sp_RbVal sp_float_numerator(mrb_float f) {
   if (isnan(f) || isinf(f)) return sp_box_float(f);
   return sp_box_int(sp_float_to_rational(f).num);
+}
+/* ---- socket support (#2922): thin layer over lib/sp_net.c + sp_io_fdopen_sock.
+   A TCPServer/TCPSocket IS an sp_File whose ->mode labels the kind; every IO
+   method (gets/read/write/puts/each_line/...) works unchanged, with writes
+   bypassing stdio (see sp_sock_write in lib/sp_io.c). */
+int sp_net_listen_host(const char *host, int port, int backlog);
+int sp_net_connect(const char *host, int port);
+int sp_net_accept(int sfd);
+int sp_net_sock_ip(int fd, int peer, char *ipbuf, int cap);
+/* TCPSocket#addr / #peeraddr: ["AF_INET", port, ip, ip], CRuby's numeric form */
+static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) __attribute__((unused));
+static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) {
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  char ip[64];
+  int port = (f && f->fp) ? sp_net_sock_ip(fileno(f->fp), peer, ip, (int)sizeof ip) : -1;
+  if (port < 0) { ip[0] = '\0'; port = 0; }
+  const char *fam = strchr(ip, ':') ? "AF_INET6" : "AF_INET";
+  sp_PolyArray_push(a, sp_box_str(sp_sprintf("%s", fam)));
+  sp_PolyArray_push(a, sp_box_int((mrb_int)port));
+  const char *ips = sp_sprintf("%s", ip);
+  sp_PolyArray_push(a, sp_box_str(ips));
+  sp_PolyArray_push(a, sp_box_str(ips));
+  return a;
 }
 /* Process.times -> Process::Tms: four cumulative CPU times in seconds.
    An unboxed value like sp_Range/sp_Class -- there is nothing to mutate. */
