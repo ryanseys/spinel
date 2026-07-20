@@ -1809,7 +1809,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent); emit_ctype(c, rt, b);
         buf_printf(b, "_t%d = %s;\n", tr2, rb2.p ? rb2.p : "NULL"); free(rb2.p);
         emit_indent(b, indent);
-        buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash();\n", tr2);
+        buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);\n", tr2, tr2, hash_box_cls(rt));
         emit_indent(b, indent);
         buf_printf(b, "for (mrb_int _t%d = 0; _t%d && _t%d < _t%d->len; ) {\n",
                    ti2, tr2, ti2, tr2);

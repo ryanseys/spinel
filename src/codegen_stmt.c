@@ -8269,7 +8269,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     /* Hash#store is the method form of []= */
     if (hn && (sp_streq(name, "[]=") || sp_streq(name, "store")) && argc == 2) {
       emit_indent(b, indent);
-      buf_puts(b, "if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash();\n");
+      buf_puts(b, "if (sp_gc_is_frozen("); emit_expr(c, recv, b); { buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_expr(c, recv, b); buf_printf(b, ", %s);\n", hash_box_cls(rt)); }
       emit_indent(b, indent);
       buf_printf(b, "sp_%sHash_set(", hn);
       emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -8494,7 +8494,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")");
     }
     buf_puts(b, "; ");
-    buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash(); ", ta);
+    buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", ta, ta, hash_box_cls(rt));
     buf_printf(b, "sp_%sHash_set(_t%d, _t%d, _t%d); }\n", hn, ta, tb, tv);
     return;
   }

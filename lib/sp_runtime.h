@@ -2630,6 +2630,11 @@ struct sp_Proc *sp_trap_proc[SP_SIG_MAX];
 SP_COLD void sp_exc_stage_recv(sp_RbVal v) { sp_pending_exc_recv = v; sp_pending_exc_flags |= 1; }
 SP_COLD void sp_exc_stage_key(sp_RbVal v)  { sp_pending_exc_key = v;  sp_pending_exc_flags |= 2; }
 SP_COLD void sp_exc_stage_val(sp_RbVal v)  { sp_pending_exc_val = v;  sp_pending_exc_flags |= 4; }
+/* frozen-Hash raise carrying the receiver (identity-preserving) (#3119) */
+static void __attribute__((noinline,cold)) sp_raise_frozen_hash_at(void *h, int cls_id) {
+  sp_exc_stage_recv(sp_box_obj(h, cls_id));
+  sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Hash")[1]));
+}
 /* Numeric queries / rounding on a poly value: dispatch on the runtime tag the
    way CRuby dispatches on the class. A tag whose class does not define the
    method raises CRuby's NoMethodError (e.g. `1.nan?`, `"x".abs`). */
@@ -4451,6 +4456,7 @@ static void __attribute__((noinline,cold)) sp_raise_frozen_obj(sp_RbVal v, const
   SP_GC_ROOT_STR(ins);
   const char *msg = sp_str_concat3(what, (&("\xff" ": ")[1]), ins);
   SP_GC_ROOT_STR(msg);
+  sp_exc_stage_recv(v);   /* FrozenError#receiver = the frozen object (#3119) */
   sp_raise_cls("FrozenError", msg);
 }
 /* Raise Hash#fetch's KeyError with MRI's "key not found: <key.inspect>" text.
