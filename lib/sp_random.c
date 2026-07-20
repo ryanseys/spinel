@@ -3,7 +3,8 @@
 #include <time.h>
 #include <string.h>
 #include "sp_random.h"
-#include "sp_alloc.h"   /* sp_str_alloc / sp_str_set_len / sp_float_to_s / sp_raise_cls / sp_gc_alloc */
+#include "sp_alloc.h"
+#include <math.h>    /* isnan/isinf for the EDOM domain checks */   /* sp_str_alloc / sp_str_set_len / sp_float_to_s / sp_raise_cls / sp_gc_alloc */
 #include "sp_format.h"  /* sp_Range_inspect */
 #include "sp_str.h"     /* sp_sprintf (defined in the generated TU) */
 
@@ -141,7 +142,11 @@ mrb_float sp_Random_rand_float(sp_Random *r) {
 /* Random#rand(Float bound): a random Float in [0, bound). A non-positive bound
    raises ArgumentError like the Integer form (MRI validates both). */
 mrb_float sp_Random_rand_float_bound(sp_Random *r, mrb_float bound) {
-  if (bound <= 0) sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %s", sp_float_to_s(bound)));
+  /* CRuby 4: a non-finite bound is Errno::EDOM; a 0.0 bound draws in [0,1) (#3049) */
+  if (isnan(bound) || isinf(bound))
+    sp_raise_cls("Errno::EDOM", "Numerical argument out of domain");
+  if (bound == 0.0) return sp_Random_rand_float(r);
+  if (bound < 0) sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %s", sp_float_to_s(bound)));
   return sp_Random_rand_float(r) * bound;
 }
 /* Class-method forms (`Random.rand` / `Random.bytes`) share the default
@@ -164,6 +169,8 @@ const char *sp_Random_bytes(sp_Random *r, mrb_int n) {
 /* Random#rand(Float range): a Float in [lo, hi) (or [lo, hi] for an inclusive
    range, though the float boundary is effectively open). */
 mrb_float sp_Random_rand_float_range(sp_Random *r, mrb_float lo, mrb_float hi) {
+  if (isnan(lo) || isinf(lo) || isnan(hi) || isinf(hi))
+    sp_raise_cls("Errno::EDOM", "Numerical argument out of domain");
   return lo + sp_Random_rand_float(r) * (hi - lo);
 }
 /* Random.new_seed: a fresh nonneg seed drawn from the default stream. */
