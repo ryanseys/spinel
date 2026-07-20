@@ -3203,6 +3203,70 @@ static int desugar_sym_to_proc_call(Compiler *c) {
   return changed;
 }
 
+/* `arr.reduce(:gcd)` / `inject(init, :lcm)`: a Symbol naming an ordinary
+   method (not an operator) folds pairwise through that method. The operator
+   symbols ride the typed/boxed fold emitters; rewrite the method-naming form
+   into the equivalent block, which the block fold already serves. (#3125) */
+static int desugar_reduce_method_symbol(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject"))) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    int argn = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = argn >= 0 ? nt_arr(nt, argn, "arguments", &an) : NULL;
+    if (!av || an < 1 || an > 2) continue;
+    const char *sym = sym_static_value(c, av[an - 1]);
+    if (!sym || !*sym) continue;
+    /* only an identifier-named method: operators keep their fold emitters */
+    if (!((sym[0] >= 'a' && sym[0] <= 'z') || (sym[0] >= 'A' && sym[0] <= 'Z') || sym[0] == '_'))
+      continue;
+    char pa[32], pb[32];
+    snprintf(pa, sizeof pa, "__rms_a_%d", id);
+    snprintf(pb, sizeof pb, "__rms_b_%d", id);
+    int base = nt->count;
+    int kpa = nt_new_node(nt, "RequiredParameterNode");
+    int kpb = nt_new_node(nt, "RequiredParameterNode");
+    if (kpa < 0 || kpb < 0) continue;
+    nt_node_set_str(nt, kpa, "name", pa);
+    nt_node_set_str(nt, kpb, "name", pb);
+    int preq[2] = { kpa, kpb };
+    int params = nt_new_node(nt, "ParametersNode");
+    nt_node_set_arr(nt, params, "requireds", preq, 2);
+    int bparams = nt_new_node(nt, "BlockParametersNode");
+    nt_node_set_ref(nt, bparams, "parameters", params);
+    int ra = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, ra, "name", pa);
+    int rb2 = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, rb2, "name", pb);
+    int cargs = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, cargs, "arguments", &rb2, 1);
+    int call = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, call, "name", sym);
+    nt_node_set_ref(nt, call, "receiver", ra);
+    nt_node_set_ref(nt, call, "arguments", cargs);
+    int blkbody = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, blkbody, "body", &call, 1);
+    int blk = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, blk, "parameters", bparams);
+    nt_node_set_ref(nt, blk, "body", blkbody);
+    nt_node_set_ref(nt, id, "block", blk);
+    /* drop the symbol argument, keeping any leading init */
+    if (an == 2) nt_node_set_arr(nt, argn, "arguments", av, 1);
+    else nt_node_set_ref(nt, id, "arguments", -1);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_lazy_stateful_stage(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -6260,6 +6324,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_lazy_stateful_stage(c);      /* arr.lazy.uniq -> arr.uniq (finite source) */
     ch |= desugar_str_range_methods(c);        /* ("a".."e").map -> .to_a.map */
     ch |= desugar_sym_to_proc_call(c);         /* :m.to_proc.call(r, a) -> r.m(a) */
+    ch |= desugar_reduce_method_symbol(c);     /* reduce(:gcd) -> reduce { |a,x| a.gcd(x) } */
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
     ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */
