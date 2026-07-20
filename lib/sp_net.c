@@ -90,6 +90,66 @@ void sp_net_set_nodelay(int fd) {
 
 /* ---------- TCP socket lifecycle ---------- */
 
+/* TCPServer.new(host, port): like sp_net_listen but bound to a specific
+   address, resolved through getaddrinfo (so "localhost" works). A NULL/empty
+   host binds INADDR_ANY. Returns the listening fd, or -1. (#2922) */
+int sp_net_listen_host(const char *host, int port, int backlog) {
+    if (port < 0 || port > 65535) return -1;
+    signal(SIGPIPE, SIG_IGN);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags    = AI_PASSIVE;
+    char portbuf[16];
+    snprintf(portbuf, sizeof(portbuf), "%d", port);
+    if (getaddrinfo((host && *host) ? host : NULL, portbuf, &hints, &res) != 0) return -1;
+    int fd = -1;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        if (bind(fd, ai->ai_addr, ai->ai_addrlen) == 0 &&
+            listen(fd, backlog > 0 ? backlog : 1024) == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+/* The local port a bound/listening fd ended up on (port 0 => ephemeral). */
+int sp_net_local_port(int fd) {
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof(ss);
+    if (getsockname(fd, (struct sockaddr *)&ss, &len) != 0) return -1;
+    if (ss.ss_family == AF_INET)  return (int)ntohs(((struct sockaddr_in *)&ss)->sin_port);
+    if (ss.ss_family == AF_INET6) return (int)ntohs(((struct sockaddr_in6 *)&ss)->sin6_port);
+    return -1;
+}
+
+/* The local/peer IP of a socket fd as text into ipbuf; returns the port, or
+   -1. peer != 0 reads the remote end (getpeername). */
+int sp_net_sock_ip(int fd, int peer, char *ipbuf, int cap) {
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof(ss);
+    int r = peer ? getpeername(fd, (struct sockaddr *)&ss, &len)
+                 : getsockname(fd, (struct sockaddr *)&ss, &len);
+    if (r != 0) return -1;
+    if (ss.ss_family == AF_INET) {
+        struct sockaddr_in *a = (struct sockaddr_in *)&ss;
+        if (!inet_ntop(AF_INET, &a->sin_addr, ipbuf, (socklen_t)cap)) return -1;
+        return (int)ntohs(a->sin_port);
+    }
+    if (ss.ss_family == AF_INET6) {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)&ss;
+        if (!inet_ntop(AF_INET6, &a->sin6_addr, ipbuf, (socklen_t)cap)) return -1;
+        return (int)ntohs(a->sin6_port);
+    }
+    return -1;
+}
+
 int sp_net_listen(int port, int reuseport) {
     if (port < 0 || port > 65535) return -1;
     int fd = socket(AF_INET, SOCK_STREAM, 0);

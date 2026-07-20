@@ -17,6 +17,7 @@ typedef struct {
   FILE *fp; const char *path; const char *mode; mrb_int lineno;
   unsigned char bin_flag;      /* #binmode was called (#3131) */
   unsigned char no_autoclose;  /* #autoclose = false (#3131) */
+  unsigned char is_sock;       /* a socket handle: writes bypass stdio (#2922) */
 } sp_File;
 
 /* File.open(path, mode) -> GC-managed handle (block form is codegen-only). */
@@ -25,6 +26,12 @@ sp_File *sp_File_open(const char *path, const char *mode);
 int sp_io_make_pipe(int fds[2]);
 /* IO.pipe end: wrap a raw pipe fd in a GC-managed sp_File. */
 sp_File *sp_io_fdopen(int fd, const char *mode);
+/* Wrap a connected/listening socket fd. Reads stay on the buffered FILE* so
+   #gets and friends work; writes bypass stdio straight to write(2), matching
+   CRuby sockets' sync = true. `kind` labels the handle ("tcp", "tcpserver",
+   ...) for #class rendering. (#2922) */
+sp_File *sp_io_fdopen_sock(int fd, const char *kind);
+void sp_sock_wait_readable(sp_File *f);
 mrb_int sp_File_write(sp_File *f, const char *s);
 mrb_int sp_File_close(sp_File *f);
 mrb_bool sp_File_closed_p(sp_File *f);

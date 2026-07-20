@@ -4893,6 +4893,22 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       /* File.new is File.open: handled by the File class-method block in the
          later dispatch (#2779). Dir.new likewise (#2821). */
       if (cn && (sp_streq(cn, "File") || sp_streq(cn, "Dir"))) return 0;
+      /* TCPServer.new(host, port) / (port); TCPSocket.new(host, port). The
+         handle IS an sp_File with a socket-kind mode label (#2922). */
+      if (cn && sp_streq(cn, "TCPServer") && sp_feature_enabled("socket") && argc >= 1) {
+        buf_puts(b, "sp_io_fdopen_sock(sp_net_listen_host(");
+        if (argc >= 2) { emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); }
+        else { buf_puts(b, "NULL, "); emit_int_expr(c, argv[0], b); }
+        buf_puts(b, ", 0), (&(\"\\xff\" \"tcpserver\")[1]))");
+        return 1;
+      }
+      if (cn && sp_streq(cn, "TCPSocket") && sp_feature_enabled("socket") && argc >= 2) {
+        buf_puts(b, "sp_io_fdopen_sock(sp_net_connect(");
+        emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
+        emit_int_expr(c, argv[1], b);
+        buf_puts(b, "), (&(\"\\xff\" \"tcp\")[1]))");
+        return 1;
+      }
       /* `.new` on a constant Spinel could not resolve -- not a user class, not a
          builtin/stdlib class handled above (Mutex, Thread, etc. return earlier).
          It is either a genuine undefined constant or a real stdlib class Spinel
@@ -8922,6 +8938,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, ", sp_File_path(%s)); (mrb_int)0; })", r);
       free(rb.p); return;
     }
+    /* socket methods on the IO handle (#2922) */
+    if (sp_feature_enabled("socket") && argc == 0 && sp_streq(name, "accept")) {
+      /* wait cooperatively for a pending connection first: the blocking
+         accept would stall the whole green-thread scheduler otherwise */
+      int tac = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = %s; sp_sock_wait_readable(_t%d);"
+                    " sp_io_fdopen_sock(sp_net_accept(fileno(_t%d->fp)), (&(\"\\xff\" \"tcp\")[1])); })",
+                 tac, r, tac, tac);
+      free(rb.p); return;
+    }
+    if (sp_feature_enabled("socket") && argc == 0 &&
+        (sp_streq(name, "addr") || sp_streq(name, "peeraddr"))) {
+      buf_printf(b, "sp_sock_addr(%s, %d)", r, sp_streq(name, "peeraddr") ? 1 : 0);
+      free(rb.p); return;
+    }
     if (argc == 0 && sp_streq(name, "stat")) {
       buf_printf(b, "sp_file_stat_handle(sp_File_path(%s))", r);
       free(rb.p); return;
@@ -10835,13 +10866,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          File; a raw stream (STDOUT, pipe end) is an IO (#2797) */
       int tio = ++g_tmp;
       buf_printf(b, "({ sp_File *_t%d = ", tio); emit_expr(c, recv, b);
-      buf_printf(b, "; (_t%d && _t%d->mode && (strcmp(_t%d->mode, \"stat\") == 0"
+      buf_printf(b, "; (_t%d && _t%d->mode && strcmp(_t%d->mode, \"tcp\") == 0)"
+                    " ? ((sp_Class){(mrb_int)-1, \"TCPSocket\"})"
+                    " : (_t%d && _t%d->mode && strcmp(_t%d->mode, \"tcpserver\") == 0)"
+                    " ? ((sp_Class){(mrb_int)-1, \"TCPServer\"})"
+                    " : (_t%d && _t%d->mode && (strcmp(_t%d->mode, \"stat\") == 0"
                     " || strcmp(_t%d->mode, \"lstat\") == 0))"
                     " ? ((sp_Class){(mrb_int)-1, \"File::Stat\"})"
                     " : (_t%d && sp_File_path(_t%d)[0] && sp_File_path(_t%d)[0] != '<')"
                     " ? ((sp_Class){(mrb_int)-121, \"File\"})"
                     " : ((sp_Class){(mrb_int)-120, \"IO\"}); })",
-                 tio, tio, tio, tio, tio, tio, tio);
+                 tio, tio, tio, tio, tio, tio, tio, tio, tio, tio, tio, tio, tio);
       return;
     }
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */

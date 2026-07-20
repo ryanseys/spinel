@@ -51,6 +51,9 @@ int sp_net_shutdown_requested(void);
  * set_nodelay: disable Nagle on a connection fd (called for you by
  *   accept/accept_nb/connect; exposed for fds obtained elsewhere). */
 int sp_net_listen(int port, int reuseport);
+int sp_net_listen_host(const char *host, int port, int backlog);
+int sp_net_local_port(int fd);
+int sp_net_sock_ip(int fd, int peer, char *ipbuf, int cap);
 int sp_net_accept(int sfd);
 int sp_net_accept_nb(int sfd);
 int sp_net_connect(const char *host, int port);

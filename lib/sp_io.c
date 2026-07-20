@@ -16,6 +16,10 @@
 #include <sys/time.h> /* utimes() for File.utime */
 #include <errno.h>
 #include <fcntl.h>   /* fcntl flags for #close_on_exec?, #fcntl */
+#include <poll.h>    /* POLLIN for the socket read park */
+#if !defined(__APPLE__) && !defined(__GLIBC__)
+#include <stdio_ext.h>  /* musl __freadahead: pending stdio read-buffer bytes */
+#endif
 
 /* Provided by the generated TU / libspinel_rt.a. */
 extern void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
@@ -56,9 +60,86 @@ sp_File *sp_io_fdopen(int fd, const char *mode) {
   return f;
 }
 
+/* Wrap a socket fd (#2922). The FILE* serves the buffered READ side (gets and
+   friends need lookahead); every write bypasses stdio straight to write(2) --
+   see sp_sock_write below -- so a response is on the wire immediately, like
+   CRuby sockets' sync = true default. `kind` lands in ->mode for #class. */
+sp_File *sp_io_fdopen_sock(int fd, const char *kind) {
+  if (fd < 0) sp_raise_cls("Errno::ECONNREFUSED", "Connection refused");
+  /* The scheduler-aware accept/connect helpers may hand us a non-blocking
+     fd; the stdio read side must BLOCK (fgets treats EAGAIN as EOF), so
+     clear O_NONBLOCK. Green threads still yield: every read entry point
+     parks on sp_sock_wait_readable below before touching the stream. */
+  { int fl = fcntl(fd, F_GETFL); if (fl >= 0) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK); }
+  sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), sp_File_fin, sp_File_scan);
+  f->fp = fdopen(fd, "r+");
+  if (!f->fp) { sp_raise_cls("IOError", "fdopen failed"); return NULL; }
+  f->path = NULL;
+  f->mode = kind;
+  f->lineno = 0;
+  f->is_sock = 1;
+  return f;
+}
+
+SP_NORETURN static void sp_file_raise_errno(const char *op, const char *path);
+/* Park the calling green thread until the socket has readable data, so a
+   blocking fgets/fread does not pin its worker while a peer is idle. A no-op
+   when stdio already buffered data (waiting then would stall on the WIRE
+   while the answer sits in the buffer), and in the single-threaded build. */
+void sp_sock_wait_readable(sp_File *f) {
+  if (!f || !f->is_sock || !f->fp) return;
+#if defined(__GLIBC__)
+  if (f->fp->_IO_read_end > f->fp->_IO_read_ptr) return;
+#elif defined(__APPLE__)
+  if (f->fp->_r > 0) return;
+#else
+  if (__freadahead(f->fp) > 0) return;   /* musl */
+#endif
+#ifdef SP_THREADS
+  {
+    extern int sp_sched_wait_io(int fd, short events);
+    sp_sched_wait_io(fileno(f->fp), POLLIN);
+  }
+#else
+  /* Cooperative build: a blocking read here would stall EVERY green thread
+     (the peer that will produce our data included). Poll with a short
+     timeout and hand the scheduler to the other threads until readable. */
+  {
+    extern void sp_Thread_pass(void);
+    struct pollfd p;
+    p.fd = fileno(f->fp);
+    p.events = POLLIN;
+    for (;;) {
+      p.revents = 0;
+      int r = poll(&p, 1, 1);
+      if (r > 0 || (r < 0 && errno != EINTR && errno != EAGAIN)) return;
+      sp_Thread_pass();
+    }
+  }
+#endif
+}
+
+/* The socket write path: straight to the descriptor, looping over short
+   writes. The stdio stream is never written through, so there is nothing to
+   flush and no read/write switching hazard on the shared FILE*. */
+static mrb_int sp_sock_write(sp_File *f, const char *s, size_t n) {
+  int fd = fileno(f->fp);
+  size_t off = 0;
+  while (off < n) {
+    ssize_t put = write(fd, s + off, n - off);
+    if (put < 0) {
+      if (errno == EINTR) continue;
+      sp_file_raise_errno("write", "socket");
+    }
+    off += (size_t)put;
+  }
+  return (mrb_int)n;
+}
+
 mrb_int sp_File_write(sp_File *f, const char *s) {
   if (!f || !f->fp || !s) return 0;
   size_t n = strlen(s);
+  if (f->is_sock) return sp_sock_write(f, s, n);
   return (mrb_int)fwrite(s, 1, n, f->fp);
 }
 
@@ -118,12 +199,18 @@ mrb_bool sp_File_closed_p(sp_File *f) {
 void sp_File_puts(sp_File *f, const char *s) {
   if (!f || !f->fp || !s) return;
   size_t n = strlen(s);
+  if (f->is_sock) {
+    sp_sock_write(f, s, n);
+    if (n == 0 || s[n - 1] != '\n') sp_sock_write(f, "\n", 1);
+    return;
+  }
   fputs(s, f->fp);
   if (n == 0 || s[n - 1] != '\n') fputc('\n', f->fp);
 }
 
 void sp_File_print(sp_File *f, const char *s) {
   if (!f || !f->fp || !s) return;
+  if (f->is_sock) { sp_sock_write(f, s, strlen(s)); return; }
   fputs(s, f->fp);
 }
 
