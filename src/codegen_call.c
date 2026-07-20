@@ -4449,6 +4449,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
              raises rather than answering nil for it (#3036) */
           buf_printf(b, " _t%d->has_recv = 0;", te2);
           if (has_args) buf_printf(b, " _t%d->xkey = _t%d;", te2, ta2);
+          /* NoMethodError.new(msg, name, args, private): the fourth argument
+             drives #private_call? (#3042) */
+          if (argc >= 4 && sp_streq(cn, "NoMethodError")) {
+            buf_printf(b, " _t%d->priv_call = ", te2);
+            emit_cond(c, argv[3], b);
+            buf_puts(b, ";");
+          }
           buf_printf(b, " _t%d; })", te2);
           return 1;
         }

@@ -6324,6 +6324,7 @@ typedef struct sp_Exception_s {
   mrb_bool has_recv;           /* was a receiver actually recorded? nil is a legal
                                   receiver (nil.foo), so the box cannot say (#3036) */
   mrb_bool has_key;            /* likewise for KeyError#key (#3030) */
+  mrb_bool priv_call;          /* NoMethodError#private_call? (#3042) */
 } sp_Exception;
 /* Registered by the generated program to provide user exception hierarchy. */
 static const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
@@ -6745,7 +6746,7 @@ static sp_RbVal sp_exc_args_acc(sp_Exception *e) {
 }
 static mrb_bool sp_exc_private_call_acc(sp_Exception *e) {
   sp_exc_acc_gate(e, "NoMethodError", "private_call?");
-  return 0;   /* the runtime raisers never model a private call */
+  return e ? e->priv_call : 0;   /* set only by the explicit .new (#3042) */
 }
 static sp_RbVal sp_exc_reason_acc(sp_Exception *e) {
   sp_exc_acc_gate(e, "LocalJumpError", "reason");
