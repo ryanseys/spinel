@@ -7688,6 +7688,35 @@ static sp_StrStrHash *sp_env_filter_bang(sp_Proc *p, int keep) {
   sp_env_filter_core(p, keep);
   return sp_env_to_h();
 }
+/* ENV.update/merge!(hash) { |key, old, new| } -- the block resolves a key that
+   is already set; its (stringified) result becomes the value (#2998). */
+static sp_StrStrHash *sp_env_update_h_blk(sp_StrStrHash *h, sp_Proc *p) {
+  if (h) {
+    SP_GC_ROOT(h);
+    for (mrb_int i = 0; i < h->len; i++) {
+      const char *k = h->order[i];
+      const char *nv = sp_StrStrHash_get(h, k);
+      const char *ov = getenv(k);
+      if (ov && p) {
+        const char *ovh = sp_str_dup_external(ov);  /* environ may move */
+        SP_GC_ROOT(ovh);
+        _sp_proc_poly_args[0] = sp_box_str(k);
+        _sp_proc_poly_args[1] = sp_box_str(ovh);
+        _sp_proc_poly_args[2] = sp_box_str(nv ? nv : "");
+        mrb_int slots[16] = { (mrb_int)(uintptr_t)k, (mrb_int)(uintptr_t)ovh,
+                              (mrb_int)(uintptr_t)(nv ? nv : "") };
+        _sp_proc_poly_ret = sp_box_nil();
+        mrb_int r = sp_proc_call(p, 3, slots);
+        const char *rv = (_sp_proc_poly_ret.tag != SP_TAG_NIL)
+                           ? sp_poly_to_s(_sp_proc_poly_ret) : (const char *)(uintptr_t)r;
+        if (rv) setenv(k, rv, 1); else unsetenv(k);
+      }
+      else if (nv) setenv(k, nv, 1);
+      else unsetenv(k);
+    }
+  }
+  return sp_env_to_h();
+}
 /* reject!/select!/filter!: nil when nothing changed (#2844) */
 static sp_RbVal sp_env_filter_bang_opt(sp_Proc *p, int keep) {
   if (sp_env_filter_core(p, keep) == 0) return sp_box_nil();

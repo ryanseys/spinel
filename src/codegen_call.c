@@ -7089,6 +7089,22 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_env_shift()");
         return;
       }
+      /* update/merge! with a conflict block: the block resolves keys already
+         present in the environment (#2998) */
+      if (enm && (sp_streq(enm, "update") || sp_streq(enm, "merge!")) && eac == 1 &&
+          nt_ref(nt, id, "block") >= 0) {
+        TyKind htb = comp_ntype(c, eav[0]);
+        const char *htyb = nt_type(nt, eav[0]);
+        if (htb == TY_STR_STR_HASH ||
+            (htyb && (sp_streq(htyb, "HashNode") || sp_streq(htyb, "KeywordHashNode")))) {
+          buf_puts(b, "sp_env_update_h_blk(");
+          emit_expr(c, eav[0], b);
+          buf_puts(b, ", ");
+          emit_proc_literal(c, id, b);
+          buf_puts(b, ")");
+          return;
+        }
+      }
       if (enm && (sp_streq(enm, "update") || sp_streq(enm, "merge!") ||
                   sp_streq(enm, "replace")) && eac == 1 &&
           nt_ref(nt, id, "block") < 0) {
@@ -7130,13 +7146,48 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "(sp_raise_cls(\"TypeError\", (&(\"\\xff\" \"cannot freeze ENV\")[1])), sp_box_nil())");
         return;
       }
-      /* ENV.delete(k): the removed value (or nil) */
+      /* ENV.delete(k): the removed value (or nil); with a block, a missing key
+         yields the block's value instead of nil (#2999) */
       if (enm && sp_streq(enm, "delete") && eac == 1) {
         int t1 = ++g_tmp, t2 = ++g_tmp;
+        int dblk = nt_ref(nt, id, "block");
         buf_printf(b, "({ const char *_t%d = ", t1); emit_expr(c, eav[0], b);
         buf_printf(b, "; const char *_t%d = getenv(_t%d);"
                       " _t%d = _t%d ? sp_str_dup_external(_t%d) : NULL;"
-                      " unsetenv(_t%d); _t%d; })", t2, t1, t2, t2, t2, t1, t2);
+                      " unsetenv(_t%d); ", t2, t1, t2, t2, t2, t1);
+        if (dblk >= 0) {
+          const char *dp0 = block_param_name(c, dblk, 0);
+          int dbody = nt_ref(nt, dblk, "body");
+          int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
+          int dval = dbn > 0 ? dbb[dbn - 1] : -1;
+          buf_printf(b, "if (!_t%d) { ", t2);
+          if (dp0) {
+            /* shadow-declare the block param in this stmt-expr scope with its
+               analyzed type (it may not be a declared local here) */
+            LocalVar *dlv = scope_local(comp_scope_of(c, id), dp0);
+            TyKind dpt = dlv ? dlv->type : TY_STRING;
+            if (dpt == TY_POLY)
+              buf_printf(b, "sp_RbVal lv_%s = sp_box_str(_t%d); (void)lv_%s; ",
+                         rename_local(dp0), t1, rename_local(dp0));
+            else
+              buf_printf(b, "const char *lv_%s = _t%d; (void)lv_%s; ",
+                         rename_local(dp0), t1, rename_local(dp0));
+          }
+          for (int k = 0; k < dbn - 1; k++) emit_stmt(c, dbb[k], b, 0);
+          if (dval >= 0) {
+            TyKind dvt = comp_ntype(c, dval);
+            buf_printf(b, "_t%d = ", t2);
+            if (dvt == TY_STRING) emit_expr(c, dval, b);
+            else if (dvt == TY_POLY) {
+              buf_puts(b, "({ sp_RbVal _dv = "); emit_expr(c, dval, b);
+              buf_puts(b, "; _dv.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(_dv); })");
+            }
+            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, dval, b); buf_puts(b, ")"); }
+            buf_puts(b, "; ");
+          }
+          buf_puts(b, "} ");
+        }
+        buf_printf(b, "_t%d; })", t2);
         return;
       }
       /* ENV.store(k, v) is []= */
