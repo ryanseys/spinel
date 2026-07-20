@@ -589,6 +589,11 @@ int range_enum_redispatch(Compiler *c, int id) {
   if (sp_streq(name, "filter_map") && block >= 0) return 1;
   /* min(n)/max(n)/minmax with a count return arrays of the range's ints */
   if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc >= 1) return 1;
+  /* blockless select/reject/map: an Enumerator over the range's own ints,
+     which the materialized array builds identically (#3062). */
+  if (block < 0 && argc == 0 &&
+      (sp_streq(name, "select") || sp_streq(name, "filter") ||
+       sp_streq(name, "find_all") || sp_streq(name, "reject"))) return 1;
   return 0;
 }
 
@@ -3354,7 +3359,9 @@ else {
        chained block forms (map.with_index { }) are typed by their own arms
        before this one. */
     if (block < 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-        (sp_streq(name, "map") || sp_streq(name, "collect")) &&
+        (sp_streq(name, "map") || sp_streq(name, "collect") ||
+         sp_streq(name, "select") || sp_streq(name, "filter") ||
+         sp_streq(name, "find_all") || sp_streq(name, "reject")) &&
         !call_is_chain_receiver_with_block(c, id)) return TY_ENUMERATOR;
     /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized
        Enumerator of slices / windows. The direct-block form has block >= 0 and

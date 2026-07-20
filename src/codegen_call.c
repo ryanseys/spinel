@@ -8290,15 +8290,20 @@ void emit_call(Compiler *c, int id, Buf *b) {
         sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
       (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
        sp_streq(name, "map") || sp_streq(name, "collect") ||
+       sp_streq(name, "select") || sp_streq(name, "filter") ||
+       sp_streq(name, "find_all") || sp_streq(name, "reject") ||
        sp_streq(name, "each_entry"))) {
-    /* a blockless map is the same element snapshot; only its #inspect method
-       name differs (the deferred mapping is supplied by a later block form,
-       which the chain emitters match before this arm) */
-    if (sp_streq(name, "map") || sp_streq(name, "collect")) {
+    /* a blockless map/select/reject is the same element snapshot; only its
+       #inspect method name differs (the deferred block is supplied by a later
+       block form, which the chain emitters match before this arm) */
+    if (!sp_streq(name, "each") && !sp_streq(name, "reverse_each") &&
+        !sp_streq(name, "each_entry")) {
       int te = ++g_tmp;
       buf_printf(b, "({ sp_Enumerator *_t%d = sp_Enumerator_new_from(", te);
       emit_boxed(c, recv, b);
-      buf_printf(b, "); _t%d->meth = \"map\"; _t%d; })", te, te);
+      buf_printf(b, "); _t%d->meth = \"%s\"; _t%d; })", te,
+                 sp_streq(name, "collect") ? "map" :
+                 sp_streq(name, "find_all") ? "select" : name, te);
       return;
     }
     buf_printf(b, "sp_Enumerator_new_from%s(", sp_streq(name, "reverse_each") ? "_rev" : "");
