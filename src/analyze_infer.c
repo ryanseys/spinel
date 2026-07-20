@@ -635,6 +635,11 @@ int hash_enum_redispatch(Compiler *c, int id) {
 }
 
 TyKind infer_call(Compiler *c, int id) {
+  /* the redirect recorded that this call yields its original receiver (#2981) */
+  {
+    int sr = nt_int(c->nt, id, "enum_self_result", -1);
+    if (sr >= 0) return infer_type(c, sr);
+  }
   const NodeTable *nt = c->nt;
   /* a dynamic send lowered to a name-dispatch (desugar_dynamic_send) yields one
      of several boxed method results -> poly. */

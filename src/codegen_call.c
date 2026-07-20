@@ -6388,6 +6388,24 @@ static int class_includes_module_named(Compiler *c, int cid, const char *mod_nam
 
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* each_slice/each_cons over a user Enumerable: the redirect made this read
+     the flat element array, so run it for its side effects and yield the
+     original receiver, which is what Ruby returns (#2981). */
+  {
+    static int self_res_active = -1;
+    int sr = nt_int(nt, id, "enum_self_result", -1);
+    if (sr >= 0 && self_res_active != id) {
+      int prev = self_res_active;
+      self_res_active = id;
+      buf_puts(b, "((void)(");
+      emit_call(c, id, b);
+      buf_puts(b, "), ");
+      emit_expr(c, sr, b);
+      buf_puts(b, ")");
+      self_res_active = prev;
+      return;
+    }
+  }
   /* An object that does not define #=== inherits Kernel#===, which delegates
      to #==. Both infer as Bool, so the node's cached type stays right when we
      re-dispatch under the #== name (#3018). */

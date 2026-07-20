@@ -4234,6 +4234,13 @@ int desugar_enum_method_recv(Compiler *c) {
       for (int t = 0; snative[t]; t++) if (sp_streq(nm, snative[t])) { nat = 1; break; }
       if (nat) continue;
     }
+    /* The block forms of each_slice/each_cons return the RECEIVER in Ruby,
+       but the redirect makes the call read the flat element array, whose
+       each_slice returns that array. Record the original receiver so the
+       emit yields it instead (#2981). */
+    if (nt_ref(nt, id, "block") >= 0 &&
+        (sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")))
+      nt_node_set_int(nt, id, "enum_self_result", recv);
     int wrap = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, wrap, "name", "__enum_to_a");
     nt_node_set_ref(nt, wrap, "receiver", recv);
