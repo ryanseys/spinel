@@ -27,6 +27,8 @@ typedef struct sp_thread {
   sp_RbVal          arg;         /* Thread.new(arg) -> the block's first param, on first run */
   sp_RbVal          retval;      /* block result (copied from fiber->yielded_value at death) */
   sp_RbVal          name;        /* #name / #name= (a string or nil) */
+  const char       *birth_file;  /* creation site for #inspect (#3126); rodata */
+  mrb_int           birth_line;
   sp_thread_state   state;
   int               has_exc;     /* body left an unhandled exception (re-raised at #join/#value) */
   const char       *exc_cls, *exc_msg;
@@ -65,6 +67,7 @@ void       sp_sched_init(void);
    a green thread and enqueue it RUNNABLE. It runs the next time the current
    thread yields, or at drain. Returns the thread (boxed SP_BUILTIN_THREAD). */
 sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg);
+sp_thread *sp_Thread_spawn_fiber_at(sp_Fiber *f, sp_RbVal arg, const char *file, mrb_int line);
 
 /* #join: block until the thread has finished, re-raise its unhandled exception
    in the caller, then return the thread. #value: same, but return its result. */

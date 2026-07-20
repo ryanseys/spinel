@@ -4521,7 +4521,9 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            like a Fiber.new block (the block result lands in fiber->yielded_value,
            read back by #value). Thread.new's first argument becomes the block's
            first param on entry; it is handed to the scheduler as the thread arg. */
-        buf_puts(b, "sp_Thread_spawn_fiber(");
+        /* __FILE__/__LINE__ resolve through the emitted #line directives to
+           the Ruby creation site, which #inspect carries (#3126) */
+        buf_puts(b, "sp_Thread_spawn_fiber_at(");
         emit_fiber_new(c, id, b, 0, -1);
         buf_puts(b, ", ");
         /* a block with >1 param takes the args positionally: pack them into a
@@ -4541,7 +4543,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         }
         else if (argc >= 1) emit_boxed(c, argv[0], b);
         else buf_puts(b, "sp_box_nil()");
-        buf_puts(b, ")");
+        /* the Ruby creation site, straight from the node -- the C __FILE__
+           macro would name the generated C under --no-line-map (#3126) */
+        {
+          const char *bpath = c->nt->source_file;
+          int bln = (int)nt_int(nt, id, "node_line", 0);
+          buf_puts(b, ", \"");
+          emit_c_escaped(b, bpath && *bpath ? bpath : "source.rb");
+          buf_printf(b, "\", %d)", bln);
+        }
         return 1;
       }
       if (cn && sp_streq(cn, "Fiber") && nt_ref(nt, id, "block") >= 0) {

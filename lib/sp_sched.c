@@ -590,6 +590,12 @@ static void sp_thread_scan(void *p) {
   if (t->tls) sp_gc_mark(t->tls);
 }
 
+sp_thread *sp_Thread_spawn_fiber_at(sp_Fiber *f, sp_RbVal arg, const char *file, mrb_int line) {
+  sp_thread *t = sp_Thread_spawn_fiber(f, arg);
+  t->birth_file = file;
+  t->birth_line = line;
+  return t;
+}
 sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   SP_GC_ROOT(f);   /* root the freshly-built fiber across the allocation below */
   SP_GC_ROOT_RBVAL(arg);
@@ -1361,5 +1367,10 @@ const char *sp_Thread_inspect(sp_thread *t) {
       default: st = t->has_exc ? "aborting" : "dead"; break;
     }
   }
+  /* CRuby carries the creation site between the address and the status */
+  if (t && t->birth_file)
+    return sp_sprintf("#<Thread:0x%016llx %s:%lld %s>",
+                      (unsigned long long)(uintptr_t)t, t->birth_file,
+                      (long long)t->birth_line, st);
   return sp_sprintf("#<Thread:0x%016llx %s>", (unsigned long long)(uintptr_t)t, st);
 }
