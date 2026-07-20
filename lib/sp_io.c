@@ -277,9 +277,23 @@ mrb_int sp_File_readbyte(sp_File *f) {
 void sp_File_ungetbyte(sp_File *f, mrb_int byte) {
   if (f && f->fp) ungetc((int)(unsigned char)byte, f->fp);
 }
-/* IO#binmode?: true only for a handle opened in binary mode. */
+/* IO#binmode?: true after #binmode, or for a handle opened in binary mode. */
 mrb_bool sp_File_binmode_p(sp_File *f) {
+  if (f && f->bin_flag) return 1;
   return f && f->mode && strchr(f->mode, 'b') != NULL;
+}
+void sp_File_set_binmode(sp_File *f) { if (f) f->bin_flag = 1; }
+/* IO#reopen(io): rebind this handle's descriptor onto the other stream. */
+sp_File *sp_File_reopen_io(sp_File *f, sp_File *other) {
+  if (!f || !f->fp || !other || !other->fp) return f;
+  fflush(f->fp);
+  fflush(other->fp);
+  if (dup2(fileno(other->fp), fileno(f->fp)) < 0)
+    sp_file_raise_errno("reopen", other->path ? other->path : "");
+  f->path = other->path;
+  f->mode = other->mode;
+  f->lineno = 0;
+  return f;
 }
 /* IO#close_on_exec? / #close_on_exec= via the FD_CLOEXEC descriptor flag. */
 mrb_bool sp_File_close_on_exec_p(sp_File *f) {

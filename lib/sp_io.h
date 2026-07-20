@@ -13,7 +13,11 @@
 #include "sp_types.h"   /* mrb_int, mrb_bool */
 #include "sp_array.h"   /* sp_IntArray (for #winsize) */
 
-typedef struct { FILE *fp; const char *path; const char *mode; mrb_int lineno; } sp_File;
+typedef struct {
+  FILE *fp; const char *path; const char *mode; mrb_int lineno;
+  unsigned char bin_flag;      /* #binmode was called (#3131) */
+  unsigned char no_autoclose;  /* #autoclose = false (#3131) */
+} sp_File;
 
 /* File.open(path, mode) -> GC-managed handle (block form is codegen-only). */
 sp_File *sp_File_open(const char *path, const char *mode);
@@ -32,6 +36,8 @@ mrb_bool sp_File_eof_p(sp_File *f);
 mrb_int sp_File_readbyte(sp_File *f);
 void sp_File_ungetbyte(sp_File *f, mrb_int byte);
 mrb_bool sp_File_binmode_p(sp_File *f);
+void sp_File_set_binmode(sp_File *f);
+sp_File *sp_File_reopen_io(sp_File *f, sp_File *other);
 mrb_bool sp_File_close_on_exec_p(sp_File *f);
 void sp_File_set_close_on_exec(sp_File *f, mrb_bool on);
 mrb_int sp_File_fcntl(sp_File *f, mrb_int cmd, mrb_int arg);

@@ -8974,11 +8974,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
       int tv = ++g_tmp;
       buf_printf(b, "({ mrb_bool _t%d = ", tv); emit_cond(c, argv[0], b);
       buf_printf(b, "; ");
-      /* autoclose is always on for a GC-owned handle, so the setter only has
-         to report back the assigned value (CRuby returns the argument). */
+      /* the GC-owned handle closes at collection either way; the flag only
+         has to drive #autoclose? (#3131) */
       if (sp_streq(name, "close_on_exec="))
         buf_printf(b, "sp_File_set_close_on_exec(%s, _t%d); ", r, tv);
-      else buf_printf(b, "(void)(%s); ", r);
+      else buf_printf(b, "(%s)->no_autoclose = !_t%d; ", r, tv);
       buf_printf(b, "_t%d; })", tv);
       free(rb.p); return;
     }
@@ -8988,9 +8988,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")"); free(rb.p); return;
     }
     if (sp_streq(name, "pread") && argc >= 1) {
+      /* pread(len, off, buf): CRuby fills the buffer argument; when it is a
+         plain local, rebind it to the read result (#3131) */
+      const char *bufn = NULL;
+      if (argc >= 3 && nt_type(nt, argv[2]) &&
+          sp_streq(nt_type(nt, argv[2]), "LocalVariableReadNode"))
+        bufn = nt_str(nt, argv[2], "name");
+      int tpr = ++g_tmp;
+      if (bufn) buf_printf(b, "({ const char *_t%d = ", tpr);
       buf_printf(b, "sp_File_pread(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
       if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
-      buf_puts(b, ")"); free(rb.p); return;
+      buf_puts(b, ")");
+      if (bufn) buf_printf(b, "; lv_%s = _t%d; _t%d; })", rename_local(bufn), tpr, tpr);
+      free(rb.p); return;
     }
     if (sp_streq(name, "pwrite") && argc >= 1) {
       buf_printf(b, "sp_File_pwrite(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
@@ -9014,6 +9024,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_File_close_half(%s, %d); sp_box_nil(); })", r,
                  sp_streq(name, "close_read") ? 1 : 0);
       free(rb.p); return;
+    }
+    if (sp_streq(name, "reopen") && argc >= 1 && comp_ntype(c, argv[0]) == TY_IO) {
+      buf_printf(b, "sp_File_reopen_io(%s, ", r); emit_expr(c, argv[0], b);
+      buf_puts(b, ")"); free(rb.p); return;
     }
     if (sp_streq(name, "reopen") && argc >= 1) {
       buf_printf(b, "sp_File_reopen(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
@@ -9053,7 +9067,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_File_fsync(%s)", r); free(rb.p); return;
     }
     if (sp_streq(name, "autoclose?") && argc == 0) {
-      buf_printf(b, "({ (void)%s; (mrb_bool)1; })", r); free(rb.p); return;
+      buf_printf(b, "(!(%s)->no_autoclose)", r); free(rb.p); return;
     }
     if (sp_streq(name, "pid") && argc == 0) {
       buf_printf(b, "({ (void)%s; sp_box_nil(); })", r); free(rb.p); return;
@@ -9292,6 +9306,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       int tfl = ++g_tmp;
       buf_printf(b, "({ sp_File *_t%d = %s; ", tfl, r);
       if (sp_streq(name, "flush")) buf_printf(b, "sp_File_flush(_t%d); ", tfl);
+      else buf_printf(b, "sp_File_set_binmode(_t%d); ", tfl);
       buf_printf(b, "_t%d; })", tfl);
       free(rb.p); return;
     }
