@@ -3024,10 +3024,13 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   if (!ty_is_array(acc_ty) && !ty_is_hash(acc_ty)) {
     TyKind bt = comp_ntype(c, bb[bn - 1]);
     if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt);
-    /* A BOXED body value cannot be narrowed back to a numeric seed without
-       truncating -- an int seed folded over the floats of a poly element
-       array came out an Integer (#2982). Keep the accumulator boxed. */
-    else if (bt == TY_POLY && ty_is_numeric(acc_ty) && init >= 0 && et == TY_POLY)
+    /* Folding a POLY element array: the block's value is boxed, and the
+       seed's slot cannot take it back -- a numeric seed would truncate
+       (#2982), an object or value-type seed cannot hold an sp_RbVal at all
+       (#2886, served by sp_user_binop_hook). Keep the accumulator boxed. */
+    else if (acc_ty != TY_POLY && init >= 0 && et == TY_POLY &&
+             (bt == TY_POLY || ty_is_object(bt) || bt == TY_RATIONAL ||
+              bt == TY_COMPLEX || bt == TY_BIGINT))
       acc_ty = TY_POLY;
   }
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;

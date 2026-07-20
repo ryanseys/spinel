@@ -2642,7 +2642,17 @@ static mrb_bool sp_poly_has_binop(sp_RbVal recv, const char *op) {
   }
   return FALSE;
 }
+/* User-defined binary operators on boxed operands. The generated TU installs
+   a cls_id-switch dispatcher; sp_poly_binop_bad consults it before raising,
+   so a fold whose accumulator widened to poly still reaches Money#+ (#2886). */
+typedef sp_RbVal (*sp_user_binop_fn)(const char *op, sp_RbVal a, sp_RbVal b, mrb_bool *handled);
+static sp_user_binop_fn sp_user_binop_hook = NULL;
 static sp_RbVal sp_poly_binop_bad(const char *op, sp_RbVal recv, sp_RbVal arg) {
+  if (recv.tag == SP_TAG_OBJ && recv.cls_id >= 0 && sp_user_binop_hook) {
+    mrb_bool _h = FALSE;
+    sp_RbVal _r = sp_user_binop_hook(op, recv, arg, &_h);
+    if (_h) return _r;
+  }
   const char *rc = sp_poly_class_name(recv);
   const char *ac = sp_poly_class_name(arg);
   if (!sp_poly_has_binop(recv, op))

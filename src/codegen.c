@@ -3911,6 +3911,71 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "  }\n  *comparable = FALSE; return 0;\n}\n");
 }
 
+/* Generate sp_user_binop_dispatch: a cls_id switch resolving user-defined
+   binary operators on a BOXED receiver. Installed as sp_user_binop_hook, the
+   last stop before sp_poly_binop_bad raises -- so `acc + x` inside a fold
+   whose accumulator widened to poly still reaches Money#+ (#2886). Each arm
+   unboxes the operand per the method's bound parameter type; a mismatched
+   operand leaves handled FALSE and the caller's TypeError stands. */
+static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
+  static const char *const uops[] = {
+    "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^", NULL };
+  buf_puts(b, "static sp_RbVal sp_user_binop_dispatch(const char *op, sp_RbVal a, sp_RbVal b, mrb_bool *handled) {\n");
+  buf_puts(b, "  *handled = FALSE;\n  switch (a.cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated) continue;
+    int any = 0;
+    for (int u = 0; uops[u] && !any; u++)
+      if (comp_method_in_chain(c, k, uops[u], NULL) >= 0) any = 1;
+    if (!any) continue;
+    int cid = comp_class_index(c, c->classes[k].name);
+    buf_printf(b, "    case %d: {\n", cid);
+    for (int u = 0; uops[u]; u++) {
+      int defcls = -1;
+      int mi = comp_method_in_chain(c, k, uops[u], &defcls);
+      if (mi < 0) continue;
+      Scope *m = &c->scopes[mi];
+      /* only methods this TU actually emits: an unreachable / yielding /
+         shadowed scope has no C function to call */
+      if (!m->reachable || m->yields || scope_is_shadowed(c, mi) ||
+          m->is_transplanted_source) continue;
+      if (m->nparams < 1 || m->rest_idx >= 0) continue;
+      LocalVar *p = scope_local(m, m->pnames[0]);
+      TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
+      const char *dcn = c->classes[defcls].c_name;
+      int self_vt = c->classes[defcls].is_value_type;
+      char argbuf[160];
+      const char *guard = NULL;
+      if (ty_is_object(pt)) {
+        int pcls = ty_object_class(pt);
+        static char gb[64];
+        snprintf(gb, sizeof gb, "b.tag == SP_TAG_OBJ && b.cls_id == %d",
+                 comp_class_index(c, c->classes[pcls].name));
+        guard = gb;
+        snprintf(argbuf, sizeof argbuf, "%s(sp_%s *)b.v.p",
+                 c->classes[pcls].is_value_type ? "*" : "", c->classes[pcls].name);
+      }
+      else if (pt == TY_POLY) snprintf(argbuf, sizeof argbuf, "b");
+      else if (pt == TY_INT) { guard = "b.tag == SP_TAG_INT"; snprintf(argbuf, sizeof argbuf, "b.v.i"); }
+      else if (pt == TY_FLOAT) { guard = "b.tag == SP_TAG_FLT"; snprintf(argbuf, sizeof argbuf, "b.v.f"); }
+      else if (pt == TY_STRING) { guard = "b.tag == SP_TAG_STR"; snprintf(argbuf, sizeof argbuf, "b.v.s"); }
+      else continue;
+      buf_printf(b, "      if (strcmp(op, \"%s\") == 0%s%s%s) {\n",
+                 uops[u], guard ? " && (" : "", guard ? guard : "", guard ? ")" : "");
+      char callbuf[256];
+      /* an alias (`alias + |`) resolves to its target's scope: name the C
+         function after the RESOLVED method, not the queried operator */
+      snprintf(callbuf, sizeof callbuf, "sp_%s_%s(%s(sp_%s *)a.v.p, %s)",
+               dcn, mc(m->name ? m->name : uops[u]), self_vt ? "*" : "", dcn, argbuf);
+      buf_puts(b, "        *handled = TRUE; return ");
+      emit_boxed_text(c, m->ret, callbuf, b);
+      buf_puts(b, ";\n      }\n");
+    }
+    buf_puts(b, "      break;\n    }\n");
+  }
+  buf_puts(b, "    default: break;\n  }\n  return sp_box_nil();\n}\n");
+}
+
 /* 1 if instantiated class k defines both #hash and #eql? with emittable shapes --
    the Ruby idiom for a custom Hash key. Validates BOTH signatures here so the two
    hooks are generated all-or-nothing: a class that passes gets both a hash arm and
@@ -4102,6 +4167,8 @@ void emit_regex_section(Buf *b) {
   }
   if (g_has_user_cmp)
     buf_puts(b, "static mrb_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, mrb_bool *comparable);\n");
+  if (g_has_user_binop)
+    buf_puts(b, "static sp_RbVal sp_user_binop_dispatch(const char *op, sp_RbVal a, sp_RbVal b, mrb_bool *handled);\n");
   if (g_needs_class_machinery)
     buf_puts(b, "static int sp_poly_is_a(sp_RbVal obj, sp_Class klass);\n");
   if (g_gen_obj_hash)
@@ -4120,6 +4187,8 @@ void emit_regex_section(Buf *b) {
     buf_puts(b, "  sp_sym_name_fn = sp_sym_to_s;\n");
   if (g_has_user_cmp)
     buf_puts(b, "  sp_obj_cmp_hook = sp_obj_cmp_dispatch;\n");
+  if (g_has_user_binop)
+    buf_puts(b, "  sp_user_binop_hook = sp_user_binop_dispatch;\n");
   if (g_gen_obj_hashkey)
     buf_puts(b, "  sp_obj_hash_hook = sp_gen_obj_hash;\n  sp_obj_eql_hook = sp_gen_obj_eql;\n");
   if (g_gen_obj_valeq)
@@ -5743,6 +5812,16 @@ char *codegen_program(const NodeTable *nt) {
     if (!c->classes[k].instantiated) continue;
     if (comp_method_in_chain(c, k, "<=>", NULL) >= 0) { g_has_user_cmp = 1; break; }
   }
+  g_has_user_binop = 0;
+  {
+    static const char *const uops[] = {
+      "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^", NULL };
+    for (int k = 0; k < c->nclasses && !g_has_user_binop; k++) {
+      if (!c->classes[k].instantiated) continue;
+      for (int u = 0; uops[u]; u++)
+        if (comp_method_in_chain(c, k, uops[u], NULL) >= 0) { g_has_user_binop = 1; break; }
+    }
+  }
   g_gen_obj_hashkey = 0;
   for (int k = 0; k < c->nclasses; k++)
     if (class_is_hashkey(c, k) || class_is_valuekey(c, k)) { g_gen_obj_hashkey = 1; break; }
@@ -5782,6 +5861,7 @@ char *codegen_program(const NodeTable *nt) {
   }
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   if (g_has_user_cmp) emit_obj_cmp_dispatch(c, body);
+  if (g_has_user_binop) emit_user_binop_dispatch(c, body);
   /* Struct/Data value-== hook (after the class struct definitions); emitted
      before the hash-key dispatch, which references sp_obj_eq_dispatch. */
   if (g_gen_obj_valeq) emit_obj_valeq_dispatch(c, body);

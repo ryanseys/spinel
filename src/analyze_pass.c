@@ -7076,10 +7076,12 @@ int infer_block_params(Compiler *c) {
       if (acc_t == TY_UNKNOWN) acc_t = et2;
       /* the accumulator is reassigned to the block's value each step, so a
          boxed block result widens it rather than truncating (#2982) */
-      if (ty_is_numeric(acc_t) && et2 == TY_POLY && rargc > 0) {
+      if (acc_t != TY_POLY && et2 == TY_POLY && rargc > 0) {
         int rbody = nt_ref(nt, block, "body");
         int rbn = 0; const int *rbb = rbody >= 0 ? nt_arr(nt, rbody, "body", &rbn) : NULL;
-        if (rbn > 0 && infer_type(c, rbb[rbn - 1]) == TY_POLY) acc_t = TY_POLY;
+        TyKind bt3 = rbn > 0 ? infer_type(c, rbb[rbn - 1]) : TY_UNKNOWN;
+        if (bt3 == TY_POLY || ty_is_object(bt3) || bt3 == TY_RATIONAL ||
+            bt3 == TY_COMPLEX || bt3 == TY_BIGINT) acc_t = TY_POLY;
       }
       LocalVar *ap = scope_local_intern(rs, p0); ap->is_block_param = 1;
       TyKind am = ty_unify(ap->type, acc_t);

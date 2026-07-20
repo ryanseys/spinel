@@ -3613,8 +3613,9 @@ else {
                  on a user Enumerable's materialized element array) cannot be
                  narrowed back to the seed's type without truncating: an int
                  seed folded over floats came out an Integer (#2982). */
-              else if (bt == TY_POLY && ty_is_numeric(it) &&
-                       ty_array_elem(rt) == TY_POLY) it = TY_POLY;
+              else if (it != TY_POLY && ty_array_elem(rt) == TY_POLY &&
+                       (bt == TY_POLY || ty_is_object(bt) || bt == TY_RATIONAL ||
+                        bt == TY_COMPLEX || bt == TY_BIGINT)) it = TY_POLY;
             }
             return it;
           }
