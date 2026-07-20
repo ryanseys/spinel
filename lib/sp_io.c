@@ -253,6 +253,9 @@ mrb_int sp_file_utime(double atime, double mtime, const char *path) {
   return 1;
 }
 
-mrb_bool sp_file_exist(const char *path) { FILE *f = fopen(path, "r"); if (f) { fclose(f); return TRUE; } return FALSE; }
+/* stat, not fopen: opening a FIFO for read blocks until a writer appears, so
+   the old fopen probe hung File.exist? on a fresh mkfifo path (#3118). stat
+   also answers true for directories, matching CRuby. */
+mrb_bool sp_file_exist(const char *path) { struct stat st; return path && stat(path, &st) == 0; }
 void sp_file_delete(const char *path) { remove(path); }
 void sp_file_rename(const char *from, const char *to) { rename(from, to); }
