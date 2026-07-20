@@ -476,8 +476,11 @@ sp_PolyArray *sp_math_lgamma(double x) {
   }
   else if (x == floor(x)) {
     /* pole at every non-positive integer -- detect it directly, since
-       sin(M_PI * x) is not exactly 0 there in floating point (#3016) */
+       sin(M_PI * x) is not exactly 0 there in floating point (#3016).
+       gamma approaches -inf from the -0 side, so -0.0 alone reports sign
+       -1 (CRuby/C99 lgamma_r) (#3116). */
     v = INFINITY;
+    if (x == 0.0 && signbit(x)) sign = -1;
   }
   else {
     double s = sin(M_PI * x);
