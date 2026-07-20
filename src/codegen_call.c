@@ -16426,6 +16426,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "class") && argc == 0) {
       buf_printf(b, "((void)(%s), ((sp_Class){-100}))", r); free(rs.p); return;  /* Integer */
     }
+    /* coerce(n): [n, self], both boxed (#3129) */
+    if (sp_streq(name, "coerce") && argc == 1) {
+      int tca = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, ", tca, tca, tca);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "); sp_PolyArray_push(_t%d, sp_box_bigint(%s)); _t%d; })", tca, r, tca);
+      free(rs.p); return;
+    }
+    /* clamp(lo, hi): compare in bigint; an mrb_int bound promotes (#3129) */
+    if (sp_streq(name, "clamp") && argc == 2) {
+      int tcl = ++g_tmp, tch = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = ", tcl); emit_bigint_operand(c, argv[0], b);
+      buf_printf(b, "; sp_Bigint *_t%d = ", tch); emit_bigint_operand(c, argv[1], b);
+      buf_printf(b, "; sp_bigint_cmp(%s, _t%d) < 0 ? _t%d"
+                    " : sp_bigint_cmp(%s, _t%d) > 0 ? _t%d : (%s); })",
+                 r, tcl, tcl, r, tch, tch, r);
+      free(rs.p); return;
+    }
     if (sp_streq(name, "bit_length") && argc == 0) {
       buf_printf(b, "sp_bigint_bit_length(%s)", r); free(rs.p); return;
     }

@@ -5083,6 +5083,9 @@ else {
   if (recv >= 0 && rt == TY_BIGINT) {
     if ((sp_streq(name, "even?") || sp_streq(name, "odd?")) && argc == 0) return TY_BOOL;
     if (sp_streq(name, "abs") && argc == 0) return TY_BIGINT;
+    /* coerce pairs the operand with self; clamp stays in bigint (#3129) */
+    if (sp_streq(name, "coerce") && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "clamp") && argc == 2) return TY_BIGINT;
     if ((sp_streq(name, "magnitude") || sp_streq(name, "abs2")) && argc == 0) return TY_BIGINT;  /* (#2418/#2424) */
     /* Bignum#downto/#upto with no block: materialized poly array of Bignums (#2305) */
     if ((sp_streq(name, "downto") || sp_streq(name, "upto")) && argc == 1 &&
