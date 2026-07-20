@@ -4075,8 +4075,16 @@ int desugar_enum_method_recv(Compiler *c) {
       static const char *const term[] = {
         "count", "include?", "member?", "sum", "min", "max", "minmax",
         "sort", "reduce", "inject", "tally", "to_h", "uniq", "reverse",
-        "find_index", "index", "join", NULL };
+        "find_index", "index", "join", "compact", "zip", NULL };
       for (int t = 0; term[t]; t++) if (sp_streq(nm, term[t])) { enum_terminal = 1; break; }
+      /* bare `first` returns the single first element, which the materialized
+         enumerator does not lower natively (only the counted first(n) does),
+         so it delegates through the element array too (#2994) */
+      if (sp_streq(nm, "first")) {
+        int fa = nt_ref(nt, id, "arguments"); int fac = 0;
+        if (fa >= 0) nt_arr(nt, fa, "arguments", &fac);
+        if (fac == 0) enum_terminal = 1;
+      }
     }
     /* A blockless TERMINAL on an index/slice enumerator delegates through
        to_a too (each_slice(2).count / .to_h): only the block-driving chains
@@ -4106,7 +4114,7 @@ int desugar_enum_method_recv(Compiler *c) {
       }
     }
     if (rt == TY_ENUMERATOR && recv_is_index_enum && enum_terminal &&
-        !sp_streq(nm, "first") && !sp_streq(nm, "size")) {
+        !sp_streq(nm, "size")) {
       int wrap2 = nt_new_node(nt, "CallNode");
       if (wrap2 >= 0) {
         nt_node_set_str(nt, wrap2, "name", "to_a");
