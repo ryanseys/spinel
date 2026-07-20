@@ -5439,6 +5439,58 @@ int desugar_to_proc_block_arg(Compiler *c) {
   return changed;
 }
 
+/* `m(&(a >> b))`: an inline proc-composition (or any Proc-valued expression
+   that is not already a simple read) as a block argument. The block-argument
+   lowering wants a value it can name, so hoist the expression into a temp on
+   the enclosing statement and pass that. The same composition assigned to a
+   local first already compiled; this makes the inline form agree. (#3117) */
+int desugar_proc_expr_block_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0) continue;
+    const char *exty = nt_type(nt, ex);
+    if (!exty || !sp_streq(exty, "CallNode")) continue;
+    /* only the Proc combinators: everything else keeps its own lowering
+       (&:sym, &obj.to_proc, &method(:m), a lambda literal, ...) */
+    const char *exn = nt_str(nt, ex, "name");
+    if (!exn || (!sp_streq(exn, ">>") && !sp_streq(exn, "<<"))) continue;
+    if (infer_type(c, ex) != TY_PROC) continue;
+    int st = -1, idx = -1;
+    if (!tp_enclosing_stmt(c, id, &st, &idx)) continue;
+    int encl = c->nscope[id];
+    int base = nt->count;
+    int wnode = nt_new_node(nt, "LocalVariableWriteNode");
+    int rd = nt_new_node(nt, "LocalVariableReadNode");
+    if (wnode < 0 || rd < 0) continue;
+    char bname[48];
+    snprintf(bname, sizeof bname, "__blkexpr_%d", id);
+    nt_node_set_str(nt, wnode, "name", bname);
+    nt_node_set_ref(nt, wnode, "value", ex);
+    nt_node_set_str(nt, rd, "name", bname);
+    nt_node_set_ref(nt, blk, "expression", rd);
+    int bn = 0; const int *body = nt_arr(nt, st, "body", &bn);
+    int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
+    if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < idx; k++) nb[k] = body[k];
+    nb[idx] = wnode;
+    for (int k = idx; k < bn; k++) nb[k + 1] = body[k];
+    nt_node_set_arr(nt, st, "body", nb, bn + 1);
+    free(nb);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    LocalVar *lv = scope_local_intern(comp_scope_of(c, id), bname);
+    lv->type = TY_PROC;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `f(**obj)` where obj is a user object defining `#to_hash`: Ruby converts it
    through to_hash. Rewrite the splat's value from `obj` to `obj.to_hash` so the
    existing double-splat machinery (which pre-evaluates the source hash into a
