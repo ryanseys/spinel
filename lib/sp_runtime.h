@@ -2191,6 +2191,7 @@ static const char *sp_class_to_s(sp_Class c);
 static const char *sp_poly_class_name(sp_RbVal v);  /* fwd: user-object to_s default */
 static inline int sp_poly_is_hash_kind(int cls_id);
 static inline const char *sp_poly_inspect(sp_RbVal v);
+static const char *sp_PolyArray_inspect(sp_PolyArray *a);  /* fwd: Array#to_s == inspect */
 static inline const char *sp_poly_to_s(sp_RbVal v) {
   switch (v.tag) {
     /* int-typed nil (SP_INT_NIL) is Ruby nil; nil.to_s is "" -- match it. */
@@ -2210,6 +2211,9 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_STR_ARRAY: return sp_StrArray_inspect((sp_StrArray *)v.v.p);
         case SP_BUILTIN_SYM_ARRAY: return sp_SymArray_inspect((sp_IntArray *)v.v.p);
         case SP_BUILTIN_PTR_ARRAY: return sp_PtrArray_inspect((sp_PtrArray *)v.v.p);
+        /* Array#to_s is Array#inspect; a boxed PolyArray element had no arm
+           and fell through to "" (#3007) */
+        case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
         case SP_BUILTIN_RANGE: return sp_Range_inspect((sp_Range *)v.v.p);
         case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
         case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);
