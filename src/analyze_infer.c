@@ -5896,8 +5896,27 @@ TyKind infer_uncached(Compiler *c, int id) {
     int r = nt_ref(nt, id, "rescue_expression");
     TyKind et = e >= 0 ? infer_type(c, e) : TY_NIL;
     TyKind rt = r >= 0 ? infer_type(c, r) : TY_NIL;
-    /* a diverging expression like raise has no real type; use the rescue arm's type */
-    if (et == TY_UNKNOWN || et == TY_VOID || et == TY_NIL) return rt;
+    /* a diverging expression (raise, a void writer) yields only the rescue
+       arm's value: its type stands. A still-UNRESOLVED try (a mid-fixpoint
+       estimate) is different -- committing to the rescue arm's concrete type
+       here let a local pin to sp_Class while the try later settled on Integer
+       (#3130). Answer the boxed union until the try resolves; if it never
+       does (the NoMethodError gate's raise-all token), poly still holds the
+       rescue arm's value correctly. */
+    if (et == TY_VOID || et == TY_NIL) return rt;
+    if (et == TY_UNKNOWN) {
+      /* a KNOWN diverging form never produces a try value however the
+         fixpoint settles: keep the rescue arm's type for it */
+      const char *ety = e >= 0 ? nt_type(nt, e) : NULL;
+      if (ety && sp_streq(ety, "CallNode") && nt_ref(nt, e, "receiver") < 0) {
+        const char *en = nt_str(nt, e, "name");
+        if (en && (sp_streq(en, "throw") || sp_streq(en, "raise") ||
+                   sp_streq(en, "exit") || sp_streq(en, "abort") ||
+                   sp_streq(en, "exit!")))
+          return rt;
+      }
+      return (rt == TY_UNKNOWN || rt == TY_VOID) ? rt : TY_POLY;
+    }
     return ty_unify(et, rt);
   }
 
