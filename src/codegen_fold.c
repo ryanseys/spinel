@@ -2816,7 +2816,9 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
     }
   }
   if (!ty_is_array(rt)) return 0;
-  const char *k = array_kind(rt);
+  /* A poly array folds through the boxed sp_poly_binop_sym path below; the
+     concretely-typed arms bail on it via their own et checks (#2880). */
+  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
   TyKind et = ty_array_elem(rt);
 
@@ -2842,7 +2844,13 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
   /* A runtime symbol operator (`arr.reduce(sym)` where sym is not statically
      known, e.g. a `|sym|` block param): fold with sp_poly_binop_sym over boxed
      operands, accumulating a boxed poly. */
-  if (!op && block < 0 && argc >= 1 &&
+  /* A poly array's elements are already boxed, so even a STATICALLY known
+     operator folds through sp_poly_binop_sym -- the static arms below only
+     serve the concretely-typed element kinds. This is what lets an array of
+     lambdas fold with reduce(:>>) (#2880). */
+  int poly_sym_fold = (k && sp_streq(k, "Poly") && block < 0 && argc >= 1 &&
+                       comp_ntype(c, argv[argc - 1]) == TY_SYMBOL);
+  if ((!op || poly_sym_fold) && block < 0 && argc >= 1 &&
       (comp_ntype(c, argv[argc - 1]) == TY_SYMBOL || comp_ntype(c, argv[argc - 1]) == TY_POLY)) {
     int symarg = argv[argc - 1];
     int rinit = (argc == 2) ? argv[0] : -1;

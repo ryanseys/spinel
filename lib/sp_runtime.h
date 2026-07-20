@@ -3193,7 +3193,15 @@ static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
    push-dispatch path can call it directly. The Integer-bit-shift
    semantics fall through when the recv isn't an array. */
 static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b);
-static sp_RbVal sp_poly_shr(sp_RbVal a, sp_RbVal b) { return sp_box_int(sp_poly_to_i(a) >> sp_poly_to_i(b)); }
+/* Proc#>> / #<< compose rather than shift. sp_Proc is not declared yet here,
+   so go through a void* shim defined beside sp_proc_compose (#2880). */
+static void *sp_proc_compose_v(void *outer, void *inner);
+static sp_RbVal sp_poly_shr(sp_RbVal a, sp_RbVal b) {
+  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_PROC &&
+      b.tag == SP_TAG_OBJ && b.cls_id == SP_BUILTIN_PROC)
+    return sp_box_proc(sp_proc_compose_v(b.v.p, a.v.p));
+  return sp_box_int(sp_poly_to_i(a) >> sp_poly_to_i(b));
+}
 /* & | ^ are boolean operators on a nil/boolean receiver (NilClass#& is
    always false, | and ^ test the operand's truthiness) and bitwise on an
    integer receiver. */
@@ -3306,6 +3314,10 @@ static const double *sp_ffi_float_array_data(sp_RbVal v) {
    group. Issue #974. */
 
 static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
+  /* Proc#<< composes the other way round: `f << g` calls g then f (#2880) */
+  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_PROC &&
+      b.tag == SP_TAG_OBJ && b.cls_id == SP_BUILTIN_PROC)
+    return sp_box_proc(sp_proc_compose_v(a.v.p, b.v.p));
   /* Dispatch by recv cls_id: an IntArray / PolyArray / etc. boxed
      into a poly slot still wants Array#<< (push), not Integer#<<
      (bit-shift). Falls through to bit-shift only when the recv is
@@ -8036,6 +8048,9 @@ static sp_Proc *sp_proc_compose(sp_Proc *outer, sp_Proc *inner) {
      regardless (#3051). */
   return sp_proc_new_meta((void *)sp_proc_compose_fn, c, sp_proc_compose_scan,
                           -1, inner ? inner->lambda_p : FALSE, 1, NULL, NULL);
+}
+static void *sp_proc_compose_v(void *outer, void *inner) {
+  return (void *)sp_proc_compose((sp_Proc *)outer, (sp_Proc *)inner);
 }
 /* Proc#curry: an immutable argument accumulator over an sp_Proc target.
    `proc.curry` makes an empty accumulator; each `[arg]` returns a fresh
