@@ -3007,7 +3007,15 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      re-types the params and re-infers the body under the shadow below), and an
      array accumulator never numeric-promotes (the pre-shadow body may have
      typed `a << x` as an int shift). */
-  if (!ty_is_array(acc_ty) && !ty_is_hash(acc_ty)) { TyKind bt = comp_ntype(c, bb[bn - 1]); if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt); }
+  if (!ty_is_array(acc_ty) && !ty_is_hash(acc_ty)) {
+    TyKind bt = comp_ntype(c, bb[bn - 1]);
+    if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt);
+    /* A BOXED body value cannot be narrowed back to a numeric seed without
+       truncating -- an int seed folded over the floats of a poly element
+       array came out an Integer (#2982). Keep the accumulator boxed. */
+    else if (bt == TY_POLY && ty_is_numeric(acc_ty) && init >= 0 && et == TY_POLY)
+      acc_ty = TY_POLY;
+  }
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -3025,7 +3033,12 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d); ", tacc);
     start = 0;
   }
-  else if (init >= 0) { emit_expr(c, init, b); buf_puts(b, "; "); start = 0; }
+  else if (init >= 0) {
+    /* a boxed accumulator wants a boxed seed */
+    if (acc_ty == TY_POLY && comp_ntype(c, init) != TY_POLY) emit_boxed(c, init, b);
+    else emit_expr(c, init, b);
+    buf_puts(b, "; "); start = 0;
+  }
   else if (nested) { buf_printf(b, "sp_PolyArray_length(_t%d) > 0 ? (sp_IntArray *)sp_PolyArray_get(_t%d, 0).v.p : sp_IntArray_new(); ", ta, ta); start = 1; }
   else { buf_printf(b, "sp_%sArray_length(_t%d) > 0 ? sp_%sArray_get(_t%d, 0) : %s; ", k, ta, k, ta,
                     acc_ty == TY_INT ? "SP_INT_NIL" : acc_ty == TY_FLOAT ? "sp_float_nil()"

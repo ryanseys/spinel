@@ -3570,7 +3570,16 @@ else {
             int rblk = nt_ref(nt, id, "block");
             int rbody = rblk >= 0 ? nt_ref(nt, rblk, "body") : -1;
             int rbn = 0; const int *rbb = rbody >= 0 ? nt_arr(nt, rbody, "body", &rbn) : NULL;
-            if (rbn > 0 && !ty_is_array(it) && !ty_is_hash(it)) { TyKind bt = infer_type(c, rbb[rbn - 1]); if (ty_is_numeric(bt)) it = ty_promote_numeric(it, bt); }
+            if (rbn > 0 && !ty_is_array(it) && !ty_is_hash(it)) {
+              TyKind bt = infer_type(c, rbb[rbn - 1]);
+              if (ty_is_numeric(bt)) it = ty_promote_numeric(it, bt);
+              /* A boxed block result (a poly element mixing into the fold, as
+                 on a user Enumerable's materialized element array) cannot be
+                 narrowed back to the seed's type without truncating: an int
+                 seed folded over floats came out an Integer (#2982). */
+              else if (bt == TY_POLY && ty_is_numeric(it) &&
+                       ty_array_elem(rt) == TY_POLY) it = TY_POLY;
+            }
             return it;
           }
         }
