@@ -4372,6 +4372,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
               buf_printf(b, " _t%d->xkey = ", te3);
               emit_boxed(c, key_v, b); buf_puts(b, ";");
             }
+            else if (sp_streq(cn, "KeyError")) buf_printf(b, " _t%d->has_key = 0;", te3);
+            if (recv_v < 0) buf_printf(b, " _t%d->has_recv = 0;", te3);
             if (recv_v >= 0) {
               buf_printf(b, " _t%d->xrecv = ", te3);
               emit_boxed(c, recv_v, b);
@@ -4408,7 +4410,14 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
         /* builtin exception class .new(msg): any object can be the message,
-           a non-String coerces via to_s (#2741) */
+           a non-String coerces via to_s (#2741). Built this way it recorded
+           neither a key nor a receiver, and the accessors for those raise
+           rather than answering nil (#3030). */
+        int clr_recv = sp_streq(cn, "KeyError") || sp_streq(cn, "NameError") ||
+                       sp_streq(cn, "NoMethodError") || sp_streq(cn, "FrozenError");
+        int clr_key = sp_streq(cn, "KeyError");
+        int tex = clr_recv || clr_key ? ++g_tmp : 0;
+        if (tex) buf_printf(b, "({ sp_Exception *_t%d = ", tex);
         buf_printf(b, "sp_exc_new(\"%s\", ", cn);
         if (argc >= 1) {
           if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
@@ -4416,6 +4425,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         }
         else buf_puts(b, "(&(\"\\xff\")[1])");
         buf_puts(b, ")");
+        if (tex) {
+          buf_puts(b, ";");
+          if (clr_recv) buf_printf(b, " _t%d->has_recv = 0;", tex);
+          if (clr_key) buf_printf(b, " _t%d->has_key = 0;", tex);
+          buf_printf(b, " _t%d; })", tex);
+        }
         return 1;
       }
       if (cn && sp_streq(cn, "String")) {
