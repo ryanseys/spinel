@@ -14658,6 +14658,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                  ta, ta, tb, ta, tb);
       return;
     }
+    /* Float <=> Bignum (either side): compare by value as doubles; a raw >/< on
+       the sp_Bigint* pointer would be ill-typed C (#3009) */
+    if ((lrt == TY_FLOAT && lat == TY_BIGINT) || (lrt == TY_BIGINT && lat == TY_FLOAT)) {
+      int ta = ++g_tmp, tb = ++g_tmp;
+      buf_printf(b, "({ double _t%d = ", ta);
+      if (lrt == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_expr(c, recv, b);
+      buf_printf(b, "; double _t%d = ", tb);
+      if (lat == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_printf(b, "; isnan(_t%d) ? SP_INT_NIL : (mrb_int)((_t%d > _t%d) - (_t%d < _t%d)); })",
+                 ta, ta, tb, ta, tb);
+      return;
+    }
     /* Bignum <=> (either side): compare by value, not the pointer identity a
        raw `>`/`<` on the sp_Bigint* would give (always -1) (#2581) */
     if ((lrt == TY_BIGINT || lat == TY_BIGINT) &&
