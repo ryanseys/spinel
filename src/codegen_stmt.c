@@ -7815,14 +7815,30 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      unified to a nullable pointer, so evaluate the tail for effect and yield
      NULL (nil), rather than assigning a void expression to the typed temp. A
      poly slot is already handled by the want_poly boxing above. (#2900) */
-  else if (g_result_var && !g_result_poly && (vty == TY_VOID || vty == TY_NIL) &&
-           sp_streq(ty, "CallNode")) {
+  /* Same shape when the tail DIVERGES: a call spinel folds into an
+     unconditional raise yields whatever C type that raise helper returns
+     (an int for the constant-folded arms, an sp_RbVal for sp_raise_nomethod),
+     which need not match the merged result slot. Evaluate it for effect and
+     yield the slot's zero; control never reaches the assignment anyway.
+     (#3021, #3060) */
+  else if (g_result_var && !g_result_poly && sp_streq(ty, "CallNode") &&
+           (vty == TY_VOID || vty == TY_NIL ||
+            (g_result_ty != TY_UNKNOWN && vty != g_result_ty &&
+             !ty_is_numeric(g_result_ty)))) {
     /* Cast the nil default to the result slot's type: a bare 0 in the comma
        expression is an int, not a null-pointer constant, so assigning it to a
        pointer slot is -Wint-conversion. typeof gives NULL for a pointer and 0
        for an int uniformly. */
     buf_puts(b, "("); emit_tail_value(c, id, b);
-    buf_printf(b, ", (__typeof__(%s))0)", g_result_var);
+    /* A struct-valued slot (sp_Class, sp_Range, ...) cannot take a scalar
+       cast, so name its zero directly when the slot type is known. */
+    if (g_result_ty != TY_UNKNOWN && comp_ty_value_obj(c, g_result_ty))
+      buf_printf(b, ", %s)", default_value(g_result_ty));
+    else if (g_result_ty != TY_UNKNOWN && !ty_is_numeric(g_result_ty) &&
+             g_result_ty != TY_BOOL && g_result_ty != TY_SYMBOL &&
+             default_value(g_result_ty) && default_value(g_result_ty)[0] == '(')
+      buf_printf(b, ", %s)", default_value(g_result_ty));
+    else buf_printf(b, ", (__typeof__(%s))0)", g_result_var);
   }
   else emit_tail_value(c, id, b);
   buf_puts(b, ";\n");

@@ -176,6 +176,9 @@ const char *g_proc_brk_home = NULL;
 int g_brk_skip_id = -1;
 const char *g_result_var = NULL;
 int g_result_poly = 0;
+/* The TyKind of the slot g_result_var names, so a tail value can be checked
+   against it (a diverging call may carry an unrelated C type). */
+TyKind g_result_ty = TY_UNKNOWN;
 /* Non-lambda proc `return` support. While emitting a method that owns a
    proc-return frame, g_method_pr_label / g_method_pr_var name the single-exit
    goto label and the value var, so an explicit `return` funnels there (popping
