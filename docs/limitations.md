@@ -198,6 +198,26 @@ element array through `String#succ`, so an unbounded string range cannot be
 iterated. `#size` is `nil`, as in CRuby, since a string range has no integer
 element count.
 
+#### `Time` sub-second precision is nanoseconds
+
+A `Time` value stores its sub-second as an integer nanosecond count
+(`int32 tv_nsec`), like `struct timespec`. A `Rational` sub-second argument
+that does not fall on a nanosecond boundary is rounded to the nearest
+nanosecond at construction:
+
+```ruby
+t = Time.utc(2020, 1, 1, 0, 0, 0, Rational(1, 3))  # 1/3 microsecond
+t.subsec    # => (333/1000000000)   (CRuby: (1/3000000))
+p t         # => 2020-01-01 00:00:00.000000333 UTC
+            #    (CRuby: 2020-01-01 00:00:00 1/3000000 UTC)
+```
+
+Everything representable in whole nanoseconds -- every Integer `usec`, and
+any `Rational` whose value lands on a nanosecond -- is exact, and `to_s`,
+`usec`, `nsec` and `strftime("%N")` agree with CRuby. Only sub-nanosecond
+exactness (and, as its consequence, the `Rational`-form `#inspect` display
+CRuby uses for non-decimal sub-seconds) is lost.
+
 #### Unboxed value types: identity IS the value
 
 `Complex`, `Rational`, and `Range` values are unboxed C structs with no
