@@ -376,6 +376,27 @@ static int ivw_index_first(const LWIndex *ix, const char *name) {
    resolvable (object receiver with no subclass override, constant receiver, or
    self) and every element must infer to a concrete type. Returns the element
    count, or 0 when the shape doesn't apply. */
+/* Does any node under `root`, other than the subtree rooted at `skip`, carry a
+   ReturnNode? Used to reject a method with more than one return shape. */
+static int subtree_has_return(const NodeTable *nt, int root, int skip) {
+  if (root < 0 || root == skip) return 0;
+  const char *ty = nt_type(nt, root);
+  if (ty && sp_streq(ty, "ReturnNode")) return 1;
+  if (ty && (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") ||
+             sp_streq(ty, "ModuleNode"))) return 0;
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++)
+    if (subtree_has_return(nt, nt_ref_at(nt, root, i), skip)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, root, i, &n);
+    for (int j = 0; j < n; j++)
+      if (subtree_has_return(nt, ids[j], skip)) return 1;
+  }
+  return 0;
+}
+
 static int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max) {
   const NodeTable *nt = c->nt;
   const char *vty = nt_type(nt, value);
@@ -407,8 +428,14 @@ static int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max)
   }
   else {
     Scope *s = comp_scope_of(c, value);
-    if (!s || s->class_id < 0) return 0;
-    mi = comp_method_in_chain(c, s->class_id, mn, NULL);
+    if (!s) return 0;
+    if (s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, mn, NULL);
+    else {
+      /* a top-level `def k` is a free function, not in any class chain (#2924) */
+      for (int si = 0; si < c->nscopes; si++)
+        if (c->scopes[si].class_id < 0 && c->scopes[si].name &&
+            sp_streq(c->scopes[si].name, mn) && c->scopes[si].def_node >= 0) { mi = si; break; }
+    }
   }
   if (mi < 0) return 0;
   int def = c->scopes[mi].def_node;
@@ -416,11 +443,28 @@ static int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max)
   int bn = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (!bb || bn <= 0) return 0;
+  /* Only a method with ONE tuple shape can type its targets: an early
+     `return nil, nil` alongside a final `return s, s` would otherwise pin
+     the targets to the last shape and mistype the nil path. Bail whenever
+     the body carries a return anywhere but its last statement. (#2924) */
+  for (int i = 0; i < bn - 1; i++)
+    if (nt_type(nt, bb[i]) && sp_streq(nt_type(nt, bb[i]), "ReturnNode")) return 0;
+  if (subtree_has_return(nt, body, bb[bn - 1])) return 0;
   int last = bb[bn - 1];
-  if (!nt_type(nt, last) || !sp_streq(nt_type(nt, last), "ReturnNode")) return 0;
-  int args = nt_ref(nt, last, "arguments");
   int an = 0;
-  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  const int *av = NULL;
+  if (nt_type(nt, last) && sp_streq(nt_type(nt, last), "ReturnNode")) {
+    int args = nt_ref(nt, last, "arguments");
+    av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  }
+  /* A method whose last statement IS an array literal returns that array, and
+     `a, b = m` destructures it -- so the literal's element types flow to the
+     targets just as an explicit `return a, b` does (#2924). */
+  else if (nt_type(nt, last) && sp_streq(nt_type(nt, last), "ArrayNode")) {
+    av = nt_arr(nt, last, "elements", &an);
+    for (int i = 0; av && i < an; i++)
+      if (nt_type(nt, av[i]) && sp_streq(nt_type(nt, av[i]), "SplatNode")) return 0;
+  }
   if (!av || an < 2 || an > max) return 0;
   for (int i = 0; i < an; i++) {
     TyKind et = infer_type(c, av[i]);
