@@ -1345,6 +1345,10 @@ int fiber_cap_needs_root(TyKind t) {
   return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) ||
          ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR ||
          t == TY_EXCEPTION ||
+         /* every other heap-backed handle: an unmarked capture is a GC UAF
+            (a TCPServer captured into a Thread block was collected, #2922) */
+         t == TY_IO || t == TY_DIR || t == TY_ENUMERATOR || t == TY_METHOD ||
+         t == TY_RANDOM || t == TY_CURRY || t == TY_STRBUF ||
          t == TY_MATCHDATA || t == TY_REGEX || t == TY_TIME;
 }
 
