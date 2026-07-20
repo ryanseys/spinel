@@ -244,6 +244,26 @@ int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
   return saw;
 }
 
+/* 1 if local `name` in scope `sc` has at least one write and every write
+   assigns an empty `[]` array literal -- the array analogue of
+   local_all_writes_empty_hash. Such a local carries no element evidence of
+   its own, so it can adopt the poly element type a callee's push forced. */
+static int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name) {
+  const NodeTable *nt = c->nt;
+  int saw = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || !sp_streq(wn, name) || comp_scope_of(c, id) != sc) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return 0;
+    int an = 0; nt_arr(nt, v, "elements", &an);
+    if (an != 0) return 0;
+    saw = 1;
+  }
+  return saw;
+}
+
 /* Per-pass index of local-variable write nodes keyed by (scope, name). The
    usage-driven promotion scans in infer_write_types ask "does local X in scope
    S have any write / an array-typed write"; without this index each such query
@@ -1639,7 +1659,19 @@ int infer_write_types(Compiler *c) {
       const char *rnm = nt_str(nt, recv, "name");
       Scope *lsc = rnm ? comp_scope_of(c, recv) : NULL;
       LocalVar *lv = lsc ? scope_local(lsc, rnm) : NULL;
-      if (!lv || lv->is_param || lv->is_block_param) continue;
+      if (!lv || lv->is_block_param) continue;
+      /* A parameter is typed from its call sites, not from its uses -- except
+         that a push through it MUTATES the caller's own array, so an element
+         the bound type cannot hold has to widen it (and, through the reverse
+         binding in bind_call_params, the caller's local too). Widening only:
+         an UNKNOWN parameter still takes its type from the call site (#2989). */
+      if (lv->is_param) {
+        if (!is_push || !ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY ||
+            lv->rbs_seeded) continue;
+        if (vt == TY_UNKNOWN || vt == TY_POLY || vt == ty_array_elem(lv->type)) continue;
+        lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
+        continue;
+      }
       /* A bare `x[i]` read OR an `x[i] = v` element assignment must not promote
          `x` to a hash if `x` elsewhere gets an array-typed write (`x = a.split`
          etc.): it is an array indexed/assigned by position, and the hash type
@@ -2004,7 +2036,10 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        any non-object param to poly. Pass nil through to ty_unify only while
        the param is still unknown or already an object. */
     if (at == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) at = TY_POLY;
-    TyKind merged = ty_unify(p->type, at);
+    /* A parameter a push through it already widened stays the poly ARRAY;
+       the plain unification would collapse it to the poly scalar (#2989). */
+    TyKind merged = (p->push_widened && ty_is_array(at)) ? TY_POLY_ARRAY
+                                                         : ty_unify(p->type, at);
     if (merged != p->type) { p->type = merged; changed = 1; }
     /* Reverse binding: an empty-`{}`-only local passed to a hash parameter is
        that hash container, filled inside the callee through the reference.
@@ -2018,6 +2053,22 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
           (al->type == TY_UNKNOWN || al->type == TY_POLY) &&
           local_all_writes_empty_hash(c, asc, an)) {
         al->type = p->type; changed = 1;
+      }
+    }
+    /* Reverse binding for an ARRAY argument: the callee mutates the very array
+       the caller holds, so a push inside the method that widened the parameter
+       to a poly array widens the caller's local too. Without this the caller
+       kept its narrow element type and the in-method push emitted an
+       ill-typed sp_StrArray_push of a symbol (#2989). Only the widening
+       direction, only to the poly array, so it stays monotonic. */
+    if (p->push_widened && apty && sp_streq(apty, "LocalVariableReadNode")) {
+      const char *an = nt_str(nt, argv[k], "name");
+      Scope *asc = an ? comp_scope_of(c, argv[k]) : NULL;
+      LocalVar *al = asc ? scope_local(asc, an) : NULL;
+      if (al && ty_is_array(al->type) && al->type != TY_POLY_ARRAY &&
+          !al->is_param && !al->is_block_param &&
+          local_all_writes_empty_array(c, asc, an)) {
+        al->type = TY_POLY_ARRAY; changed = 1;
       }
     }
     if (merged == TY_PROC) {
