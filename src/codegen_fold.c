@@ -5494,6 +5494,22 @@ int callee_has_kwarg(Compiler *c, Scope *m, const char *name) {
   return 0;
 }
 
+/* Like callee_has_kwarg, but for a param that is a REAL declared keyword param
+   (present in the def's keywords list). Unlike callee_has_kwarg it does NOT
+   treat every param of a `...` forwarding method as keyword-matchable, so it
+   answers "can this param be bound by position?" (#3114). */
+int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name) {
+  if (!m || !name || m->def_node < 0) return 0;
+  int pn = nt_ref(c->nt, m->def_node, "parameters");
+  if (pn < 0) return 0;
+  int kn = 0; const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
+  for (int i = 0; i < kn; i++) {
+    const char *kpn = nt_str(c->nt, kws[i], "name");
+    if (kpn && sp_streq(kpn, name)) return 1;
+  }
+  return 0;
+}
+
 /* Materialize the first `**hash` source inside `kwh` (a KeywordHashNode) into
    a typed temp so per-param extraction / kwrest collection can read it.
    Returns the temp id, or -1 when kwh carries no double-splat (or its source
@@ -6173,7 +6189,12 @@ else {
         int krhash = emit_kwrest_collect(c, m, kwh, ds_hash_tmp, ds_hash_type, argsNode);
         buf_printf(out, "_t%d", krhash);
       }
-      else if (i < pos_argc) {
+      else if (i < pos_argc && !callee_param_is_declared_kwarg(c, m, m->pnames[i])) {
+        /* a declared KEYWORD param is never bound by position: only a
+           positional param takes a surplus positional arg here. An unmatched
+           keyword param falls through to its default below (#3114). (A `...`
+           forwarding method's synthesized positional params are not declared
+           keywords, so they still bind here.) */
         emit_arg_rooted(c, m, i, argv[i], out);
       }
       else {
