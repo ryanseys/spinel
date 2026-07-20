@@ -83,8 +83,20 @@ sp_Time sp_time_at_float(double epoch) {
    interprets the broken-down value in the host local zone and resolves
    DST itself (tm_isdst=-1). The fixed-offset 7-arg form is a separate
    issue. */
+/* CRuby validates each civil component against a fixed range before
+   normalizing overflow into neighbouring fields (e.g. Feb 30 -> Mar 1 is
+   allowed, but mon 13 / mday 32 / hour 25 raise ArgumentError) (#3099). */
+static void sp_time_check_args(int64_t mo, int64_t d, int64_t h, int64_t mi, int64_t s) {
+  if (mo < 1 || mo > 12) sp_raise_cls("ArgumentError", "mon out of range");
+  if (d  < 1 || d  > 31) sp_raise_cls("ArgumentError", "mday out of range");
+  if (h  < 0 || h  > 24) sp_raise_cls("ArgumentError", "hour out of range");
+  if (mi < 0 || mi > 59) sp_raise_cls("ArgumentError", "min out of range");
+  if (s  < 0 || s  > 60) sp_raise_cls("ArgumentError", "sec out of range");
+}
+
 sp_Time sp_time_new(int64_t y, int64_t mo, int64_t d,
                     int64_t h, int64_t mi, int64_t s) {
+  sp_time_check_args(mo, d, h, mi, s);
   struct tm tm;
   memset(&tm, 0, sizeof(tm));
   tm.tm_year = (int)y - 1900;
@@ -115,6 +127,7 @@ static int64_t sp_time_civil_epoch(int64_t y, int64_t mo, int64_t d,
 /* Time.utc(y, m, d, h, mi, s) — UTC construction. */
 sp_Time sp_time_new_utc(int64_t y, int64_t mo, int64_t d,
                         int64_t h, int64_t mi, int64_t s) {
+  sp_time_check_args(mo, d, h, mi, s);
   return (sp_Time){ sp_time_civil_epoch(y, mo, d, h, mi, s), 0, 1 };
 }
 
@@ -125,6 +138,7 @@ sp_Time sp_time_new_off(int64_t y, int64_t mo, int64_t d,
                         int64_t h, int64_t mi, int64_t s, int64_t off) {
   if (off <= -86400 || off >= 86400)
     sp_raise_cls("ArgumentError", "utc_offset out of range");
+  sp_time_check_args(mo, d, h, mi, s);
   sp_Time t = { sp_time_civil_epoch(y, mo, d, h, mi, s) - off, 0, 2 };
   t.utc_off = (int32_t)off;
   return t;
