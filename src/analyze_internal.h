@@ -228,6 +228,7 @@ int desugar_builtin_class_var_recv(Compiler *c);
 int desugar_compose_method_operand(Compiler *c);
 int desugar_reduce_proc_arg(Compiler *c);
 int desugar_block_capture_wrap(Compiler *c);
+int desugar_user_not_match(Compiler *c);
 int desugar_env_enum(Compiler *c);
 int desugar_dir_surface(Compiler *c);
 const char *builtin_class_var_static_name(Compiler *c, int node);

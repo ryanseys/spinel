@@ -6101,6 +6101,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_compose_method_operand(c);   /* proc >> meth -> proc >> meth.to_proc */
     ch |= desugar_reduce_proc_arg(c);          /* reduce(&pr) -> reduce { |a,b| pr.call(a,b) } */
     ch |= desugar_block_capture_wrap(c);       /* { |i| ->{i} } -> { |i| (->(i){ ->{i} }).call(i) } */
+    ch |= desugar_user_not_match(c);            /* a !~ b -> !(a =~ b) for a user =~ (#3019) */
     ch |= desugar_env_enum(c);                 /* ENV.keys/... -> __env_to_h.keys/... */
     ch |= desugar_dir_surface(c);              /* Dir.foreach{} -> entries.each{}, chdir{} splice, ... */           /* C.class_eval { v } -> (->(){v}).call */
     ch |= desugar_enumerable_chain(c);               /* x.chain(y) / enum+enum -> __enum_chain(x.to_a + y.to_a) */

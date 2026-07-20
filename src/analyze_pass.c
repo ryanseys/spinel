@@ -4268,6 +4268,41 @@ int desugar_dir_surface(Compiler *c) {
   return changed;
 }
 
+/* `a !~ b` where a's class defines `=~` (and no `!~` of its own): Object#!~ is
+   !(a =~ b). Rewrite the CallNode into `!` over a FRESH `=~` node -- renaming
+   in codegen poisoned the node-type cache (`!~` bool vs `=~` any, see #3018's
+   note), a fresh node types independently (#3019). Receivers without a user
+   `=~` (regex operands, bool/nil raises) keep their dedicated paths. */
+int desugar_user_not_match(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "!~")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    TyKind rt = infer_type(c, recv);
+    if (!ty_is_object(rt)) continue;
+    int cid = ty_object_class(rt);
+    if (cid < 0 || comp_method_in_chain(c, cid, "=~", NULL) < 0) continue;
+    if (comp_method_in_chain(c, cid, "!~", NULL) >= 0) continue;  /* user !~ wins */
+    int inner = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, inner, "name", "=~");
+    nt_node_set_ref(nt, inner, "receiver", recv);
+    nt_node_set_ref(nt, inner, "arguments", nt_ref(nt, id, "arguments"));
+    nt_node_set_ref(nt, inner, "block", -1);
+    nt_node_set_str(nt, id, "name", "!");
+    nt_node_set_ref(nt, id, "receiver", inner);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    comp_grow_node_arrays(c);
+    c->nscope[inner] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_env_enum(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
