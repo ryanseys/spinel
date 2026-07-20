@@ -1176,16 +1176,25 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
                                    _ra == TY_POLY_ARRAY ? "Poly" : array_kind(_ra); })
                  : array_kind(bret);
   if (!bk) return 0;
+  /* The fixpoint may settle the RESULT on a poly array even though this block
+     returns a typed one -- the enclosing method's parameter widened under
+     differently-typed call sites (#2927). Collect into a PolyArray then, so
+     the downstream consumers (join, indexing) that dispatch on the cached
+     node type read the layout they expect; each spliced element boxes. */
+  int res_boxed = comp_ntype(c, id) == TY_POLY_ARRAY && !sp_streq(bk, "Poly");
+  const char *bkr = res_boxed ? "Poly" : bk;
   int np = 0; while (block_param_name(c, block, np)) np++;
   if (np > 1 && rt != TY_POLY_ARRAY) return 0;  /* destructure needs poly elements */
   TyKind et = ty_array_elem(rt);
   int ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-  if (poly_recv) buf_printf(g_pre, " _t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "sp_box_nil()", ta);
+  /* sp_enum_items_from, not sp_poly_to_poly_array: a boxed HASH receiver
+     enumerates as its [key, value] pairs (#2927); an array is unchanged. */
+  if (poly_recv) buf_printf(g_pre, " _t%d = sp_enum_items_from(%s); SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "sp_box_nil()", ta);
   else buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : "");
   free(rb.p);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", bk, tres, bk, tres);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", bkr, tres, bkr, tres);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, rk, ta, ti);
   if (np <= 1) {
@@ -1234,7 +1243,13 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
     else { emit_ctype(c, bret, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tbv, default_value(bret)); }
     emit_block_value_into(c, block, tbvb, box, g_indent + 1);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", bk, tres, tbv);
+    if (res_boxed) {
+      char sv[24]; snprintf(sv, sizeof sv, "_t%d", tbv);
+      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, sv, &bx);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", tres, bx.p ? bx.p : sv);
+      free(bx.p);
+    }
+    else buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", bk, tres, tbv);
   } else {
     int tj = ++g_tmp;
     /* collect the block's value (next-aware) into the per-iteration array temp,
@@ -1243,7 +1258,14 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, " _t%d = %s;\n", tbv, default_value(bret));
     emit_block_value_into(c, block, tbvb, bret == TY_POLY, g_indent + 1);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
+    if (res_boxed) {
+      char sv[64]; snprintf(sv, sizeof sv, "sp_%sArray_get(_t%d, _t%d)", bk, tbv, tj);
+      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, ty_array_elem(bret), sv, &bx);
+      buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) sp_PolyArray_push(_t%d, %s);\n",
+                 tj, tj, bk, tbv, tj, tres, bx.p ? bx.p : sv);
+      free(bx.p);
+    }
+    else buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
                tj, tj, bk, tbv, tj, bk, tres, bk, tbv, tj);
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
