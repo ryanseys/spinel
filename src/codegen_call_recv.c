@@ -4342,20 +4342,31 @@ else {
         if (bp0) buf_printf(b, " lv_%s = _t%d;", rename_local(bp0), tk);
         if (bp1) buf_printf(b, " lv_%s = sp_PolyPolyHash_get(_t%d, _t%d);", rename_local(bp1), tr, tk);
         if (bp2) buf_printf(b, " lv_%s = _t%d;", rename_local(bp2), tv);
-        buf_printf(b, " sp_PolyPolyHash_set(_t%d, _t%d, ", tr, tk);
+        buf_printf(b, " sp_PolyPolyHash_set(_t%d, _t%d, ({ ", tr, tk);
         {
           int bbody = nt_ref(nt, blk, "body");
           int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
           int bval = bn > 0 ? bb[bn - 1] : -1;
-          buf_puts(b, "({ ");
-          for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+          /* redirect g_pre so an allocating value expression (e.g. a `[o, n]`
+             array literal) drains its setup INSIDE this stmt-expr -- after the
+             block params were assigned above -- rather than being hoisted
+             before the merge loop, which would read the params' initial nil
+             (#3100 follow-up). */
+          Buf lpre; memset(&lpre, 0, sizeof lpre);
+          Buf lval; memset(&lval, 0, sizeof lval);
+          Buf *saved_pre = g_pre; g_pre = &lpre;
+          for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], &lval, 0);
           if (bval >= 0) {
-            if (comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-            else emit_expr(c, bval, b);
+            if (comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, &lval);
+            else emit_expr(c, bval, &lval);
           }
-          else buf_puts(b, "sp_box_nil()");
-          buf_puts(b, "; })");
+          else buf_puts(&lval, "sp_box_nil()");
+          g_pre = saved_pre;
+          if (lpre.p) buf_puts(b, lpre.p);
+          if (lval.p) buf_puts(b, lval.p);
+          free(lpre.p); free(lval.p);
         }
+        buf_puts(b, "; })");
         buf_printf(b, "); } else { sp_PolyPolyHash_set(_t%d, _t%d, _t%d); } }", tr, tk, tv);
         buf_printf(b, " _t%d; })", tr);
         return 1;

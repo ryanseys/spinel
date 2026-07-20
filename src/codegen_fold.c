@@ -2892,7 +2892,24 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
       int has_init = rac >= 1 && rav &&
                      !(nt_type(nt, rav[0]) && sp_streq(nt_type(nt, rav[0]), "SymbolNode"));
       if (has_init) {
-        if (selfty == TY_POLY) emit_boxed(c, rav[0], b);
+        /* an empty {} / [] seed defaults to StrPolyHash / a poly array, but the
+           reduce RESULT may have inferred a different concrete variant (e.g.
+           PolyPolyHash). On an empty receiver the seed IS the result, so emit
+           it in the result's variant or it is read back through the wrong
+           struct (#3100 follow-up). */
+        const char *ity = nt_type(nt, rav[0]);
+        int seed_empty = 0;
+        if (ity && (sp_streq(ity, "HashNode") || sp_streq(ity, "ArrayNode"))) {
+          int en = 0; nt_arr(nt, rav[0], "elements", &en);
+          seed_empty = (en == 0);
+        }
+        if (seed_empty && ty_is_hash(selfty) && ty_hash_cname(selfty))
+          buf_printf(b, "sp_%sHash_new()", ty_hash_cname(selfty));
+        else if (seed_empty && selfty == TY_POLY_ARRAY)
+          buf_puts(b, "sp_PolyArray_new()");
+        else if (seed_empty && ty_is_array(selfty) && array_kind(selfty))
+          buf_printf(b, "sp_%sArray_new()", array_kind(selfty));
+        else if (selfty == TY_POLY) emit_boxed(c, rav[0], b);
         else emit_expr(c, rav[0], b);
       }
       else if (selfty == TY_INT) buf_puts(b, "SP_INT_NIL");
