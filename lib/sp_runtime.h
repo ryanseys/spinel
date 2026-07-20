@@ -5306,6 +5306,7 @@ static mrb_bool sp_poly_equal(sp_RbVal a, sp_RbVal b) {
 /* is_a?/kind_of? for a poly value against a BUILTIN class named `cn`. The
    caller (codegen) routes here only when `cn` is a known builtin; a user-class
    target is resolved inline via sp_class_le on the boxed object's cls_id. */
+static mrb_int sp_exc_is_a(volatile struct sp_Exception_s *ve, const char *cn);  /* fwd (#3096) */
 static mrb_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
   if (!cn) return FALSE;
   if (strcmp(cn, "Object") == 0 || strcmp(cn, "BasicObject") == 0 || strcmp(cn, "Kernel") == 0)
@@ -5327,6 +5328,10 @@ static mrb_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
   if (strcmp(cn, "Comparable") == 0) return is_int || is_flt || is_rat ||
                                              v.tag == SP_TAG_STR || v.tag == SP_TAG_SYM;
   if (strcmp(cn, "Enumerable") == 0) return is_arr || is_range || is_hash;
+  /* a boxed exception (e.g. rescued into a poly-union local) walks the
+     exception hierarchy: StopIteration is_a? StandardError etc. (#3096) */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p)
+    return (mrb_bool)sp_exc_is_a((volatile struct sp_Exception_s *)v.v.p, cn);
   return FALSE;
 }
 /* is_a?/instance_of? for a poly value against a RUNTIME class value `cls` (a
