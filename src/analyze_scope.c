@@ -1080,6 +1080,17 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
   int args = nt_ref(nt, val, "arguments");
   int an = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  /* The string-named form `Struct.new("Foo", ...)` registers a `Struct::Foo`
+     constant -- a legacy pattern spinel deliberately drops (see limitations.md).
+     Reject it with a pointer to the modern `Foo = Struct.new(...)` form rather
+     than leaving `Struct::Foo` untyped and failing with a raw C error (#3080). */
+  if (an >= 1 && argv && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "StringNode")) {
+    int ln = (int)nt_int(nt, val, "node_line", 0);
+    const char *file = nt->source_file ? nt->source_file : "source.rb";
+    fprintf(stderr, "spinel: %s:%d: Struct.new with a string name (the Struct::Name "
+                    "form) is not supported; use `Name = Struct.new(...)`\n", file, ln);
+    exit(1);
+  }
   for (int a = 0; a < an; a++) {
     /* trailing `keyword_init: true` -> the members are keyword-initialized;
        Struct#keyword_init? reports it (a KeywordHashNode holds the pairs). */

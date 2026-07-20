@@ -254,6 +254,21 @@ name` instead of failing with a raw C error. Renaming the nested module
 avoids it. Builtin *modules* (`Comparable`, `Kernel`, `Math`, …) reopen
 normally at any nesting level.
 
+#### String-named `Struct` (the `Struct::Name` form)
+
+The legacy form `Struct.new("Foo", :a, :b)` registers the new class as the
+constant `Struct::Foo`. Spinel does not support this: a class is a compile-time
+entity here, and the whole point of the string name — a class installed under
+the `Struct::` namespace and reached through `Struct::Foo` — has no analogue in
+the ahead-of-time model. Spinel refuses both the string-named definition and any
+`Struct::Name` reference at compile time with `Struct.new with a string name …
+is not supported; use \`Name = Struct.new(...)\``. Use the modern constant-
+assignment form, which is equivalent and idiomatic:
+
+```ruby
+Foo = Struct.new(:a, :b)   # not Struct.new("Foo", :a, :b)
+```
+
 #### `Rational` precision and `Complex` components
 
 `Rational` is stored as a pair of fixed `mrb_int` numerator/denominator. The

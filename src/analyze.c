@@ -5805,6 +5805,29 @@ void analyze_program(Compiler *c) {
      is typed, and before reachability so it is kept only when actually called.
      Explicit `to_enum`/`enum_for` no longer route here -- synth_to_enum_generators
      builds a real lazy Enumerator helper, retargeted by desugar_to_enum. */
+  /* Reject the legacy `Struct::Name` constant path (the string-named Struct
+     form), deliberately dropped -- see limitations.md and the matching check in
+     register_struct_members (#3080). A bare `Struct.new("Foo", ...)` definition
+     is compile-time only, so the `Struct::Foo` access is where the dropped form
+     surfaces; reject it with a pointer to the modern `Name = Struct.new(...)`. */
+  {
+    const NodeTable *nt = c->nt;
+    for (int id = 0; id < nt->count; id++) {
+      if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "ConstantPathNode")) continue;
+      int par = nt_ref(nt, id, "parent");
+      const char *pn = (par >= 0 && nt_type(nt, par) &&
+                        sp_streq(nt_type(nt, par), "ConstantReadNode"))
+                       ? nt_str(nt, par, "name") : NULL;
+      if (pn && sp_streq(pn, "Struct")) {
+        int ln = (int)nt_int(nt, id, "node_line", 0);
+        const char *file = nt->source_file ? nt->source_file : "source.rb";
+        fprintf(stderr, "spinel: %s:%d: the Struct::Name constant path is not supported "
+                        "(legacy string-named Struct); use `Name = Struct.new(...)`\n", file, ln);
+        exit(1);
+      }
+    }
+  }
+
   synth_struct_each(c);
   synth_enum_to_a(c);
   synth_to_enum_generators(c);
