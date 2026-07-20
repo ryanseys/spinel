@@ -10503,6 +10503,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* x.class -> the class-name string (compile-time for known types) */
+  /* top-level `self.class` (and inside a top-level def): self is main, an
+     Object instance, so the class is Object -- the SelfNode has no C slot at
+     top level and previously fell through unsupported (#3035) */
+  if (recv >= 0 && sp_streq(name, "class") && argc == 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode") &&
+      ({ Scope *_ss = comp_scope_of(c, id); !_ss || _ss->class_id < 0; })) {
+    buf_puts(b, "((sp_Class){(mrb_int)-116, \"Object\"})");
+    return;
+  }
   if (recv >= 0 && sp_streq(name, "class") && argc == 0 &&
       !obj_member_shadows(c, comp_recv_type(c, recv), "class")) {
     TyKind rt = comp_recv_type(c, recv);  /* empty-literal receivers coerce */

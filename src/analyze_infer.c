@@ -1675,6 +1675,11 @@ TyKind infer_call(Compiler *c, int id) {
       int en0 = 0;
       if (sp_streq(rty0, "ArrayNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) return TY_CLASS; }
       if (sp_streq(rty0, "HashNode") || sp_streq(rty0, "KeywordHashNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) return TY_CLASS; }
+      /* top-level `self.class`: self is main (an Object) -> Object (#3035) */
+      if (sp_streq(rty0, "SelfNode")) {
+        Scope *ss = comp_scope_of(c, id);
+        if (!ss || ss->class_id < 0) return TY_CLASS;
+      }
     }
     /* a member/method literally named `class` (a Data/Struct member) shadows
        Object#class: fall through to the reader/method dispatch (#2975) */
