@@ -7631,13 +7631,21 @@ sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler);
 mrb_int sp_process_kill1(sp_RbVal sig, mrb_int pid);
 /* SignalException.new(sig) / Interrupt.new(msg?): the message is the SIG-name
    and #signo rides the xkey slot (#2762, #2763). */
-static sp_Exception *sp_signal_exc_new(sp_RbVal sig) {
+/* msg: an explicit second argument overrides the SIG<name> message (only the
+   Integer-signal form accepts one, matching CRuby); NULL keeps the default. */
+static sp_Exception *sp_signal_exc_new_m(sp_RbVal sig, const char *msg) {
+  if (msg && sig.tag != SP_TAG_INT)
+    sp_raise_cls("ArgumentError", "wrong number of arguments");
   int no = sp_signal_resolve(sig);
   const char *nm = sp_signal_signame(no);
-  sp_Exception *e = sp_exc_new("SignalException", sp_sprintf("SIG%s", nm ? nm : "?"));
+  sp_Exception *e = sp_exc_new("SignalException",
+                               msg ? msg : sp_sprintf("SIG%s", nm ? nm : "?"));
   SP_GC_ROOT(e);
   e->xkey = sp_box_int((mrb_int)no);
   return e;
+}
+static sp_Exception *sp_signal_exc_new(sp_RbVal sig) {
+  return sp_signal_exc_new_m(sig, NULL);
 }
 static sp_Exception *sp_interrupt_new(const char *msg) {
   sp_Exception *e = sp_exc_new("Interrupt", (msg && msg[0]) ? msg : "Interrupt");

@@ -4280,6 +4280,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
                         " \"wrong number of arguments (given 0, expected 1..2)\"), NULL))");
             return 1;
           }
+          if (argc >= 2) {
+            /* SignalException.new(signo, msg): the message overrides SIG<name>
+               (Integer signal form only, checked at runtime) (#3073) */
+            buf_puts(b, "sp_signal_exc_new_m(");
+            emit_boxed(c, argv[0], b);
+            buf_puts(b, ", ");
+            if (comp_ntype(c, argv[1]) == TY_STRING) emit_expr(c, argv[1], b);
+            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[1], b); buf_puts(b, ")"); }
+            buf_puts(b, ")");
+            return 1;
+          }
           buf_puts(b, "sp_signal_exc_new(");
           emit_boxed(c, argv[0], b);
           buf_puts(b, ")");
