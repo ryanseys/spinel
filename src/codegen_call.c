@@ -8338,6 +8338,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
     emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
   }
+  /* the concurrency handles: never frozen, never nil (a live C pointer) (#3124) */
+  {
+    TyKind hrt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    if ((hrt == TY_THREAD || hrt == TY_QUEUE || hrt == TY_MUTEX || hrt == TY_CONDVAR) &&
+        argc == 0 && (sp_streq(name, "frozen?") || sp_streq(name, "nil?"))) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_bool)0)");
+      return;
+    }
+    if ((hrt == TY_THREAD || hrt == TY_QUEUE || hrt == TY_MUTEX || hrt == TY_CONDVAR) &&
+        argc == 0 && sp_streq(name, "itself")) {
+      emit_expr(c, recv, b); return;
+    }
+  }
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "frozen?")) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ")->frozen)"); return;
   }
@@ -10767,6 +10780,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     else if (rt == TY_DIR) cn = "Dir";
     else if (rt == TY_TMS) cn = "Process::Tms";
+    else if (rt == TY_THREAD) cn = "Thread";
+    else if (rt == TY_QUEUE) cn = "Thread::Queue";
+    else if (rt == TY_MUTEX) cn = "Thread::Mutex";
+    else if (rt == TY_CONDVAR) cn = "Thread::ConditionVariable";
     else if (rt == TY_IO) {
       /* a stat handle is a File::Stat (#2841); a path-backed handle is a
          File; a raw stream (STDOUT, pipe end) is an IO (#2797) */

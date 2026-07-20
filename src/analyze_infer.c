@@ -2253,6 +2253,13 @@ else {
     if (sp_streq(name, "kill")) return TY_FIBER;   /* returns the receiver */
   }
 
+  /* universal query methods on the concurrency handles (#3124) */
+  if (recv >= 0 && (rt == TY_THREAD || rt == TY_QUEUE || rt == TY_MUTEX ||
+                    rt == TY_CONDVAR) && argc == 0) {
+    if (sp_streq(name, "class")) return TY_CLASS;
+    if (sp_streq(name, "frozen?") || sp_streq(name, "nil?")) return TY_BOOL;
+    if (sp_streq(name, "itself")) return rt;
+  }
   /* TY_THREAD instance methods */
   if (recv >= 0 && rt == TY_THREAD) {
     if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) return TY_STRING;
