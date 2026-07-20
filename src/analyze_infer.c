@@ -2178,8 +2178,11 @@ else {
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "yield")) return TY_POLY;
       /* Random class methods: Random.rand(float)->float / Random.rand(int)->int
          / Random.rand->float */
-      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand"))
-        return argc >= 1 ? (infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_INT) : TY_FLOAT;
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand")) {
+        if (argc < 1) return TY_FLOAT;
+        TyKind rr0 = infer_type(c, argv[0]);
+        return rr0 == TY_FLOAT ? TY_FLOAT : rr0 == TY_BIGINT ? TY_BIGINT : TY_INT;
+      }
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "bytes")) return TY_STRING;
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "new_seed")) return TY_INT;
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "urandom")) return TY_STRING;
@@ -2310,6 +2313,7 @@ else {
       if (argc < 1) return TY_FLOAT;
       TyKind a0 = infer_type(c, argv[0]);
       if (a0 == TY_FLOAT || a0 == TY_FLOAT_RANGE) return TY_FLOAT;   /* rand(Float range) -> Float (#2521) */
+      if (a0 == TY_BIGINT) return TY_BIGINT;   /* rand(Bignum bound) -> Bigint (#3058) */
       /* rand(Float range) -> Float (#2521) */
       const char *atype = nt_type(nt, argv[0]);
       if (atype && sp_streq(atype, "RangeNode")) {
@@ -3025,6 +3029,7 @@ else {
       /* rand(literal 0) is a Float in [0,1) like rand(); nonzero -> Integer */
       if (atype && sp_streq(atype, "IntegerNode") && nt_int(nt, argv[0], "value", 0) == 0)
         return TY_FLOAT;
+      if (infer_type(c, argv[0]) == TY_BIGINT) return TY_BIGINT;   /* rand(Bignum bound) (#3058) */
       /* rand(Float max): CRuby truncates a positive max to an Integer range and
          returns an Integer, but max 0.0 falls back to a Float in [0,1) -- so a
          Float argument is a runtime-chosen poly (#2549). */

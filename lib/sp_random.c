@@ -211,3 +211,33 @@ mrb_int sp_kernel_srand(mrb_int seed) {
   sp_krand_srand((uint64_t)seed);
   return prev;
 }
+/* Random#rand(Bignum bound): a uniform Bigint in [0, bound). Composed from
+   32-bit chunks of the instance stream; accumulating two extra chunks past
+   the bound keeps the modulo bias around 2^-64. A non-positive bound raises
+   ArgumentError like the mrb_int form (#3058). */
+typedef struct sp_Bigint sp_Bigint;
+extern sp_Bigint *sp_bigint_new_int(int64_t v);
+extern sp_Bigint *sp_bigint_mul(sp_Bigint *a, sp_Bigint *b);
+extern sp_Bigint *sp_bigint_add(sp_Bigint *a, sp_Bigint *b);
+extern sp_Bigint *sp_bigint_mod(sp_Bigint *a, sp_Bigint *b);
+extern int sp_bigint_cmp(sp_Bigint *a, sp_Bigint *b);
+extern const char *sp_bigint_to_s(sp_Bigint *b);
+sp_Bigint *sp_bigint_rand(sp_Random *r, sp_Bigint *bound) {
+  SP_GC_ROOT(bound);
+  sp_Bigint *zero = sp_bigint_new_int(0);
+  SP_GC_ROOT(zero);
+  if (sp_bigint_cmp(bound, zero) <= 0)
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %s", sp_bigint_to_s(bound)));
+  sp_Bigint *acc = zero;
+  SP_GC_ROOT(acc);
+  sp_Bigint *b32 = sp_bigint_new_int((int64_t)1 << 32);
+  SP_GC_ROOT(b32);
+  int extra = 2;
+  while (extra > 0) {
+    sp_Bigint *chunk = sp_bigint_new_int((int64_t)(sp_random_next(r) & 0xffffffffULL));
+    SP_GC_ROOT(chunk);
+    acc = sp_bigint_add(sp_bigint_mul(acc, b32), chunk);
+    if (sp_bigint_cmp(acc, bound) >= 0) extra--;
+  }
+  return sp_bigint_mod(acc, bound);
+}

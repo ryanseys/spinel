@@ -8473,6 +8473,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_Random_rand_float_bound(sp_random_default_get(), ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
+      else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+        /* Random.rand(Bignum bound): a uniform Bigint in [0, bound) (#3058) */
+        buf_puts(b, "sp_bigint_rand(sp_random_default_get(), ");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       else if (argc >= 1) {
         buf_puts(b, "sp_Random_rand_int(sp_random_default_get(), ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -8546,6 +8551,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, "sp_Random_rand_range("); emit_expr(c, recv, b); buf_puts(b, ", ");
           emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
+      }
+      else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+        /* rand(Bignum bound): a uniform Bigint in [0, bound) (#3058) */
+        buf_puts(b, "sp_bigint_rand("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (argc >= 1) {
         buf_puts(b, "sp_Random_rand_int("); emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -9472,6 +9482,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                       " _t%d > 0 ? sp_box_int(sp_krand_below(_t%d))"
                       " : sp_box_float(sp_krand_float()); })",
                    tn, tf, tn, tn, tn, tn, tn);
+        return;
+      }
+      /* rand(Bignum bound): a uniform Bigint in [0, bound) off the shared
+         default stream (#3058) */
+      if (comp_ntype(c, av[0]) == TY_BIGINT) {
+        buf_puts(b, "sp_bigint_rand(sp_random_default_get(), ");
+        emit_expr(c, av[0], b); buf_puts(b, ")");
         return;
       }
       /* a dynamic Integer argument may be 0 at run time (a Float [0,1)) or

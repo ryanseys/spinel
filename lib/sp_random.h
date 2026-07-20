@@ -34,6 +34,8 @@ mrb_int sp_Random_seed(sp_Random *r);
 mrb_bool sp_Random_eq(sp_Random *a, sp_Random *b);
 mrb_int sp_Random_rand_range(sp_Random *r, sp_Range rg);
 mrb_int sp_Random_rand_int(sp_Random *r, mrb_int n);
+struct sp_Bigint;
+struct sp_Bigint *sp_bigint_rand(sp_Random *r, struct sp_Bigint *bound);
 mrb_float sp_Random_rand_float(sp_Random *r);
 mrb_float sp_Random_rand_float_bound(sp_Random *r, mrb_float bound);
 mrb_float sp_Random_rand_float_range(sp_Random *r, mrb_float lo, mrb_float hi);
