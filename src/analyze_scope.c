@@ -3578,6 +3578,46 @@ int infer_ivar_types(Compiler *c) {
       }
     }
     else if (sp_streq(ty, "CallNode")) {
+      /* instance_variable_set(:@lit, v): CRuby creates the ivar on the spot,
+         so register a slot for a brand-new literal name in the receiver's
+         class layout (like an `@lit = v` write would), pinning the value's
+         type. Without this the write has no field to lower to (#3059). */
+      {
+        const char *ivsn = nt_str(nt, id, "name");
+        if (ivsn && sp_streq(ivsn, "instance_variable_set")) {
+          int sargs = nt_ref(nt, id, "arguments"); int san = 0;
+          const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &san) : NULL;
+          const char *a0ty = (san == 2 && sav) ? nt_type(nt, sav[0]) : NULL;
+          const char *sym = NULL;
+          if (a0ty && sp_streq(a0ty, "SymbolNode")) sym = nt_str(nt, sav[0], "value");
+          else if (a0ty && sp_streq(a0ty, "StringNode")) sym = nt_str(nt, sav[0], "content");
+          if (sym && sym[0] == '@') {
+            int ivrecv = nt_ref(nt, id, "receiver");
+            const char *ivrt = ivrecv >= 0 ? nt_type(nt, ivrecv) : NULL;
+            int tcid = -1;
+            if (ivrecv < 0 || (ivrt && sp_streq(ivrt, "SelfNode"))) {
+              Scope *s = comp_scope_of(c, id);
+              tcid = s->class_id;
+              if (tcid < 0 && c->node_cbody[id] >= 0) tcid = c->node_cbody[id];
+            } else {
+              TyKind rt = comp_ntype(c, ivrecv);
+              if (ty_is_object(rt)) tcid = ty_object_class(rt);
+            }
+            if (tcid >= 0 && tcid < c->nclasses) {
+              ClassInfo *ci = &c->classes[tcid];
+              int old_ni = ci->nivars;
+              int iv = comp_ivar_intern(ci, sym);
+              if (ci->nivars != old_ni) changed = 1;
+              TyKind vt = infer_type(c, sav[1]);
+              if (vt != TY_NIL && !class_ivar_pinned(ci, sym)) {
+                TyKind merged = ty_unify(ci->ivar_types[iv], vt);
+                if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+              }
+            }
+          }
+          continue;
+        }
+      }
       /* attr-writer assignment: obj.x = v  (CallNode "x=") */
       const char *nm = nt_str(nt, id, "name");
       int recv = nt_ref(nt, id, "receiver");

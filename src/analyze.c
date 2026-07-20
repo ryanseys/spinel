@@ -5820,6 +5820,37 @@ void analyze_program(Compiler *c) {
     if (ntm->count != nend) comp_grow_node_arrays(c);
   }
 
+  /* A receiverless `instance_variable_get`/`_set`/`_defined?` inside an
+     instance method operates on self; give it an explicit self receiver so it
+     lowers through the object-receiver handler instead of failing as an
+     unsupported bare call (#3059). The synthesized SelfNode must inherit the
+     call's scope so infer_type resolves self to the instance (not top-level
+     main), which the return-type fixpoint depends on. */
+  {
+    NodeTable *ntm = (NodeTable *)c->nt;
+    int nend = ntm->count;
+    int *self_ids = NULL, *self_scopes = NULL, npend = 0, cap = 0;
+    for (int id = 0; id < nend; id++) {
+      if (nt_kind(ntm, id) != NK_CallNode) continue;
+      if (nt_ref(ntm, id, "receiver") >= 0) continue;
+      const char *nm = nt_str(ntm, id, "name");
+      if (!nm || (!sp_streq(nm, "instance_variable_get") &&
+                  !sp_streq(nm, "instance_variable_set") &&
+                  !sp_streq(nm, "instance_variable_defined?"))) continue;
+      Scope *s = comp_scope_of(c, id);
+      if (!s || s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
+      int sid = nt_new_node(ntm, "SelfNode");
+      nt_node_set_ref(ntm, id, "receiver", sid);
+      if (npend == cap) { cap = cap ? cap * 2 : 8;
+        self_ids = realloc(self_ids, (size_t)cap * sizeof(int));
+        self_scopes = realloc(self_scopes, (size_t)cap * sizeof(int)); }
+      self_ids[npend] = sid; self_scopes[npend] = c->nscope[id]; npend++;
+    }
+    if (ntm->count != nend) comp_grow_node_arrays(c);
+    for (int k = 0; k < npend; k++) c->nscope[self_ids[k]] = self_scopes[k];
+    free(self_ids); free(self_scopes);
+  }
+
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
      its call sites exactly like a yielding method. The block-param slot is
