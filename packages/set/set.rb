@@ -188,6 +188,14 @@ class Set
   end
   alias eql? ==
 
+  # Content-based, order-independent: equal sets hash equal (#3069).
+  # XOR of the element hashes is commutative, so insertion order is moot.
+  def hash
+    h = size
+    @data.each { |x| h ^= x.hash }
+    h
+  end
+
   def subset?(other)
     @data.all? { |x| other.include?(x) }
   end
