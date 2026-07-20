@@ -65,10 +65,13 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     case TY_COMPLEX: fn = "sp_box_complex"; break;  case TY_RATIONAL: fn = "sp_box_rational"; break;
     /* TY_PROC / TY_METHOD are handled by the nullable-builtin box above. */
     case TY_CLASS: fn = "sp_box_class"; break;
-    case TY_INT_ARRAY: fn = "sp_box_int_array"; break;
-    case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
-    case TY_STR_ARRAY: fn = "sp_box_str_array"; break;
-    case TY_POLY_ARRAY: fn = "sp_box_poly_array"; break;
+    /* Array slots are nilable C pointers (`[x] if cond` in value position is
+       NULL on the else path): box NULL as a proper nil, not a truthy OBJ
+       wrapping NULL that passes truthy checks (#2992). */
+    case TY_INT_ARRAY:   buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_INT_ARRAY)", expr); return;
+    case TY_FLOAT_ARRAY: buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_FLT_ARRAY)", expr); return;
+    case TY_STR_ARRAY:   buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_STR_ARRAY)", expr); return;
+    case TY_POLY_ARRAY:  buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_POLY_ARRAY)", expr); return;
     case TY_NIL:
       /* a nil-typed expression can still have side effects (puts/print as a
          block tail): evaluate it for effect, then yield nil */
