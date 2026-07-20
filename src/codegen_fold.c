@@ -5269,6 +5269,20 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
             return;
           }
         }
+        /* A concrete typed array arg (IntArray/StrArray/FloatArray) into a
+           poly-array param: the structs store elements differently (raw
+           mrb_int / const char ptr / mrb_float vs boxed sp_RbVal), a raw pointer
+           pass reinterprets the layout and every read is garbage -- pop
+           returned a boxed nil built from a char* (#3137). Rebuild through
+           the boxing converter, mirroring the local-assignment coercion. */
+        if (pt == TY_POLY_ARRAY &&
+            (at == TY_INT_ARRAY || at == TY_STR_ARRAY || at == TY_FLOAT_ARRAY)) {
+          const char *cv = at == TY_INT_ARRAY ? "sp_PolyArray_from_int_array"
+                         : at == TY_STR_ARRAY ? "sp_PolyArray_from_str_array"
+                         : "sp_PolyArray_from_float_array";
+          buf_printf(out, "%s(", cv); emit_expr(c, provided, out); buf_puts(out, ")");
+          return;
+        }
         /* poly arg into a concrete param (holds the right type at runtime):
            coerce, else the generated C assigns sp_RbVal to a const char* /
            mrb_int / mrb_float / sp_<Class>* slot. */

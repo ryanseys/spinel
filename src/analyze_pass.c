@@ -2091,10 +2091,18 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        any non-object param to poly. Pass nil through to ty_unify only while
        the param is still unknown or already an object. */
     if (at == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) at = TY_POLY;
-    /* A parameter a push through it already widened stays the poly ARRAY;
-       the plain unification would collapse it to the poly scalar (#2989). */
-    TyKind merged = (p->push_widened && ty_is_array(at)) ? TY_POLY_ARRAY
-                                                         : ty_unify(p->type, at);
+    /* Two array parameters meet as the poly ARRAY, not the poly SCALAR: a
+       param typed as one array kind at one call site and a different array
+       kind at another is still a container, so its array methods (pop, <<)
+       stay dispatchable (#2989, #3137). A push-widened param is the special
+       case of this where the widening came from a use rather than a call. */
+    TyKind merged;
+    if (ty_is_array(p->type) && ty_is_array(at) && p->type != at)
+      merged = TY_POLY_ARRAY;
+    else if (p->push_widened && ty_is_array(at))
+      merged = TY_POLY_ARRAY;
+    else
+      merged = ty_unify(p->type, at);
     if (merged != p->type) { p->type = merged; changed = 1; }
     /* Reverse binding: an empty-`{}`-only local passed to a hash parameter is
        that hash container, filled inside the callee through the reference.
