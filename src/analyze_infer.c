@@ -4869,7 +4869,11 @@ else {
         sp_streq(name, "abs") || sp_streq(name, "magnitude") ||
         sp_streq(name, "modulo") || sp_streq(name, "remainder") || sp_streq(name, "to_f") ||
         (sp_streq(name, "fdiv") && argc == 1)) return TY_FLOAT;
-    if ((sp_streq(name, "numerator") || sp_streq(name, "denominator")) && argc == 0) return TY_INT;
+    /* Float#numerator is an Integer when finite and the (non-finite) Float
+       itself otherwise, so it is boxed; #denominator is always an Integer
+       (1 for a non-finite value). (#3011) */
+    if (sp_streq(name, "numerator") && argc == 0) return TY_POLY;
+    if (sp_streq(name, "denominator") && argc == 0) return TY_INT;
     if ((sp_streq(name, "to_r") && argc == 0) ||
         (sp_streq(name, "rationalize") && (argc == 0 || argc == 1))) return TY_RATIONAL;
     if (sp_streq(name, "eql?") && argc == 1) return TY_BOOL;

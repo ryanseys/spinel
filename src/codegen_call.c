@@ -2510,6 +2510,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, recv, b);
       buf_printf(b, "), 0, %d})", crt == TY_FLOAT ? 1 : 0); return 1;
     }
+    /* Float#numerator / #denominator: a non-finite Float has no rational form,
+       so answer the value itself and 1 rather than raising (#3011). */
+    if (crt == TY_FLOAT && argc == 0 &&
+        (sp_streq(name, "numerator") || sp_streq(name, "denominator"))) {
+      buf_printf(b, "sp_float_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
     if (crt == TY_RATIONAL) {
       if (sp_streq(name, "numerator"))   { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").num"); return 1; }
       if (sp_streq(name, "denominator")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").den"); return 1; }

@@ -2437,6 +2437,18 @@ static mrb_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     return sp_str_in_list(m, excm);
   return 0;
 }
+/* Float#numerator / #denominator. A non-finite Float has no rational form, so
+   CRuby answers the value itself and 1 rather than converting (#3011). */
+static mrb_int sp_float_denominator(mrb_float f) __attribute__((unused));
+static mrb_int sp_float_denominator(mrb_float f) {
+  if (isnan(f) || isinf(f)) return 1;
+  return sp_float_to_rational(f).den;
+}
+static sp_RbVal sp_float_numerator(mrb_float f) __attribute__((unused));
+static sp_RbVal sp_float_numerator(mrb_float f) {
+  if (isnan(f) || isinf(f)) return sp_box_float(f);
+  return sp_box_int(sp_float_to_rational(f).num);
+}
 /* Process.times -> Process::Tms: four cumulative CPU times in seconds.
    An unboxed value like sp_Range/sp_Class -- there is nothing to mutate. */
 typedef struct { mrb_float utime, stime, cutime, cstime; } sp_Tms;
