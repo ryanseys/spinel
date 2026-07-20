@@ -5797,6 +5797,29 @@ void analyze_program(Compiler *c) {
   mark_empty_hash_key_ctx(c);
   mark_empty_hash_const_writes(c);
 
+  /* A bare identifier inside a class method that names a `class << self`
+     attr reader is an implicit-self read of that singleton attribute; give it
+     an explicit self receiver so it resolves like `self.reader` instead of
+     failing as an undefined local/method (#3108). */
+  {
+    NodeTable *ntm = (NodeTable *)c->nt;
+    int nend = ntm->count;
+    for (int id = 0; id < nend; id++) {
+      if (nt_kind(ntm, id) != NK_CallNode) continue;
+      if (nt_ref(ntm, id, "receiver") >= 0) continue;
+      int args = nt_ref(ntm, id, "arguments"); int ac = 0;
+      if (args >= 0) nt_arr(ntm, args, "arguments", &ac);
+      if (ac != 0 || nt_ref(ntm, id, "block") >= 0) continue;
+      const char *nm = nt_str(ntm, id, "name");
+      if (!nm) continue;
+      Scope *s = comp_scope_of(c, id);
+      if (!s || !s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
+      if (!comp_is_sg_reader(&c->classes[s->class_id], nm)) continue;
+      nt_node_set_ref(ntm, id, "receiver", nt_new_node(ntm, "SelfNode"));
+    }
+    if (ntm->count != nend) comp_grow_node_arrays(c);
+  }
+
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
      its call sites exactly like a yielding method. The block-param slot is
