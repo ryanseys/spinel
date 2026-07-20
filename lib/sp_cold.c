@@ -1447,6 +1447,44 @@ sp_File *sp_file_stat_handle(const char *path) {
   f->lineno = 0;
   return f;
 }
+/* File.lstat / File#lstat: like stat, but describing the link itself when the
+   final component is a symlink. The handle records mode "lstat" so the
+   accessors below read it with lstat(2). (#2986) */
+sp_File *sp_file_lstat_handle(const char *path) {
+  struct stat st;
+  if (lstat(path ? path : "", &st) != 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_file_s_lstat - %s", path ? path : ""));
+  sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), NULL, sp_file_stat_scan);
+  f->fp = NULL;
+  f->path = sp_sprintf("%s", path ? path : "");
+  f->mode = (&("\xff" "lstat")[1]);
+  f->lineno = 0;
+  return f;
+}
+/* True when the handle came from lstat, so a final symlink is not followed. */
+mrb_bool sp_stat_nofollow(sp_File *f) {
+  return f && f->mode && strcmp(f->mode, "lstat") == 0;
+}
+mrb_int sp_stat_size(sp_File *f) {
+  struct stat st;
+  const char *p = (f && f->path) ? f->path : "";
+  int r = sp_stat_nofollow(f) ? lstat(p, &st) : stat(p, &st);
+  return r == 0 ? (mrb_int)st.st_size : SP_INT_NIL;
+}
+mrb_int sp_stat_mode(sp_File *f) {
+  struct stat st;
+  const char *p = (f && f->path) ? f->path : "";
+  int r = sp_stat_nofollow(f) ? lstat(p, &st) : stat(p, &st);
+  return r == 0 ? (mrb_int)st.st_mode : 0;
+}
+const char *sp_stat_ftype(sp_File *f) {
+  /* sp_file_ftype already lstat()s, so it is exactly the lstat answer; a
+     following handle resolves the link first. */
+  const char *p = (f && f->path) ? f->path : "";
+  if (sp_stat_nofollow(f)) return sp_file_ftype(p);
+  { const char *rp = sp_file_realpath(p); return sp_file_ftype(rp ? rp : p); }
+}
 mrb_int sp_file_stat_mode(const char *path) {
   struct stat st;
   if (stat(path ? path : "", &st) != 0) return 0;

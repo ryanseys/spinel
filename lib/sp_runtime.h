@@ -2293,7 +2293,9 @@ static const char *sp_poly_class_name(sp_RbVal v) {
           /* mirror the typed .class emit: a stat handle is a File::Stat
              (#2841), a path-backed handle a File, a raw stream an IO (#3041) */
           sp_File *_iof = (sp_File *)v.v.p;
-          if (_iof && _iof->mode && strcmp(_iof->mode, "stat") == 0) return SPL("File::Stat");
+          if (_iof && _iof->mode &&
+              (strcmp(_iof->mode, "stat") == 0 || strcmp(_iof->mode, "lstat") == 0))
+            return SPL("File::Stat");
           if (_iof && sp_File_path(_iof)[0] && sp_File_path(_iof)[0] != '<') return SPL("File");
           return SPL("IO");
         }
@@ -7130,6 +7132,11 @@ sp_File *sp_File_open_flags(const char *path, mrb_int fl);
    File::Stat this backend models (#2775, #2790). */
 void sp_file_stat_scan(void *p);
 sp_File *sp_file_stat_handle(const char *path);
+sp_File *sp_file_lstat_handle(const char *path);
+mrb_bool sp_stat_nofollow(sp_File *f);
+mrb_int sp_stat_size(sp_File *f);
+mrb_int sp_stat_mode(sp_File *f);
+const char *sp_stat_ftype(sp_File *f);
 mrb_int sp_file_stat_mode(const char *path);
 /* IO#puts with an Array argument: one element per line, recursively (#2813) */
 static void sp_File_puts_val(sp_File *f, sp_RbVal v) {

@@ -8825,14 +8825,25 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "), (mrb_int)0)");
       free(rb.p); return;
     }
-    if (argc == 0 && (sp_streq(name, "size") || sp_streq(name, "mtime") ||
-                      sp_streq(name, "atime") || sp_streq(name, "ctime") ||
-                      sp_streq(name, "birthtime") || sp_streq(name, "ftype"))) {
-      buf_printf(b, "sp_file_%s(sp_File_path(%s))", sp_streq(name, "size") ? "size" : name, r);
+    /* size/ftype read the HANDLE so an lstat handle describes the link
+       itself rather than its target (#2986) */
+    if (argc == 0 && (sp_streq(name, "size") || sp_streq(name, "ftype"))) {
+      buf_printf(b, "sp_stat_%s(%s)", name, r);
       free(rb.p); return;
     }
-    if (argc == 0 && sp_streq(name, "mode") && strstr(r, "sp_file_stat_handle")) {
-      buf_printf(b, "sp_file_stat_mode(sp_File_path(%s))", r);
+    if (argc == 0 && (sp_streq(name, "mtime") ||
+                      sp_streq(name, "atime") || sp_streq(name, "ctime") ||
+                      sp_streq(name, "birthtime"))) {
+      buf_printf(b, "sp_file_%s(sp_File_path(%s))", name, r);
+      free(rb.p); return;
+    }
+    if (argc == 0 && sp_streq(name, "mode") &&
+        (strstr(r, "sp_file_stat_handle") || strstr(r, "sp_file_lstat_handle"))) {
+      buf_printf(b, "sp_stat_mode(%s)", r);
+      free(rb.p); return;
+    }
+    if (argc == 0 && sp_streq(name, "lstat")) {
+      buf_printf(b, "sp_file_lstat_handle(sp_File_path(%s))", r);
       free(rb.p); return;
     }
     if (argc == 1 && sp_streq(name, "chmod")) {
@@ -10728,12 +10739,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          File; a raw stream (STDOUT, pipe end) is an IO (#2797) */
       int tio = ++g_tmp;
       buf_printf(b, "({ sp_File *_t%d = ", tio); emit_expr(c, recv, b);
-      buf_printf(b, "; (_t%d && _t%d->mode && strcmp(_t%d->mode, \"stat\") == 0)"
+      buf_printf(b, "; (_t%d && _t%d->mode && (strcmp(_t%d->mode, \"stat\") == 0"
+                    " || strcmp(_t%d->mode, \"lstat\") == 0))"
                     " ? ((sp_Class){(mrb_int)-1, \"File::Stat\"})"
                     " : (_t%d && sp_File_path(_t%d)[0] && sp_File_path(_t%d)[0] != '<')"
                     " ? ((sp_Class){(mrb_int)-121, \"File\"})"
                     " : ((sp_Class){(mrb_int)-120, \"IO\"}); })",
-                 tio, tio, tio, tio, tio, tio);
+                 tio, tio, tio, tio, tio, tio, tio);
       return;
     }
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
@@ -12618,6 +12630,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (sp_streq(name, "stat") && argc == 1) {
       buf_puts(b, "sp_file_stat_handle("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "lstat") && argc == 1) {
+      buf_puts(b, "sp_file_lstat_handle("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
     /* the path-manipulation family (#2774, #2787) */
     if (sp_streq(name, "split") && argc == 1) {

@@ -2141,7 +2141,7 @@ else {
           sp_streq(name, "birthtime"))
         return TY_TIME;
       if (sp_streq(name, "readlines") || sp_streq(name, "split")) return TY_STR_ARRAY;
-      if (sp_streq(name, "stat")) return TY_IO;   /* the path-carrying stat handle */
+      if (sp_streq(name, "stat") || sp_streq(name, "lstat")) return TY_IO;   /* the path-carrying stat handle */
       /* File.open / File.new without a block -> a typed IO handle */
       if (sp_streq(name, "open") || sp_streq(name, "new")) {
         int blk = nt_ref(nt, id, "block");
@@ -2438,7 +2438,7 @@ else {
         sp_streq(name, "close_read") || sp_streq(name, "close_write")) return TY_POLY;
     if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime") ||
         sp_streq(name, "birthtime")) return TY_TIME;
-    if (sp_streq(name, "stat")) return TY_IO;
+    if (sp_streq(name, "stat") || sp_streq(name, "lstat")) return TY_IO;
     if (sp_streq(name, "putc") || sp_streq(name, "printf") || sp_streq(name, "ungetc") ||
         sp_streq(name, "pid")) return TY_POLY;
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) return TY_INT_ARRAY;
