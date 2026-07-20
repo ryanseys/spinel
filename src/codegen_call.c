@@ -2474,6 +2474,15 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "inspect")) { buf_puts(b, "sp_rational_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if ((sp_streq(name, "to_f")) && argc == 0) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if ((sp_streq(name, "to_r") || sp_streq(name, "rationalize")) && argc == 0) { emit_expr(c, recv, b); return 1; }
+      /* rationalize(eps): the simplest rational within eps of self. Reuse the
+         Float path (it builds the [self-eps, self+eps] interval) via the double
+         value of self and eps (#3057) */
+      if (sp_streq(name, "rationalize") && argc == 1) {
+        buf_puts(b, "sp_float_rationalize(sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, "), ");
+        if (comp_ntype(c, argv[0]) == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else emit_float_expr(c, argv[0], b);
+        buf_puts(b, ")"); return 1;
+      }
       if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
            (sp_streq(name, "truncate") && argc == 0))) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return 1; }
       if (sp_streq(name, "round") && argc == 0) { buf_puts(b, "sp_rational_round_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
