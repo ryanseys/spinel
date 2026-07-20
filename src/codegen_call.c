@@ -1308,8 +1308,12 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   TyKind st = infer_type(c, lazy_src);
   int src_is_range = (st == TY_RANGE), src_is_intarr = (st == TY_INT_ARRAY);
   int src_is_enum = (st == TY_ENUMERATOR);
-  /* other array kinds iterate a boxed-element snapshot */
-  int src_is_arr = (st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY);
+  /* other array kinds iterate a boxed-element snapshot. An empty `[]` literal
+     has no element type and so infers UNKNOWN, but it is still an array and
+     the pipeline over it yields [] (#2996). */
+  int src_is_arr = (st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY ||
+                    (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&
+                     sp_streq(nt_type(nt, lazy_src), "ArrayNode")));
   if (!src_is_range && !src_is_intarr && !src_is_enum && !src_is_arr) return 0;
 
   int excl = 0, endless = 0, right = -1, left_n = -1;

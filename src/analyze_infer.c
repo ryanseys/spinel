@@ -4228,7 +4228,10 @@ else {
       return (argc == 1) ? TY_POLY_ARRAY : TY_INT;  /* emit_lazy_pipeline_expr -> PolyArray */
     /* An array-source lazy first(n) (e.g. the `arr.lazy.take(n).to_a` that the
        take->first desugar produces) materializes n boxed elements. */
-    if (lazy_src >= 0 && argc == 1 && ty_is_array(lst))
+    if (lazy_src >= 0 && argc == 1 &&
+        (ty_is_array(lst) ||
+         (lst == TY_UNKNOWN && nt_type(nt, lazy_src) &&
+          sp_streq(nt_type(nt, lazy_src), "ArrayNode"))))
       return TY_POLY_ARRAY;
   }
   }
@@ -4304,10 +4307,14 @@ else {
       saw_op = 1;
       cur = nt_ref(nt, cur, "receiver");
     }
-    if (ok && saw_op && lazy_src >= 0) {
+    if (ok && (saw_op || sp_streq(name, "to_a") || sp_streq(name, "force")) && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
       if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR ||
           st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY) return TY_POLY_ARRAY;
+      /* an empty array literal has no element type and so types UNKNOWN, but
+         the pipeline over it is still well defined -- it yields [] (#2996) */
+      if (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&
+          sp_streq(nt_type(nt, lazy_src), "ArrayNode")) return TY_POLY_ARRAY;
     }
   }
 
