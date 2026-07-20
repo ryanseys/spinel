@@ -1798,6 +1798,18 @@ int sp_feature_enabled(const char *name) {
   return 0;
 }
 
+/* Like sp_feature_enabled, but the require is mandatory REGARDLESS of the
+   require-gate mode: true only when the program actually `require`d the
+   feature. For stdlib whose classes CRuby only defines after the require
+   (socket's TCPServer/TCPSocket) -- without this, the baseline mode would
+   grow the constants unconditionally and diverge from CRuby's NameError. */
+int sp_feature_required(const char *name) {
+  if (!name) return 0;
+  for (int i = 0; i < sp_req_feats_n; i++)
+    if (strcmp(sp_req_feats[i], name) == 0) return 1;
+  return 0;
+}
+
 /* Feature search roots from `-I <dir>` (like ruby -I). A plain `require "X"`
    that is not a bundled lib or native feature is looked up here, in order, as
    <root>/X.rb (CRuby single-file form) or <root>/X/<last>.rb (the colocated

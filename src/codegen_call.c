@@ -4895,14 +4895,14 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       if (cn && (sp_streq(cn, "File") || sp_streq(cn, "Dir"))) return 0;
       /* TCPServer.new(host, port) / (port); TCPSocket.new(host, port). The
          handle IS an sp_File with a socket-kind mode label (#2922). */
-      if (cn && sp_streq(cn, "TCPServer") && sp_feature_enabled("socket") && argc >= 1) {
+      if (cn && sp_streq(cn, "TCPServer") && sp_feature_required("socket") && argc >= 1) {
         buf_puts(b, "sp_io_fdopen_sock(sp_net_listen_host(");
         if (argc >= 2) { emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); }
         else { buf_puts(b, "NULL, "); emit_int_expr(c, argv[0], b); }
         buf_puts(b, ", 0), (&(\"\\xff\" \"tcpserver\")[1]))");
         return 1;
       }
-      if (cn && sp_streq(cn, "TCPSocket") && sp_feature_enabled("socket") && argc >= 2) {
+      if (cn && sp_streq(cn, "TCPSocket") && sp_feature_required("socket") && argc >= 2) {
         buf_puts(b, "sp_io_fdopen_sock(sp_net_connect(");
         emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
         emit_int_expr(c, argv[1], b);
@@ -8939,7 +8939,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       free(rb.p); return;
     }
     /* socket methods on the IO handle (#2922) */
-    if (sp_feature_enabled("socket") && argc == 0 && sp_streq(name, "accept")) {
+    if (sp_feature_required("socket") && argc == 0 && sp_streq(name, "accept")) {
       /* wait cooperatively for a pending connection first: the blocking
          accept would stall the whole green-thread scheduler otherwise */
       int tac = ++g_tmp;
@@ -8948,7 +8948,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
                  tac, r, tac, tac);
       free(rb.p); return;
     }
-    if (sp_feature_enabled("socket") && argc == 0 &&
+    if (sp_feature_required("socket") && argc == 0 &&
         (sp_streq(name, "addr") || sp_streq(name, "peeraddr"))) {
       buf_printf(b, "sp_sock_addr(%s, %d)", r, sp_streq(name, "peeraddr") ? 1 : 0);
       free(rb.p); return;

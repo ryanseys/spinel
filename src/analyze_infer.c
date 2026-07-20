@@ -1930,7 +1930,7 @@ else {
       if (cn && sp_streq(cn, "Dir")) return TY_DIR;   /* Dir.new is an open handle (#2821) */
       /* the TCP socket classes ARE IO handles (#2922) */
       if (cn && (sp_streq(cn, "TCPServer") || sp_streq(cn, "TCPSocket")) &&
-          sp_feature_enabled("socket")) return TY_IO;
+          sp_feature_required("socket")) return TY_IO;
       if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
                  sp_streq(cn, "Random") || sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
@@ -1990,7 +1990,7 @@ else {
       if (cn && sp_streq(cn, "Dir")) return TY_DIR;   /* Dir.new is an open handle (#2821) */
       /* the TCP socket classes ARE IO handles (#2922) */
       if (cn && (sp_streq(cn, "TCPServer") || sp_streq(cn, "TCPSocket")) &&
-          sp_feature_enabled("socket")) return TY_IO;
+          sp_feature_required("socket")) return TY_IO;
       if (cn && (sp_streq(cn, "Thread") ||
                  sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
@@ -2482,7 +2482,7 @@ else {
     if (sp_streq(name, "getc") || sp_streq(name, "readchar") || sp_streq(name, "readpartial") ||
         sp_streq(name, "sysread") || sp_streq(name, "ftype")) return TY_STRING;
     /* socket methods on the IO handle (#2922) */
-    if (sp_feature_enabled("socket")) {
+    if (sp_feature_required("socket")) {
       if (sp_streq(name, "accept") && argc == 0) return TY_IO;
       if ((sp_streq(name, "addr") || sp_streq(name, "peeraddr")) && argc == 0)
         return TY_POLY_ARRAY;
