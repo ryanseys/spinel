@@ -4602,6 +4602,65 @@ static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   return 0;
 }
 
+/* An @ivar (or a bare attr_reader that returns one) passed to a helper whose
+   parameter was push-widened (a `<<` inside pushed an element the bound type
+   could not hold, e.g. an object into an empty-`[]` int array) shares its
+   backing storage with that parameter, so the ivar must widen to the poly
+   array too -- otherwise the call copy-converts the narrow int array and the
+   helper's push lands on the throwaway copy. Runs post-fixpoint, when
+   push_widened is final (during the fixpoint it is set only after
+   bind_call_params has already observed the param). Monotone: typed array ->
+   poly array only. (#3154) */
+static void widen_ivars_from_pushed_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *name = nt_str(nt, id, "name");
+    if (!name) continue;
+    int ca = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+    if (!av || an == 0) continue;
+    /* resolve the callee scope */
+    int recv = nt_ref(nt, id, "receiver");
+    int mi = -1;
+    if (recv < 0) {
+      mi = comp_method_index(c, name);
+      if (mi < 0) {
+        Scope *self = comp_scope_of(c, id);
+        if (self && self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL);
+      }
+    } else {
+      TyKind rt = infer_type(c, recv);
+      if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+    }
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    Scope *asc = comp_scope_of(c, id);
+    if (!asc || asc->class_id < 0) continue;
+    ClassInfo *acls = &c->classes[asc->class_id];
+    for (int k = 0; k < an && k < m->nparams; k++) {
+      LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+      if (!p || !p->push_widened) continue;
+      const char *aty = nt_type(nt, av[k]);
+      if (!aty) continue;
+      char ivbuf[128];
+      const char *ivn = NULL;
+      if (sp_streq(aty, "InstanceVariableReadNode")) {
+        ivn = nt_str(nt, av[k], "name");             /* already "@name" */
+      } else if (sp_streq(aty, "CallNode") && nt_ref(nt, av[k], "receiver") < 0) {
+        const char *cn = nt_str(nt, av[k], "name");  /* a bare attr_reader call */
+        if (cn && cn[0] != '@' && strlen(cn) < sizeof ivbuf - 1) {
+          ivbuf[0] = '@'; strcpy(ivbuf + 1, cn); ivn = ivbuf;
+        }
+      }
+      if (!ivn) continue;
+      int ivi = comp_ivar_index(acls, ivn);
+      if (ivi < 0) continue;
+      if (ty_is_array(acls->ivar_types[ivi]) && acls->ivar_types[ivi] != TY_POLY_ARRAY)
+        acls->ivar_types[ivi] = TY_POLY_ARRAY;
+    }
+  }
+}
+
 static void narrow_object_arrays(Compiler *c) {
   const NodeTable *nt = c->nt;
   /* 1. candidate slots: POLY_ARRAY locals/params (skip block params + rbs). */
@@ -7391,6 +7450,15 @@ void analyze_program(Compiler *c) {
     ch |= infer_return_types(c);
     if (!ch) break;
   }
+  g_ret_no_new_poly = 0;
+
+  /* Widen an ivar shared with a push-widened helper param -- after the write
+     re-run above (which would re-narrow it from its empty-`[]` write) so the
+     poly widening sticks, then re-derive return types only so a manual reader
+     (`def flags; @flags; end`) reports the now-poly array (#3154). */
+  widen_ivars_from_pushed_params(c);
+  g_ret_no_new_poly = 1;
+  for (int iter = 0; iter < 8; iter++) if (!infer_return_types(c)) break;
   g_ret_no_new_poly = 0;
   /* The write-type re-run can re-derive a hash/array container type for an
      iteration-bound block param from its element-index usage (e.g. `a[1]=v`),
