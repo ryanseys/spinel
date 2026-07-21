@@ -2530,6 +2530,63 @@ int ffi_find_reader(Compiler *c, const char *mod, const char *name) {
   return -1;
 }
 
+/* `$g = {}` / `$g = Hash.new` followed by `$g[k] = v` elsewhere: an empty hash
+   producer has no key/value type of its own, so the global's inferred type
+   stays UNKNOWN and it gets no file-scope slot at all -- every reference then
+   fails to compile (`gv_g` undeclared). Derive the variant from the global's
+   index-writes, defaulting to the widest hash when they are inconclusive so the
+   global is always declarable (#3205). Returns UNKNOWN if the global has no
+   `[]=` usage (leave the type alone). */
+static TyKind gvar_hash_variant_from_writes(Compiler *c, const char *gname) {
+  const NodeTable *nt = c->nt;
+  TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
+  int saw = 0;
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_CallNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || (!sp_streq(wn, "[]=") && !sp_streq(wn, "store"))) continue;
+    int wr = nt_ref(nt, w, "receiver");
+    if (wr < 0 || nt_kind(nt, wr) != NK_GlobalVariableReadNode) continue;
+    const char *rn = nt_str(nt, wr, "name");
+    if (!rn || !sp_streq(rn + 1, gname)) continue;
+    int wa = nt_ref(nt, w, "arguments");
+    int wan = 0; const int *wav = wa >= 0 ? nt_arr(nt, wa, "arguments", &wan) : NULL;
+    if (wan < 2) continue;
+    kt = ty_unify(kt, infer_type(c, wav[0]));
+    vt = ty_unify(vt, infer_type(c, wav[1]));
+    saw = 1;
+  }
+  if (!saw) return TY_UNKNOWN;
+  TyKind want = (kt == TY_SYMBOL) ? TY_SYM_POLY_HASH
+              : (kt == TY_UNKNOWN) ? TY_POLY_POLY_HASH : ty_hash_of(kt, vt);
+  if (!ty_is_hash(want)) want = (kt == TY_STRING) ? TY_STR_POLY_HASH : TY_POLY_POLY_HASH;
+  return want;
+}
+
+/* 1 iff `node` is an empty-hash producer: a bare `{}` or `Hash.new` (with no
+   size/default args), which yields no key/value type of its own. */
+static int node_is_empty_hash_producer(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  NodeKind nk = nt_kind(nt, node);
+  if (nk == NK_HashNode || nk == NK_KeywordHashNode) {
+    int en = 0; nt_arr(nt, node, "elements", &en);
+    return en == 0;
+  }
+  if (nk == NK_CallNode) {
+    const char *nm = nt_str(nt, node, "name");
+    if (!nm || !sp_streq(nm, "new")) return 0;
+    int r = nt_ref(nt, node, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) return 0;
+    const char *rn = nt_str(nt, r, "name");
+    if (!rn || !sp_streq(rn, "Hash")) return 0;
+    int a = nt_ref(nt, node, "arguments");
+    int an = 0; if (a >= 0) nt_arr(nt, a, "arguments", &an);
+    return an == 0 && nt_ref(nt, node, "block") < 0;
+  }
+  return 0;
+}
+
 int infer_global_const_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -2542,7 +2599,14 @@ int infer_global_const_types(Compiler *c) {
       const char *nm = nt_str(nt, id, "name");
       const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
       if (rn) lv = comp_gvar(c, rn);
-      vt = infer_type(c, nt_ref(nt, id, "value"));
+      int vnode = nt_ref(nt, id, "value");
+      vt = infer_type(c, vnode);
+      /* an empty `{}`/`Hash.new` RHS leaves vt UNKNOWN (no element type); adopt
+         the variant implied by the global's `[]=` writes so it gets a slot. */
+      if (!ty_is_hash(vt) && rn && node_is_empty_hash_producer(c, vnode)) {
+        TyKind hv = gvar_hash_variant_from_writes(c, rn);
+        if (ty_is_hash(hv)) vt = hv;
+      }
       if (vt == TY_NIL) continue;
     }
     else if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {

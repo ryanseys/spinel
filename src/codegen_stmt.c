@@ -6184,6 +6184,19 @@ else {
     if (vty && (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))) {
       int hec = 0; nt_arr(nt, v, "elements", &hec); v_empty_hash = (hec == 0);
     }
+    /* `$g = Hash.new` (no args/block): an empty hash whose typed slot needs a
+       fresh `sp_XHash_new()`, not the boxed sp_RbVal emit_expr would produce for
+       the untyped Hash.new call (#3205). */
+    if (vty && sp_streq(vty, "CallNode") && ty_is_hash(lv->type) &&
+        nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "new") &&
+        nt_ref(nt, v, "block") < 0) {
+      int hr = nt_ref(nt, v, "receiver");
+      const char *hrn = hr >= 0 && nt_type(nt, hr) && sp_streq(nt_type(nt, hr), "ConstantReadNode")
+                        ? nt_str(nt, hr, "name") : NULL;
+      int ha = nt_ref(nt, v, "arguments"); int han = 0;
+      if (ha >= 0) nt_arr(nt, v, "arguments", &han);
+      if (hrn && sp_streq(hrn, "Hash") && han == 0) v_empty_hash = 1;
+    }
     if (vty && sp_streq(vty, "NilNode"))
       buf_puts(b, lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type));
     else if (v_empty_arr && lv->type == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
