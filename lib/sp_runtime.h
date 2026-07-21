@@ -3459,6 +3459,10 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
       sp_File_write((sp_File *)a.v.p, sp_poly_to_s(b));
       return a;
     }
+    /* A user object with a `<<` method (a Set held as a Hash value, #3174):
+       dispatch through the user-binop hook, which mutates it in place and
+       returns the receiver -- not the Integer#<< bit-shift fallback below. */
+    if (a.cls_id >= 0) return sp_poly_binop_bad("<<", a, b);
   }
   /* String#<< appends (sp_str_concat treats NULL as the empty string) */
   if (a.tag == SP_TAG_STR && b.tag == SP_TAG_STR)
