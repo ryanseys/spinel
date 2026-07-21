@@ -6536,6 +6536,15 @@ else {
       int is_kwp_d = m && m->pnames[k] && callee_has_kwarg(c, m, m->pnames[k]);
       int kv = (m && kwh_d >= 0 && is_kwp_d) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
       int provided = kv >= 0 ? kv : (k < pos_argc_d ? argv[k] : -1);
+      /* Options-hash idiom: a trailing keyword hash whose keys name no
+         parameter collapses into the first unfilled positional param when
+         that param is hash- or poly-typed -- Ruby packs `f(key: v)` into the
+         positional `data`. Mirrors the emit_args_filled path (#3191). */
+      if (provided < 0 && kwh_d >= 0 && k == pos_argc_d && !is_kwp_d &&
+          !(m && m->kwrest_idx == k)) {
+        TyKind pt_d = p ? p->type : TY_INT;
+        if (ty_is_hash(pt_d) || pt_d == TY_POLY) provided = kwh_d;
+      }
       if (m && m->kwrest_idx >= 0 && k == m->kwrest_idx) {
         /* `**kwrest` callee param: collect the call's unbound keywords. */
         int krhash = emit_kwrest_collect(c, m, kwh_d, ds_tmp_d, ds_type_d, argsNode);
