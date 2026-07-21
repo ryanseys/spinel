@@ -1806,6 +1806,30 @@ static void class_pin_ivar(ClassInfo *ci, const char *name) {
   ci->rbs_pin_ivars[ci->n_rbs_pin_ivars++] = strdup(name);
 }
 
+/* Does `name` belong to an override family -- defined on two related
+   classes (one an ancestor of the other)? A return seed on any member
+   would pin that member's C decl repr while poly-dispatch call sites
+   keep the family (boxed) view: `sp_Base_s_instantiate` declared
+   `sp_Base *` but unboxed `.v.p` at the call (#3203). Overridden
+   methods keep their inferred return -- the same never-makes-it-worse
+   rule the seed path applies to layout conflicts. Params still seed:
+   they are per-scope and carry no cross-family repr. */
+static int method_in_override_family(Compiler *c, int class_id,
+                                     const char *name, int is_cmethod) {
+  if (class_id < 0 || !name) return 0;
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (!!s->is_cmethod != !!is_cmethod) continue;
+    if (!s->name || !sp_streq(s->name, name)) continue;
+    if (s->class_id == class_id || s->class_id < 0) continue;
+    for (int ci = s->class_id; ci >= 0; ci = c->classes[ci].parent)
+      if (ci == class_id) return 1;
+    for (int ci = class_id; ci >= 0; ci = c->classes[ci].parent)
+      if (ci == s->class_id) return 1;
+  }
+  return 0;
+}
+
 /* Pin scope `s`'s return and each named parameter to its seeded type. ptypes
    is a comma-separated, param-index-aligned list (empty fields preserved so a
    skipped middle param doesn't shift the rest). */
@@ -1878,10 +1902,12 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
     else if (sp_streq(kw, "meth") && a1 && a2) {
       int class_id = (cur_ci == -2) ? -1 : cur_ci;
       if (cur_ci == -2 || cur_ci >= 0)
-        seed_method(c, find_method_scope(c, class_id, a1, 0), a2, a3);
+        seed_method(c, find_method_scope(c, class_id, a1, 0),
+                    method_in_override_family(c, class_id, a1, 0) ? NULL : a2, a3);
     }
     else if (sp_streq(kw, "cmeth") && a1 && a2 && cur_ci >= 0) {
-      seed_method(c, find_method_scope(c, cur_ci, a1, 1), a2, a3);
+      seed_method(c, find_method_scope(c, cur_ci, a1, 1),
+                  method_in_override_family(c, cur_ci, a1, 1) ? NULL : a2, a3);
     }
   }
   fclose(f);
