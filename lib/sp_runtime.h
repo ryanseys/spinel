@@ -2167,6 +2167,7 @@ static inline mrb_bool sp_class_eq(sp_Class a, sp_Class b) {
   const char *an = sp_class_to_s(a), *bn = sp_class_to_s(b);
   return (an && bn) ? strcmp(an, bn) == 0 : an == bn;
 }
+static inline const char *sp_poly_to_s(sp_RbVal v);   /* defined below; used by the user-object arm */
 static inline void sp_poly_puts(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT: printf("%lld\n", (long long)v.v.i); break;
@@ -2225,7 +2226,11 @@ static inline void sp_poly_puts(sp_RbVal v) {
           for (mrb_int _i = 0; _i < _a->len; _i++) sp_poly_puts(_a->data[_i]);
           break;
         }
-        default: printf("#<Object:0x%p>\n", v.v.p); break;
+        /* A user object (or any non-array OBJ) prints via to_s: delegate to
+           sp_poly_to_s, which dispatches the class's user #to_s (falling back to
+           the default #<Name:0x..>). The bare #<Object> print skipped the user
+           to_s for an object read from a collection (#3189). */
+        default: { fputs(sp_poly_to_s(v), stdout); putchar('\n'); break; }
       }
       break;
     }
