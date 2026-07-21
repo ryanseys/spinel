@@ -5163,6 +5163,15 @@ static int isa_node_diverges(Compiler *c, int node) {
   if (!ty) return 0;
   if (sp_streq(ty, "NextNode") || sp_streq(ty, "BreakNode") ||
       sp_streq(ty, "ReturnNode") || sp_streq(ty, "RedoNode")) return 1;
+  /* a bare `raise` / `raise E` (or exit/abort/throw) also diverges, so a
+     `raise unless v.is_a?(K)` guard proves K for the fall-through (#3150). */
+  if (sp_streq(ty, "CallNode")) {
+    const char *cn = nt_str(nt, node, "name");
+    if (cn && nt_ref(nt, node, "receiver") < 0 &&
+        (sp_streq(cn, "raise") || sp_streq(cn, "fail") || sp_streq(cn, "throw") ||
+         sp_streq(cn, "exit") || sp_streq(cn, "exit!") || sp_streq(cn, "abort")))
+      return 1;
+  }
   if (sp_streq(ty, "StatementsNode")) {
     int n = 0; const int *bb = nt_arr(nt, node, "body", &n);
     return n > 0 && isa_node_diverges(c, bb[n - 1]);
