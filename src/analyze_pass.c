@@ -5620,7 +5620,11 @@ int desugar_value_callable_forwards(Compiler *c) {
     int inline_lambda = sp_streq(exty, "LambdaNode");
     if (!simple_ref && !method_obj && !inline_lambda) continue;
     TyKind ct = infer_type(c, ex);
-    if (ct != TY_PROC && ct != TY_METHOD) continue;  /* Proc / Method values */
+    /* A poly local can hold a callable produced by an operation whose static
+       type stays poly -- e.g. `procs.reduce(:>>)`, a composed Proc. Forward it
+       as a value callable too (its `.call` dispatches at runtime); restricted
+       to a bare local/ivar read so re-evaluation is side-effect-free (#3167). */
+    if (ct != TY_PROC && ct != TY_METHOD && !(ct == TY_POLY && simple_ref)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     const char *name = nt_str(nt, id, "name");
