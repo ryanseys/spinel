@@ -679,6 +679,27 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* `poly.zip(other...)` on a poly array read out of a container (e.g. a row
+     that is a block param of an outer nested-array iterator): coerce the
+     receiver to a poly array and re-dispatch as the array zip form, whose arg
+     handling already unboxes a poly argument too (#3190). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "zip") && argc >= 1 &&
+      nt_ref(nt, id, "block") < 0 && g_n_argov < MAX_ARG_OVERRIDE) {
+    int ta = ++g_tmp;
+    Buf rb = expr_buf(c, recv);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"zip\"); SP_GC_ROOT(_t%d);\n",
+               ta, rb.p ? rb.p : "sp_box_nil()", ta);
+    free(rb.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+    g_n_argov++;
+    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    emit_expr(c, id, b);
+    c->ntype[recv] = sv;
+    g_n_argov--;
+    return 1;
+  }
   /* `poly.each_index { |i| ... }` on a poly array read out of a container:
      iterate the index range, yield each index, and return self. (#2930) */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "each_index") &&
@@ -1944,6 +1965,16 @@ else {
             at[j] = TY_INT_ARRAY;
             continue;
           }
+          /* a boxed (poly) argument -- e.g. an outer block param that holds an
+             array at runtime -- must be unboxed to a poly array, not assigned
+             raw into an sp_PolyArray* slot (#3190). */
+          if (at[j] == TY_POLY) {
+            buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_poly_array(", tb[j]);
+            emit_expr(c, argv[j], b);
+            buf_puts(b, ");");
+            at[j] = TY_POLY_ARRAY;
+            continue;
+          }
           const char *kj = (at[j] == TY_POLY_ARRAY) ? "Poly" : (array_kind(at[j]) ? array_kind(at[j]) : "Poly");
           buf_printf(b, " sp_%sArray *_t%d = ", kj, tb[j]); emit_expr(c, argv[j], b); buf_puts(b, ";");
         }
@@ -3105,6 +3136,16 @@ else {
             emit_expr(c, argv[j], b);
             buf_printf(b, "; sp_range_to_ia(_t%d); });", trj);
             at[j] = TY_INT_ARRAY;
+            continue;
+          }
+          /* a boxed (poly) argument -- e.g. an outer block param that holds an
+             array at runtime -- must be unboxed to a poly array, not assigned
+             raw into an sp_PolyArray* slot (#3190). */
+          if (at[j] == TY_POLY) {
+            buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_poly_array(", tb[j]);
+            emit_expr(c, argv[j], b);
+            buf_puts(b, ");");
+            at[j] = TY_POLY_ARRAY;
             continue;
           }
           const char *kj = (at[j] == TY_POLY_ARRAY) ? "Poly" : (array_kind(at[j]) ? array_kind(at[j]) : "Poly");

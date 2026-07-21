@@ -829,6 +829,12 @@ TyKind infer_call(Compiler *c, int id) {
       (sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
       infer_type(c, recv) == TY_POLY)
     return TY_POLY_ARRAY;
+  /* `poly.zip(other...)` on a value only known to be an array at runtime
+     (e.g. a row that is a block param of an outer nested-array iterator):
+     a poly array of tuples, matching the array-receiver form (#3190). */
+  if (recv >= 0 && sp_streq(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0 &&
+      infer_type(c, recv) == TY_POLY)
+    return TY_POLY_ARRAY;
   /* `poly_recv.sum { }` (a group_by bucket, a case-merged local) folds the
      block result with sp_poly_add, so the accumulation is a boxed poly value.
      Concrete typed arrays keep their int/float/string sum arms below. (#2872) */
