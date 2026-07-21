@@ -826,7 +826,8 @@ TyKind infer_call(Compiler *c, int id) {
   /* `poly.reject/select/filter { }` on a value only known to be an array at
      runtime (read out of a poly container): a filtered generic Array. */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
-      (sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
+      (sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter") ||
+       sp_streq(name, "map!") || sp_streq(name, "collect!")) &&
       infer_type(c, recv) == TY_POLY)
     return TY_POLY_ARRAY;
   /* `poly.zip(other...)` on a value only known to be an array at runtime
@@ -941,6 +942,24 @@ TyKind infer_call(Compiler *c, int id) {
       (sp_streq(name, "message") || sp_streq(name, "result") ||
        sp_streq(name, "key") || sp_streq(name, "receiver")))
     return sp_streq(name, "message") ? TY_STRING : TY_POLY;
+  /* Integer / Time accessors, Proc#arity on a poly value read out of a
+     container: an int-returning builtin the poly-builtin dispatch handles at
+     runtime; type it int so the result is not boxed to nil (#3162). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) &&
+      (sp_streq(name, "arity") || sp_streq(name, "year") || sp_streq(name, "mon") ||
+       sp_streq(name, "month") || sp_streq(name, "mday") ||
+       sp_streq(name, "hour") || sp_streq(name, "sec") ||
+       sp_streq(name, "wday") || sp_streq(name, "yday")))
+    return TY_INT;
+  /* Range#to_a on a poly value: its element array. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && sp_streq(name, "to_a"))
+    return TY_POLY_ARRAY;
+  /* Hash#merge on a poly value: a general PolyPoly hash. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && sp_streq(name, "merge"))
+    return TY_POLY_POLY_HASH;
   /* sort over a poly value that is an array at runtime (a group_by bucket / an
      inner array): a fresh sorted poly array (#2928). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_defines_method(c, name) &&

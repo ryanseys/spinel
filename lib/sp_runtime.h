@@ -7659,8 +7659,9 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)
     return (sp_PolyArray *)v.v.p;
   if (v.tag == SP_TAG_OBJ &&
-      (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id)))
-    return sp_enum_items_from(v);
+      (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id) ||
+       v.cls_id == SP_BUILTIN_RANGE))
+    return sp_enum_items_from(v);   /* Range#to_a -> its element array (#3162) */
   /* a Struct/Data read out of a container: Struct#to_a is its member values in
      order, which the symbol-keyed to_h (via the generated hook) preserves. */
   if (v.tag == SP_TAG_OBJ && sp_obj_to_h_fn) {
@@ -7670,6 +7671,24 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
   }
   sp_raise_nomethod(sp_nomethod_msg("to_a", v));
   return NULL;
+}
+/* Hash#merge on a poly hash (a hash read out of a container, any variant):
+   fold both operands' pairs into a general PolyPoly hash, the receiver first
+   then the argument overriding (#3162). */
+static sp_PolyPolyHash *sp_poly_hash_merge(sp_RbVal a, sp_RbVal b) {
+  sp_PolyPolyHash *r = sp_PolyPolyHash_new();
+  SP_GC_ROOT(r);
+  sp_RbVal hs[2]; hs[0] = a; hs[1] = b;
+  for (int h = 0; h < 2; h++) {
+    if (hs[h].tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(hs[h].cls_id)) continue;
+    sp_PolyArray *pairs = sp_poly_to_a_arr(hs[h]);
+    SP_GC_ROOT(pairs);
+    for (mrb_int i = 0; pairs && i < pairs->len; i++) {
+      sp_RbVal pair = pairs->data[i];
+      sp_PolyPolyHash_set(r, sp_poly_arr_get(pair, 0), sp_poly_arr_get(pair, 1));
+    }
+  }
+  return r;
 }
 /* Struct#members on a boxed value: the field-name symbols in order (the keys of
    the symbol-keyed to_h). */

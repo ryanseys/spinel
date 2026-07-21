@@ -681,6 +681,38 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* `poly.map! { |x| ... }` / `collect!` where poly is an array read out of a
+     container: coerce to a poly array and rewrite each element in place with
+     the block result, returning the (mutated) array (#3162). */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      (sp_streq(name, "map!") || sp_streq(name, "collect!"))) {
+    int mblock = nt_ref(nt, id, "block");
+    const char *bp = block_param_name(c, mblock, 0); if (bp) bp = rename_local(bp);
+    int mbody = nt_ref(nt, mblock, "body");
+    int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
+    if (mbn >= 1) {
+      int trecv = ++g_tmp, ti = ++g_tmp;
+      Buf rb = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"map!\"); SP_GC_ROOT(_t%d);\n",
+                 trecv, rb.p ? rb.p : "sp_box_nil()", trecv);
+      free(rb.p);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+      char es[64]; snprintf(es, sizeof es, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
+      int splat = emit_iter_autosplat(c, mblock, TY_POLY_ARRAY, es, g_indent + 1);
+      if (!splat && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = %s;\n", bp, es); }
+      for (int j = 0; j < mbn - 1; j++) emit_stmt(c, mbb[j], g_pre, g_indent + 1);
+      int sv = g_indent; g_indent++;
+      Buf vb; memset(&vb, 0, sizeof vb); emit_boxed(c, mbb[mbn - 1], &vb); g_indent = sv;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "_t%d->data[_t%d] = %s;\n", trecv, ti, vb.p ? vb.p : "sp_box_nil()");
+      free(vb.p);
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      buf_printf(b, "_t%d", trecv);
+      return 1;
+    }
+  }
   /* `poly.zip(other...)` on a poly array read out of a container (e.g. a row
      that is a block param of an outer nested-array iterator): coerce the
      receiver to a poly array and re-dispatch as the array zip form, whose arg

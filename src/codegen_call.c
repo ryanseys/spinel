@@ -3037,6 +3037,68 @@ static int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
   return 0;
 }
 
+/* Builtin methods on a poly value that holds a specific builtin type (a Range /
+   Proc / Time / Integer / Hash read out of a container or a widened slot). The
+   poly dispatch only knows user-class arms, so these fell to NoMethodError.
+   Emitted as a runtime tag/cls_id check; declined when a user class defines the
+   name so the general dispatch (which then has arms) wins. (#3162) */
+static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || comp_ntype(c, recv) != TY_POLY || !name) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  int argc; const int *argv = call_args(nt, id, &argc);
+  if (diag_user_defines(c, name)) return 0;   /* a user class owns the name */
+
+  /* Time accessors: the boxed poly holds a pointer to the sp_Time value. */
+  const char *tf = NULL;
+  if (argc == 0) {
+    if (sp_streq(name, "year")) tf = "year";
+    else if (sp_streq(name, "mon") || sp_streq(name, "month")) tf = "mon";
+    else if (sp_streq(name, "mday") || sp_streq(name, "day")) tf = "mday";
+    else if (sp_streq(name, "hour")) tf = "hour";
+    else if (sp_streq(name, "sec")) tf = "sec";
+    else if (sp_streq(name, "wday")) tf = "wday";
+    else if (sp_streq(name, "yday")) tf = "yday";
+  }
+  if (tf) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME"
+                  " ? sp_time_%s(*(sp_Time *)_t%d.v.p)"
+                  " : (mrb_int)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), 0); })",
+               tv, tv, tf, tv, name, tv);
+    return 1;
+  }
+  /* Proc#arity: read the arity field off the boxed proc. */
+  if (sp_streq(name, "arity") && argc == 0) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
+                  " ? ((sp_Proc *)_t%d.v.p)->arity"
+                  " : (mrb_int)(sp_raise_nomethod(sp_nomethod_msg(\"arity\", _t%d)), 0); })",
+               tv, tv, tv, tv);
+    return 1;
+  }
+  /* Integer#to_s(base): base-N string of a poly integer. */
+  if (sp_streq(name, "to_s") && argc == 1) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_int_to_s_base(_t%d.v.i, ", tv, tv);
+    emit_int_expr(c, argv[0], b);
+    buf_printf(b, ") : sp_poly_to_s(_t%d); })", tv);
+    return 1;
+  }
+  /* Hash#merge(other): fold both hashes into a general PolyPoly hash. */
+  if (sp_streq(name, "merge") && argc == 1) {
+    buf_puts(b, "sp_poly_hash_merge("); emit_boxed(c, recv, b);
+    buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  }
+  return 0;
+}
+
 static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -16298,6 +16360,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
+  if (emit_poly_builtin_method(c, id, b)) return;
   if (emit_poly_method_dispatch(c, id, b)) return;
   /* the distinct value-type ranges (float / string) answer first */
   if (recv >= 0 && (rt == TY_STR_RANGE || rt == TY_FLOAT_RANGE) &&
