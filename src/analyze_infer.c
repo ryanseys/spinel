@@ -1965,7 +1965,26 @@ else {
           /* Array.new(n) { body }: element type from last expression of block body */
           int bbody = nt_ref(nt, blk, "body");
           int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-          if (bn > 0 && bb) { TyKind et = infer_type(c, bb[bn - 1]); if (et != TY_UNKNOWN) return ty_array_of(et); }
+          if (bn > 0 && bb) {
+            TyKind et = infer_type(c, bb[bn - 1]);
+            if (et != TY_UNKNOWN) return ty_array_of(et);
+            /* Element type unsettled. Stay UNKNOWN -- rather than latch
+               POLY_ARRAY -- ONLY while the block's index param is itself still
+               being inferred: its eventual type gives the element type, and a
+               premature POLY_ARRAY would bind monotonically into a callee param
+               that could never un-widen to the real INT_ARRAY, forcing a copy-
+               convert that drops in-place mutation (#3157). Once the param has
+               settled (or there is none) a still-unknown element -- e.g. an
+               empty `[]` -- falls through to POLY_ARRAY as before. */
+            int bpn = a_proc_params_node(c, id);   /* id is the Array.new call */
+            int brn = 0; const int *breqs = bpn >= 0 ? nt_arr(nt, bpn, "requireds", &brn) : NULL;
+            if (brn > 0 && breqs) {
+              Scope *bsc = comp_scope_of(c, bb[bn - 1]);   /* the block's own scope */
+              const char *bpname = nt_str(nt, breqs[0], "name");
+              LocalVar *bplv = (bsc && bpname) ? scope_local(bsc, bpname) : NULL;
+              if (bplv && bplv->type == TY_UNKNOWN) return TY_UNKNOWN;
+            }
+          }
         }
         /* a bare `Array.new` carries no element type; leave it UNKNOWN (like an
            empty `[]`) so the push-promotion pass can narrow it from `<<`/push. */
