@@ -894,7 +894,15 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   }
   else {
     /* key carried over; new value = block result (box/unbox to match dest type) */
-    buf_printf(g_pre, "_t%d, ", tk);
+    /* When the block result forced a poly-valued dest hash (no concrete
+       (key, result) variant, e.g. Int-key + Float value -> PolyPoly), the
+       carried-over concrete key must be boxed for the poly-keyed set (#3173). */
+    if (dkt == TY_POLY && skt != TY_POLY) {
+      Buf bx; memset(&bx, 0, sizeof bx); char gk[64]; snprintf(gk, sizeof gk, "_t%d", tk);
+      emit_boxed_text(c, skt, gk, &bx);
+      buf_printf(g_pre, "%s, ", bx.p ? bx.p : ""); free(bx.p);
+    }
+    else buf_printf(g_pre, "_t%d, ", tk);
     if (dvt == TY_POLY && bret != TY_POLY) {
       Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb.p ? vb.p : "", &bx);
       buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);

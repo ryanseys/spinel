@@ -4603,8 +4603,19 @@ else {
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         TyKind nvt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
-        TyKind r = ty_hash_of(ty_hash_key(rt), nvt);
-        return r != TY_UNKNOWN ? r : rt;
+        TyKind kt = ty_hash_key(rt);
+        TyKind r = ty_hash_of(kt, nvt);
+        if (r != TY_UNKNOWN) return r;
+        /* No concrete (key, block-result) hash variant exists (e.g. a Float or
+           object value: there is no StrFloat hash). Falling back to the input
+           type truncated the value (#3173); use a poly-valued hash of the same
+           key kind so the block result is stored boxed, not coerced. */
+        if (nvt != TY_UNKNOWN && nvt != ty_hash_val(rt)) {
+          if (kt == TY_STRING) return TY_STR_POLY_HASH;
+          if (kt == TY_SYMBOL) return TY_SYM_POLY_HASH;
+          return TY_POLY_POLY_HASH;
+        }
+        return rt;
       }
     }
     if (sp_streq(name, "merge") && argc == 1) {
