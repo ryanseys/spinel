@@ -5236,6 +5236,9 @@ static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
   switch (v.cls_id) {
     case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_get((sp_SymPolyHash*)v.v.p, key);
     case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_get((sp_PolyPolyHash*)v.v.p, sp_box_sym(key));
+    /* an OpenStruct read as poly (e.g. returned from a method that can also
+       return an int): `o[:k]` is the member value (#3193). */
+    case SP_BUILTIN_OPENSTRUCT: return sp_OpenStruct_get((sp_OpenStruct*)v.v.p, key);
     default: return sp_box_nil();
   }
 }
@@ -7689,6 +7692,27 @@ static sp_PolyPolyHash *sp_poly_hash_merge(sp_RbVal a, sp_RbVal b) {
     }
   }
   return r;
+}
+/* OpenStruct.new(hash) where hash is a runtime value (not a literal): seed the
+   member table from the hash's entries, keys coerced to symbols. Copies, so
+   mutating the OpenStruct does not alter the source hash (#3194). */
+static sp_OpenStruct *sp_openstruct_from_poly(sp_RbVal h) {
+  sp_SymPolyHash *tbl = sp_SymPolyHash_new();
+  SP_GC_ROOT(tbl);
+  if (h.tag == SP_TAG_OBJ && h.cls_id == SP_BUILTIN_SYM_POLY_HASH) {
+    sp_SymPolyHash *s = (sp_SymPolyHash *)h.v.p;
+    for (mrb_int i = 0; i < s->len; i++)
+      sp_SymPolyHash_set(tbl, s->order[i], sp_SymPolyHash_get(s, s->order[i]));
+  } else if (h.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(h.cls_id)) {
+    sp_PolyArray *pairs = sp_poly_to_a_arr(h);
+    SP_GC_ROOT(pairs);
+    for (mrb_int i = 0; pairs && i < pairs->len; i++) {
+      sp_RbVal pair = pairs->data[i], k = sp_poly_arr_get(pair, 0);
+      sp_sym sym = (k.tag == SP_TAG_SYM) ? (sp_sym)k.v.i : sp_sym_intern(sp_poly_to_s(k));
+      sp_SymPolyHash_set(tbl, sym, sp_poly_arr_get(pair, 1));
+    }
+  }
+  return sp_OpenStruct_new_from(tbl);
 }
 /* Struct#members on a boxed value: the field-name symbols in order (the keys of
    the symbol-keyed to_h). */

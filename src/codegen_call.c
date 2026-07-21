@@ -5059,8 +5059,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, " sp_OpenStruct_new_from(_h%d); })", th);
           return 1;
         }
-        /* a runtime hash argument: only a symbol-keyed hash carries member
-           names; anything else is an unsupported ctor form */
+        /* a runtime hash argument (a variable / expression): seed the member
+           table from its entries at runtime (#3194). */
+        if (argc == 1 && (ty_is_hash(comp_ntype(c, argv[0])) ||
+                          comp_ntype(c, argv[0]) == TY_POLY)) {
+          buf_puts(b, "sp_openstruct_from_poly("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+          return 1;
+        }
         unsupported(c, id, "OpenStruct.new argument form");
         return 1;
       }
