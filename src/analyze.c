@@ -1681,8 +1681,19 @@ static void class_qualified_name(Compiler *c, int ci, char *out, size_t cap) {
   for (int x = ci; x >= 0 && n < (int)(sizeof chain / sizeof chain[0]);
        x = c->classes[x].enclosing_class)
     chain[n++] = x;
-  size_t j = 0;
+  /* A qualify_colliding_classes-renamed link (`Mod__Leaf`) already embeds its
+     full enclosing path in its stored name; prepending its enclosers again
+     would duplicate the module prefix (`Red::Base::Inner` with a renamed
+     `Red__Base` link would reconstruct as `Red_Red__Base_Inner`, which no
+     extractor-emitted seed name can match). Start at the outermost renamed
+     link instead. */
+  int start = n - 1;
   for (int i = n - 1; i >= 0; i--) {
+    const char *nm = c->classes[chain[i]].name;
+    if (nm && strstr(nm, "__")) { start = i; break; }
+  }
+  size_t j = 0;
+  for (int i = start; i >= 0; i--) {
     const char *nm = c->classes[chain[i]].name;
     if (!nm) continue;
     if (j && j + 1 < cap) out[j++] = '_';

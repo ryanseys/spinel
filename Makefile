@@ -578,6 +578,7 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB)
 	  -c --no-line-map -o "$$tmp/cp.c" 2>/dev/null; \
 	grep -Eq 'const char[[:space:]]*\*[[:space:]]*iv_rtag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (collision-renamed class seed not applied)"; ok=0; }; \
 	grep -Eq 'sp_RbVal[[:space:]]+sp_Blue__Base_btag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (poly union return seed not pinned)"; ok=0; }; \
+	grep -Eq 'const char[[:space:]]*\*[[:space:]]*iv_itag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (seed for class nested in a renamed class not applied)"; ok=0; }; \
 	if $(CC) -O0 -Ilib "$$tmp/cp.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/cp" 2>"$$tmp/cp.err"; then \
 	  "$$tmp/cp" > "$$tmp/cp.out" 2>/dev/null; \
 	  cmp -s "$$tmp/cp.out" test/rbs-seed/colliding_class_pin.expected || { echo "rbs-seed-test: FAIL (colliding_class_pin output mismatch)"; diff -u test/rbs-seed/colliding_class_pin.expected "$$tmp/cp.out" || true; ok=0; }; \

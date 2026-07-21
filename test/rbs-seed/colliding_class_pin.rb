@@ -17,6 +17,14 @@
 # and pinned rather than silently dropped.
 module Red
   class Base
+    class Inner
+      def initialize
+        @itag = nil
+      end
+      def itag
+        @itag
+      end
+    end
     def initialize
       @rtag = nil
     end
@@ -36,3 +44,4 @@ end
 
 p Red::Base.new.rtag.nil?
 p Blue::Base.new.btag
+p Red::Base::Inner.new.itag.nil?
