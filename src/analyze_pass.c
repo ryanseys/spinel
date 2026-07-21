@@ -6034,6 +6034,22 @@ static void ple_build(Compiler *c) {
     int an = 0; const int *av = nt_arr(nt, ca, "arguments", &an);
     for (int k = 0; k < an; k++) if (av[k] >= 0 && av[k] < n) ple_escaped[av[k]] = 1;
   }
+  /* A proc literal stored as a hash value or array element also escapes: it is
+     read back as a boxed value and invoked through the type-erased ABI, so its
+     args ride the boxed side-channel just like a proc passed as a call
+     argument (#3178). */
+  NT_FOREACH_KIND(nt, NK_HashNode, id) {
+    int en = 0; const int *el = nt_arr(nt, id, "elements", &en);
+    for (int k = 0; k < en; k++) {
+      if (el[k] < 0 || !nt_type(nt, el[k]) || !sp_streq(nt_type(nt, el[k]), "AssocNode")) continue;
+      int v = nt_ref(nt, el[k], "value");
+      if (v >= 0 && v < n) ple_escaped[v] = 1;
+    }
+  }
+  NT_FOREACH_KIND(nt, NK_ArrayNode, id) {
+    int en = 0; const int *el = nt_arr(nt, id, "elements", &en);
+    for (int k = 0; k < en; k++) if (el[k] >= 0 && el[k] < n) ple_escaped[el[k]] = 1;
+  }
 }
 static int proc_literal_escapes_as_arg(Compiler *c, int lit) {
   const NodeTable *nt = c->nt;

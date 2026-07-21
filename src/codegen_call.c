@@ -7787,6 +7787,42 @@ void emit_call(Compiler *c, int id, Buf *b) {
          yields, keeping the ternary's two branches a single type. */
       int mabi_poly = g_promote_mode;
       const char *aty = mabi_poly ? "sp_RbVal" : "mrb_int";
+      /* A splat among the arguments makes the arg count dynamic: build the full
+         (boxed) argument array and spread it, as the statically-typed Proc path
+         does. The poly value is a Proc here (a boxed Method with a splat call is
+         not covered) (#3178). */
+      {
+        int any_splat_pc = 0;
+        for (int k = 0; k < argc; k++)
+          if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) any_splat_pc = 1;
+        if (any_splat_pc) {
+          g_needs_proc_poly_argslot = 1;
+          int ta = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ta, ta);
+          for (int k = 0; k < argc; k++) {
+            Buf ab; memset(&ab, 0, sizeof ab);
+            const char *aty2 = nt_type(nt, argv[k]);
+            if (aty2 && sp_streq(aty2, "SplatNode")) {
+              int sx = nt_ref(nt, argv[k], "expression");
+              if (sx >= 0) emit_boxed(c, sx, &ab);
+              int ts = ++g_tmp, ti = ++g_tmp;
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "{ sp_PolyArray *_t%d = sp_enum_items_from(%s); SP_GC_ROOT(_t%d);"
+                                " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                                " sp_PolyArray_push(_t%d, _t%d->data[_t%d]); }\n",
+                         ts, ab.p ? ab.p : "sp_box_nil()", ts, ti, ti, ts, ti, ta, ts, ti);
+            } else {
+              emit_boxed(c, argv[k], &ab);
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", ta, ab.p ? ab.p : "sp_box_nil()");
+            }
+            free(ab.p);
+          }
+          buf_printf(b, "((void)sp_proc_call_spread((sp_Proc *)_t%d.v.p, sp_box_poly_array(_t%d)), _sp_proc_poly_ret)", t, ta);
+          return;
+        }
+      }
       /* Hoist every argument to a rooted temp and publish it (boxed) to the
          proc poly-arg side-channel, mirroring the general proc-call ABI. The
          callee may be a poly-signatured Proc whose params read from that
