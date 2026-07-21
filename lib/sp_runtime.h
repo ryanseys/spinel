@@ -5459,6 +5459,13 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
     return sp_PolyPolyHash_get((sp_PolyPolyHash *)recv.v.p, idx);
   if (idx.tag == SP_TAG_STR) return sp_poly_get_str(recv, idx.v.s);
   if (idx.tag == SP_TAG_SYM) return sp_poly_get_sym(recv, (sp_sym)idx.v.i);
+  /* a Range index on a poly STRING is a substring (String#[Range]); without
+     this a Range fell through as i=0 and returned char 0 (#3175). */
+  if (idx.tag == SP_TAG_OBJ && idx.cls_id == SP_BUILTIN_RANGE && recv.tag == SP_TAG_STR) {
+    sp_Range *rg = (sp_Range *)idx.v.p;
+    return sp_box_str(sp_str_sub_range_r(recv.v.s ? recv.v.s : sp_str_empty,
+                                         rg->first, rg->last, (int)rg->excl));
+  }
   mrb_int i = (idx.tag == SP_TAG_INT) ? idx.v.i : 0;
   return sp_poly_arr_get_hash(recv, i);
 }

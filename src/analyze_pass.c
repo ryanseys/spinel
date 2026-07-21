@@ -6025,6 +6025,31 @@ static int register_proc_numbered(Compiler *c, int create) {
 static const NodeTable *ple_nt = NULL;
 static int ple_ntc = -1;
 static char *ple_escaped = NULL;
+/* Mark node `x` as escaping. If `x` is a bare local read of a proc, mark the
+   proc LITERAL assigned to that local too: `f = ->(a){...}; g([f])` escapes the
+   literal even though the container/arg holds a reference, not the literal
+   itself (#3175). */
+static void ple_mark_escaped(Compiler *c, int x) {
+  const NodeTable *nt = c->nt;
+  int n = ple_ntc;
+  if (x < 0 || x >= n || !ple_escaped) return;
+  ple_escaped[x] = 1;
+  const char *xty = nt_type(nt, x);
+  if (!xty || !sp_streq(xty, "LocalVariableReadNode")) return;
+  const char *vn = nt_str(nt, x, "name");
+  Scope *sc = vn ? comp_scope_of(c, x) : NULL;
+  if (!vn || !sc) return;
+  for (int w = 0; w < n; w++) {
+    const char *wty = nt_type(nt, w);
+    if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+    int val = nt_ref(nt, w, "value");
+    if (val >= 0 && val < n && nt_type(nt, val) &&
+        (sp_streq(nt_type(nt, val), "LambdaNode") || is_proc_create(c, val)))
+      ple_escaped[val] = 1;
+  }
+}
 static void ple_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
@@ -6036,7 +6061,7 @@ static void ple_build(Compiler *c) {
     int ca = nt_ref(nt, id, "arguments");
     if (ca < 0) continue;
     int an = 0; const int *av = nt_arr(nt, ca, "arguments", &an);
-    for (int k = 0; k < an; k++) if (av[k] >= 0 && av[k] < n) ple_escaped[av[k]] = 1;
+    for (int k = 0; k < an; k++) ple_mark_escaped(c, av[k]);
   }
   /* A proc literal stored as a hash value or array element also escapes: it is
      read back as a boxed value and invoked through the type-erased ABI, so its
@@ -6046,13 +6071,29 @@ static void ple_build(Compiler *c) {
     int en = 0; const int *el = nt_arr(nt, id, "elements", &en);
     for (int k = 0; k < en; k++) {
       if (el[k] < 0 || !nt_type(nt, el[k]) || !sp_streq(nt_type(nt, el[k]), "AssocNode")) continue;
-      int v = nt_ref(nt, el[k], "value");
-      if (v >= 0 && v < n) ple_escaped[v] = 1;
+      ple_mark_escaped(c, nt_ref(nt, el[k], "value"));
     }
   }
   NT_FOREACH_KIND(nt, NK_ArrayNode, id) {
     int en = 0; const int *el = nt_arr(nt, id, "elements", &en);
-    for (int k = 0; k < en; k++) if (el[k] >= 0 && el[k] < n) ple_escaped[el[k]] = 1;
+    for (int k = 0; k < en; k++) ple_mark_escaped(c, el[k]);
+  }
+  /* A proc literal RETURNED from a method (an explicit `return ->(x){...}` or
+     the body tail that is the implicit return) escapes: the caller invokes it
+     through the type-erased ABI, so its own params must read the boxed side-
+     channel rather than default to int (#3175). */
+  NT_FOREACH_KIND(nt, NK_ReturnNode, id) {
+    int ra = nt_ref(nt, id, "arguments");
+    int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+    for (int k = 0; k < rn; k++) ple_mark_escaped(c, rv[k]);
+  }
+  NT_FOREACH_KIND(nt, NK_DefNode, id) {
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || !nt_type(nt, body) || !sp_streq(nt_type(nt, body), "StatementsNode")) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    if (bn > 0 && bb[bn - 1] >= 0 && bb[bn - 1] < n &&
+        nt_type(nt, bb[bn - 1]) && sp_streq(nt_type(nt, bb[bn - 1]), "LambdaNode"))
+      ple_escaped[bb[bn - 1]] = 1;
   }
 }
 static int proc_literal_escapes_as_arg(Compiler *c, int lit) {
