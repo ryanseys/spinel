@@ -2859,7 +2859,13 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
    keep 0. Returns NULL for types whose zero-init already reads as nil
    (string->NULL) or which are nil-initialized separately (poly). */
 static const char *ivar_scalar_nil_init(TyKind t) {
+  /* Mirror the read-side nil sentinels: an unwritten int ivar's nil is
+     SP_INT_NIL and a symbol ivar's is (sp_sym)-1, neither of which is the memset
+     zero pattern (symbol 0 is a real symbol), so `@x ||= v` on an unset ivar
+     would otherwise keep the zero value instead of running the assignment
+     (#3210). */
   if (t == TY_INT) return "SP_INT_NIL";
+  if (t == TY_SYMBOL) return "((sp_sym)-1)";
   return NULL;
 }
 
