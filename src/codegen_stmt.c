@@ -1626,10 +1626,27 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, Buf *b) {
    value, an array element, a find window) where the scrutinee is sp_RbVal. */
 static void emit_pm_hash_cond_poly(Compiler *c, int pat, const char *hexpr, Buf *b) {
   const NodeTable *nt = c->nt;
-  int th = ++g_tmp, tok = ++g_tmp, tf = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = %s; mrb_bool _t%d = 0; (void)_t%d; "
+  int th0 = ++g_tmp, th = ++g_tmp, tok = ++g_tmp, tf = ++g_tmp;
+  /* A hash pattern also matches a user object via #deconstruct_keys: a Struct/
+     Data value (or any object) read out of a container as a boxed poly. Convert
+     a non-hash user object to its keyed hash first, then match. A class-
+     qualified pattern (`User[name:]`) additionally guards the runtime class
+     (#3161/#3180). */
+  int hc_const = nt_ref(nt, pat, "constant");
+  char subj0[24]; snprintf(subj0, sizeof subj0, "_t%d", th0);
+  buf_printf(b, "({ sp_RbVal _t%d = %s; sp_RbVal _t%d = ", th0, hexpr, th);
+  buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && !sp_poly_is_hash_kind(_t%d.cls_id) && sp_obj_to_h_fn)"
+                " ? sp_obj_to_h_fn(_t%d) : _t%d;",
+             th0, th0, th0, th0, th0);
+  buf_printf(b, " mrb_bool _t%d = 0; (void)_t%d; "
                 "int _t%d = (_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id));",
-             th, hexpr, tf, tf, tok, th, th);
+             tf, tf, tok, th, th);
+  if (hc_const >= 0) {
+    Buf cg; memset(&cg, 0, sizeof cg);
+    if (emit_poly_class_when(c, hc_const, subj0, &cg))
+      buf_printf(b, " _t%d = _t%d && (%s);", tok, tok, cg.p ? cg.p : "1");
+    free(cg.p);
+  }
   int en = 0, listed = 0;
   const int *elms = nt_arr(nt, pat, "elements", &en);
   for (int i = 0; i < en; i++) {
@@ -2246,6 +2263,15 @@ static void emit_pm_bind_hash_poly(Compiler *c, int pat, const char *hexpr, int 
   const NodeTable *nt = c->nt;
   int en = 0;
   const int *elms = nt_arr(nt, pat, "elements", &en);
+  /* deconstruct a user object (a Struct/Data read as a boxed poly) into its
+     keyed hash so the per-key reads below find the members; a real hash is
+     left untouched by the runtime guard (#3161/#3180). */
+  int thd = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_RbVal _t%d = %s; if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && !sp_poly_is_hash_kind(_t%d.cls_id) && sp_obj_to_h_fn) _t%d = sp_obj_to_h_fn(_t%d);\n",
+             thd, hexpr, thd, thd, thd, thd, thd);
+  char hbuf[24]; snprintf(hbuf, sizeof hbuf, "_t%d", thd);
+  hexpr = hbuf;
   for (int i = 0; i < en; i++) {
     if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
     int key = nt_ref(nt, elms[i], "key");
