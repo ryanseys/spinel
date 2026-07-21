@@ -2126,6 +2126,22 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
         al->type = p->type; changed = 1;
       }
     }
+    /* Same, but the callee takes the hash opaquely (a TY_POLY param). An empty
+       `{}` passed there is written inside the callee through the reference; the
+       poly-value hash accessors (`h[k] ||= v` boxed set) only persist to a
+       PolyPoly hash, so a StrPoly default silently dropped an int-keyed write
+       (#3158). Type the caller's `{}` as PolyPoly so any key persists. */
+    if (p->type == TY_POLY && apty && sp_streq(apty, "LocalVariableReadNode")) {
+      const char *an = nt_str(nt, argv[k], "name");
+      Scope *asc = an ? comp_scope_of(c, argv[k]) : NULL;
+      LocalVar *al = asc ? scope_local(asc, an) : NULL;
+      if (al && !al->is_param && !al->is_block_param &&
+          (al->type == TY_UNKNOWN || al->type == TY_POLY || ty_is_hash(al->type)) &&
+          al->type != TY_POLY_POLY_HASH &&
+          local_all_writes_empty_hash(c, asc, an)) {
+        al->type = TY_POLY_POLY_HASH; changed = 1;
+      }
+    }
     /* Reverse binding for an ARRAY argument: the callee mutates the very array
        the caller holds, so a push inside the method that widened the parameter
        to a poly array widens the caller's local too. Without this the caller
