@@ -2058,9 +2058,17 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
          a complex argument's prelude is hoisted whole to g_pre, not spliced into
          this line when b is g_pre. */
       int tn = ++g_tmp, td = ++g_tmp;
-      Buf nb = expr_buf(c, argv[0]);
-      Buf db = expr_buf(c, argv[1]);
-      buf_printf(b, "({ mrb_int _t%d = (mrb_int)(%s); mrb_int _t%d = (mrb_int)(%s);"
+      /* Each numerator/denominator must reach an mrb_int. A poly argument (e.g.
+         `n / g` where n was destructured to poly) is a tagged sp_RbVal struct,
+         which cannot be C-cast to an integer -- unbox it with sp_poly_to_i
+         (#3184). */
+      Buf nb; memset(&nb, 0, sizeof nb);
+      if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(&nb, "sp_poly_to_i("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "sp_box_nil()"); buf_puts(&nb, ")"); free(t0.p); }
+      else { buf_puts(&nb, "(mrb_int)("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "0"); buf_puts(&nb, ")"); free(t0.p); }
+      Buf db; memset(&db, 0, sizeof db);
+      if (comp_ntype(c, argv[1]) == TY_POLY) { buf_puts(&db, "sp_poly_to_i("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "sp_box_nil()"); buf_puts(&db, ")"); free(t1.p); }
+      else { buf_puts(&db, "(mrb_int)("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "0"); buf_puts(&db, ")"); free(t1.p); }
+      buf_printf(b, "({ mrb_int _t%d = %s; mrb_int _t%d = %s;"
                     " if (_t%d == 0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
                     " sp_rational_new(_t%d, _t%d); })",
                  tn, nb.p ? nb.p : "0", td, db.p ? db.p : "0", td, tn, td);
@@ -3094,6 +3102,18 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   if (sp_streq(name, "merge") && argc == 1) {
     buf_puts(b, "sp_poly_hash_merge("); emit_boxed(c, recv, b);
     buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  }
+  /* Integer#gcd / #lcm on poly operands (destructured pair elements): both are
+     ints at runtime; fold to the int helper (#3184). */
+  if ((sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1) {
+    int tv = ++g_tmp, tw = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+    buf_printf(b, "; sp_RbVal _t%d = ", tw); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; (_t%d.tag == SP_TAG_INT && _t%d.tag == SP_TAG_INT)"
+                  " ? sp_%s(_t%d.v.i, _t%d.v.i)"
+                  " : (mrb_int)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), 0); })",
+               tv, tw, name, tv, tw, name, tv);
     return 1;
   }
   return 0;

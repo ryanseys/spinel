@@ -960,6 +960,11 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "merge"))
     return TY_POLY_POLY_HASH;
+  /* Integer#gcd / #lcm on a poly value (destructured pair): int. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) &&
+      (sp_streq(name, "gcd") || sp_streq(name, "lcm")))
+    return TY_INT;
   /* sort over a poly value that is an array at runtime (a group_by bucket / an
      inner array): a fresh sorted poly array (#2928). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_defines_method(c, name) &&
