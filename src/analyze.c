@@ -1625,6 +1625,8 @@ void rename_shadowing_block_params(Compiler *c) {
    classes) are skipped, so a seed never makes inference worse. Entirely inert
    when SPINEL_RBS_SEED is unset -- the normal compile path is unchanged. */
 
+static int seed_class_index(Compiler *c, const char *name);
+
 static TyKind parse_seed_type(Compiler *c, const char *tok) {
   if (!tok || !*tok) return TY_UNKNOWN;
   size_t n = strlen(tok);
@@ -1641,6 +1643,9 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
   if (sp_streq(buf, "bool"))   return TY_BOOL;
   if (sp_streq(buf, "nil"))    return TY_NIL;
   if (sp_streq(buf, "void"))   return TY_VOID;
+  /* heterogeneous unions map to the bare poly tag (#1255); accepting the
+     token pins the slot to sp_RbVal instead of silently dropping the seed */
+  if (sp_streq(buf, "poly"))   return TY_POLY;
   if (sp_streq(buf, "int_array"))    return TY_INT_ARRAY;
   if (sp_streq(buf, "float_array"))  return TY_FLOAT_ARRAY;
   if (sp_streq(buf, "str_array"))    return TY_STR_ARRAY;
@@ -1656,7 +1661,10 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
   if (sp_streq(buf, "str_poly_hash"))  return TY_STR_POLY_HASH;
   if (sp_streq(buf, "poly_poly_hash")) return TY_POLY_POLY_HASH;
   if (!strncmp(buf, "obj_", 4)) {
-    int ci = comp_class_index(c, buf + 4);
+    /* the full seed matcher, not a bare table lookup: an obj_ token names a
+       class the same way a `class` seed line does (module-nested leaf,
+       collision-renamed form), and must match the same set */
+    int ci = seed_class_index(c, buf + 4);
     return ci >= 0 ? ty_object(ci) : TY_UNKNOWN;
   }
   return TY_UNKNOWN;
@@ -1673,8 +1681,19 @@ static void class_qualified_name(Compiler *c, int ci, char *out, size_t cap) {
   for (int x = ci; x >= 0 && n < (int)(sizeof chain / sizeof chain[0]);
        x = c->classes[x].enclosing_class)
     chain[n++] = x;
-  size_t j = 0;
+  /* A qualify_colliding_classes-renamed link (`Mod__Leaf`) already embeds its
+     full enclosing path in its stored name; prepending its enclosers again
+     would duplicate the module prefix (`Red::Base::Inner` with a renamed
+     `Red__Base` link would reconstruct as `Red_Red__Base_Inner`, which no
+     extractor-emitted seed name can match). Start at the outermost renamed
+     link instead. */
+  int start = n - 1;
   for (int i = n - 1; i >= 0; i--) {
+    const char *nm = c->classes[chain[i]].name;
+    if (nm && strstr(nm, "__")) { start = i; break; }
+  }
+  size_t j = 0;
+  for (int i = start; i >= 0; i--) {
     const char *nm = c->classes[chain[i]].name;
     if (!nm) continue;
     if (j && j + 1 < cap) out[j++] = '_';
@@ -1686,6 +1705,21 @@ static void class_qualified_name(Compiler *c, int ci, char *out, size_t cap) {
 
 /* Class index for a seed `class` line, normalizing `::` to the `_` form used
    in the compiler's class table. -1 if no such user class. */
+/* Equal with every run of consecutive underscores treated as one (see the
+   fallback in seed_class_index). */
+static int seed_name_und_eq(const char *a, const char *b) {
+  while (*a && *b) {
+    if (*a == '_' && *b == '_') {
+      while (*a == '_') a++;
+      while (*b == '_') b++;
+      continue;
+    }
+    if (*a != *b) return 0;
+    a++; b++;
+  }
+  return *a == '\0' && *b == '\0';
+}
+
 static int seed_class_index(Compiler *c, const char *name) {
   char buf[256];
   size_t j = 0;
@@ -1714,6 +1748,22 @@ static int seed_class_index(Compiler *c, const char *name) {
     char qn[256];
     class_qualified_name(c, i, qn, sizeof qn);
     if (sp_streq(qn, buf)) return i;
+  }
+  /* Last resort: compare with underscore runs collapsed on both sides.
+     qualify_colliding_classes renames a colliding leaf to the `Mod__Leaf`
+     (double-underscore) form -- stored as the class's own name, with the
+     enclosing-module link intact -- while the extractor's path join is a
+     single underscore (`Mod_Leaf`), so no exact form above can match and
+     the seeds for exactly the collision-prone classes were silently
+     dropped. Compare both the stored name (renamed classes) and the
+     reconstructed qualified name (renamed classes nested deeper) with
+     underscore runs collapsed. A fallback only: it can never shadow an
+     exact match. */
+  for (int i = 0; i < c->nclasses; i++) {
+    if (c->classes[i].name && seed_name_und_eq(c->classes[i].name, buf)) return i;
+    char qn[256];
+    class_qualified_name(c, i, qn, sizeof qn);
+    if (seed_name_und_eq(qn, buf)) return i;
   }
   return -1;
 }

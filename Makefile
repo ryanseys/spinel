@@ -574,6 +574,15 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB)
 	  "$$tmp/mc" > "$$tmp/mc.out" 2>/dev/null; \
 	  cmp -s "$$tmp/mc.out" test/rbs-seed/module_clone_divergent.expected || { echo "rbs-seed-test: FAIL (#2008 module-clone divergent-hash output mismatch)"; diff -u test/rbs-seed/module_clone_divergent.expected "$$tmp/mc.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#2008 module-clone divergent-hash C did not compile)"; ok=0; fi; \
+	$(SPINEL) test/rbs-seed/colliding_class_pin.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/cp.c" 2>/dev/null; \
+	grep -Eq 'const char[[:space:]]*\*[[:space:]]*iv_rtag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (collision-renamed class seed not applied)"; ok=0; }; \
+	grep -Eq 'sp_RbVal[[:space:]]+sp_Blue__Base_btag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (poly union return seed not pinned)"; ok=0; }; \
+	grep -Eq 'const char[[:space:]]*\*[[:space:]]*iv_itag' "$$tmp/cp.c" || { echo "rbs-seed-test: FAIL (seed for class nested in a renamed class not applied)"; ok=0; }; \
+	if $(CC) -O0 -Ilib "$$tmp/cp.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/cp" 2>"$$tmp/cp.err"; then \
+	  "$$tmp/cp" > "$$tmp/cp.out" 2>/dev/null; \
+	  cmp -s "$$tmp/cp.out" test/rbs-seed/colliding_class_pin.expected || { echo "rbs-seed-test: FAIL (colliding_class_pin output mismatch)"; diff -u test/rbs-seed/colliding_class_pin.expected "$$tmp/cp.out" || true; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (colliding_class_pin C did not compile)"; ok=0; fi; \
 	$(SPINEL) test/rbs-seed/void_block_tail.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/v.c" 2>/dev/null; \
 	if $(CC) -O0 -Ilib "$$tmp/v.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/v" 2>"$$tmp/v.err"; then \
