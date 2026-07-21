@@ -14252,12 +14252,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        holds nil (NilClass#=~ is always nil); any other tag has no =~ (Object#=~
        was removed) -> NoMethodError, matching CRuby. */
     if (are >= 0 && sp_streq(name, "=~") && rt == TY_POLY) {
+      /* Self-contained statement-expression: this can appear in a pure
+         expression position (an `if`/ternary condition) where a g_pre prelude
+         would not be flushed and would splice a stray statement into the
+         condition (#3187). */
       int tv = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
-      buf_printf(b, "(_t%d.tag == SP_TAG_STR ? sp_re_match_poly(sp_re_pat_%d, _t%d.v.s)"
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "; (_t%d.tag == SP_TAG_STR ? sp_re_match_poly(sp_re_pat_%d, _t%d.v.s)"
                     " : _t%d.tag == SP_TAG_NIL ? sp_box_nil()"
-                    " : sp_raise_nomethod(\"undefined method '=~' for poly\"))",
+                    " : sp_raise_nomethod(\"undefined method '=~' for poly\")); })",
                  tv, are, tv, tv);
       return;
     }
@@ -14266,11 +14269,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        non-poly (string) receiver keeps the direct negated-match emit. */
     if (are >= 0 && sp_streq(name, "!~") && rt == TY_POLY) {
       int tv = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
-      buf_printf(b, "(_t%d.tag == SP_TAG_STR ? !sp_re_match_p(sp_re_pat_%d, _t%d.v.s)"
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "; (_t%d.tag == SP_TAG_STR ? !sp_re_match_p(sp_re_pat_%d, _t%d.v.s)"
                     " : _t%d.tag == SP_TAG_NIL ? 1"
-                    " : (sp_raise_nomethod(\"undefined method '=~' for poly\"), 0))",
+                    " : (sp_raise_nomethod(\"undefined method '=~' for poly\"), 0)); })",
                  tv, are, tv, tv);
       return;
     }
