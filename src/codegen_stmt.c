@@ -1730,6 +1730,15 @@ static int pm_hash_value_class(const NodeTable *nt, int vpat) {
   return PM_HASH_VAL_REJECT;
 }
 
+/* When set, a typed-hash pattern's statement-form match helpers (which
+   reference the subject temp `_t<t>`) are emitted here instead of g_pre.
+   g_pre is prepended to the whole enclosing statement -- ahead of the subject
+   declaration -- so an alternation like `{a:} | {b:}` at the top of a case
+   would use `_t<t>` before it is declared. Routing to the arm's own block keeps
+   the helpers after the subject (#3185). */
+static Buf *g_pm_hash_sink = NULL;
+static int g_pm_hash_sink_indent = 0;
+
 int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *pty = nt_type(nt, pat);
@@ -1967,6 +1976,10 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     const char *hn = ty_is_hash(pt) ? ty_hash_cname(pt) : NULL;
     if (!hn) return 0;
     TyKind hvt = ty_hash_val(pt);
+    /* Statement-form helpers reference the subject `_t<t>`; route them to the
+       arm's own block when a sink is set, else the g_pre prologue (#3185). */
+    Buf *hs = g_pm_hash_sink ? g_pm_hash_sink : g_pre;
+    int hi = g_pm_hash_sink ? g_pm_hash_sink_indent : g_indent;
     int en = 0;
     const int *elms = nt_arr(nt, pat, "elements", &en);
     for (int i = 0; i < en; i++) {
@@ -1977,13 +1990,13 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
         /* a value sub-pattern (literal, range, alternation, pin, container):
            trial-emit the recursive condition against the fetched value's type
            and reject when the recursion cannot check it. The trial may write
-           prelude text; roll g_pre back so a reject leaves no half-built code. */
-        size_t gp_len = g_pre->len;
+           helper text; roll the sink back so a reject leaves no half-built code. */
+        size_t gp_len = hs->len;
         int tt = ++g_tmp;
         Buf trial; memset(&trial, 0, sizeof trial);
         int ok = emit_pm_cond(c, nt_ref(nt, elms[i], "value"), tt, hvt, &trial);
         free(trial.p);
-        if (g_pre->p) { g_pre->len = gp_len; g_pre->p[gp_len] = 0; }
+        if (hs->p) { hs->len = gp_len; hs->p[gp_len] = 0; }
         if (!ok) return 0;
         continue;
       }
@@ -1995,46 +2008,46 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       }
     }
     int hcond = ++g_tmp;
-    emit_indent(g_pre, g_indent); buf_printf(g_pre, "int _t%d = 1;\n", hcond);
+    emit_indent(hs, hi); buf_printf(hs, "int _t%d = 1;\n", hcond);
     for (int i = 0; i < en; i++) {
       int key = nt_ref(nt, elms[i], "key");
       int vchk = nt_ref(nt, elms[i], "value");
       int classpat = pm_hash_value_class(nt, vchk);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, t);
-      emit_expr(c, key, g_pre); buf_puts(g_pre, ");\n");
+      emit_indent(hs, hi);
+      buf_printf(hs, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, t);
+      emit_expr(c, key, hs); buf_puts(hs, ");\n");
       if (classpat == PM_HASH_VAL_REJECT) {
         /* fetch the value into a typed temp and AND in the recursive check
            (validated to succeed above) */
         int vtmp = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        buf_puts(g_pre, "{ ");
-        emit_ctype(c, hvt, g_pre);
-        buf_printf(g_pre, " _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
-        emit_expr(c, key, g_pre); buf_puts(g_pre, "); ");
+        emit_indent(hs, hi);
+        buf_puts(hs, "{ ");
+        emit_ctype(c, hvt, hs);
+        buf_printf(hs, " _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
+        emit_expr(c, key, hs); buf_puts(hs, "); ");
         Buf vc; memset(&vc, 0, sizeof vc);
         emit_pm_cond(c, vchk, vtmp, hvt, &vc);
-        buf_printf(g_pre, "_t%d = _t%d && (%s); }\n", hcond, hcond, vc.p ? vc.p : "1");
+        buf_printf(hs, "_t%d = _t%d && (%s); }\n", hcond, hcond, vc.p ? vc.p : "1");
         free(vc.p);
         continue;
       }
       if (classpat < 0) continue;
       if (hvt == TY_POLY) {
         int vtmp = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "{ sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
-        emit_expr(c, key, g_pre); buf_puts(g_pre, "); ");
+        emit_indent(hs, hi);
+        buf_printf(hs, "{ sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
+        emit_expr(c, key, hs); buf_puts(hs, "); ");
         char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
         Buf cw; memset(&cw, 0, sizeof cw);
         emit_poly_class_when(c, classpat, vn, &cw);   /* validated to succeed above */
-        buf_printf(g_pre, "_t%d = _t%d && (%s);", hcond, hcond, cw.p ? cw.p : "1");
+        buf_printf(hs, "_t%d = _t%d && (%s);", hcond, hcond, cw.p ? cw.p : "1");
         free(cw.p);
-        buf_puts(g_pre, " }\n");
+        buf_puts(hs, " }\n");
       }
       else {
         const char *cn = nt_str(nt, classpat, "name");
         if (cn && ty_matches_class(hvt, cn, 0) <= 0) {
-          emit_indent(g_pre, g_indent); buf_printf(g_pre, "_t%d = 0;\n", hcond);
+          emit_indent(hs, hi); buf_printf(hs, "_t%d = 0;\n", hcond);
         }
       }
     }
@@ -2718,7 +2731,17 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       has_cond = 1;
     }
     else {
+      /* A hash pattern reached here (e.g. inside an alternation `{a:} | {b:}`)
+         emits statement-form helpers that reference the subject `_t`; route
+         them into this arm's block, after the subject, not the g_pre prologue
+         (#3185). */
+      Buf *saved_sink = g_pm_hash_sink;
+      int saved_sink_indent = g_pm_hash_sink_indent;
+      g_pm_hash_sink = b;
+      g_pm_hash_sink_indent = indent + 1;
       has_cond = emit_pm_cond(c, pat, arm_t, arm_pt, &cond_buf);
+      g_pm_hash_sink = saved_sink;
+      g_pm_hash_sink_indent = saved_sink_indent;
     }
     /* For IfNode the pattern is always a binding (LV), guard is separate */
     if (sp_streq(pty, "IfNode")) has_cond = 0;
