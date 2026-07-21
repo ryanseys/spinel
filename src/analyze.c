@@ -5516,11 +5516,14 @@ static void mark_empty_literal_tails(Compiler *c) {
    (#397) only reads string/symbol keys and skips int keys (array-ambiguous), so
    an int-keyed mutation leaves the param poly, and mutating a poly hash through
    `[]=` widens it -- dropping the change on the caller's empty `{}` (#2871). */
-static int param_nonstr_index_written(Compiler *c, int mi, int p) {
+/* Collected once per mark_empty_literal_args run: every `local[k] = v` write
+   whose key type cannot be assumed String (#2894), as (scope, local-name)
+   pairs. The old form rescanned the whole node table per (call, param) --
+   O(calls * nodes) once call names resolve. */
+typedef struct { const Scope *sc; const char *nm; } NonstrIdxWrite;
+static NonstrIdxWrite *nonstr_idx_writes(Compiler *c, int *out_n) {
   const NodeTable *nt = c->nt;
-  if (mi < 0 || p < 0 || p >= c->scopes[mi].nparams) return 0;
-  const char *pn = c->scopes[mi].pnames[p];
-  if (!pn) return 0;
+  NonstrIdxWrite *v = NULL; int n = 0, cap = 0;
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -5528,7 +5531,7 @@ static int param_nonstr_index_written(Compiler *c, int mi, int p) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
     const char *rn = nt_str(nt, recv, "name");
-    if (!rn || !sp_streq(rn, pn) || comp_scope_of(c, recv) != &c->scopes[mi]) continue;
+    if (!rn) continue;
     int args = nt_ref(nt, id, "arguments"); int an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an < 2) continue;
@@ -5536,8 +5539,26 @@ static int param_nonstr_index_written(Compiler *c, int mi, int p) {
     /* An unresolved key (typically a parameter whose type arrives from the call
        sites) cannot be assumed String: defaulting the caller's `{}` to the
        string-keyed variant would drop the callee's write (#2894). */
-    if (kt == TY_INT || kt == TY_SYMBOL || kt == TY_UNKNOWN || kt == TY_POLY) return 1;
+    if (kt != TY_INT && kt != TY_SYMBOL && kt != TY_UNKNOWN && kt != TY_POLY) continue;
+    if (n >= cap) {
+      cap = cap ? cap * 2 : 16;
+      v = realloc(v, sizeof(*v) * (size_t)cap);
+      if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    v[n].sc = comp_scope_of(c, recv);
+    v[n].nm = rn;
+    n++;
   }
+  *out_n = n;
+  return v;
+}
+static int param_nonstr_index_written(Compiler *c, int mi, int p,
+                                      const NonstrIdxWrite *ix, int ixn) {
+  if (mi < 0 || p < 0 || p >= c->scopes[mi].nparams) return 0;
+  const char *pn = c->scopes[mi].pnames[p];
+  if (!pn) return 0;
+  for (int i = 0; i < ixn; i++)
+    if (ix[i].sc == &c->scopes[mi] && sp_streq(ix[i].nm, pn)) return 1;
   return 0;
 }
 static void mark_empty_literal_args(Compiler *c) {
@@ -5549,6 +5570,36 @@ static void mark_empty_literal_args(Compiler *c) {
      unfrozen O(nscopes) linear reverse scan -- the dominant analyze cost on
      large apps (lobsters: ~72% of compile time was this triple loop). */
   comp_scope_index_set_frozen(1);
+  /* The per-call fallback below resolved an unmatched name by probing every
+     class (comp_method_in_class + comp_cmethod_in_class for k in 0..nclasses).
+     Builtin call names (each/map/puts/...) match no class, so most CallNodes
+     paid the full O(nclasses) scan: O(calls * classes) overall. Build a
+     name -> first-defining-scope map once instead -- inserting classes in
+     ascending order keeps the exact first-match semantics of the old loop. */
+  int nix_n = 0;
+  NonstrIdxWrite *nix = nonstr_idx_writes(c, &nix_n);
+  int mm_cap = 64;
+  while (mm_cap < c->nscopes * 2) mm_cap <<= 1;
+  struct { const char *nm; int mi; } *mm = calloc((size_t)mm_cap, sizeof *mm);
+  if (!mm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (s->class_id < 0 || !s->name) continue;
+    unsigned long h = 5381;
+    for (const char *p = s->name; *p; p++) h = h * 33 + (unsigned char)*p;
+    for (int probe = (int)(h & (mm_cap - 1));; probe = (probe + 1) & (mm_cap - 1)) {
+      if (!mm[probe].nm) { mm[probe].nm = s->name; mm[probe].mi = si; break; }
+      if (sp_streq(mm[probe].nm, s->name)) {
+        /* keep the entry the old class-ascending, methods-before-cmethods
+           probe order would have found first */
+        Scope *o = &c->scopes[mm[probe].mi];
+        if (s->class_id < o->class_id ||
+            (s->class_id == o->class_id && !s->is_cmethod && o->is_cmethod))
+          mm[probe].mi = si;
+        break;
+      }
+    }
+  }
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -5561,11 +5612,14 @@ static void mark_empty_literal_args(Compiler *c) {
        the param poly so a `[]=` widen drops the mutation on the caller's `{}`.
        A string-keyed direct-index wrapper stays with the precise mechanism. */
     int mi = comp_method_index(c, nm);
-    if (mi < 0)
-      for (int k = 0; k < c->nclasses && mi < 0; k++) {
-        mi = comp_method_in_class(c, k, nm);
-        if (mi < 0) mi = comp_cmethod_in_class(c, k, nm);
+    if (mi < 0) {
+      unsigned long h = 5381;
+      for (const char *p = nm; *p; p++) h = h * 33 + (unsigned char)*p;
+      for (int probe = (int)(h & (mm_cap - 1));; probe = (probe + 1) & (mm_cap - 1)) {
+        if (!mm[probe].nm) break;
+        if (sp_streq(mm[probe].nm, nm)) { mi = mm[probe].mi; break; }
       }
+    }
     if (mi < 0) continue;
     int yields = c->scopes[mi].yields;
     int anode = nt_ref(nt, id, "arguments");
@@ -5573,7 +5627,7 @@ static void mark_empty_literal_args(Compiler *c) {
     for (int j = 0; j < an; j++) {
       int a = args[j];
       if (a < 0 || a >= c->node_cap) continue;
-      int want = yields || param_nonstr_index_written(c, mi, j);
+      int want = yields || param_nonstr_index_written(c, mi, j, nix, nix_n);
       if (!want) continue;
       NodeKind ak = nt_kind(nt, a);
       if (ak == NK_HashNode || ak == NK_KeywordHashNode) {
@@ -5599,6 +5653,8 @@ static void mark_empty_literal_args(Compiler *c) {
       }
     }
   }
+  free(mm);
+  free(nix);
   comp_scope_index_set_frozen(0);
 }
 /* An empty `{}` compared against a hash-typed peer takes that peer's variant,
@@ -5975,6 +6031,8 @@ static int ctor_writes_ivar(Compiler *c, int ci, const char *ivname) {
   }
   return 0;
 }
+
+
 
 void analyze_program(Compiler *c) {
   comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
