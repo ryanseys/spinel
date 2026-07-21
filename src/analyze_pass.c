@@ -1119,7 +1119,12 @@ int infer_write_types(Compiler *c) {
               LocalVar *lv_p = lnm_p ? scope_local(ms_poly, lnm_p) : NULL;
               if (!lv_p || lv_p->is_param || lv_p->is_block_param) continue;
               TyKind mg_p = ty_unify(lv_p->type, TY_POLY);
-              if (mg_p != lv_p->type) { lv_p->type = mg_p; changed = 1; }
+              /* plain locals are reset+recomputed each iteration; net change
+                 is detected by the end-of-pass stash compare. Reporting the
+                 re-derivation here reads as change every iteration and the
+                 fixpoint never converges. Only a non-reset (pinned) slot's
+                 transition is a real change. */
+              if (mg_p != lv_p->type) { lv_p->type = mg_p; if (lv_p->rbs_seeded) changed = 1; }
             }
           }
         }
@@ -1698,6 +1703,8 @@ int infer_write_types(Compiler *c) {
     /* fold into a local's type or an ivar's type (an empty `@buf=[]` filled by
        `@buf << x` infers its element type the same way a local does) */
     TyKind *slot = NULL;
+    int slot_reset = 0;  /* slot is a plain local, reset+recomputed per iteration:
+                            net change is the stash compare's job, not this site's */
     const char *watch_nm = NULL;  /* ivar name for SP_IVWATCH, NULL for locals */
     if (rty && sp_streq(rty, "LocalVariableReadNode")) {
       const char *rnm = nt_str(nt, recv, "name");
@@ -1734,6 +1741,7 @@ int infer_write_types(Compiler *c) {
         if (has_array_write) continue;
       }
       slot = &lv->type;
+      slot_reset = !lv->is_param && !lv->is_block_param && !lv->rbs_seeded;
     }
     else if (rty && sp_streq(rty, "InstanceVariableReadNode")) {
       const char *inm = nt_str(nt, recv, "name");
@@ -1904,7 +1912,7 @@ int infer_write_types(Compiler *c) {
       *slot = TY_POLY_POLY_HASH;
     }
     sp_ivwatch(watch_nm, is_push ? "usage_push" : (is_idx_write ? "usage_idxwrite" : "usage_read"), before, *slot);
-    if (*slot != before) changed = 1;
+    if (*slot != before && !slot_reset) changed = 1;
   }
 
   /* Propagate container widening across direct local aliases (`b = a`): the
@@ -7765,6 +7773,12 @@ int infer_return_types(Compiler *c) {
        (backprop_hash_return_types), don't collapse it back to UNKNOWN -- that
        would re-emit a void C signature the caller can't assign (#1680). */
     if (r == TY_UNKNOWN && ty_is_hash(sc->ret) && scope_tail_empty_hash(c, s) >= 0) continue;
+    /* A void body-recompute must not downgrade an established return: an
+       abstract/raising body infers TY_VOID every pass, while the slot's real
+       type comes from descendant-override dispatch unification (or a caller
+       backprop). Re-deriving VOID here would flip the slot every iteration
+       and the fixpoint never converges. */
+    if (r == TY_VOID && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID) continue;
     if (r != sc->ret) { sc->ret = r; changed = 1; }
     /* For a method with a &block param, record the value type its block yields
        (unified across all call sites). Blocks passed to it are emitted returning
