@@ -2369,9 +2369,11 @@ else {
     if (sp_streq(name, "size")) return TY_POLY;
     if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "drop") && argc == 1 && nt_ref(nt, id, "block") < 0) return TY_POLY_ARRAY;
-    /* reject/select/filter with a block over the materialized pairs: a generic
-       Array (each_with_index.reject { |v, i| ... }). */
-    if ((sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
+    /* reject/select/filter/map with a block over the materialized pairs: a
+       generic Array (each_with_index.reject { |v, i| ... }, each_index.map { }). */
+    if ((sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter") ||
+         sp_streq(name, "map") || sp_streq(name, "collect") || sp_streq(name, "flat_map") ||
+         sp_streq(name, "filter_map")) &&
         argc == 0 && nt_ref(nt, id, "block") >= 0) return TY_POLY_ARRAY;
     /* block forms over the materialized pairs: sort_by is a reordered Array;
        max_by/min_by pick one pair (a boxed element); sum { } folds to a poly. */
