@@ -5521,7 +5521,11 @@ static NonstrIdxWrite *nonstr_idx_writes(Compiler *c, int *out_n) {
        sites) cannot be assumed String: defaulting the caller's `{}` to the
        string-keyed variant would drop the callee's write (#2894). */
     if (kt != TY_INT && kt != TY_SYMBOL && kt != TY_UNKNOWN && kt != TY_POLY) continue;
-    if (n >= cap) { cap = cap ? cap * 2 : 16; v = realloc(v, sizeof(*v) * (size_t)cap); }
+    if (n >= cap) {
+      cap = cap ? cap * 2 : 16;
+      v = realloc(v, sizeof(*v) * (size_t)cap);
+      if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
     v[n].sc = comp_scope_of(c, recv);
     v[n].nm = rn;
     n++;
@@ -5558,6 +5562,7 @@ static void mark_empty_literal_args(Compiler *c) {
   int mm_cap = 64;
   while (mm_cap < c->nscopes * 2) mm_cap <<= 1;
   struct { const char *nm; int mi; } *mm = calloc((size_t)mm_cap, sizeof *mm);
+  if (!mm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int si = 1; si < c->nscopes; si++) {
     Scope *s = &c->scopes[si];
     if (s->class_id < 0 || !s->name) continue;
