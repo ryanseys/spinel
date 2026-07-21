@@ -7168,6 +7168,7 @@ void analyze_program(Compiler *c) {
      that only does blk.call/&blk-forward never reaches here (the
      blk_param pass above already kept it yields=0 when self-recursive);
      this loop covers bodies with literal `yield`s. */
+  int lowered_recursive_yield = 0;
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
     if (!m->name || !m->reachable) continue;
@@ -7194,7 +7195,16 @@ void analyze_program(Compiler *c) {
       yblk->is_param = 1;
       yblk->is_cell = 1;
     }
+    lowered_recursive_yield = 1;
   }
+
+  /* A method lowered just above (yields=1 -> a real &block-forwarding function)
+     turns any literal block passed to it into a lifted first-class proc. That
+     classification (a_block_is_lifted) reads m->yields, so those blocks were
+     still "unlifted" when mark_proc_captures ran earlier -- their captures of
+     enclosing locals never got heap cells (#3166). Re-run the capture pass now
+     that the yields flags are final; it only sets is_cell and is idempotent. */
+  if (lowered_recursive_yield) mark_proc_captures(c);
 
   /* Post-fixpoint: propagate include-copy param types back to the source
      scope so the final infer_type scan (which uses comp_scope_of, mapping
