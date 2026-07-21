@@ -6129,16 +6129,28 @@ int infer_block_params(Compiler *c) {
   }
 
   /* recv.instance_eval { |me| } : the block params all receive the receiver
-     (Ruby yields self), typed as the receiver's object type. */
+     (Ruby yields self), typed as the receiver's object type. tap/then/
+     yield_self also yield self to the block param (they do not rebind self, so
+     only the param is typed here, not implicit-self calls) -- without this a
+     `list.tap { |x| .. }` left x UNKNOWN, so a push of x into a typed array
+     could not widen the array's element type (#3144). */
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cname = nt_str(nt, id, "name");
     if (!cname) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     TyKind rt = infer_type(c, recv);
-    if (!ty_is_object(rt)) continue;
-    if (!sp_streq(cname, "instance_eval") &&
-        comp_trampoline_kind(c, ty_object_class(rt), cname, NULL) != 1) continue;
+    int yields_self = sp_streq(cname, "tap") || sp_streq(cname, "then") ||
+                      sp_streq(cname, "yield_self");
+    if (yields_self) {
+      /* tap/then/yield_self yield self to the block param for ANY receiver
+         type (a string, an int, an object), so type the param as rt. */
+      if (rt == TY_UNKNOWN) continue;
+    } else {
+      if (!ty_is_object(rt)) continue;
+      if (!sp_streq(cname, "instance_eval") &&
+          comp_trampoline_kind(c, ty_object_class(rt), cname, NULL) != 1) continue;
+    }
     int blk = nt_ref(nt, id, "block");
     if (blk < 0) continue;
     int pn = nt_ref(nt, blk, "parameters");
