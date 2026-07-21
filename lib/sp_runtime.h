@@ -4735,7 +4735,13 @@ static const char *sp_PolyArray_join(sp_PolyArray *a, const char *sep) {
     else
       sp_String_append(s, sp_poly_to_s(e));
   }
-  return s->data;
+  /* Copy out of the sp_String builder: `s` is unrooted once this returns, so a
+     later GC would sweep it and its finalizer free the fd-buffer, leaving a
+     caller that stored the result (a StrArray element joined later) with a
+     dangling pointer. The fd-buffer's 0xfd marker also makes sp_mark_string a
+     no-op, so the buffer cannot be kept alive by marking it. Return a standalone
+     heap string instead (#3151). */
+  return sp_str_from_bytes(s->data, (size_t)s->len);
 }
 /* join on a boxed array (poly value holding any array kind) */
 static const char *sp_poly_join(sp_RbVal a, const char *sep) {
@@ -4756,7 +4762,7 @@ static const char *sp_poly_join(sp_RbVal a, const char *sep) {
         if (i > 0 && sep) sp_String_append(s, sep);
         sp_String_append(s, sp_int_to_s(ar->data[ar->start + i]));
       }
-      return s->data;
+      return sp_str_from_bytes(s->data, (size_t)s->len);  /* standalone copy (#3151) */
     }
     default: return sp_poly_to_s(a);
   }

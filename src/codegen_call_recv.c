@@ -2573,7 +2573,7 @@ else {
           buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
         else if (argc == 1) emit_expr(c, argv[0], b);
-        else buf_puts(b, "\"\"");
+        else buf_puts(b, "sp_str_empty");
         buf_puts(b, ")");
         return 1;
       }
@@ -3248,7 +3248,7 @@ else {
           buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
         else if (argc == 1) emit_expr(c, argv[0], b);
-        else buf_puts(b, "\"\"");
+        else buf_puts(b, "sp_str_empty");
         buf_puts(b, ")");
         return 1;
       }
@@ -8798,7 +8798,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   /* poly receiver: join */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "join")) {
     buf_puts(b, "sp_poly_join("); emit_expr(c, recv, b);
-    buf_puts(b, ", "); if (argc >= 1) emit_expr(c, argv[0], b); else buf_puts(b, "\"\"");
+    buf_puts(b, ", "); if (argc >= 1) emit_expr(c, argv[0], b); else buf_puts(b, "sp_str_empty");
     buf_puts(b, ")"); return 1;
   }
   /* poly receiver: clamp(lo, hi) tag-dispatches int/float at runtime; the range
