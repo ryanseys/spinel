@@ -3657,6 +3657,18 @@ else {
                        (bt == TY_POLY || ty_is_object(bt) || bt == TY_RATIONAL ||
                         bt == TY_COMPLEX || bt == TY_BIGINT)) it = TY_POLY;
             }
+            /* reduce(init, :op) symbol-operator form has no block, so the block
+               promotion above cannot fire: an int seed folded over floats with
+               `:+` still came out Integer. Promote a numeric seed by the element
+               type when the operator is arithmetic (#3181). */
+            else if (rbn == 0 && ty_is_numeric(it)) {
+              const char *sop = argc >= 2 ? sym_static_value(c, argv[argc - 1]) : NULL;
+              TyKind et = ty_array_elem(rt);
+              if (sop && ty_is_numeric(et) &&
+                  (sp_streq(sop, "+") || sp_streq(sop, "-") || sp_streq(sop, "*") ||
+                   sp_streq(sop, "/") || sp_streq(sop, "%") || sp_streq(sop, "**")))
+                it = ty_promote_numeric(it, et);
+            }
             return it;
           }
         }
