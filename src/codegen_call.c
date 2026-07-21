@@ -79,13 +79,25 @@ static int re_src_has_backref(const char *s) {
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
-  /* A block, when present, must be a literal BlockNode (a forwarded &proc is a
-     different shape handled elsewhere). block < 0 is the no-block construction:
+  /* A literal BlockNode is spliced directly. A forwarded `&b` / `&`
+     (BlockArgumentNode) inside an inlined enclosing method resolves to that
+     method's own block, which is exactly the currently-active g_block_id -- so
+     inherit it rather than bailing (which would fall back to the plain
+     constructor and SKIP the yielding initialize, leaving its ivars unset and
+     later dereferenced as NULL) (#3209). block < 0 is the no-block construction:
      still inline the yielding initialize body so its ivar writes run -- the
      emitted constructor skips a yielding initialize, so without this the body
      (including @ivar = ...) would vanish. With g_block_id < 0 a `yield` is dead
      code and `block_given?` folds to false, matching a blockless `new`. */
-  if (block >= 0 && (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode"))) return 0;
+  int fwd_block = 0;
+  if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode")) {
+    /* only inheritable when an enclosing block is actually in scope (an inlined
+       method's forwarded block); with none live there is nothing to yield to and
+       the plain-constructor fallback is correct. */
+    if (g_block_id < 0) return 0;
+    fwd_block = 1;
+  }
+  else if (block >= 0 && (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode"))) return 0;
   int mi = comp_method_in_chain(c, ci, "initialize", NULL);
   if (mi < 0 || !c->scopes[mi].yields) return 0;
   Scope *m = &c->scopes[mi];
@@ -120,7 +132,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   g_yield_self_fallback = g_self;
   g_yield_self_deref_fallback = g_self_deref;
   g_yield_emitting_class_fallback = g_emitting_class_id;
-  g_block_id = block;
+  g_block_id = fwd_block ? saved_block : block;
   g_block_param_name = m->blk_param;
 
   int st = ++g_tmp;

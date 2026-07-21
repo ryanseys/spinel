@@ -797,6 +797,23 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       buf_puts(b, as_expr ? "; " : ";\n");
     }
   }
+  /* Ruby evaluates every yielded argument for its side effects, even ones no
+     block param binds -- an empty or under-arity block still runs the arg
+     expression (`yield(@f = Foo.new)` must set @f). The loops above emitted only
+     the bound args; a rest param collects and thereby evaluates the middle, but
+     with no rest those dropped middle args would be lost. Evaluate them here for
+     effect (#3209). */
+  if (splat_tmp < 0 && !brest) {
+    for (int j = P + ot_static; j < yc - Q; j++) {
+      /* a trailing kwargs hash consumed by keyword params / **kwrest is not a
+         dropped positional -- it was already read above */
+      if (j == ykw && (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk))) continue;
+      Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, yargs[j], &vb);
+      if (!as_expr) emit_indent(b, indent);
+      buf_printf(b, "(void)(%s)%s", vb.p ? vb.p : "0", as_expr ? "; " : ";\n");
+      free(vb.p);
+    }
+  }
   /* Keep the rename table active for the block body: the block's variable
      references are in the same lexical scope as the surrounding inlined
      method, so renames like x → _y3_x must stay visible. Nested inlines
