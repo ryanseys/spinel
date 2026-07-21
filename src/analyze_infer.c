@@ -911,7 +911,8 @@ TyKind infer_call(Compiler *c, int id) {
      (Base.subclasses / #ancestors hand back boxed classes, #2656). Only when no
      user class defines the method -- then it dispatches to that instead. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
-      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      ((sp_streq(name, "name") && !sp_feature_required("ostruct")) ||
+       sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
       !an_user_defines_method(c, name))
     return TY_STRING;
   /* Complex#real / #imaginary on a poly value (a Complex read out of a
@@ -972,6 +973,16 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "merge"))
     return TY_POLY_POLY_HASH;
+  /* When ostruct is in the program, a bare reader on a poly value may be an
+     OpenStruct member (any name, boxed value). The runtime dispatch checks the
+     tag; type it poly so the member is not truncated to a class-name string
+     (#3197). Length/size/predicate readers keep their own arms. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && sp_feature_required("ostruct") &&
+      name[0] && name[strlen(name) - 1] != '?' && name[strlen(name) - 1] != '!' &&
+      !sp_streq(name, "to_s") && !sp_streq(name, "inspect") &&
+      !sp_streq(name, "length") && !sp_streq(name, "size") && !sp_streq(name, "count"))
+    return TY_POLY;
   /* Integer#gcd / #lcm on a poly value (destructured pair): int. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) &&

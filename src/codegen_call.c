@@ -3137,12 +3137,19 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     int is_class_named = (sp_streq(name, "name") || sp_streq(name, "to_s") ||
                           sp_streq(name, "inspect")) && !diag_user_defines(c, name);
     int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, 0);
+    /* When ostruct is in the program a bare `obj.reader` on a poly value may be
+       an OpenStruct member access (any name) -- read it at runtime (#3197). */
+    int is_ostruct = argc == 0 && nt_ref(nt, id, "block") < 0 &&
+                     !is_lengthlike && !is_empty && !is_pred &&
+                     !sp_streq(name, "to_s") && !sp_streq(name, "inspect") &&
+                     sp_feature_required("ostruct") && !diag_user_defines(c, name);
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
           (c->classes[k].is_native_class && comp_native_method_find(c, k, name, 0, 0) >= 0)) ncand++;
-    if (ncand > 0 || is_lengthlike || is_pred || is_class_named) {
+    if (ncand > 0 || is_lengthlike || is_pred || is_class_named || is_ostruct) {
       TyKind ret = comp_ntype(c, id);
+      if (is_ostruct) ret = TY_POLY;   /* an OpenStruct member is a boxed value */
       int tv = ++g_tmp, tr = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
       emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);
@@ -3175,6 +3182,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         const char *sbclose = (ret == TY_POLY) ? ")" : "";
         buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %ssp_class_val_name(_t%d)%s; else ",
                    tv, tr, sbopen, tv, sbclose);
+      }
+      /* an OpenStruct answers ANY reader with its member value; checked ahead of
+         the cls_id switch since its id is a builtin, not a user class (#3197). */
+      if (is_ostruct) {
+        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_OPENSTRUCT)"
+                      " _t%d = sp_OpenStruct_get((sp_OpenStruct *)_t%d.v.p, sp_sym_intern(\"%s\")); else ",
+                   tv, tv, tr, tv, name);
       }
       /* class 0 emits a `case 0:` arm here when it defines/inherits the method
          (nrequired 0) or exposes it as a reader; the dispatch key is then guarded
