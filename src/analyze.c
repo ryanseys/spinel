@@ -5034,6 +5034,29 @@ static void narrow_poly_int_locals(Compiler *c) {
   int nc = nt->count ? nt->count : 1;
   char *is_read = (char *)malloc(nc);
   char *claimed = (char *)malloc(nc);
+  /* Every check below only cares about nodes in the candidate local's own
+     scope (a read's consumer in receiver/argument position shares the read's
+     scope -- only a block opens a new one, and blocks are separate refs).
+     Bucket node ids by scope once, so each candidate walks its scope's nodes
+     instead of the whole table: the old shape was O(poly-locals * nodes) and
+     a dominant post-fixpoint cost on large trees. */
+  int *sc_cnt = (int *)calloc((size_t)(c->nscopes + 1), sizeof(int));
+  int *sc_off = (int *)malloc(sizeof(int) * (size_t)(c->nscopes + 1));
+  int *sc_nodes = (int *)malloc(sizeof(int) * (size_t)nc);
+  if (!is_read || !claimed || !sc_cnt || !sc_off || !sc_nodes) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memset(is_read, 0, (size_t)nc);
+  memset(claimed, 0, (size_t)nc);
+  for (int id = 0; id < nt->count; id++) {
+    int s2 = c->nscope[id];
+    if (s2 >= 0 && s2 < c->nscopes) sc_cnt[s2]++;
+  }
+  sc_off[0] = 0;
+  for (int s = 0; s < c->nscopes; s++) sc_off[s + 1] = sc_off[s] + sc_cnt[s];
+  for (int s = 0; s <= c->nscopes; s++) sc_cnt[s] = 0;
+  for (int id = 0; id < nt->count; id++) {
+    int s2 = c->nscope[id];
+    if (s2 >= 0 && s2 < c->nscopes) sc_nodes[sc_off[s2] + sc_cnt[s2]++] = id;
+  }
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     for (int li = 0; li < sc->nlocals; li++) {
@@ -5045,9 +5068,10 @@ static void narrow_poly_int_locals(Compiler *c) {
 
       /* 1. writes: plain LocalVariableWriteNode with an int/poly value; any
             op/and/or-write or multi-target leaves it poly. */
-      for (int id = 0; id < nt->count && ok; id++) {
+      for (int k = sc_off[s]; k < sc_off[s + 1] && ok; k++) {
+        int id = sc_nodes[k];
         const char *ty = nt_type(nt, id);
-        if (!ty || c->nscope[id] != s) continue;
+        if (!ty) continue;
         if (sp_streq(ty, "LocalVariableOperatorWriteNode") ||
             sp_streq(ty, "LocalVariableAndWriteNode") ||
             sp_streq(ty, "LocalVariableOrWriteNode") ||
@@ -5066,16 +5090,20 @@ static void narrow_poly_int_locals(Compiler *c) {
       }
       if (!ok || !saw_write) continue;
 
-      /* 2. map this local's reads, then claim those in an int context. */
-      for (int id = 0; id < nt->count; id++) {
+      /* 2. map this local's reads, then claim those in an int context.
+         (is_read/claimed are re-cleared per candidate over this scope's nodes
+         only -- nothing outside the scope is ever set.) */
+      for (int k = sc_off[s]; k < sc_off[s + 1]; k++) {
+        int id = sc_nodes[k];
         is_read[id] = 0; claimed[id] = 0;
         const char *ty = nt_type(nt, id);
-        if (!ty || !sp_streq(ty, "LocalVariableReadNode") || c->nscope[id] != s) continue;
+        if (!ty || !sp_streq(ty, "LocalVariableReadNode")) continue;
         const char *rn = nt_str(nt, id, "name");
         if (rn && sp_streq(rn, nm)) is_read[id] = 1;
       }
       int has_index = 0;
-      for (int id = 0; id < nt->count; id++) {
+      for (int k = sc_off[s]; k < sc_off[s + 1]; k++) {
+        int id = sc_nodes[k];
         const char *ty = nt_type(nt, id);
         if (!ty) continue;
         if (sp_streq(ty, "CallNode")) {
@@ -5086,7 +5114,7 @@ static void narrow_poly_int_locals(Compiler *c) {
           int is_idx = cn && (sp_streq(cn, "[]") || sp_streq(cn, "at") || sp_streq(cn, "[]="));
           if (npi_is_int_op(cn)) {
             if (recv >= 0 && is_read[recv]) claimed[recv] = 1;
-            for (int k = 0; k < an; k++) if (is_read[av[k]]) claimed[av[k]] = 1;
+            for (int k2 = 0; k2 < an; k2++) if (is_read[av[k2]]) claimed[av[k2]] = 1;
           }
           else if (is_idx && an >= 1 && is_read[av[0]]) {
             /* the index is arg 0, and only an ARRAY index proves an int (a hash
@@ -5101,17 +5129,20 @@ static void narrow_poly_int_locals(Compiler *c) {
           if (ty_is_array(rt) || ty_is_obj_array(rt)) {
             int args = nt_ref(nt, id, "arguments"); int an = 0;
             const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-            for (int k = 0; k < an; k++) if (is_read[av[k]]) { claimed[av[k]] = 1; has_index = 1; }
+            for (int k2 = 0; k2 < an; k2++) if (is_read[av[k2]]) { claimed[av[k2]] = 1; has_index = 1; }
           }
         }
       }
       /* every read must be claimed, and at least one must be an index (which
          proves the value is an integer, making a poly-source coercion sound). */
-      for (int id = 0; id < nt->count && ok; id++)
+      for (int k = sc_off[s]; k < sc_off[s + 1] && ok; k++) {
+        int id = sc_nodes[k];
         if (is_read[id] && !claimed[id]) ok = 0;
+      }
       if (ok && has_index) lv->type = TY_INT;
     }
   }
+  free(sc_cnt); free(sc_off); free(sc_nodes);
   free(is_read); free(claimed);
 }
 
@@ -7355,18 +7386,31 @@ void analyze_program(Compiler *c) {
      Done before the drop decision below so the freshly-typed params can
      propagate through poly-dispatch param binding (e.g. a poke dispatch table
      entry typed here flows into `@pads[0].poke(data)` -> Pad#poke). */
+  /* Collect the names referenced by `method(:sym)` nodes once (they are
+     rare), instead of rescanning every node per scope: the old shape was
+     O(scopes * nodes) and dominated the post-fixpoint tail on large trees. */
+  const char **msym_names = NULL;
+  int msym_n = 0, msym_cap = 0;
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *nty = nt_type(c->nt, id);
+    if (!nty || !sp_streq(nty, "CallNode")) continue;
+    const char *nm = nt_str(c->nt, id, "name");
+    if (!nm || !sp_streq(nm, "method")) continue;
+    const char *msym = method_sym_arg(c, id);
+    if (!msym) continue;
+    if (msym_n >= msym_cap) {
+      msym_cap = msym_cap ? msym_cap * 2 : 16;
+      msym_names = realloc(msym_names, sizeof(*msym_names) * (size_t)msym_cap);
+      if (!msym_names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    msym_names[msym_n++] = msym;
+  }
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     if (!sc->reachable || !sc->name) continue;
     int taken = 0;
-    for (int id = 0; id < c->nt->count && !taken; id++) {
-      const char *nty = nt_type(c->nt, id);
-      if (!nty || !sp_streq(nty, "CallNode")) continue;
-      const char *nm = nt_str(c->nt, id, "name");
-      if (!nm || !sp_streq(nm, "method")) continue;
-      const char *msym = method_sym_arg(c, id);
-      if (msym && sp_streq(msym, sc->name)) taken = 1;
-    }
+    for (int i = 0; i < msym_n && !taken; i++)
+      if (sp_streq(msym_names[i], sc->name)) taken = 1;
     if (taken) {
       /* The bound-Method ABI is `mrb_int (*)(void *, mrb_int...)`: the dispatch
          site (sp_poly_arr_get_hash / sp_poly_slice) reads the return as mrb_int
@@ -7382,6 +7426,7 @@ void analyze_program(Compiler *c) {
       if (sc->ret == TY_UNKNOWN || sc->ret == TY_POLY) sc->ret = TY_INT;
     }
   }
+  free(msym_names);
 
 
   /* Propagate ivar types up the inheritance chain: a base-class method runs on
