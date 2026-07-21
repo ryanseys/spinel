@@ -906,14 +906,15 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   else if (is_empty_array && lv && lv->type == TY_POLY_ARRAY) {
     buf_puts(b, "sp_PolyArray_new()");
   }
-  else if (is_empty_array && lv && ty_is_obj_array(lv->type)) {
-    /* `a = []` for a narrowed object array: an sp_PtrArray whose elements are
-       GC-marked as ordinary heap objects. */
+  else if (is_empty_array && lv && ty_is_ptr_array(lv->type)) {
+    /* `a = []` for a narrowed object / int-array array: an sp_PtrArray whose
+       elements are GC-marked as ordinary heap objects. */
     buf_puts(b, "sp_PtrArray_new()");
   }
-  else if (lv && ty_is_obj_array(lv->type) && vty && sp_streq(vty, "ArrayNode")) {
-    /* `a = [X.new, ...]` for a narrowed object array: build the sp_PtrArray
-       with the unboxed object pointers (rooted while constructing). */
+  else if (lv && ty_is_ptr_array(lv->type) && vty && sp_streq(vty, "ArrayNode")) {
+    /* `a = [X.new, ...]` / `a = [[..], [..]]` for a narrowed pointer array:
+       build the sp_PtrArray with the unboxed element pointers (each an object
+       pointer or an sp_IntArray*, rooted while constructing). */
     int t = ++g_tmp;
     buf_printf(b, "({ sp_PtrArray *_t%d = sp_PtrArray_new(); SP_GC_ROOT(_t%d);", t, t);
     int en = 0; const int *el = nt_arr(c->nt, v, "elements", &en);

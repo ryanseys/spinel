@@ -773,6 +773,7 @@ const char *c_type_name(TyKind t) {
     case TY_POLY_POLY_HASH: return "sp_PolyPolyHash *";
     case TY_POLY:         return "sp_RbVal";
     case TY_POLY_ARRAY:   return "sp_PolyArray *";
+    case TY_INT_ARRAY_ARRAY: return "sp_PtrArray *";
     case TY_PROC:         return "sp_Proc *";
     case TY_CURRY:        return "sp_Curry *";
     case TY_FIBER:        return "sp_Fiber *";
@@ -795,7 +796,7 @@ const char *c_type_name(TyKind t) {
 int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
          t == TY_SYMBOL || t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
-         t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
+         t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY || t == TY_INT_ARRAY_ARRAY ||
          t == TY_STRBUF ||
          t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_RANDOM || t == TY_DIR || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_CLASS || t == TY_OPENSTRUCT ||
          ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t);
@@ -852,7 +853,8 @@ const char *default_value(TyKind t) {
     case TY_INT_ARRAY:
     case TY_FLOAT_ARRAY:
     case TY_STR_ARRAY:
-    case TY_POLY_ARRAY: return "NULL";
+    case TY_POLY_ARRAY:
+    case TY_INT_ARRAY_ARRAY: return "NULL";
     case TY_PROC:    return "NULL";
     case TY_CURRY:   return "NULL";
     case TY_FIBER:   return "NULL";

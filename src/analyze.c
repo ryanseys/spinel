@@ -4514,10 +4514,18 @@ static void oa_uf_union(OAS *sl, int a, int b) {
   int ra = oa_uf_find(sl, a), rb = oa_uf_find(sl, b);
   if (ra != rb) sl[ra].uf = rb;
 }
-/* the single user-object class of a node's value, or -1 if not a lone object. */
+/* Element-class sentinel: the array's elements are themselves int-arrays
+   (ExtField-style int[4]), narrowing the container to TY_INT_ARRAY_ARRAY
+   rather than an object-pointer array. Distinct from -1 (none) / -2 (conflict)
+   and from any user class id (>= 0), so oa_cls_join composes it unchanged. */
+#define OA_CLS_IA (-1000)
+/* the single user-object class of a node's value, an int-array sentinel, or -1
+   if neither a lone object nor a lone int-array. */
 static int oa_obj_class_of(Compiler *c, int node) {
   TyKind t = infer_type(c, node);
-  return ty_is_object(t) ? ty_object_class(t) : -1;
+  if (ty_is_object(t)) return ty_object_class(t);
+  if (t == TY_INT_ARRAY) return OA_CLS_IA;
+  return -1;
 }
 /* class evidence join: -1 = none seen, -2 = conflicting classes. */
 static int oa_cls_join(int a, int b) {
@@ -4775,7 +4783,16 @@ static void narrow_object_arrays(Compiler *c) {
   }
   for (int i = 0; i < n; i++) {
     int r = oa_uf_find(sl, i);
-    if (!sl[r].alive || sl[r].cls < 0) continue;
+    if (!sl[r].alive) continue;
+    if (sl[r].cls == -1 || sl[r].cls == -2) continue;  /* no evidence / conflict */
+    if (sl[r].cls == OA_CLS_IA) {
+      /* array-of-int-array: the codegen supports index/push/[]=/length/first/
+         last but not the boxed sort/min/max comparators yet, so a component
+         that used those (needs_cmp) stays on the poly path for now. */
+      if (sl[r].needs_cmp) continue;
+      sl[i].lv->type = TY_INT_ARRAY_ARRAY;
+      continue;
+    }
     /* a component using no-block sort/min/max narrows only when the element
        class can actually compare (has `<=>` in its chain); otherwise it stays
        poly, where the boxed comparator raises the CRuby ArgumentError. */
@@ -4791,7 +4808,7 @@ static void narrow_object_arrays(Compiler *c) {
     for (int li = 0; li < sc->nlocals; li++) {
       LocalVar *lv = &sc->locals[li];
       if (lv->type != TY_POLY || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-      int cls = -1, ok = 1, saw = 0;
+      TyKind elem = TY_UNKNOWN; int ok = 1, saw = 0;
       for (int id = 0; id < nt->count && ok; id++) {
         const char *ty = nt_type(nt, id);
         if (!ty || !sp_streq(ty, "LocalVariableWriteNode") || c->nscope[id] != s) continue;
@@ -4808,12 +4825,14 @@ static void narrow_object_arrays(Compiler *c) {
         int end_op = cn && (sp_streq(cn, "first") || sp_streq(cn, "last")) && can == 0;
         if ((!idx_op && !end_op) || crecv < 0) { ok = 0; break; }
         TyKind rt = infer_type(c, crecv);
-        if (!ty_is_obj_array(rt)) { ok = 0; break; }
-        int ec = ty_obj_array_class(rt);
-        if (cls < 0) cls = ec; else if (cls != ec) { ok = 0; break; }
+        /* element type of a narrowed obj-array OR the new int-array-array */
+        TyKind ec = ty_is_obj_array(rt) ? ty_object(ty_obj_array_class(rt))
+                  : (rt == TY_INT_ARRAY_ARRAY) ? TY_INT_ARRAY : TY_UNKNOWN;
+        if (ec == TY_UNKNOWN) { ok = 0; break; }
+        if (elem == TY_UNKNOWN) elem = ec; else if (elem != ec) { ok = 0; break; }
         saw = 1;
       }
-      if (ok && saw && cls >= 0) lv->type = ty_object(cls);
+      if (ok && saw && elem != TY_UNKNOWN) lv->type = elem;
     }
   }
 

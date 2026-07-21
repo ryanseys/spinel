@@ -9589,6 +9589,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && (sp_streq(name, "<<") || sp_streq(name, "push") || sp_streq(name, "append")) &&
       argc >= 1 && ty_is_array(comp_ntype(c, recv))) {
     TyKind art = comp_ntype(c, recv);
+    /* A narrowed pointer array (int-array-array): push the element pointer
+       (an sp_IntArray*) directly into the sp_PtrArray, no boxing. */
+    if (ty_is_ptr_array(art)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = ", t); emit_expr(c, recv, b); buf_puts(b, "; ");
+      for (int a = 0; a < argc; a++) {
+        buf_printf(b, "sp_PtrArray_push(_t%d, ", t); emit_expr(c, argv[a], b); buf_puts(b, "); ");
+      }
+      buf_printf(b, "_t%d; })", t);
+      return;
+    }
     /* Lift: when a typed-array literal is pushed a heterogeneous element,
        rebuild the receiver as a PolyArray rather than emitting a type mismatch. */
     int needs_lift = 0;

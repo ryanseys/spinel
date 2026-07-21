@@ -148,9 +148,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
      post-fixpoint narrow_object_arrays pass. Indexing yields a typed `sp_X *`
      directly -- no sp_RbVal box, no cls-id dispatch. Only the op set the pass
      admits reaches here; the pass and this block stay in lockstep. */
-  if (recv >= 0 && ty_is_obj_array(rt)) {
-    int ecls = ty_obj_array_class(rt);
-    const char *ecn = c->classes[ecls].name;
+  if (recv >= 0 && ty_is_ptr_array(rt)) {
+    int is_ia = (rt == TY_INT_ARRAY_ARRAY);
+    int ecls = is_ia ? -1 : ty_obj_array_class(rt);
+    /* element c-type stem: `sp_<ecn> *` is the indexed pointer type. For an
+       int-array-array the element is an sp_IntArray*; for an object array it
+       is the class's own struct. */
+    const char *ecn = is_ia ? "IntArray" : c->classes[ecls].name;
     if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) {
       buf_printf(b, "((sp_%s *)sp_PtrArray_get(", ecn);
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, "))");
@@ -189,18 +193,18 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     /* no-block comparisons via the boxed comparator (user `<=>` through the
        cmp hook); the narrowing pass admits these only when the element class
        has `<=>` and (for sort) the result lands in a modeled consumer. */
-    if (sp_streq(name, "sort") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    if (!is_ia && sp_streq(name, "sort") && argc == 0 && nt_ref(nt, id, "block") < 0) {
       buf_puts(b, "sp_PtrArray_sort_obj("); emit_expr(c, recv, b);
       buf_printf(b, ", %d)", ecls);
       return 1;
     }
-    if (sp_streq(name, "sort!") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    if (!is_ia && sp_streq(name, "sort!") && argc == 0 && nt_ref(nt, id, "block") < 0) {
       int tr = ++g_tmp;
       buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
       buf_printf(b, "; sp_PtrArray_sort_obj_bang(_t%d, %d); _t%d; })", tr, ecls, tr);
       return 1;
     }
-    if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 &&
+    if (!is_ia && (sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 &&
         nt_ref(nt, id, "block") < 0) {
       buf_printf(b, "((sp_%s *)sp_PtrArray_minmax_obj(", ecn);
       emit_expr(c, recv, b);

@@ -47,6 +47,13 @@ typedef enum {
   TY_FLOAT_ARRAY,
   TY_STR_ARRAY,
   TY_POLY_ARRAY,
+  TY_INT_ARRAY_ARRAY, /* array of int-arrays (sp_PtrArray of sp_IntArray*):
+                         the typed nested counterpart of TY_POLY_ARRAY for a
+                         monomorphic array-of-int-array. Produced ONLY by the
+                         post-fixpoint narrow_object_arrays pass, like
+                         TY_OBJ_ARRAY, so it never cascades through the
+                         fixpoint. Indexing yields a typed sp_IntArray* with no
+                         per-element boxing (#3145 / BabyStark ExtField). */
   TY_STR_INT_HASH,
   TY_STR_STR_HASH,
   TY_INT_INT_HASH,
@@ -124,5 +131,9 @@ static inline int    ty_object_class(TyKind t){ return (int)t - TY_OBJECT_BASE; 
 static inline int    ty_is_obj_array(TyKind t)   { return (int)t >= TY_OBJ_ARRAY_BASE; }
 static inline TyKind ty_obj_array(int class_id)  { return (TyKind)(TY_OBJ_ARRAY_BASE + class_id); }
 static inline int    ty_obj_array_class(TyKind t){ return (int)t - TY_OBJ_ARRAY_BASE; }
+/* Both TY_OBJ_ARRAY and TY_INT_ARRAY_ARRAY are backed by sp_PtrArray (unboxed
+   void* elements): code that only cares about the container representation (new,
+   push, length, box, GC-root) uses this; the element cast on index differs. */
+static inline int    ty_is_ptr_array(TyKind t)   { return ty_is_obj_array(t) || t == TY_INT_ARRAY_ARRAY; }
 
 #endif
