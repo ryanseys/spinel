@@ -15955,6 +15955,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, " && _t%d <= ", tv); emit_expr(c, argv[1], b); buf_puts(b, "); })");
       return;
     }
+    /* Comparable#between? on a poly receiver (a user object read from a
+       container / block param): compare through the boxed <=> hook, which
+       raises the incomparable ArgumentError like CRuby. clamp already takes
+       this path; between? was missing it (#3170). */
+    if (rt == TY_POLY) {
+      int ts = hoist_boxed_rooted(c, recv);
+      int tlo = hoist_boxed_rooted(c, argv[0]), thi = hoist_boxed_rooted(c, argv[1]);
+      buf_printf(b, "(sp_poly_cmp_ck(_t%d, _t%d) >= 0 && sp_poly_cmp_ck(_t%d, _t%d) <= 0)",
+                 ts, tlo, ts, thi);
+      return;
+    }
     /* Comparable: user type with <=> method */
     if (ty_is_object(rt)) {
       int cid_b = ty_object_class(rt);
