@@ -2115,8 +2115,16 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       }
     }
     else if (p0) {
+      /* Coerce the boxed element to the block param's declared type: a param
+         inferred as a concrete scalar (String from a would-be str_array whose
+         producer actually diverged, #3147) must not take a raw sp_RbVal into a
+         const char* slot. emit_block_param_from_boxed inserts the conversion. */
+      Scope *e0s = comp_scope_of(c, block);
+      LocalVar *e0lv = e0s ? scope_local(e0s, block_param_name(c, block, 0)) : NULL;
+      TyKind e0t = (e0lv && e0lv->type != TY_UNKNOWN) ? e0lv->type : TY_POLY;
+      char src[64]; snprintf(src, sizeof src, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
       emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = sp_poly_each_elem(_t%d, _t%d);\n", p0, ta, ti);
+      emit_block_param_from_boxed(c, p0, e0t, src, b);
     }
     /* a paramless block (`each { ... }`) binds nothing; the loop still runs the
        body once per element for its side effect. */
