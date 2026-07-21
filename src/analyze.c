@@ -5085,6 +5085,22 @@ static void isa_mark_reads(Compiler *c, int root, Scope *s, const char *pn, TyKi
   }
 }
 
+/* A node that always exits the current control flow (block iteration / method):
+   reaching a statement AFTER `<exit> unless cond` proves cond held. */
+static int isa_node_diverges(Compiler *c, int node) {
+  if (node < 0) return 0;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return 0;
+  if (sp_streq(ty, "NextNode") || sp_streq(ty, "BreakNode") ||
+      sp_streq(ty, "ReturnNode") || sp_streq(ty, "RedoNode")) return 1;
+  if (sp_streq(ty, "StatementsNode")) {
+    int n = 0; const int *bb = nt_arr(nt, node, "body", &n);
+    return n > 0 && isa_node_diverges(c, bb[n - 1]);
+  }
+  return 0;
+}
+
 /* Walk statements; for each `if v.is_a?(K)` narrow reads of v in the then-arm
    (v provably IS K there) unless the arm rewrites v. Recurses so nested and
    `elsif v.is_a?(K2)` chains each narrow their own arm. */
@@ -5099,6 +5115,25 @@ static void isa_mark_guards(Compiler *c, int root, Scope *s) {
       int branch = nt_ref(nt, root, "statements");  /* the then-arm: v IS K */
       if (branch >= 0 && !nng_has_write(c, branch, pn))
         isa_mark_reads(c, branch, s, pn, t);
+    }
+  }
+  /* guard-continue: `<exit> unless v.is_a?(K)` gates the fall-through, so every
+     SUBSEQUENT sibling statement provably sees v as K (#3142). Scan a
+     StatementsNode for such a guard and narrow the reads that follow it, up to
+     a write of v. */
+  if (ty && sp_streq(ty, "StatementsNode")) {
+    int n = 0; const int *bb = nt_arr(nt, root, "body", &n);
+    for (int i = 0; i < n; i++) {
+      const char *cty = nt_type(nt, bb[i]);
+      if (!cty || !sp_streq(cty, "UnlessNode")) continue;
+      if (nt_ref(nt, bb[i], "else_clause") >= 0) continue;   /* a plain guard only */
+      TyKind t = TY_UNKNOWN;
+      const char *pn = isa_guard_local(c, nt_ref(nt, bb[i], "predicate"), s, &t);
+      if (!pn || !isa_node_diverges(c, nt_ref(nt, bb[i], "statements"))) continue;
+      for (int j = i + 1; j < n; j++) {
+        if (nng_has_write(c, bb[j], pn)) break;
+        isa_mark_reads(c, bb[j], s, pn, t);
+      }
     }
   }
   int nr = nt_num_refs(nt, root);
