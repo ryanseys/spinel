@@ -1353,6 +1353,88 @@ void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt,
    receiver into a temp, run the statement emitter with the receiver's
    emission overridden to the temp, and yield the temp. Statement position
    never reaches this (emit_stmt claims iterators first). */
+/* `<array>.take_while.with_index { |v, i| pred }` (and drop_while): a blockless
+   take_while/drop_while returns an Enumerator whose with_index feeds the index
+   to the predicate. Emit the take/drop-while loop with a running index over the
+   typed array source, collecting into a fresh array of the same kind (#3182). */
+int emit_takewhile_with_index(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || !sp_streq(name, "with_index")) return 0;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return 0;
+  const char *rnm = nt_str(nt, recv, "name");
+  int is_take = rnm && sp_streq(rnm, "take_while");
+  int is_drop = rnm && sp_streq(rnm, "drop_while");
+  if ((!is_take && !is_drop) || nt_ref(nt, recv, "block") >= 0 || nt_ref(nt, recv, "arguments") >= 0)
+    return 0;
+  int src = nt_ref(nt, recv, "receiver");
+  if (src < 0) return 0;
+  TyKind srt = comp_ntype(c, src);
+  if (!ty_is_array(srt)) return 0;
+  const char *k = (srt == TY_POLY_ARRAY) ? "Poly" : array_kind(srt);
+  if (!k) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  int wargc; const int *wargv = call_args(nt, id, &wargc);
+  Scope *bs = comp_scope_of(c, block);
+  const char *p0 = block_param_name(c, block, 0);
+  const char *p1 = block_param_name(c, block, 1);
+  LocalVar *p0lv = (p0 && bs) ? scope_local(bs, p0) : NULL;
+  LocalVar *p1lv = (p1 && bs) ? scope_local(bs, p1) : NULL;
+
+  int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, toff = ++g_tmp;
+  int tdrop = is_drop ? ++g_tmp : -1;
+  Buf sb = expr_buf(c, src);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", k, ta, sb.p ? sb.p : "NULL", ta);
+  free(sb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "mrb_int _t%d = ", toff);
+  if (wargc == 1 && wargv) emit_int_expr(c, wargv[0], g_pre); else buf_puts(g_pre, "0");
+  buf_puts(g_pre, ";\n");
+  if (is_drop) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "int _t%d = 1;\n", tdrop); }
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, ta, ti);
+  char es[64]; snprintf(es, sizeof es, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+  TyKind et = ty_array_elem(srt);
+  if (p0lv) {
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "lv_%s = ", rename_local(p0));
+    /* coerce the typed element to the param's declared type: box when the
+       param widened to poly, else assign the typed value directly. */
+    if (p0lv->type == TY_POLY && et != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, et, es, &bx); buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+    else buf_puts(g_pre, es);
+    buf_puts(g_pre, ";\n");
+  }
+  if (p1lv) {
+    emit_indent(g_pre, g_indent + 1);
+    if (p1lv->type == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d + _t%d);\n", rename_local(p1), ti, toff);
+    else buf_printf(g_pre, "lv_%s = _t%d + _t%d;\n", rename_local(p1), ti, toff);
+  }
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+  int sv = g_indent; g_indent++;
+  Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
+  emit_indent(g_pre, g_indent + 1);
+  if (is_take) {
+    buf_printf(g_pre, "if (!(%s)) break;\n", cb.p ? cb.p : "0");
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, tr, es);
+  } else {
+    buf_printf(g_pre, "if (_t%d && (%s)) continue;\n", tdrop, cb.p ? cb.p : "0");
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "_t%d = 0;\n", tdrop);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, tr, es);
+  }
+  free(cb.p);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tr);
+  return 1;
+}
+
 int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");

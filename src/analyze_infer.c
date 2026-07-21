@@ -3404,8 +3404,9 @@ else {
       }
       else if (sp_streq(inner, "each") || sp_streq(inner, "select") ||
                sp_streq(inner, "filter") || sp_streq(inner, "reject") ||
+               sp_streq(inner, "take_while") || sp_streq(inner, "drop_while") ||
                sp_streq(inner, "map!") || sp_streq(inner, "collect!"))
-        return arr_t;   /* map! mutates in place and returns the receiver */
+        return arr_t;   /* take_while/drop_while keep the element type (subset) */
     }
   }
 
