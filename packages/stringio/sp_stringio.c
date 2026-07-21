@@ -45,7 +45,17 @@ sp_StringIO *sp_StringIO_new_sm(mrb_int cls_id, const char *init, const char *mo
   if (m0 == 'a') s->pos = s->len;
   return s;
 }
-const char *sp_StringIO_string(sp_StringIO *s) { return s->buf ? s->buf : sp_str_empty; }
+/* #string returns the buffer as a spinel String. A borrowed buffer already IS
+   a spinel string (a valid sp_str_hdr precedes it), so it can be handed back
+   directly and keeps identity. A written buffer is a raw malloc block with no
+   header, so it must be copied into a proper String -- returning it raw let
+   callers read the sp_str_hdr one block before the allocation (a String method
+   or the GC string-heap walk), corrupting the heap (#3152). */
+const char *sp_StringIO_string(sp_StringIO *s) {
+  if (!s->buf) return sp_str_empty;
+  if (s->borrowed) return s->buf;
+  return sp_str_from_bytes(s->buf, (size_t)s->len);
+}
 mrb_int sp_StringIO_pos(sp_StringIO *s) { return s->pos; }
 mrb_int sp_StringIO_size(sp_StringIO *s) { return s->len; }
 mrb_int sp_StringIO_write(sp_StringIO *s, const char *str) { return sio_write(s, str, (int64_t)strlen(str)); }

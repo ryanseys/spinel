@@ -355,8 +355,15 @@ const char *sp_StrArray_sample(sp_StrArray*a){if(a->len<=0)return sp_str_empty;r
 /* ============ poly/inspect-dependent array ops (display, concat, to_poly) ============ */
 sp_StrArray *sp_StrArray_from_string_range(const char *s, const char *e, mrb_int excl) {
   sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
   if (!s || !e) return a;
+  /* `cur` walks the range via String#succ, allocating a fresh heap string each
+     step; the next sp_str_alloc can trigger a GC that would sweep both the
+     array under construction and the current (unrooted) succ string, so the
+     strcpy read freed memory (#3152). Root the slot -- it tracks each succ
+     reassignment. */
   const char *cur = s;
+  SP_GC_ROOT_STR(cur);
   int iters = 0;
   while (iters < 4096) {
     int cmp = strcmp(cur, e);
