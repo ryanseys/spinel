@@ -961,6 +961,13 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "split") &&
       argc <= 2 && nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name))
     return TY_STR_ARRAY;
+  /* blockless each_index / each_with_index on a poly value (an inner array read
+     out of a container): a chained Enumerator, so `.map`/`.to_a` re-dispatch on
+     it materializes (#3160). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) &&
+      (sp_streq(name, "each_index") || sp_streq(name, "each_with_index")))
+    return TY_ENUMERATOR;
   /* Hash#merge on a poly value: a general PolyPoly hash. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "merge"))

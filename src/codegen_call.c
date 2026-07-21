@@ -8747,7 +8747,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
      yields the indices. A chained/terminal use (each_with_index.map/.to_a) is
      matched earlier by emit_each_with_index_terminal and never reaches here. */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      (ty_is_array(comp_ntype(c, recv)) || comp_ntype(c, recv) == TY_ENUMERATOR) &&
+      (ty_is_array(comp_ntype(c, recv)) || comp_ntype(c, recv) == TY_ENUMERATOR ||
+       comp_ntype(c, recv) == TY_POLY) &&
       (sp_streq(name, "each_with_index") || sp_streq(name, "each_index"))) {
     /* An Enumerator receiver (`arr.each.each_with_index`) is materialized to its
        element array first (#2487). */
