@@ -988,6 +988,10 @@ TyKind infer_call(Compiler *c, int id) {
       !an_user_defines_method(c, name) &&
       (sp_streq(name, "gcd") || sp_streq(name, "lcm")))
     return TY_INT;
+  /* #clear on a poly value returns the (emptied) receiver, itself poly. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && sp_streq(name, "clear"))
+    return TY_POLY;
   /* sort over a poly value that is an array at runtime (a group_by bucket / an
      inner array): a fresh sorted poly array (#2928). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_defines_method(c, name) &&

@@ -5282,6 +5282,27 @@ static sp_RbVal sp_fmt_named_ref(sp_PolyArray *a, const char *nm) {
 }
 static mrb_int sp_PolyPolyHash_length(sp_PolyPolyHash*h){return h->len;}
 static void sp_PolyPolyHash_clear(sp_PolyPolyHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->occ[i]=0;h->len=0;}
+/* `#clear` on a poly value (a mixed Array/Hash collection element reached via
+   `&:clear`): empty the container in place, dispatching on its runtime kind and
+   returning the receiver (#3199). */
+static sp_RbVal sp_poly_clear(sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ || !v.v.p) return v;
+  switch (v.cls_id) {
+    case SP_BUILTIN_INT_ARRAY:      ((sp_IntArray *)v.v.p)->len = 0; break;
+    case SP_BUILTIN_FLT_ARRAY:      ((sp_FloatArray *)v.v.p)->len = 0; break;
+    case SP_BUILTIN_STR_ARRAY:      ((sp_StrArray *)v.v.p)->len = 0; break;
+    case SP_BUILTIN_POLY_ARRAY:     ((sp_PolyArray *)v.v.p)->len = 0; break;
+    case SP_BUILTIN_STR_INT_HASH:   sp_StrIntHash_clear((sp_StrIntHash *)v.v.p); break;
+    case SP_BUILTIN_STR_STR_HASH:   sp_StrStrHash_clear((sp_StrStrHash *)v.v.p); break;
+    case SP_BUILTIN_INT_STR_HASH:   sp_IntStrHash_clear((sp_IntStrHash *)v.v.p); break;
+    case SP_BUILTIN_INT_INT_HASH:   sp_IntIntHash_clear((sp_IntIntHash *)v.v.p); break;
+    case SP_BUILTIN_STR_POLY_HASH:  sp_StrPolyHash_clear((sp_StrPolyHash *)v.v.p); break;
+    case SP_BUILTIN_SYM_POLY_HASH:  sp_SymPolyHash_clear((sp_SymPolyHash *)v.v.p); break;
+    case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_clear((sp_PolyPolyHash *)v.v.p); break;
+    default: sp_raise_nomethod(sp_nomethod_msg("clear", v)); break;
+  }
+  return v;
+}
 /* Hash#delete for a poly-keyed hash: was entirely missing (only the
    String/Symbol-keyed hash kinds had a delete), so `poly_poly_hash.
    delete(k)` hit codegen's "unsupported call" catch-all -- e.g. doom's

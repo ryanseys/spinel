@@ -3104,6 +3104,12 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
+  /* #clear on a poly value (a mixed Array/Hash element via `&:clear`): empty the
+     container in place, dispatching on its runtime kind (#3199). */
+  if (sp_streq(name, "clear") && argc == 0) {
+    buf_puts(b, "sp_poly_clear("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  }
   /* Integer#gcd / #lcm on poly operands (destructured pair elements): both are
      ints at runtime; fold to the int helper (#3184). */
   if ((sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1) {
