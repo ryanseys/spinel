@@ -406,6 +406,16 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "fputs(sp_poly_inspect("); emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
   }
+  else if (t == TY_UNKNOWN) {
+    /* An unresolved call (`OpenStruct.new(..)` without `require "ostruct"`, or
+       any `undefined.method`) has no static type -- but it emits a diverging
+       NoMethodError/NameError raise (the NoMethodError gate), so it must still
+       compile in argument position, not just as a statement. Box it (emit_boxed
+       evaluates the raise, then yields nil) and inspect; the print never runs
+       because the raise unwinds first (#3135 without require). */
+    buf_puts(b, "fputs(sp_poly_inspect("); emit_boxed(c, arg, b);
+    buf_puts(b, "), stdout); putchar('\\n');\n");
+  }
   else if (t == TY_COMPLEX) {
     buf_puts(b, "fputs(sp_complex_inspect("); emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
