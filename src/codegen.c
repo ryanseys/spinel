@@ -3897,8 +3897,22 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
       continue;
     }
     buf_printf(b, "    case %d: {\n", cid);
-    if (obj_operand)
-      buf_printf(b, "      if (b.tag != SP_TAG_OBJ || b.cls_id != %d) { *comparable = FALSE; return 0; }\n", pcid);
+    if (obj_operand) {
+      /* The operand param was inferred to a single class (`pcid`), but the
+         `<=>` body (defined up the chain, e.g. a Comparable mixin) works for
+         any object in that hierarchy. Accept `b` when it is `pcid` OR any
+         instantiated subclass of it: a subclass shares pcid's layout, so the
+         `(sp_pcn *)b` cast below stays valid, and comparing two different
+         subclasses (Rectangle vs Square) no longer fails closed (#3188). */
+      buf_printf(b, "      if (b.tag != SP_TAG_OBJ || !(b.cls_id == %d", pcid);
+      for (int d = 0; d < c->nclasses; d++) {
+        if (d == pcid || !c->classes[d].instantiated) continue;
+        if (!is_descendant(c, d, pcid)) continue;
+        int dcid = comp_class_index(c, c->classes[d].name);
+        buf_printf(b, " || b.cls_id == %d", dcid);
+      }
+      buf_puts(b, ")) { *comparable = FALSE; return 0; }\n");
+    }
     if (scalar_guard)
       buf_printf(b, "      if (b.tag != %s) { *comparable = FALSE; return 0; }\n", scalar_guard);
     if (m->ret == TY_INT) {
