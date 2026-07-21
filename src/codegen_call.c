@@ -4909,6 +4909,45 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "), (&(\"\\xff\" \"tcp\")[1]))");
         return 1;
       }
+      /* OpenStruct.new(k: v, ..) / OpenStruct.new({k => v}) -- a dynamic
+         member bag backed by a symbol->value hash (#3135). Members are set
+         later via `o.k=`/`o[:k]=`; the ctor seeds from a literal keyword hash
+         or hash literal with symbol keys. */
+      if (cn && sp_streq(cn, "OpenStruct") && sp_feature_required("ostruct")) {
+        int seed = -1;
+        if (argc == 1) {
+          const char *at = nt_type(nt, argv[0]);
+          if (at && (sp_streq(at, "KeywordHashNode") || sp_streq(at, "HashNode"))) seed = argv[0];
+        }
+        if (argc == 0 || (argc == 1 && seed >= 0)) {
+          int th = ++g_tmp;
+          buf_printf(b, "({ sp_SymPolyHash *_h%d = sp_SymPolyHash_new(); SP_GC_ROOT(_h%d);", th, th);
+          if (seed >= 0) {
+            int en = 0;
+            const int *els = nt_arr(nt, seed, "elements", &en);
+            for (int e = 0; e < en; e++) {
+              int key = nt_ref(nt, els[e], "key");
+              int val = nt_ref(nt, els[e], "value");
+              if (key < 0 || val < 0) continue;
+              const char *kty = nt_type(nt, key);
+              buf_printf(b, " sp_SymPolyHash_set(_h%d, ", th);
+              if (kty && sp_streq(kty, "SymbolNode")) {
+                const char *kn = nt_str(nt, key, "value");
+                buf_printf(b, "sp_sym_intern(\"%s\")", kn ? kn : "");
+              } else {
+                buf_puts(b, "sp_sym_intern(sp_poly_to_s("); emit_boxed(c, key, b); buf_puts(b, "))");
+              }
+              buf_puts(b, ", "); emit_boxed(c, val, b); buf_puts(b, ");");
+            }
+          }
+          buf_printf(b, " sp_OpenStruct_new_from(_h%d); })", th);
+          return 1;
+        }
+        /* a runtime hash argument: only a symbol-keyed hash carries member
+           names; anything else is an unsupported ctor form */
+        unsupported(c, id, "OpenStruct.new argument form");
+        return 1;
+      }
       /* `.new` on a constant Spinel could not resolve -- not a user class, not a
          builtin/stdlib class handled above (Mutex, Thread, etc. return earlier).
          It is either a genuine undefined constant or a real stdlib class Spinel
@@ -6840,6 +6879,98 @@ void emit_call(Compiler *c, int id, Buf *b) {
   int argc;
   const int *argv = call_args(nt, id, &argc);
   if (!name) unsupported(c, id, "call (no name)");
+
+  /* OpenStruct: a dynamic member bag (#3135). `o.k` / `o[:k]` read a boxed
+     value (nil when absent), `o.k = v` / `o[:k] = v` write, plus a small
+     fixed method surface. Any other bare name is a member access; a handful
+     of Object/Kernel names fall through to their generic handlers. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_OPENSTRUCT) {
+    if (sp_streq(name, "to_h") && argc == 0) {
+      buf_puts(b, "sp_OpenStruct_to_h("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
+    if (sp_streq(name, "inspect") || (sp_streq(name, "to_s") && argc == 0)) {
+      buf_puts(b, "sp_String_new(sp_OpenStruct_inspect("); emit_expr(c, recv, b); buf_puts(b, "))");
+      return;
+    }
+    if (sp_streq(name, "respond_to?") && argc >= 1) {
+      buf_puts(b, "(sp_OpenStruct_has("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (comp_ntype(c, argv[0]) == TY_SYMBOL) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_sym_intern("); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_puts(b, ") ? 1 : 0)");
+      return;
+    }
+    if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1 &&
+        comp_ntype(c, argv[0]) == TY_OPENSTRUCT) {
+      buf_puts(b, "sp_OpenStruct_eq("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) {
+      buf_puts(b, "((void)("); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
+      return;
+    }
+    if ((sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
+         sp_streq(name, "instance_of?")) && argc == 1 &&
+        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")) {
+      const char *tcn = nt_str(nt, argv[0], "name");
+      int yes;
+      if (sp_streq(name, "instance_of?")) yes = tcn && sp_streq(tcn, "OpenStruct");
+      else yes = tcn && (sp_streq(tcn, "OpenStruct") || sp_streq(tcn, "Object") ||
+                         sp_streq(tcn, "Kernel") || sp_streq(tcn, "BasicObject"));
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes ? 1 : 0);
+      return;
+    }
+    if (sp_streq(name, "[]") && argc == 1) {
+      buf_puts(b, "sp_OpenStruct_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (comp_ntype(c, argv[0]) == TY_SYMBOL) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_sym_intern("); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_puts(b, ")");
+      return;
+    }
+    if (sp_streq(name, "[]=") && argc == 2) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _v%d = ", tv); emit_boxed(c, argv[1], b);
+      buf_puts(b, "; sp_OpenStruct_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (comp_ntype(c, argv[0]) == TY_SYMBOL) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_sym_intern("); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_printf(b, ", _v%d); _v%d; })", tv, tv);
+      return;
+    }
+    /* a member writer `o.k = v` (parsed as name "k=") */
+    {
+      size_t nl = strlen(name);
+      if (nl > 1 && name[nl - 1] == '=' && argc == 1 &&
+          name[0] != '=' && name[0] != '<' && name[0] != '>' && name[0] != '!') {
+        char mem[256];
+        if (nl - 1 < sizeof mem) {
+          memcpy(mem, name, nl - 1); mem[nl - 1] = 0;
+          int tv = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _v%d = ", tv); emit_boxed(c, argv[0], b);
+          buf_puts(b, "; sp_OpenStruct_set("); emit_expr(c, recv, b);
+          buf_printf(b, ", sp_sym_intern(\"%s\"), _v%d); _v%d; })", mem, tv, tv);
+          return;
+        }
+      }
+    }
+    /* a bare member read `o.k`, unless it is an Object/Kernel method that must
+       keep its normal behaviour */
+    if (argc == 0) {
+      static const char *const OS_METHODS[] = {
+        "class", "nil?", "frozen?", "freeze", "dup", "clone", "hash",
+        "object_id", "itself", "tap", "then", "yield_self", "inspect",
+        "to_s", "to_h", "members", "each_pair", "send", "__send__",
+        "instance_variables", "methods", "is_a?", "kind_of?", NULL };
+      int reserved = 0;
+      for (int mi = 0; OS_METHODS[mi]; mi++)
+        if (sp_streq(name, OS_METHODS[mi])) { reserved = 1; break; }
+      if (!reserved) {
+        buf_puts(b, "sp_OpenStruct_get("); emit_expr(c, recv, b);
+        buf_printf(b, ", sp_sym_intern(\"%s\"))", name);
+        return;
+      }
+    }
+  }
 
   /* x.is_a?(NoSuchConst): the is_a?-family arms below match the target
      ConstantReadNode textually and never emit the constant read, so an
@@ -10856,6 +10987,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     else if (rt == TY_DIR) cn = "Dir";
+    else if (rt == TY_OPENSTRUCT) cn = "OpenStruct";
     else if (rt == TY_TMS) cn = "Process::Tms";
     else if (rt == TY_THREAD) cn = "Thread";
     else if (rt == TY_QUEUE) cn = "Thread::Queue";

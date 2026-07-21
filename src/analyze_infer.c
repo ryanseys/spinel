@@ -1931,6 +1931,7 @@ else {
       /* the TCP socket classes ARE IO handles (#2922) */
       if (cn && (sp_streq(cn, "TCPServer") || sp_streq(cn, "TCPSocket")) &&
           sp_feature_required("socket")) return TY_IO;
+      if (cn && sp_streq(cn, "OpenStruct") && sp_feature_required("ostruct")) return TY_OPENSTRUCT;
       if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
                  sp_streq(cn, "Random") || sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
@@ -1991,6 +1992,7 @@ else {
       /* the TCP socket classes ARE IO handles (#2922) */
       if (cn && (sp_streq(cn, "TCPServer") || sp_streq(cn, "TCPSocket")) &&
           sp_feature_required("socket")) return TY_IO;
+      if (cn && sp_streq(cn, "OpenStruct") && sp_feature_required("ostruct")) return TY_OPENSTRUCT;
       if (cn && (sp_streq(cn, "Thread") ||
                  sp_streq(cn, "IO") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
@@ -2304,6 +2306,25 @@ else {
   if (recv >= 0 && rt == TY_TMS && argc == 0 &&
       (sp_streq(name, "utime") || sp_streq(name, "stime") ||
        sp_streq(name, "cutime") || sp_streq(name, "cstime"))) return TY_FLOAT;
+  /* OpenStruct: dynamic members. A member read (any name, arg-less, no
+     writer) or `[sym]` returns a boxed value; a writer / `[]=` returns the
+     assigned value; the rest is a small fixed surface (#3135). */
+  if (recv >= 0 && rt == TY_OPENSTRUCT) {
+    if (sp_streq(name, "to_h") && argc == 0) return TY_SYM_POLY_HASH;
+    if (sp_streq(name, "respond_to?")) return TY_BOOL;
+    if (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
+        sp_streq(name, "instance_of?")) return TY_BOOL;
+    if ((sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=")) && argc == 1) return TY_BOOL;
+    if (sp_streq(name, "class") && argc == 0) return TY_CLASS;
+    if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
+    if ((sp_streq(name, "[]=") || sp_streq(name, "[]")) ) return TY_POLY;
+    if (sp_streq(name, "frozen?") || sp_streq(name, "nil?")) return TY_BOOL;
+    if (sp_streq(name, "dig")) return TY_POLY;
+    if (sp_streq(name, "each_pair") || sp_streq(name, "freeze") ||
+        sp_streq(name, "itself")) return TY_OPENSTRUCT;
+    /* any other arg-less name (or a `name=` writer) is a dynamic member */
+    return TY_POLY;
+  }
   /* TY_ENUMERATOR instance methods */
   if (recv >= 0 && rt == TY_ENUMERATOR) {
     if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;

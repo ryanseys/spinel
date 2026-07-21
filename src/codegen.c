@@ -21,6 +21,7 @@ const char *ty_nullable_builtin_id(TyKind t) {
     case TY_PROC:       return "SP_BUILTIN_PROC";
     case TY_METHOD:     return "SP_BUILTIN_METHOD";
     case TY_DIR:        return "SP_BUILTIN_DIR";
+    case TY_OPENSTRUCT: return "SP_BUILTIN_OPENSTRUCT";
     /* TY_TMS is an unboxed VALUE type: it boxes by heap copy (sp_box_tms),
        never as a nullable pointer (#3132) */
     default:            return NULL;
@@ -76,6 +77,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     case TY_FLOAT_ARRAY: buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_FLT_ARRAY)", expr); return;
     case TY_STR_ARRAY:   buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_STR_ARRAY)", expr); return;
     case TY_POLY_ARRAY:  buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_POLY_ARRAY)", expr); return;
+    case TY_OPENSTRUCT:  buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_OPENSTRUCT)", expr); return;
     case TY_NIL:
       /* a nil-typed expression can still have side effects (puts/print as a
          block tail): evaluate it for effect, then yield nil */
@@ -433,6 +435,9 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_FLOAT_RANGE: fn = "sp_box_frange"; break;
     case TY_STR_RANGE: fn = "sp_box_srange"; break;
     case TY_TMS: fn = "sp_box_tms"; break;
+    case TY_OPENSTRUCT:
+      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
+      buf_puts(b, "), SP_BUILTIN_OPENSTRUCT)"); return;
     case TY_TIME:   fn = "sp_box_time";  break;
     case TY_COMPLEX:  fn = "sp_box_complex";  break;
     case TY_RATIONAL: fn = "sp_box_rational"; break;
@@ -486,6 +491,7 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
     case TY_COMPLEX:  buf_puts(&cty, "sp_Complex"); init = "{0}"; break;
     case TY_RATIONAL: buf_puts(&cty, "sp_Rational"); init = "{0}"; break;
     case TY_TMS:    buf_puts(&cty, "sp_Tms"); init = "{0}"; break;
+    case TY_OPENSTRUCT: buf_puts(&cty, "sp_OpenStruct *"); init = "NULL"; ptr = 1; break;
     case TY_STRING: buf_puts(&cty, "const char *"); init = "(&(\"\\xff\")[1])"; ptr = 1; break;
     case TY_POLY:   buf_puts(&cty, "sp_RbVal"); init = "sp_box_nil()"; break;
     case TY_CLASS:  buf_puts(&cty, "sp_Class"); init = "((sp_Class){-1})"; break;
@@ -1347,7 +1353,7 @@ int fiber_cap_needs_root(TyKind t) {
          t == TY_EXCEPTION ||
          /* every other heap-backed handle: an unmarked capture is a GC UAF
             (a TCPServer captured into a Thread block was collected, #2922) */
-         t == TY_IO || t == TY_DIR || t == TY_ENUMERATOR || t == TY_METHOD ||
+         t == TY_IO || t == TY_DIR || t == TY_ENUMERATOR || t == TY_METHOD || t == TY_OPENSTRUCT ||
          t == TY_RANDOM || t == TY_CURRY || t == TY_STRBUF ||
          t == TY_MATCHDATA || t == TY_REGEX || t == TY_TIME;
 }

@@ -783,6 +783,7 @@ const char *c_type_name(TyKind t) {
     case TY_RANDOM:       return "sp_Random *";
     case TY_DIR:          return "sp_Dir *";
     case TY_TMS:          return "sp_Tms";
+    case TY_OPENSTRUCT:   return "sp_OpenStruct *";
     case TY_METHOD:       return "sp_BoundMethod *";
     case TY_IO:           return "sp_File *";
     case TY_ARGF:         return "sp_Argf *";
@@ -796,7 +797,7 @@ int is_scalar_ret(TyKind t) {
          t == TY_SYMBOL || t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_STRBUF ||
-         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_RANDOM || t == TY_DIR || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_CLASS ||
+         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_RANDOM || t == TY_DIR || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_CLASS || t == TY_OPENSTRUCT ||
          ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t);
 }
 /* native binding (Path B): map a spinel type spec to the C type at the ABI
@@ -862,6 +863,7 @@ const char *default_value(TyKind t) {
     case TY_RANDOM:  return "NULL";
     case TY_DIR:     return "NULL";
     case TY_TMS:     return "((sp_Tms){0})";
+    case TY_OPENSTRUCT: return "NULL";
     case TY_METHOD:  return "NULL";
     case TY_IO:      return "NULL";
     case TY_ARGF:    return "NULL";

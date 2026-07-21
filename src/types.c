@@ -43,6 +43,7 @@ const char *ty_name(TyKind t) {
     case TY_DIR:     return "dir";
     case TY_STR_RANGE: return "str_range";
     case TY_TMS:     return "tms";
+    case TY_OPENSTRUCT: return "openstruct";
     case TY_METHOD:  return "method";
     case TY_IO:      return "io";
     case TY_ENUMERATOR: return "enumerator";

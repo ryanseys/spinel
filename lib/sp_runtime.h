@@ -2351,6 +2351,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
           return SPL("IO");
         }
         case SP_BUILTIN_TMS: return SPL("Process::Tms");
+        case SP_BUILTIN_OPENSTRUCT: return SPL("OpenStruct");
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
         default: { sp_Class c = {v.cls_id}; return sp_class_to_s(c); }
       }
@@ -4629,6 +4630,8 @@ static const char *sp_PolyPolyHash_inspect(sp_PolyPolyHash *h);
    each branch reuses the matching primitive inspect helper. Falls back
    to "#<Object>" for SP_TAG_OBJ because the runtime has no class-name
    table yet (follow-up PR). Returns a GC-managed C string. */
+struct sp_OpenStruct_s;
+static const char *sp_OpenStruct_inspect(struct sp_OpenStruct_s *o);
 static inline const char *sp_poly_inspect(sp_RbVal v) {
   switch (v.tag) {
     /* An int-typed nil (unfilled int block param, nullable-int miss) carries
@@ -4672,6 +4675,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_inspect((sp_StrPolyHash *)v.v.p);
         case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_inspect((sp_SymPolyHash *)v.v.p);
         case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_inspect((sp_PolyPolyHash *)v.v.p);
+        case SP_BUILTIN_OPENSTRUCT: return sp_OpenStruct_inspect((struct sp_OpenStruct_s *)v.v.p);
         default:
           /* a user object: the generated per-class ivar walk renders
              #<Name:0x... @a=..., ...> like CRuby's default inspect */
@@ -4892,6 +4896,64 @@ static mrb_bool sp_SymPolyHash_has_value(sp_SymPolyHash*h,sp_RbVal v){if(!h)retu
 static sp_sym sp_SymPolyHash_key(sp_SymPolyHash*h,sp_RbVal v){if(!h)return (sp_sym)-1;for(mrb_int i=0;i<h->len;i++)if(sp_poly_eq(sp_SymPolyHash_get(h,h->order[i]),v))return h->order[i];return (sp_sym)-1;}
 static sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b){sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_SymPolyHash_get(b,b->order[i]));return r;}
 static void sp_SymPolyHash_update(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(a,b->order[i],sp_SymPolyHash_get(b,b->order[i]));}
+/* OpenStruct: a dynamic-member object (#3135). Members are named at run time
+   (JSON keys, CLI args, ...) so they cannot be static C fields; the backing is
+   a SymPolyHash of symbol -> boxed value. Reads of an absent member are nil,
+   writes create the member, and to_h / [] / respond_to? / == all read the
+   hash. It is boxed as SP_BUILTIN_OPENSTRUCT and never masquerades as a
+   Struct -- a distinct dynamic type outside static field access. */
+typedef struct sp_OpenStruct_s { sp_SymPolyHash *tbl; } sp_OpenStruct;
+static void sp_OpenStruct_scan(void *p){ sp_OpenStruct *o=(sp_OpenStruct*)p; if(o->tbl) sp_gc_mark(o->tbl); }
+static sp_OpenStruct *sp_OpenStruct_new(void){
+  sp_OpenStruct *o=(sp_OpenStruct*)sp_gc_alloc(sizeof(sp_OpenStruct),NULL,sp_OpenStruct_scan);
+  o->tbl=sp_SymPolyHash_new(); return o;
+}
+static sp_RbVal sp_box_openstruct(sp_OpenStruct *o){ return sp_box_obj(o, SP_BUILTIN_OPENSTRUCT); }
+static sp_RbVal sp_OpenStruct_get(sp_OpenStruct *o, sp_sym k){
+  if(!o||!o->tbl||!sp_SymPolyHash_has_key(o->tbl,k)) return sp_box_nil();
+  return sp_SymPolyHash_get(o->tbl,k);
+}
+static void sp_OpenStruct_set(sp_OpenStruct *o, sp_sym k, sp_RbVal v){
+  if(o&&o->tbl) sp_SymPolyHash_set(o->tbl,k,v);
+}
+static mrb_bool sp_OpenStruct_has(sp_OpenStruct *o, sp_sym k){
+  return o&&o->tbl&&sp_SymPolyHash_has_key(o->tbl,k);
+}
+/* new(a: 1, b: 2): fill from a keyword/symbol-keyed hash literal built by the
+   emit. The hash's ownership transfers -- OpenStruct wraps it directly. */
+static sp_OpenStruct *sp_OpenStruct_new_from(sp_SymPolyHash *h){
+  sp_OpenStruct *o=(sp_OpenStruct*)sp_gc_alloc(sizeof(sp_OpenStruct),NULL,sp_OpenStruct_scan);
+  o->tbl=h?h:sp_SymPolyHash_new(); return o;
+}
+static sp_SymPolyHash *sp_OpenStruct_to_h(sp_OpenStruct *o){
+  /* a fresh copy so mutating the returned hash does not alter the object */
+  sp_SymPolyHash *r=sp_SymPolyHash_new(); SP_GC_ROOT(r);
+  if(o&&o->tbl) for(mrb_int i=0;i<o->tbl->len;i++){ sp_sym k=o->tbl->order[i]; sp_SymPolyHash_set(r,k,sp_SymPolyHash_get(o->tbl,k)); }
+  return r;
+}
+static mrb_bool sp_OpenStruct_eq(sp_OpenStruct *a, sp_OpenStruct *b){
+  if(a==b) return 1;
+  if(!a||!b||!a->tbl||!b->tbl) return 0;
+  if(a->tbl->len!=b->tbl->len) return 0;
+  for(mrb_int i=0;i<a->tbl->len;i++){ sp_sym k=a->tbl->order[i];
+    if(!sp_SymPolyHash_has_key(b->tbl,k)) return 0;
+    if(!sp_poly_eq(sp_SymPolyHash_get(a->tbl,k), sp_SymPolyHash_get(b->tbl,k))) return 0; }
+  return 1;
+}
+/* #inspect: #<OpenStruct a=1, b="hi"> */
+static const char *sp_OpenStruct_inspect(sp_OpenStruct *o){
+  sp_String *s=sp_String_new(""); SP_GC_ROOT(s);
+  sp_String_append(s,"#<OpenStruct");
+  if(o&&o->tbl) for(mrb_int i=0;i<o->tbl->len;i++){
+    sp_sym k=o->tbl->order[i];
+    sp_String_append(s, i==0?" ":", ");
+    sp_String_append(s, sp_sym_to_s(k));
+    sp_String_append(s, "=");
+    sp_String_append(s, sp_poly_inspect(sp_SymPolyHash_get(o->tbl,k)));
+  }
+  sp_String_append(s,">");
+  return sp_String_cstr(s);
+}
 /* MatchData#named_captures(symbolize_names: true) and #deconstruct_keys: the
    named captures as a symbol-keyed hash (#2503, #2530). */
 static sp_sym sp_sym_intern(const char *s);

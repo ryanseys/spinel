@@ -46,6 +46,7 @@
    by-value Range so its endpoints are not truncated. */
 #define SP_BUILTIN_FLOAT_RANGE (-36)
 #define SP_BUILTIN_STR_RANGE   (-40)  /* ("a".."e"): sp_StrRange */
+#define SP_BUILTIN_OPENSTRUCT  (-41)  /* OpenStruct: dynamic symbol->value members */
 typedef struct { int tag; int cls_id; union { mrb_int i; const char *s; mrb_float f; mrb_bool b; void *p; } v; } sp_RbVal;
 
 /* ---- Collector globals shared with the generated TU ----
