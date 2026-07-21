@@ -5760,6 +5760,10 @@ static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
   switch (v.cls_id) {
     case SP_BUILTIN_SYM_POLY_HASH:  sp_SymPolyHash_set((sp_SymPolyHash*)v.v.p, key, val); break;
     case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash*)v.v.p, sp_box_sym(key), val); break;
+    /* OpenStruct#[]= (`os[:name] = v`) routes to the member table, matching the
+       sp_OpenStruct_get reader (without this the poly-dispatch write was dropped
+       and the reader kept the old value) (#3201). */
+    case SP_BUILTIN_OPENSTRUCT:     sp_OpenStruct_set((sp_OpenStruct*)v.v.p, key, val); break;
     default: break;
   }
   return val;
