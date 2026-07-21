@@ -2984,6 +2984,22 @@ void register_includes(Compiler *c) {
   if (g_inc_did_clone) register_locals(c);
 }
 
+int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *has_new);
+static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci);
+
+/* True if scope `mi`'s body contains a receiverless (implicit-self) call --
+   a `new`, a sibling method, etc. Such a call rebinds when the method runs as
+   a class method of an extending class, so its body must be specialized. */
+static int scope_has_receiverless_call(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    if (c->nscope[id] != mi) continue;
+    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    return 1;
+  }
+  return 0;
+}
+
 /* For each class, find `extend M` declarations and transplant M's instance
    methods as class methods (is_cmethod=1) so they are callable as C.m. */
 void register_extends(Compiler *c) {
@@ -3015,6 +3031,20 @@ void register_extends(Compiler *c) {
           /* Only transplant instance methods; self.* on the module stay on it. */
           if (src->class_id != mod_id || src->is_cmethod || !src->name) continue;
           if (comp_cmethod_in_class(c, ci, src->name) >= 0) continue;
+          /* A module method whose body makes a receiverless call binds `self`
+             to the extending class: a bare `new` constructs that class, and a
+             sibling call resolves to the extending class's (transplanted) class
+             method. Sharing the module's body leaves those nodes attributed to
+             the module scope, where codegen cannot resolve them. When the body
+             has any receiverless call, CLONE and re-walk against `ci` via the
+             inherited-cmethod specializer (which also pins a bare-`new` return
+             to ty_object(ci)); the module source is then DCE'd (#3177). */
+          if (scope_has_receiverless_call(c, ms)) {
+            specialize_cmethod_for(c, ms, mod_id, ci);
+            src = &c->scopes[ms];  /* realloc-safe */
+            src->is_transplanted_source = 1;
+            continue;
+          }
           Scope *dst = comp_scope_new(c, src->name, src->def_node);
           src = &c->scopes[ms];
           dst->body = src->body;
