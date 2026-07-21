@@ -6535,7 +6535,12 @@ else {
          (mirrors emit_args_filled). */
       int is_kwp_d = m && m->pnames[k] && callee_has_kwarg(c, m, m->pnames[k]);
       int kv = (m && kwh_d >= 0 && is_kwp_d) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
-      int provided = kv >= 0 ? kv : (k < pos_argc_d ? argv[k] : -1);
+      /* A declared keyword param is never bound by position: `def fn(*opts,
+         ivar: false)` called `fn("a", "b")` must leave ivar at its default, not
+         steal the last positional (which the rest already collected) (#3204).
+         Mirrors the callee_param_is_declared_kwarg guard in emit_args_filled. */
+      int is_declkw_d = m && callee_param_is_declared_kwarg(c, m, m->pnames[k]);
+      int provided = kv >= 0 ? kv : ((k < pos_argc_d && !is_declkw_d) ? argv[k] : -1);
       /* Options-hash idiom: a trailing keyword hash whose keys name no
          parameter collapses into the first unfilled positional param when
          that param is hash- or poly-typed -- Ruby packs `f(key: v)` into the
