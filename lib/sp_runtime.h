@@ -5773,6 +5773,16 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, mrb_int idx, sp_RbVal val)
     sp_poly_set_poly(v, sp_box_int(idx), val);
     return v;
   }
+  /* `s[i] = v` on a poly value that is actually a STRING (a param widened to
+     poly by another call site): String#[]= replaces the char at i with the
+     value string. Spinel strings splice to a fresh buffer, so return it for the
+     caller to reassign to the poly slot (sp_poly_arr_set is a no-op on a
+     string, silently dropping the mutation) (#3172). */
+  if (v.tag == SP_TAG_STR) {
+    const char *rep = (val.tag == SP_TAG_STR) ? (val.v.s ? val.v.s : sp_str_empty)
+                                              : sp_poly_to_s(val);
+    return sp_box_str(sp_str_splice_at(v.v.s ? v.v.s : sp_str_empty, idx, 1, rep, 0));
+  }
   sp_poly_arr_set(v, idx, val);
   return v;
 }
