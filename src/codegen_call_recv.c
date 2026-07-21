@@ -681,6 +681,25 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* `poly.split(sep[, limit])` where poly holds a string (a String param
+     widened to poly by a poly call site): dispatch String#split at runtime.
+     Without this the whole `str.split.map` chain stayed UNKNOWN and a following
+     multiple assignment was rejected (#3186 / #3164). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "split") &&
+      (argc == 0 || argc == 1 || argc == 2) && nt_ref(nt, id, "block") < 0) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? ", tv);
+    if (argc == 0) buf_printf(b, "sp_str_split_ws(_t%d.v.s)", tv);
+    else if (argc == 1) {
+      buf_printf(b, "sp_str_split_drop_trailing(_t%d.v.s, ", tv); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+    } else {
+      buf_printf(b, "sp_str_split_limit(_t%d.v.s, ", tv); emit_str_expr(c, argv[0], b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+    }
+    buf_printf(b, " : (sp_StrArray *)(sp_raise_nomethod(sp_nomethod_msg(\"split\", _t%d)), (void *)0); })", tv);
+    return 1;
+  }
   /* `poly.map! { |x| ... }` / `collect!` where poly is an array read out of a
      container: coerce to a poly array and rewrite each element in place with
      the block result, returning the (mutated) array (#3162). */

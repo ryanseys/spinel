@@ -107,6 +107,11 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     default: break;
   }
   if (t == TY_TIME) { buf_printf(b, "(*(sp_Time *)(%s).v.p)", expr); return; }  /* boxed by-value copy */
+  /* Rational / Complex are by-value structs boxed behind a pointer, so unbox by
+     dereferencing -- not the pointer-cast the generic arm below would emit,
+     which casts a pointer straight to a struct (#3186). */
+  if (t == TY_RATIONAL) { buf_printf(b, "(*(sp_Rational *)(%s).v.p)", expr); return; }
+  if (t == TY_COMPLEX)  { buf_printf(b, "(*(sp_Complex *)(%s).v.p)", expr); return; }
   if (t == TY_CLASS) { buf_printf(b, "sp_unbox_class(%s)", expr); return; }  /* a by-value struct, not a pointer (#2797) */
   if (ty_is_object(t)) { buf_printf(b, "(sp_%s *)(%s).v.p", c->classes[ty_object_class(t)].c_name, expr); return; }
   const char *cn = c_type_name(t);

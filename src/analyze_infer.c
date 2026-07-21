@@ -956,6 +956,11 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "to_a"))
     return TY_POLY_ARRAY;
+  /* String#split on a poly value (a string param widened to poly): a string
+     array, so a following `.map` / multiple assignment narrows (#3186/#3164). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "split") &&
+      argc <= 2 && nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name))
+    return TY_STR_ARRAY;
   /* Hash#merge on a poly value: a general PolyPoly hash. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "merge"))
