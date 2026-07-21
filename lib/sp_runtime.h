@@ -5956,7 +5956,9 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:  return sp_box_int(sp_IntArray_sum((sp_IntArray *)v.v.p, 0));
     case SP_BUILTIN_FLT_ARRAY:  return sp_box_float(sp_FloatArray_sum((sp_FloatArray *)v.v.p, 0.0));
-    case SP_BUILTIN_POLY_ARRAY: return sp_box_int(sp_PolyArray_sum_int((sp_PolyArray *)v.v.p));
+    /* Accumulate a poly array through sp_poly_add, not sum_int: a container-read
+       row of Rationals/Floats/Bignums summed as ints returned 0 (#3159). */
+    case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_sum_poly((sp_PolyArray *)v.v.p);
     default: return sp_box_int(0);
   }
 }
