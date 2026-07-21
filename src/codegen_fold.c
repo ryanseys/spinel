@@ -6346,9 +6346,17 @@ else {
         emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, out);
       }
       else if (m->kwrest_idx >= 0 && i == m->kwrest_idx) {
-        /* Collect remaining (unbound) keyword args into a sp_SymPolyHash. */
+        /* Collect remaining (unbound) keyword args into a sp_SymPolyHash. When
+           the kwrest param is typed poly (sp_RbVal) rather than a concrete
+           SymPolyHash* -- as happens forwarding `**kwargs` into a `**extra`
+           where the param inference stayed poly -- box the collected hash so it
+           matches the C signature (#3176). */
         int krhash = emit_kwrest_collect(c, m, kwh, ds_hash_tmp, ds_hash_type, argsNode);
-        buf_printf(out, "_t%d", krhash);
+        LocalVar *krp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+        if (krp && krp->type == TY_POLY)
+          buf_printf(out, "sp_box_obj(_t%d, SP_BUILTIN_SYM_POLY_HASH)", krhash);
+        else
+          buf_printf(out, "_t%d", krhash);
       }
       else if (i < pos_argc && !callee_param_is_declared_kwarg(c, m, m->pnames[i])) {
         /* a declared KEYWORD param is never bound by position: only a
