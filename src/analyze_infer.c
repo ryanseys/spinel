@@ -992,6 +992,11 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "clear"))
     return TY_POLY;
+  /* String#start_with? / #end_with? on a poly value: a bool. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) &&
+      (sp_streq(name, "start_with?") || sp_streq(name, "end_with?")))
+    return TY_BOOL;
   /* sort over a poly value that is an array at runtime (a group_by bucket / an
      inner array): a fresh sorted poly array (#2928). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_defines_method(c, name) &&
