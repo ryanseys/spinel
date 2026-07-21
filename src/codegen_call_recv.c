@@ -1507,6 +1507,59 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "_t%d", tres); return 1;
         }
       }
+      /* bsearch_index { |x| cond }: find-minimum binary search returning the
+         index of the first element satisfying the predicate, or nil. Kept here,
+         before the typed-kind `if (k)` gate, so a poly array (one widened by
+         flowing through a method param) reaches it too -- like bsearch (#3165). */
+      if (sp_streq(name, "bsearch_index") && block >= 0) {
+        const char *bk = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+        if (!bk) return 0;
+        const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
+        int body = nt_ref(nt, block, "body");
+        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        if (bn >= 1) {
+          int trecv = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp, tres = ++g_tmp, tmid = ++g_tmp;
+          Buf rbs = expr_buf(c, recv);
+          emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+          buf_printf(g_pre, " _t%d = %s;\n", trecv, rbs.p ? rbs.p : "NULL"); free(rbs.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "mrb_int _t%d = 0, _t%d = sp_%sArray_length(_t%d) - 1, _t%d = SP_INT_NIL;\n", tlo, thi, bk, trecv, tres);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "mrb_int _t%d = _t%d + (_t%d - _t%d) / 2;\n", tmid, tlo, thi, tlo);
+          if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, bk, trecv, tmid); }
+          for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+          int sv = g_indent; g_indent++;
+          /* The block value is the search predicate: route through emit_cond so a
+             poly / nullable-scalar result becomes a valid C truthiness test rather
+             than `if (sp_RbVal)` or `if (SP_INT_NIL)`. */
+          Buf cb; memset(&cb, 0, sizeof cb);
+          /* Integer-valued block: find-ANY mode (0 found, <0 left, >0 right),
+             yielding the index. Boolean block: find-minimum, as before. */
+          if (comp_ntype(c, bb[bn - 1]) == TY_INT) {
+            Buf ib = expr_buf(c, bb[bn - 1]); g_indent = sv;
+            int tcmp = ++g_tmp;
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "mrb_int _t%d = %s;\n", tcmp, ib.p ? ib.p : "0");
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "if (_t%d == 0) { _t%d = _t%d; break; }\n", tcmp, tres, tmid);
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+            emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+            free(ib.p);
+            emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+            buf_printf(b, "_t%d", tres); return 1;
+          }
+          emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
+          free(cb.p);
+          emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+          buf_printf(b, "_t%d", tres); return 1;
+        }
+      }
     }
     if (k) {
       if ((sp_streq(name, "to_a") || sp_streq(name, "to_ary") || sp_streq(name, "entries") ||
@@ -2159,57 +2212,6 @@ else {
         return 1;
       }
       int block = nt_ref(nt, id, "block");
-      /* bsearch_index { |x| cond }: find-minimum binary search returning the
-         index of the first element satisfying the predicate, or nil. */
-      if (sp_streq(name, "bsearch_index") && block >= 0) {
-        const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
-        int body = nt_ref(nt, block, "body");
-        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        if (bn >= 1) {
-          int trecv = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp, tres = ++g_tmp, tmid = ++g_tmp;
-          Buf rbs = expr_buf(c, recv);
-          emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-          buf_printf(g_pre, " _t%d = %s;\n", trecv, rbs.p ? rbs.p : "NULL"); free(rbs.p);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "mrb_int _t%d = 0, _t%d = sp_%sArray_length(_t%d) - 1, _t%d = SP_INT_NIL;\n", tlo, thi, k, trecv, tres);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
-          emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "mrb_int _t%d = _t%d + (_t%d - _t%d) / 2;\n", tmid, tlo, thi, tlo);
-          if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, tmid); }
-          for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-          int sv = g_indent; g_indent++;
-          /* The block value is the search predicate: route through emit_cond so a
-             poly / nullable-scalar result becomes a valid C truthiness test rather
-             than `if (sp_RbVal)` or `if (SP_INT_NIL)`. */
-          Buf cb; memset(&cb, 0, sizeof cb);
-          /* Integer-valued block: find-ANY mode (0 found, <0 left, >0 right),
-             yielding the index. Boolean block: find-minimum, as before. */
-          if (comp_ntype(c, bb[bn - 1]) == TY_INT) {
-            /* g_indent was already bumped for the block-body statements above;
-               evaluate the comparator at that depth, then restore. */
-            Buf ib = expr_buf(c, bb[bn - 1]); g_indent = sv;
-            int tcmp = ++g_tmp;
-            emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "mrb_int _t%d = %s;\n", tcmp, ib.p ? ib.p : "0");
-            emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "if (_t%d == 0) { _t%d = _t%d; break; }\n", tcmp, tres, tmid);
-            emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
-            emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
-            free(ib.p);
-            emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-            buf_printf(b, "_t%d", tres); return 1;
-          }
-          emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
-          emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
-          free(cb.p);
-          emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
-          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-          buf_printf(b, "_t%d", tres); return 1;
-        }
-      }
       /* find_index { |x| cond } / index { |x| cond } / rindex { |x| cond } on
          typed arrays - returns the index or nil (rindex scans from the end). */
       if ((sp_streq(name, "find_index") || sp_streq(name, "index") ||
