@@ -982,6 +982,7 @@ install: all bin/spin
 	install -m 644 lib/sp_net.h          $(SPNLDIR)/lib/
 	install -m 644 lib/sp_random.h       $(SPNLDIR)/lib/
 	install -m 644 lib/sp_enum.h         $(SPNLDIR)/lib/
+	rm -rf $(SPNLDIR)/packages
 	cp -r packages $(SPNLDIR)/packages
 	rm -rf $(SPNLDIR)/packages/*/build
 	install -d $(PREFIX)/bin
