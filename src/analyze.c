@@ -5903,7 +5903,19 @@ static int ctor_writes_ivar(Compiler *c, int ci, const char *ivname) {
           sp_streq(ty, "InstanceVariableAndWriteNode") ||
           sp_streq(ty, "InstanceVariableTargetNode")) {
         const char *wn = nt_str(nt, id, "name");
-        if (wn && sp_streq(wn, ivname)) return 1;
+        if (wn && sp_streq(wn, ivname)) {
+          /* A ctor write of a plain `nil` literal does not SEED the slot with a
+             concrete value -- it explicitly leaves it nil. If every other write
+             (elsewhere) is a scalar, the slot is nullable and must widen to poly,
+             so a nil-only ctor write must not block the poly backstop (#3143).
+             A non-nil write, or any operator/or/and/target write, does seed. */
+          if (sp_streq(ty, "InstanceVariableWriteNode")) {
+            int wv = nt_ref(nt, id, "value");
+            const char *vty = wv >= 0 ? nt_type(nt, wv) : NULL;
+            if (vty && sp_streq(vty, "NilNode")) continue;
+          }
+          return 1;
+        }
       }
     }
   }
