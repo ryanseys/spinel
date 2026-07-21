@@ -1719,7 +1719,7 @@ int infer_write_types(Compiler *c) {
       if (lv->is_param) {
         if (!is_push || !ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY ||
             lv->rbs_seeded) continue;
-        if (vt == TY_UNKNOWN || vt == TY_POLY || vt == ty_array_elem(lv->type)) continue;
+        if (vt == TY_UNKNOWN || vt == ty_array_elem(lv->type)) continue;
         lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
         continue;
       }
