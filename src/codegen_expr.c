@@ -1503,6 +1503,12 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && sp_streq(nm, "STDOUT")) { buf_puts(b, "sp_io_stdout()"); return; }
     if (nm && sp_streq(nm, "STDERR")) { buf_puts(b, "sp_io_stderr()"); return; }
     if (nm && sp_streq(nm, "STDIN"))  { buf_puts(b, "sp_io_stdin()"); return; }
+    /* `OpenStruct` as a class value, matching what an OpenStruct's #class
+       returns (name-keyed, cls_id -1); require "ostruct" gated (#3155). */
+    if (nm && sp_streq(nm, "OpenStruct") && sp_feature_required("ostruct")) {
+      buf_puts(b, "((sp_Class){(mrb_int)-1, \"OpenStruct\"})");
+      return;
+    }
     if (nm) {
       int _cidx = comp_class_index(c, nm);
       if (_cidx >= 0) {

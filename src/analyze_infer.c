@@ -5477,6 +5477,9 @@ TyKind infer_uncached(Compiler *c, int id) {
                sp_streq(nm, "STDIN"))) return TY_IO;
     if (nm && comp_class_index(c, nm) >= 0) return TY_CLASS;
     if (nm && is_builtin_class_name(nm)) return TY_CLASS;
+    /* `OpenStruct` as a value (o.class == OpenStruct) resolves only under
+       require "ostruct" (#3155). */
+    if (nm && sp_streq(nm, "OpenStruct") && sp_feature_required("ostruct")) return TY_CLASS;
     return TY_UNKNOWN;
   }
   if (nk == NK_DefinedNode) return TY_STRING;  /* a label string, or nil (NULL) */
