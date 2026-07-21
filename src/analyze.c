@@ -2477,6 +2477,32 @@ static void desugar_enum_chain_shapes(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int recv = nt_ref(nt, id, "receiver");
+    /* `<finite>.lazy.each_cons(n)` / `.each_slice(n)`: each_cons/each_slice are
+       not element-wise, so the lazy pipeline cannot fuse them and the chain
+       falls to a NoMethodError. For a finite source (a bounded range literal or
+       an array) the lazy is a no-op -- drop it so the eager each_cons/each_slice
+       Enumerator, and a following .first(m), materialize (#3171). */
+    if ((sp_streq(nm, "each_cons") || sp_streq(nm, "each_slice")) && recv >= 0 &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "lazy") &&
+        nt_ref(nt, recv, "block") < 0 && nt_ref(nt, recv, "arguments") < 0) {
+      int lz_recv = nt_ref(nt, recv, "receiver");
+      /* `p (2..10).lazy...` parses the source as a ParenthesesNode; look through
+         it (and nested parens) to the real range/array. */
+      while (lz_recv >= 0 && nt_type(nt, lz_recv) && sp_streq(nt_type(nt, lz_recv), "ParenthesesNode")) {
+        int pb = nt_ref(nt, lz_recv, "body"); int pbn = 0;
+        const int *pbb = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
+        lz_recv = (pbn == 1 && pbb) ? pbb[0] : -1;
+      }
+      const char *lty = lz_recv >= 0 ? nt_type(nt, lz_recv) : NULL;
+      int finite = 0;
+      if (lty && sp_streq(lty, "ArrayNode")) finite = 1;
+      else if (lty && sp_streq(lty, "RangeNode")) {
+        int rgt = nt_ref(nt, lz_recv, "right");   /* endless (nil right) stays lazy */
+        finite = rgt >= 0 && nt_type(nt, rgt) && sp_streq(nt_type(nt, rgt), "IntegerNode");
+      }
+      if (finite) { nt_node_set_ref(nt, id, "receiver", lz_recv); continue; }
+    }
     /* enum.to_set == Set.new(enum) whenever the set package's Set class is
        in the program (an in-place rewrite; Set's initialize adds each
        element, deduplicating). */
