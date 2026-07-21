@@ -41,3 +41,13 @@ alphas << [10, 20, 30, 40]
 sum = 0
 alphas.length.times { |k| sum += alphas[k][0] }
 p sum
+
+# array-of-int-array LITERAL narrows the same way a pushed one does (the
+# OA_CLS_IA sentinel is negative but IS evidence, not an invalid marker)
+rows = [[1, 2], [3, 4], [5, 6]]
+p rows.length
+p rows[0]
+p rows[2]
+tot = 0
+rows.length.times { |k| tot += rows[k][0] + rows[k][1] }
+p tot

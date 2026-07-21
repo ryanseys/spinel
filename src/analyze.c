@@ -4793,7 +4793,11 @@ static void narrow_object_arrays(Compiler *c) {
       for (int e = 0; e < en; e++) {
         const char *ety = nt_type(nt, el[e]);
         int ec = (ety && sp_streq(ety, "SplatNode")) ? -2 : oa_obj_class_of(c, el[e]);
-        if (ec < 0) { sl[S].alive = 0; break; }
+        /* OA_CLS_IA (int-array element) is a negative SENTINEL, not an
+           "invalid" -1/-2: it is real evidence, so it must not kill the slot
+           (an `[[a,b],[c,d]]` array-of-int-array literal narrows like a pushed
+           one already does -- the push arm never had this < 0 guard). */
+        if (ec < 0 && ec != OA_CLS_IA) { sl[S].alive = 0; break; }
         sl[S].cls = oa_cls_join(sl[S].cls, ec);
       }
     }
