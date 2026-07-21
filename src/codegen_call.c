@@ -16801,12 +16801,49 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                  to2, to2, to2, td, tb2, to2, td, tb2, to2);
       free(rs.p); return;
     }
+    if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+      /* Bignum bit-slice n[lo..hi]: shift down by lo, mask hi-lo+1 bits (or
+         keep everything above lo for an endless range). Mirrors the int-
+         receiver Range arm but over bigint ops (#3156). The slice may not fit
+         mrb_int for a very wide range; that truncates, like the int arm. */
+      int tr = ++g_tmp, ts = ++g_tmp;
+      buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+      buf_printf(b, "; mrb_int _lo%d = _t%d.first == INTPTR_MIN"
+                    " ? (sp_raise_cls(\"ArgumentError\","
+                    " \"The beginless range for Integer#[] results in infinity\"), 0)"
+                    " : _t%d.first;"
+                    " sp_Bigint *_t%d = sp_bigint_shr(%s, (int64_t)_lo%d);"
+                    " _t%d.last == INTPTR_MAX ? sp_bigint_to_int(_t%d)"
+                    " : sp_bigint_to_int(sp_bigint_and(_t%d,"
+                    " sp_bigint_sub(sp_bigint_shl(sp_bigint_new_int(1),"
+                    " (int64_t)(_t%d.last - _lo%d + (_t%d.excl ? 0 : 1))), sp_bigint_new_int(1)))); })",
+                 tr, tr, tr,
+                 ts, r, tr,
+                 tr, ts,
+                 ts,
+                 tr, tr, tr);
+      free(rs.p); return;
+    }
     if (sp_streq(name, "[]") && argc == 1) {
       int tn = ++g_tmp;
       buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
       buf_printf(b, "; _t%d < 0 ? (mrb_int)0"
                     " : sp_bigint_to_int(sp_bigint_and(sp_bigint_shr(%s, _t%d), sp_bigint_new_int(1))); })",
                  tn, r, tn);
+      free(rs.p); return;
+    }
+    if (sp_streq(name, "[]") && argc == 2) {
+      /* Bignum n[start, len]: the len-bit field starting at bit `start`. */
+      int tst = ++g_tmp, tln = ++g_tmp, tsh = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", tst); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; mrb_int _t%d = ", tln); emit_int_expr(c, argv[1], b);
+      buf_printf(b, "; sp_Bigint *_t%d = sp_bigint_shr(%s, (int64_t)_t%d);"
+                    " (_t%d < 0 || _t%d < 0) ? (mrb_int)0"
+                    " : sp_bigint_to_int(sp_bigint_and(_t%d,"
+                    " sp_bigint_sub(sp_bigint_shl(sp_bigint_new_int(1), (int64_t)_t%d), sp_bigint_new_int(1)))); })",
+                 tsh, r, tst,
+                 tst, tln,
+                 tsh, tln);
       free(rs.p); return;
     }
     if (sp_streq(name, "pow") && argc == 2) {

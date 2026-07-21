@@ -5173,7 +5173,9 @@ else {
         argc == 1) return TY_BIGINT;
     if (sp_streq(name, "pow") && argc == 2) return TY_BIGINT;
     if (sp_streq(name, "divmod") && argc == 1) return TY_POLY_ARRAY;
-    if (sp_streq(name, "[]") && argc == 1) return TY_INT;
+    /* #[] is a single bit, a bit-slice (Range or start,len) -- all narrowed to
+       int here (a very wide slice truncates, like the int-receiver arm) (#3156) */
+    if (sp_streq(name, "[]") && (argc == 1 || argc == 2)) return TY_INT;
     if ((sp_streq(name, "div") || sp_streq(name, "gcd") || sp_streq(name, "lcm") ||
          sp_streq(name, "ceildiv")) && argc == 1) return TY_BIGINT;
     if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) &&
