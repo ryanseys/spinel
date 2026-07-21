@@ -10201,7 +10201,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     buf_puts(b, "), (mrb_int)0)");
     return;
   }
+  /* A bare `exit` inside a class that defines its own `exit` reader/method is
+     that member, not Kernel#exit (Ruby's implicit-self dispatch prefers the
+     defined method) -- fall through to the normal resolution (#3207). */
   if (recv < 0 && (sp_streq(name, "exit") || sp_streq(name, "exit!"))) {
+    Scope *xsc = comp_scope_of(c, id);
+    int xcls = xsc ? xsc->class_id : -1;
+    if (xcls >= 0 && (comp_reader_in_chain(c, xcls, name, NULL) ||
+                      comp_method_in_chain(c, xcls, name, NULL) >= 0)) {
+      /* not Kernel#exit: leave it to the reader/method dispatch below */
+    } else {
     /* exit raises a rescuable SystemExit (#2761); exit! terminates directly.
        A boolean status maps true -> 0, false -> 1, as in CRuby. */
     const char *xfn = sp_streq(name, "exit!") ? "exit" : "sp_exit_raise";
@@ -10213,6 +10222,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (xt == TY_BOOL) { buf_printf(b, "({ %s((", xfn); emit_expr(c, argv[0], b); buf_puts(b, ") ? 0 : 1); (mrb_int)0; })"); }
     else { buf_printf(b, "({ %s((int)(", xfn); emit_expr(c, argv[0], b); buf_puts(b, ")); (mrb_int)0; })"); }
     return;
+    }
   }
   if (recv < 0 && sp_streq(name, "abort")) {
     /* abort raises a rescuable SystemExit(1) after writing the message to
