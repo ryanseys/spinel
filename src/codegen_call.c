@@ -1085,6 +1085,39 @@ int lazy_endpoint_is_infinite(Compiler *c, int right) {
    through a fusion-capable terminal (`first(n)` / `to_a` / `force`), so the
    broken assignment can be suppressed and each force site fuses the chain
    directly. (#2932) */
+/* True if the node subtree contains a call -- a conservative "may have a side
+   effect" test for operand-ordering decisions. */
+static int node_has_call(const NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  if (nt_kind(nt, node) == NK_CallNode) return 1;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (node_has_call(nt, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *a = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) if (node_has_call(nt, a[j])) return 1;
+  }
+  return 0;
+}
+/* Emit `sp_poly_eq(recv, arg)` (negated when !eq) with recv evaluated strictly
+   before arg. A C `fn(a, b)` leaves its two argument evaluations unsequenced,
+   so when the Ruby left operand has a side effect the right observes
+   (`ary.push(x) == ary[0]`) gcc's right-first order read stale state (#3148).
+   Hoist recv to a boxed temp only when BOTH operands may have side effects --
+   otherwise there is no interdependency and the extra temp is pure churn. */
+static void emit_poly_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b) {
+  int order = node_has_call(c->nt, recv) && node_has_call(c->nt, arg);
+  buf_puts(b, eq ? "" : "(!");
+  if (order) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, recv, b);
+    buf_printf(b, "; sp_poly_eq(_t%d, ", t); emit_boxed(c, arg, b); buf_puts(b, "); })");
+  } else {
+    buf_puts(b, "sp_poly_eq("); emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_boxed(c, arg, b); buf_puts(b, ")");
+  }
+  buf_puts(b, eq ? "" : ")");
+}
 int lazy_alias_write_suppressible(Compiler *c, int write) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, write) != NK_LocalVariableWriteNode) return 0;
@@ -5300,9 +5333,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
            Ruby has one Hash, and a StrPolyHash built at runtime (JSON.parse)
            equals the same pairs written as a StrIntHash literal. Box both
            and let sp_poly_eq's cross-variant arm walk the pairs. */
-        buf_puts(b, eq ? "sp_poly_eq(" : "(!sp_poly_eq(");
-        emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
-        buf_puts(b, eq ? ")" : "))");
+        emit_poly_eq_ordered(c, recv, argv[0], eq, b);
         return 1;
       }
       if ((ty_is_hash(rt) || ty_is_hash(a0)) && rt != TY_POLY && a0 != TY_POLY) {
@@ -5353,9 +5384,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
       }
-      buf_puts(b, eq ? "sp_poly_eq(" : "(!sp_poly_eq(");
-      emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
-      buf_puts(b, eq ? ")" : "))");
+      emit_poly_eq_ordered(c, recv, argv[0], eq, b);
       return 1;
     }
     {
