@@ -2401,9 +2401,10 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       for (int k = 0; k < argc; k++) buf_puts(b, "sp_curry_apply(");
       emit_expr(c, recv, b);
       for (int k = 0; k < argc; k++) {
-        buf_puts(b, ", (mrb_int)(");
-        emit_expr(c, argv[k], b);
-        buf_puts(b, "))");
+        /* each accumulated arg is stored boxed so a non-int arg keeps its type */
+        buf_puts(b, ", ");
+        emit_boxed(c, argv[k], b);
+        buf_puts(b, ")");
       }
       if (realize) buf_puts(b, ")");
       return 1;

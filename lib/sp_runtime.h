@@ -8252,15 +8252,17 @@ static void *sp_proc_compose_v(void *outer, void *inner) {
    by calling the target with the collected (mrb_int) arguments. Spinel
    defers the call to the point of use (sp_curry_to_int), so a partial
    curry behaves as a deferred call rather than auto-invoking at arity. */
-typedef struct { sp_Proc *target; mrb_int nargs; mrb_int args[16]; } sp_Curry;
-static void sp_curry_scan(void *p) { sp_Curry *c = (sp_Curry *)p; if (c->target) sp_gc_mark(c->target); }
+typedef struct { sp_Proc *target; mrb_int nargs; sp_RbVal args[16]; } sp_Curry;
+static void sp_curry_scan(void *p) { sp_Curry *c = (sp_Curry *)p; if (c->target) sp_gc_mark(c->target); for (mrb_int i = 0; i < c->nargs && i < 16; i++) sp_mark_rbval(c->args[i]); }
 static sp_Curry *sp_curry_new(sp_Proc *p) {
   SP_GC_ROOT(p);  /* the target proc has no other root across this alloc */
   sp_Curry *c = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry), NULL, sp_curry_scan);
   c->target = p; c->nargs = 0;
   return c;
 }
-static sp_Curry *sp_curry_apply(sp_Curry *c, mrb_int arg) {
+/* Each accumulated argument is stored boxed so a non-int arg (a String, an
+   object, ...) keeps its type through the deferred call (#3183). */
+static sp_Curry *sp_curry_apply(sp_Curry *c, sp_RbVal arg) {
   /* root the source accumulator: in a chained apply it is only referenced
      from a C argument slot, and this allocation can collect */
   SP_GC_ROOT(c);
@@ -8269,18 +8271,25 @@ static sp_Curry *sp_curry_apply(sp_Curry *c, mrb_int arg) {
   if (n->nargs < 16) n->args[n->nargs++] = arg;
   return n;
 }
-/* Publish the accumulated (int) args on the boxed side-channel too: a
-   poly-param target reads its arguments back from there. */
+/* Publish the accumulated (boxed) args on the side-channel: a poly-param
+   target reads its arguments back from there, keeping each arg's real type. */
 static void sp_curry_publish_args(sp_Curry *c) {
   for (mrb_int i = 0; i < c->nargs && i < 16; i++)
-    _sp_proc_poly_args[i] = sp_box_int(c->args[i]);
+    _sp_proc_poly_args[i] = c->args[i];
+}
+/* The int slots feed a target with scalar-int params, which reads them
+   directly rather than from the boxed side-channel. */
+static void sp_curry_int_slots(sp_Curry *c, mrb_int *slots) {
+  for (mrb_int i = 0; i < c->nargs && i < 16; i++) slots[i] = sp_poly_to_i(c->args[i]);
 }
 static mrb_int sp_curry_to_int(sp_Curry *c) {
   if (!c || !c->target) return 0;
   SP_GC_ROOT(c);  /* c->args is read during the call; the target can allocate */
+  mrb_int slots[16];
+  sp_curry_int_slots(c, slots);
   sp_curry_publish_args(c);
   /* the target publishes its (boxed) result through the return slot */
-  sp_proc_call(c->target, c->nargs, c->args);
+  sp_proc_call(c->target, c->nargs, slots);
   return sp_poly_to_i(_sp_proc_poly_ret);
 }
 /* Realization for a target whose return is not statically int: the boxed
@@ -8288,8 +8297,10 @@ static mrb_int sp_curry_to_int(sp_Curry *c) {
 static sp_RbVal sp_curry_realize_poly(sp_Curry *c) {
   if (!c || !c->target) return sp_box_nil();
   SP_GC_ROOT(c);
+  mrb_int slots[16];
+  sp_curry_int_slots(c, slots);
   sp_curry_publish_args(c);
-  sp_proc_call(c->target, c->nargs, c->args);
+  sp_proc_call(c->target, c->nargs, slots);
   return _sp_proc_poly_ret;
 }
 

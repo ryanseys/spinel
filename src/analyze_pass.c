@@ -2741,6 +2741,16 @@ int infer_param_types(Compiler *c) {
       }
     }
 
+    /* proc.curry: the deferred realization passes each accumulated argument
+       boxed (its static type is unknown at the curry site), so the target's
+       params must read them from the boxed side-channel -> widen to POLY.
+       Without this a String/object arg reaches an int-typed param as a raw
+       pointer value (#3183). */
+    if (recv >= 0 && name && sp_streq(name, "curry") &&
+        infer_type(c, recv) == TY_PROC) {
+      changed |= widen_proc_params_poly(c, recv);
+    }
+
     if (recv < 0) {
       /* bare `new(args)` inside a class method constructs the enclosing
          (possibly specialized) class -> bind args to that class's
@@ -5164,6 +5174,14 @@ static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn) {
     *out_body = c->scopes[mi].body;
     *out_pn = dn >= 0 ? nt_ref(nt, dn, "parameters") : -1;
     return *out_body >= 0;
+  }
+  /* `<callable>.to_proc` is the callable itself (Method#to_proc / Proc#to_proc
+     are identity for these purposes): resolve through the receiver so a curried
+     `method(:m).to_proc.curry` sees the target's arity and return type (#3183). */
+  if (sp_streq(ty, "CallNode") && nt_str(nt, ref, "name") &&
+      sp_streq(nt_str(nt, ref, "name"), "to_proc")) {
+    int r = nt_ref(nt, ref, "receiver");
+    return r >= 0 ? fwd_callable_def(c, r, out_body, out_pn) : 0;
   }
   int create = -1;
   if (sp_streq(ty, "LambdaNode") || is_proc_create(c, ref)) create = ref;
