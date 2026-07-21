@@ -7535,7 +7535,10 @@ struct sp_Proc;
 static struct sp_Proc *sp_at_exit_hooks[SP_AT_EXIT_MAX];
 static mrb_int sp_at_exit_count = 0;
 
-typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); mrb_int arity; mrb_bool lambda_p; mrb_int param_count; const sp_sym *param_kinds; const sp_sym *param_names; mrb_bool frozen; /* Object#freeze observed (sp_gc_alloc zero-fills) */ } sp_Proc;
+typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); mrb_int arity; mrb_bool lambda_p; mrb_int param_count; const sp_sym *param_kinds; const sp_sym *param_names; mrb_bool frozen; /* Object#freeze observed (sp_gc_alloc zero-fills) */ void *origin; /* dup/clone lineage root for Proc#== (NULL: self is the root) */ } sp_Proc;
+/* The lineage root of a proc: dups/clones of one proc share it, so Proc#== /
+   #eql? compare roots (a dup == its original) while distinct literals differ. */
+static inline sp_Proc *sp_proc_root(sp_Proc *p) { return (p && p->origin) ? (sp_Proc *)p->origin : p; }
 static void sp_Proc_scan(void *p) { sp_Proc *pr = (sp_Proc *)p; if (pr->cap && pr->cap_scan) pr->cap_scan(pr->cap); }
 static sp_Proc *sp_proc_new_meta(void *fn, void *cap, void (*cap_scan)(void *), mrb_int arity, mrb_bool lambda_p, mrb_int param_count, const sp_sym *param_kinds, const sp_sym *param_names) { sp_Proc *p = (sp_Proc *)sp_gc_alloc(sizeof(sp_Proc), NULL, sp_Proc_scan); p->fn = fn; p->cap = cap; p->cap_scan = cap_scan; p->arity = arity; p->lambda_p = lambda_p; p->param_count = param_count; p->param_kinds = param_kinds; p->param_names = param_names; return p; }
 /* Proc#dup / #clone: a fresh shallow copy (distinct identity; the capture
@@ -7547,6 +7550,7 @@ static sp_Proc *sp_proc_dup(sp_Proc *p, int keep_frozen) {
   sp_Proc *r = (sp_Proc *)sp_gc_alloc(sizeof(sp_Proc), NULL, sp_Proc_scan);
   *r = *p;
   if (!keep_frozen) r->frozen = 0;
+  r->origin = sp_proc_root(p);   /* share the lineage root so dup == original */
   return r;
 }
 static sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *)) { return sp_proc_new_meta(fn, cap, cap_scan, 0, FALSE, 0, NULL, NULL); }

@@ -8537,12 +8537,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
       (sp_streq(name, "inspect") || sp_streq(name, "to_s"))) {
     buf_puts(b, "sp_proc_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
-  /* Proc identity/state predicates: equal?/eql?/== compare by pointer, frozen?
-     is false, freeze/dup/clone/itself evaluate to the proc itself. */
+  /* Proc identity/state predicates: equal? compares by pointer; ==/eql?
+     compare the dup/clone lineage root, so a dup equals its original but two
+     distinct blocks differ (#3163). frozen? is false, freeze/dup/clone/itself
+     evaluate to the proc itself. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 1 &&
-      (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) &&
-      comp_ntype(c, argv[0]) == TY_PROC) {
+      sp_streq(name, "equal?") && comp_ntype(c, argv[0]) == TY_PROC) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
+    emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
+  }
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 1 &&
+      (sp_streq(name, "eql?") || sp_streq(name, "==")) &&
+      comp_ntype(c, argv[0]) == TY_PROC) {
+    buf_puts(b, "(sp_proc_root("); emit_expr(c, recv, b); buf_puts(b, ") == sp_proc_root(");
     emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
   }
   /* the concurrency handles: never frozen, never nil (a live C pointer) (#3124) */
