@@ -2488,6 +2488,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     int arm_t = t;
     TyKind arm_pt = pt;
     int reject_arm = 0;
+    int poly_class_guard = -1;   /* `_tN` bool: the poly subject is the pattern's class */
     if (pt == TY_MATCHDATA && sp_streq(pty, "HashPatternNode")) {
       char md[24]; snprintf(md, sizeof md, "_t%d", t);
       arm_t = emit_md_deconstruct_keys(b, indent + 1, md);
@@ -2565,6 +2566,53 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           buf_puts(b, ");\n");
         }
         arm_pt = TY_SYM_POLY_HASH;
+      }
+    }
+    /* A poly subject with a class-qualified pattern (`A[x]` / `User[name:]`,
+       common when a case subject unifies several Struct/Data classes): check
+       the runtime class, then deconstruct AS that class. Without this the
+       constant is dropped and the arm is compiled as a bare array/hash pattern
+       -- an is-Array check that a Struct instance never satisfies (#3179/#3180). */
+    else if (pt == TY_POLY &&
+             (sp_streq(pty, "ArrayPatternNode") || sp_streq(pty, "HashPatternNode"))) {
+      int cnode = nt_ref(nt, pat, "constant");
+      int ccid = -1;
+      if (cnode >= 0 && nt_type(nt, cnode) &&
+          (sp_streq(nt_type(nt, cnode), "ConstantReadNode") ||
+           sp_streq(nt_type(nt, cnode), "ConstantPathNode"))) {
+        const char *ccn = nt_str(nt, cnode, "name");
+        if (ccn) { const char *ra = resolve_class_alias(c, ccn); if (ra) ccn = ra; ccid = comp_class_index(c, ccn); }
+      }
+      if (ccid >= 0 && c->classes[ccid].is_struct) {
+        ClassInfo *sc = &c->classes[ccid];
+        int isv = sc->is_value_type;
+        char subj[24]; snprintf(subj, sizeof subj, "_t%d", t);
+        poly_class_guard = ++g_tmp;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "int _t%d = (", poly_class_guard);
+        Buf gb; memset(&gb, 0, sizeof gb);
+        if (!emit_poly_class_when(c, cnode, subj, &gb)) buf_puts(&gb, "0");
+        buf_puts(b, gb.p ? gb.p : "0"); free(gb.p);
+        buf_puts(b, ");\n");
+        int is_hash = sp_streq(pty, "HashPatternNode");
+        arm_t = ++g_tmp;
+        emit_indent(b, indent + 1);
+        if (is_hash) buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
+        else         buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "if (_t%d) {\n", poly_class_guard);
+        for (int i = 0; i < sc->nivars; i++) {
+          char fb[320];
+          if (isv) snprintf(fb, sizeof fb, "((sp_%s *)_t%d.v.p)->iv_%s", sc->c_name, t, iv_c(sc->ivars[i] + 1));
+          else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d.v.p)->iv_%s", sc->c_name, t, iv_c(sc->ivars[i] + 1));
+          emit_indent(b, indent + 2);
+          if (is_hash) buf_printf(b, "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", arm_t, comp_sym_intern(c, sc->ivars[i] + 1));
+          else         buf_printf(b, "sp_PolyArray_push(_t%d, ", arm_t);
+          emit_boxed_text(c, sc->ivar_types[i], fb, b);
+          buf_puts(b, ");\n");
+        }
+        emit_indent(b, indent + 1); buf_puts(b, "}\n");
+        arm_pt = is_hash ? TY_SYM_POLY_HASH : TY_POLY_ARRAY;
       }
     }
     /* An array pattern needs an array scrutinee. After the deconstruct dispatch
@@ -2747,7 +2795,16 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     if (sp_streq(pty, "IfNode")) has_cond = 0;
 
     int body_indent = indent + 1;
-    if (has_cond) {
+    if (poly_class_guard >= 0) {
+      /* the deconstruct above only populated arm_t when the runtime class
+         matched: the arm matches only when the guard AND the element/value
+         pattern hold (#3179/#3180). */
+      emit_indent(b, indent + 1);
+      if (has_cond) buf_printf(b, "if (_t%d && (%s)) {\n", poly_class_guard, cond_buf.p ? cond_buf.p : "1");
+      else buf_printf(b, "if (_t%d) {\n", poly_class_guard);
+      body_indent = indent + 2;
+    }
+    else if (has_cond) {
       emit_indent(b, indent + 1);
       buf_printf(b, "if (%s) {\n", cond_buf.p ? cond_buf.p : "1");
       body_indent = indent + 2;
