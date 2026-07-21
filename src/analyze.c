@@ -4923,8 +4923,6 @@ static void narrow_poly_int_locals(Compiler *c) {
   int nc = nt->count ? nt->count : 1;
   char *is_read = (char *)malloc(nc);
   char *claimed = (char *)malloc(nc);
-  memset(is_read, 0, (size_t)nc);
-  memset(claimed, 0, (size_t)nc);
   /* Every check below only cares about nodes in the candidate local's own
      scope (a read's consumer in receiver/argument position shares the read's
      scope -- only a block opens a new one, and blocks are separate refs).
@@ -4935,6 +4933,8 @@ static void narrow_poly_int_locals(Compiler *c) {
   int *sc_off = (int *)malloc(sizeof(int) * (size_t)(c->nscopes + 1));
   int *sc_nodes = (int *)malloc(sizeof(int) * (size_t)nc);
   if (!is_read || !claimed || !sc_cnt || !sc_off || !sc_nodes) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memset(is_read, 0, (size_t)nc);
+  memset(claimed, 0, (size_t)nc);
   for (int id = 0; id < nt->count; id++) {
     int s2 = c->nscope[id];
     if (s2 >= 0 && s2 < c->nscopes) sc_cnt[s2]++;
