@@ -40,7 +40,12 @@ static inline const char *isa_const_name(const NodeTable *nt, int arg) {
   const char *t = arg >= 0 ? nt_type(nt, arg) : NULL;
   if (!t) return NULL;
   if (sp_streq(t, "ConstantReadNode")) return nt_str(nt, arg, "name");
-  if (sp_streq(t, "ConstantPathNode") && nt_ref(nt, arg, "parent") < 0)
+  /* A ConstantPathNode names a class by its last segment, whether root-scoped
+     (`::Integer`, parent < 0) or namespace-qualified (`Outer::Thing`, parent
+     >= 0). Resolving the latter too lets is_a? answer a namespace-qualified
+     class instead of falling to the dynamic path, which raised on a builtin
+     receiver where CRuby returns false (#3258). */
+  if (sp_streq(t, "ConstantPathNode"))
     return nt_str(nt, arg, "name");
   return NULL;
 }
