@@ -3789,6 +3789,11 @@ else {
                 }
                 if (boxed_num) it = TY_POLY;
               }
+              /* fold over a poly array whose element type is erased (e.g. from
+                 a zip.map): the elements may be Float/Rational/etc., so an int
+                 seed cannot unbox the boxed accumulator without reinterpreting
+                 the bits. Keep the result boxed (#3238). */
+              else if (arith && et == TY_POLY) it = TY_POLY;
             }
             return it;
           }
