@@ -813,6 +813,18 @@ int diag_user_defines(Compiler *c, const char *name) {
   return comp_method_index(c, name) >= 0;
 }
 
+/* Like diag_user_defines, but also counts an attr_reader / Struct / Data member
+   -- a real method living in a class's readers list rather than the method
+   chain. Used where a builtin poly-method shortcut must decline to the general
+   cls_id dispatch so a field-reader arm (which the general path DOES emit) wins
+   over a colliding builtin (e.g. Data member `day` vs Time#day, #3239). */
+static int user_defines_or_reads(Compiler *c, const char *name) {
+  if (diag_user_defines(c, name)) return 1;
+  for (int uk = 0; uk < c->nclasses; uk++)
+    if (comp_is_reader(&c->classes[uk], name)) return 1;
+  return 0;
+}
+
 /* BasicObject's own instance methods (the spinel-relevant surface). */
 static int basicobject_own_method(const char *n) {
   static const char *const B[] = { "==", "!=", "!", "equal?", "instance_eval",
@@ -3128,7 +3140,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   if (recv < 0 || comp_ntype(c, recv) != TY_POLY || !name) return 0;
   if (nt_ref(nt, id, "block") >= 0) return 0;
   int argc; const int *argv = call_args(nt, id, &argc);
-  if (diag_user_defines(c, name)) return 0;   /* a user class owns the name */
+  if (user_defines_or_reads(c, name)) return 0;   /* a user class owns the name */
 
   /* Time accessors: the boxed poly holds a pointer to the sp_Time value. */
   const char *tf = NULL;
