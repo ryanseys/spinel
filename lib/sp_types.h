@@ -45,6 +45,17 @@
 # define SP_TLS
 #endif
 
+/* Worker identity, shared by the allocators (per-worker string/object heaps) and
+   the scheduler that owns it. In the base header so sp_gc.h's SP_GC_HEAP_PUSH --
+   included ahead of sp_alloc.h -- can index the per-worker object heap. */
+#ifdef SP_THREADS
+# ifndef SP_MAX_WORKERS
+#  define SP_MAX_WORKERS 256
+# endif
+extern SP_TLS int sp_worker_id;      /* this OS worker's slot (0 = main); sp_sched.c */
+extern int sp_active_workers;        /* live worker count; sp_sched.c */
+#endif
+
 /* Branch-hint / hot-cold attributes. Static approximation of PGO: marking
    rare paths (raise, dispatch fallbacks) cold lets the C compiler split
    them out of the hot path's i-cache footprint. No-op on non-GCC/clang. */

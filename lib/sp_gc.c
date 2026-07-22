@@ -19,7 +19,11 @@
 /* ---- Globals shared with the generated TU (declared extern in sp_gc.h) ---- */
 SP_TLS void **sp_gc_roots[SP_GC_STACK_MAX];   /* per-worker (SP_TLS); see sp_gc.h */
 SP_TLS int sp_gc_nroots = 0;
+#ifdef SP_THREADS
+sp_gc_wslot_t sp_gc_wslot[SP_MAX_WORKERS];   /* per-worker young head + flush delta, cache-line padded */
+#else
 sp_gc_hdr *sp_gc_heap = NULL;
+#endif
 size_t sp_gc_bytes = 0;
 size_t sp_gc_old_bytes = 0;
 int sp_gc_cycle = 0;
@@ -62,7 +66,13 @@ void sp_oom_die(void){fputs("unhandled exception: out of memory\n",stderr);exit(
  * registered header, so the scan-time membership test is O(log n). ---- */
 static int sp_gc_vsnap_cmp(const void *a, const void *b){ uintptr_t x=(uintptr_t)*(sp_gc_hdr*const*)a, y=(uintptr_t)*(sp_gc_hdr*const*)b; return x<y?-1:x>y?1:0; }
 static void sp_gc_vsnap_push(sp_gc_hdr *h){ if(sp_gc_vsnap_n==sp_gc_vsnap_cap){ size_t c=sp_gc_vsnap_cap?sp_gc_vsnap_cap*2:1024; sp_gc_hdr**n=(sp_gc_hdr**)realloc(sp_gc_vsnap,c*sizeof(sp_gc_hdr*)); if(!n)sp_oom_die(); sp_gc_vsnap=n; sp_gc_vsnap_cap=c; } sp_gc_vsnap[sp_gc_vsnap_n++]=h; }
-static void sp_gc_verify_snapshot(void){ sp_gc_vsnap_n=0; for(sp_gc_hdr*p=sp_gc_heap;p;p=p->next)sp_gc_vsnap_push(p); for(sp_gc_hdr*p=sp_gc_old_heap;p;p=p->next)sp_gc_vsnap_push(p); if(sp_gc_vsnap_n>1)qsort(sp_gc_vsnap,sp_gc_vsnap_n,sizeof(sp_gc_hdr*),sp_gc_vsnap_cmp); }
+static void sp_gc_verify_snapshot(void){ sp_gc_vsnap_n=0;
+#ifdef SP_THREADS
+  { int n=sp_active_workers; if(n<1)n=1; if(n>SP_MAX_WORKERS)n=SP_MAX_WORKERS; for(int i=0;i<n;i++)for(sp_gc_hdr*p=sp_gc_wslot[i].young;p;p=p->next)sp_gc_vsnap_push(p); }
+#else
+  for(sp_gc_hdr*p=sp_gc_heap;p;p=p->next)sp_gc_vsnap_push(p);
+#endif
+  for(sp_gc_hdr*p=sp_gc_old_heap;p;p=p->next)sp_gc_vsnap_push(p); if(sp_gc_vsnap_n>1)qsort(sp_gc_vsnap,sp_gc_vsnap_n,sizeof(sp_gc_hdr*),sp_gc_vsnap_cmp); }
 static int sp_gc_obj_registered(sp_gc_hdr *h){ uintptr_t hv=(uintptr_t)h; size_t lo=0,hi=sp_gc_vsnap_n; while(lo<hi){ size_t m=lo+(hi-lo)/2; uintptr_t x=(uintptr_t)sp_gc_vsnap[m]; if(x==hv)return 1; if(x<hv)lo=m+1; else hi=m; } return 0; }
 /* Verify diagnostics: which phase/slot the bad pointer came from. */
 const char *sp_gc_dbg_phase = "?";
@@ -98,6 +108,12 @@ unsigned sp_gc_mark_gen = 0;
    tracking the live size whichever heap initiated the collect; the old
    split retunes left one threshold stale and re-triggered immediately. */
 void (*sp_gc_obj_retune_hook)(size_t before) = NULL;
+/* Minor sweep of one young list (under stop-the-world): free/recycle the dead,
+   promote survivors into the shared old heap, accumulating survivor bytes into
+   sp_gc_bytes and sp_gc_old_bytes (both pre-seeded by the caller). */
+static void sp_gc_sweep_young(sp_gc_hdr **pp){
+  while(*pp){sp_gc_hdr*h=*pp;if(h->marked!=sp_gc_mark_gen){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;}}
+}
 void sp_gc_collect(void){
   size_t ob_before = sp_gc_bytes;
   int full=(sp_gc_cycle%SP_GC_FULL_INTERVAL==0);sp_gc_cycle++;
@@ -108,7 +124,11 @@ void sp_gc_collect(void){
   if(!sp_gc_mark_gen){
     sp_gc_mark_gen=1;
     for(sp_gc_hdr*hh=sp_gc_old_heap;hh;hh=hh->next)hh->marked=0;
+#ifdef SP_THREADS
+    { int n=sp_active_workers; if(n<1)n=1; if(n>SP_MAX_WORKERS)n=SP_MAX_WORKERS; for(int i=0;i<n;i++)for(sp_gc_hdr*hh=sp_gc_wslot[i].young;hh;hh=hh->next)hh->marked=0; }
+#else
     for(sp_gc_hdr*hh=sp_gc_heap;hh;hh=hh->next)hh->marked=0;
+#endif
   }
   sp_gc_mark_all();
   if(full){
@@ -118,8 +138,17 @@ void sp_gc_collect(void){
   /* minor: the old list is not walked at all -- an old object's stale stamp
      simply reads as unmarked next generation, which is what a fresh unmark
      pass used to produce. */
-  sp_gc_hdr**pp=&sp_gc_heap;sp_gc_bytes=sp_gc_old_bytes;
-  while(*pp){sp_gc_hdr*h=*pp;if(h->marked!=sp_gc_mark_gen){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;}}
+  sp_gc_bytes=sp_gc_old_bytes;
+#ifdef SP_THREADS
+  { int n=sp_active_workers; if(n<1)n=1; if(n>SP_MAX_WORKERS)n=SP_MAX_WORKERS;
+    for(int i=0;i<n;i++)sp_gc_sweep_young(&sp_gc_wslot[i].young);
+    /* The recompute above set sp_gc_bytes from every live object's size, so the
+       workers' unflushed per-worker deltas are now subsumed -- clear them (all
+       mutators are parked, so this is race-free). */
+    for(int i=0;i<n;i++)sp_gc_wslot[i].flush_delta=0; }
+#else
+  sp_gc_sweep_young(&sp_gc_heap);
+#endif
   /* Sweep the string heap only when IT is over its trigger: the sweep is a
      full walk of the live string list, and running it on every OBJECT-heap
      collection made each collection O(live strings) -- the dominant cost of

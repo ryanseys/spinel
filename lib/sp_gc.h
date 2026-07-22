@@ -97,7 +97,32 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
    header walk. Use this for string parameters in runtime helpers. */
 #define SP_GC_ROOT_STR(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)2))
 #define SP_GC_RESTORE() sp_gc_nroots = _gc_saved
+/* Young object heap. Threaded build: per-worker lists (one pusher each, since a
+   started thread is pinned to its worker), so allocation pushes without the
+   CAS-on-shared-head that made object-heavy parallel workloads bounce a cache
+   line every alloc. Removals happen only under stop-the-world (every mutator
+   parked). Survivors promote into the single shared old heap during the sweep,
+   under stop-the-world, so the old list stays lock-free and shared. The live-
+   byte counter sp_gc_bytes stays a single (relaxed-atomic) total -- array data
+   buffers adjust it from whichever worker mutates them, which a per-worker split
+   could not attribute correctly. */
+#ifdef SP_THREADS
+/* One cache-line-padded slot per worker holding the two fields written on every
+   object allocation: the young list head and the unflushed live-byte delta.
+   Padding is essential -- without it adjacent workers' 8-byte slots share a
+   cache line, so a per-worker heap still bounced that line every alloc (false
+   sharing), which kept object-heavy parallel allocation from scaling despite the
+   lock/CAS removal. One line per worker isolates them completely. */
+#define SP_CACHELINE 64
+typedef struct {
+  sp_gc_hdr *young;     /* per-worker young list head */
+  size_t flush_delta;   /* per-worker unflushed live-byte delta (see below) */
+  char _pad[SP_CACHELINE - sizeof(sp_gc_hdr*) - sizeof(size_t)];
+} sp_gc_wslot_t;
+extern sp_gc_wslot_t sp_gc_wslot[SP_MAX_WORKERS];
+#else
 extern sp_gc_hdr *sp_gc_heap;
+#endif
 /* Current mark generation (see sp_gc_hdr.marked in sp_types.h). */
 extern unsigned sp_gc_mark_gen;
 extern void (*sp_gc_obj_retune_hook)(size_t before);
@@ -130,6 +155,36 @@ extern void (*sp_gc_mark_suspended_fibers_hook)(void);
 #define SP_GC_CTR_SET(ctr, n) ((ctr) = (size_t)(n))
 #endif
 
+/* Live-byte accounting for the object heap. Every allocation and every array-
+   buffer resize adjusts sp_gc_bytes; under SP_THREADS a shared atomic RMW per
+   op bounces one cache line across workers and dominated object-heavy parallel
+   allocation (measured ~13x on the counter alone at 4 workers). Batch it: each
+   worker accumulates its delta in a private (non-atomic) slot and flushes to the
+   shared total only every SP_GC_FLUSH_QUANTUM, cutting the atomic frequency by
+   ~quantum/alloc-size. sp_gc_bytes stays the authoritative shared total -- every
+   read (threshold trigger, GC.stat) and the collector's recompute are unchanged;
+   the trigger merely lags the true total by at most quantum*workers, bounded
+   overshoot for a heuristic. The collector resets the deltas after its recompute
+   (which already counts every live object's size, so the pending deltas are
+   subsumed). The single-threaded build is the plain +=/-= it always was. */
+#ifdef SP_THREADS
+#define SP_GC_FLUSH_QUANTUM (16u * 1024u)
+static inline void sp_gc_bytes_add(size_t n) {
+  size_t *d = &sp_gc_wslot[sp_worker_id].flush_delta;
+  size_t v = *d + n;
+  if (v >= SP_GC_FLUSH_QUANTUM) { SP_GC_CTR_ADD(sp_gc_bytes, v); *d = 0; }
+  else *d = v;
+}
+static inline void sp_gc_bytes_sub(size_t n) {
+  size_t *d = &sp_gc_wslot[sp_worker_id].flush_delta;
+  if (*d >= n) { *d -= n; }
+  else { size_t rem = n - *d; *d = 0; SP_GC_CTR_SUB(sp_gc_bytes, rem); }
+}
+#else
+static inline void sp_gc_bytes_add(size_t n) { sp_gc_bytes += n; }
+static inline void sp_gc_bytes_sub(size_t n) { sp_gc_bytes -= n; }
+#endif
+
 /* Push a header onto the shared sp_gc_heap list. Under SP_THREADS this is a
    lock-free CAS push so callers that hold no lock (the pool-hit relink) stay
    off the heap mutex; the allocators, which hold the mutex anyway for the
@@ -143,11 +198,12 @@ extern void (*sp_gc_mark_suspended_fibers_hook)(void);
    defense. Release order publishes the node's initialized header to the
    collector. */
 #ifdef SP_THREADS
+/* Per-worker young list: only this worker's M pushes here (started threads are
+   pinned and a worker pumps one green thread at a time), so a plain store is
+   race-free -- no CAS, no shared-head cache-line bounce. */
 #define SP_GC_HEAP_PUSH(hdr) do { \
-    sp_gc_hdr *_sp_old = __atomic_load_n(&sp_gc_heap, __ATOMIC_RELAXED); \
-    do { __atomic_store_n(&(hdr)->next, _sp_old, __ATOMIC_RELAXED); } \
-    while (!__atomic_compare_exchange_n(&sp_gc_heap, &_sp_old, (hdr), 1, \
-                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED)); \
+    sp_gc_hdr **_sp_head = &sp_gc_wslot[sp_worker_id].young; \
+    (hdr)->next = *_sp_head; *_sp_head = (hdr); \
   } while (0)
 #else
 #define SP_GC_HEAP_PUSH(hdr) do { (hdr)->next = sp_gc_heap; sp_gc_heap = (hdr); } while (0)

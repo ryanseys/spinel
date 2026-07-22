@@ -52,11 +52,7 @@ extern pthread_mutex_t sp_heap_lock;
    The collector reaches every list under stop-the-world (all workers parked).
    The single-threaded build keeps one global list and stays byte-identical. */
 #ifdef SP_THREADS
-# ifndef SP_MAX_WORKERS
-#  define SP_MAX_WORKERS 256
-# endif
-extern SP_TLS int sp_worker_id;                    /* this worker's slot (sp_sched.c) */
-extern int sp_active_workers;                      /* live worker count (sp_sched.c) */
+/* sp_worker_id / sp_active_workers / SP_MAX_WORKERS: sp_types.h */
 extern sp_str_hdr *sp_str_heap_w[SP_MAX_WORKERS];  /* per-worker live-string lists */
 extern size_t sp_str_heap_bytes_w[SP_MAX_WORKERS]; /* per-worker live string bytes */
 #else
@@ -347,7 +343,7 @@ static void __attribute__((noinline, cold)) sp_raise_frozen_array_v(sp_RbVal v) 
 /* sp_PolyArray: a growable array of boxed values. */
 typedef struct { sp_RbVal *data; mrb_int len; mrb_int cap; mrb_int frozen; } sp_PolyArray;
 static inline void sp_PolyArray_scan(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; for (mrb_int i = 0; i < a->len; i++) sp_mark_rbval(a->data[i]); }
-static inline void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); SP_GC_CTR_SUB(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; free(a->data); }
+static inline void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes_sub(sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; free(a->data); }
 /* Free-list pool for PolyArray, header AND data buffer kept together. The
    allocation-heaviest programs (per-point tuple building: BabyStark's
    constraint evaluation) churn millions of short-lived PolyArrays; recycling
@@ -373,7 +369,7 @@ static inline sp_PolyArray *sp_PolyArray_new(void) {
     ph->marked = 0;
     ph->recycle = sp_PolyArray_pool_recycle;
     SP_GC_HEAP_PUSH(ph);
-    SP_GC_CTR_ADD(sp_gc_bytes, ph->size);
+    sp_gc_bytes_add(ph->size);
     sp_PolyArray *a = (sp_PolyArray *)((char *)ph + sizeof(sp_gc_hdr));
     a->len = 0;
     a->frozen = 0;
@@ -381,9 +377,9 @@ static inline sp_PolyArray *sp_PolyArray_new(void) {
   }
   sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan);
   a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); if (!a->data) sp_oom_die(); a->len = 0;
-  { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->recycle = sp_PolyArray_pool_recycle; h->size += sizeof(sp_RbVal) * a->cap; SP_GC_CTR_ADD(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); }
+  { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->recycle = sp_PolyArray_pool_recycle; h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes_add(sizeof(sp_RbVal) * a->cap); }
   return a;
 }
-static inline void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); SP_GC_CTR_SUB(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; a->cap = (a->cap * 2) + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; SP_GC_CTR_ADD(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); } a->data[a->len++] = v; }
+static inline void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes_sub(sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; a->cap = (a->cap * 2) + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes_add(sizeof(sp_RbVal) * a->cap); } a->data[a->len++] = v; }
 static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); return a->data[i]; }
 #endif /* SP_ALLOC_H */

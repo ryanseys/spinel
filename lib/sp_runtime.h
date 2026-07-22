@@ -665,7 +665,7 @@ static void *sp_gc_alloc_pool(size_t sz, void(*scn)(void*), void(*recycle)(sp_gc
 static void sp_gc_pool_relink(sp_gc_hdr *h) {
   h->marked = 0;
   SP_GC_HEAP_PUSH(h);
-  SP_GC_CTR_ADD(sp_gc_bytes, h->size);
+  sp_gc_bytes_add(h->size);
 }
 
 /* Per-class free-list pool boilerplate. SP_POOL_DEFINE(CLS) goes at

@@ -106,32 +106,39 @@ int sp_gc_collection_wanted(void) {
 }
 
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
+#ifdef SP_THREADS
+  /* Lock-free fast path: the list push is a CAS (SP_GC_HEAP_PUSH) and the live-
+     byte counter is atomic, so concurrent allocations need no mutex -- the old
+     sp_heap_lock only serialized them and the string sweep, and both string
+     allocation (per-worker heap) and every collection (stop-the-world) have
+     moved off it. Removals happen only under stop-the-world with every mutator
+     parked, so a push never races the sweep. The stress-threshold one-shot is
+     idempotent under a race. */
+  if (!sp_gc_stress_checked) { sp_gc_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { SP_GC_CTR_SET(sp_gc_threshold, 2048); sp_gc_threshold_init = 2048; } }
+  if (SP_GC_CTR_GET(sp_gc_bytes) > SP_GC_CTR_GET(sp_gc_threshold)) sp_stw_collect();
+  size_t need = sizeof(sp_gc_hdr) + sz;
+  sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
+  if (!h) sp_oom_die();
+  h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
+  SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
+  return (char *)h + sizeof(sp_gc_hdr);
+#else
   SP_HEAP_LOCK();
   /* The threshold store is atomic: sp_gc_collection_wanted reads it without
      the heap lock. threshold_init stays plain -- only retune reads it, under
      stop-the-world, ordered after this by the writer's park. */
   if (!sp_gc_stress_checked) { sp_gc_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { SP_GC_CTR_SET(sp_gc_threshold, 2048); sp_gc_threshold_init = 2048; } }
   if (SP_GC_CTR_GET(sp_gc_bytes) > sp_gc_threshold) {
-#ifdef SP_THREADS
-    /* Drop the heap lock before stopping the world: a worker stalled here on the
-       heap lock could never reach a safepoint, deadlocking the collector. */
-    SP_HEAP_UNLOCK();
-    sp_stw_collect();
-    SP_HEAP_LOCK();
-#else
     sp_gc_collect_retune();
-#endif
   }
   size_t need = sizeof(sp_gc_hdr) + sz;
   sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
-  /* CAS push, not a plain locked store: the pool-hit relink pushes onto the
-     same list head WITHOUT the heap lock, so every writer must use the same
-     atomic protocol (sp_gc.h). */
-  SP_GC_HEAP_PUSH(h); SP_GC_CTR_ADD(sp_gc_bytes, need);
+  SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
+#endif
 }
 void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   size_t need = sizeof(sp_gc_hdr) + sz;
@@ -139,7 +146,7 @@ void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
   SP_HEAP_LOCK();
-  SP_GC_HEAP_PUSH(h); SP_GC_CTR_ADD(sp_gc_bytes, need);
+  SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 }
