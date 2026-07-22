@@ -13258,23 +13258,26 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       (sp_streq(nt_str(nt, recv, "name"), "File") ||
        sp_streq(nt_str(nt, recv, "name"), "FileTest"))) {
     if ((sp_streq(name, "basename") || sp_streq(name, "dirname") || sp_streq(name, "extname")) && argc == 1) {
-      buf_printf(b, "sp_file_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+      /* the path argument must reach sp_file_* as a const char*; emit_str_expr
+         coerces a poly / nullable-string path so it does not pass an sp_RbVal
+         into the char* slot (a C type error) (#3262). */
+      buf_printf(b, "sp_file_%s(", name); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
     if (sp_streq(name, "basename") && argc == 2) {
-      buf_puts(b, "sp_file_basename2("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
-      emit_expr(c, argv[1], b); buf_puts(b, ")"); return;
+      buf_puts(b, "sp_file_basename2("); emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_str_expr(c, argv[1], b); buf_puts(b, ")"); return;
     }
     if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 1) {
-      buf_puts(b, "sp_file_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+      buf_puts(b, "sp_file_read("); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
     /* File.read(path, length) -> the first length bytes (#2776) */
     if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 2) {
-      buf_puts(b, "sp_file_read_len("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      buf_puts(b, "sp_file_read_len("); emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
       emit_int_expr(c, argv[1], b); buf_puts(b, ")"); return;
     }
     /* the stat/predicate family (#2775) */
     if (sp_streq(name, "ftype") && argc == 1) {
-      buf_puts(b, "sp_file_ftype("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+      buf_puts(b, "sp_file_ftype("); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
     if (sp_streq(name, "writable?") && argc == 1) {
       buf_puts(b, "sp_file_writable("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
