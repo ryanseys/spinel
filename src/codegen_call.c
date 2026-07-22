@@ -14511,12 +14511,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   {
     int rre = re_lit_index(c, recv);
     if (rre >= 0 && sp_streq(name, "match") && (argc == 1 || argc == 2)) {
+      /* the subject is a string; emit_str_expr coerces a poly/nullable-string
+         value (e.g. a `string?` attr read) to const char*, which emit_expr would
+         leave as an sp_RbVal into sp_re_matchdata's const char* slot (#3219). */
       if (argc == 1) {
-        buf_printf(b, "sp_re_matchdata(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        buf_printf(b, "sp_re_matchdata(sp_re_pat_%d, ", rre); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else {
-        buf_printf(b, "sp_re_matchdata_at(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b);
-        buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+        buf_printf(b, "sp_re_matchdata_at(sp_re_pat_%d, ", rre); emit_str_expr(c, argv[0], b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       }
       return;
     }
