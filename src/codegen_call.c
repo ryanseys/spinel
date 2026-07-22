@@ -8624,25 +8624,50 @@ void emit_call(Compiler *c, int id, Buf *b) {
     TyKind tret = tm ? (TyKind)tm->ret : (poly_abi ? TY_POLY : TY_INT);
     if (!is_scalar_ret(tret)) tret = TY_INT;  /* aggregate ret: raw carrier */
     buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
-    buf_puts(b, "(("); emit_ctype(c, tret, b); buf_puts(b, " (*)(void *");
+    /* Hoist each argument into a temp so both call arms (self-ful / self-less)
+       reference it without re-evaluating (#3252). */
+    int *atmp = argc ? (int *)calloc((size_t)argc, sizeof(int)) : NULL;
     for (int k = 0; k < argc; k++) {
-      buf_puts(b, ", ");
+      atmp[k] = ++g_tmp;
       if (tm && k + shift < tm->nparams) {
         LocalVar *pp = scope_local(tm, tm->pnames[k + shift]);
         emit_ctype(c, pp ? pp->type : TY_INT, b);
+        buf_printf(b, " _t%d = ", atmp[k]); emit_arg_or_default(c, tm, k + shift, argv[k], b);
       }
-      else if (poly_abi) buf_puts(b, "sp_RbVal");
-      else buf_puts(b, "mrb_int");
+      else if (poly_abi) { buf_printf(b, "sp_RbVal _t%d = ", atmp[k]); emit_boxed(c, argv[k], b); }
+      else if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) {
+        buf_printf(b, "mrb_int _t%d = (mrb_int)(uintptr_t)(", atmp[k]); emit_expr(c, argv[k], b); buf_puts(b, ")");
+      }
+      else { buf_printf(b, "mrb_int _t%d = ", atmp[k]); emit_expr(c, argv[k], b); }
+      buf_puts(b, "; ");
     }
-    buf_printf(b, "))(uintptr_t)_t%d->fn)((void *)_t%d->self", tr, tr);
-    for (int k = 0; k < argc; k++) {
-      buf_puts(b, ", ");
-      if (tm && k + shift < tm->nparams) emit_arg_or_default(c, tm, k + shift, argv[k], b);
-      else if (poly_abi) emit_boxed(c, argv[k], b);
-      else if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[k], b);
+    /* A top-level def has a self-less C ABI (fn(args)); an object-bound method
+       is fn(self, args). The bound method carries a NULL self for the former. */
+    buf_printf(b, "_t%d->self != NULL ? ", tr);
+    for (int arm = 0; arm < 2; arm++) {
+      if (arm) buf_puts(b, " : ");
+      buf_puts(b, "(("); emit_ctype(c, tret, b); buf_puts(b, " (*)(");
+      if (arm == 0) buf_puts(b, "void *");
+      for (int k = 0; k < argc; k++) {
+        if (arm == 0 || k) buf_puts(b, ", ");
+        if (tm && k + shift < tm->nparams) {
+          LocalVar *pp = scope_local(tm, tm->pnames[k + shift]);
+          emit_ctype(c, pp ? pp->type : TY_INT, b);
+        }
+        else if (poly_abi) buf_puts(b, "sp_RbVal");
+        else buf_puts(b, "mrb_int");
+      }
+      if (arm != 0 && argc == 0) buf_puts(b, "void");
+      buf_printf(b, "))(uintptr_t)_t%d->fn)(", tr);
+      if (arm == 0) buf_printf(b, "(void *)_t%d->self", tr);
+      for (int k = 0; k < argc; k++) {
+        if (arm == 0 || k) buf_puts(b, ", ");
+        buf_printf(b, "_t%d", atmp[k]);
+      }
+      buf_puts(b, ")");
     }
-    buf_printf(b, "); })");
+    buf_puts(b, "; })");
+    free(atmp);
     return;
   }
 
