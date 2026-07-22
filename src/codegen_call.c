@@ -17676,6 +17676,46 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          receiver+arg slots, ...) recognize the sp_raise_nomethod token and
          keep the side-effect -- see the staged groundwork notes below. */
       const char *nm = nt_str(nt, id, "name");
+      /* A poly receiver may hold a Class at runtime, where `nm` is a class
+         method (`def self.nm`) -- e.g. an untyped `model` in `model.table_name`.
+         Dispatch on the class tag + cls_id before falling through to
+         NoMethodError, rather than raising unconditionally (#3215). Gated on a
+         genuinely poly receiver (a concrete non-class static type can never be a
+         Class) and a poly result slot (dflt nil), the shape this arises in. */
+      if (grt == TY_POLY && nm && (ret == TY_POLY || ret == TY_UNKNOWN)) {
+        int ccls[64], cmi[64], cdef[64], nc = 0;
+        for (int k = 0; k < c->nclasses && nc < 64; k++) {
+          int dc = -1;
+          int mi = comp_cmethod_in_chain(c, k, nm, &dc);
+          if (mi >= 0 && scope_has_callable_symbol(c, mi)) {
+            ccls[nc] = k; cmi[nc] = mi; cdef[nc] = dc; nc++;
+          }
+        }
+        if (nc > 0) {
+          int tv = ++g_tmp, argsN = nt_ref(nt, id, "arguments");
+          char raise[256];
+          snprintf(raise, sizeof raise,
+                   "sp_raise_nomethod(sp_nomethod_msg_args(\"%s\", _t%d, 0, (sp_RbVal[]){sp_box_nil()}))",
+                   nm, tv);
+          buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+          buf_printf(b, "; (_t%d.tag == SP_TAG_CLASS) ? (", tv);
+          for (int k = 0; k < nc; k++) {
+            buf_printf(b, "_t%d.cls_id == %d ? ", tv, ccls[k]);
+            Buf cb; memset(&cb, 0, sizeof cb);
+            buf_printf(&cb, "sp_%s_s_%s(", c->classes[cdef[k]].c_name, mc(c->scopes[cmi[k]].name));
+            emit_args_filled(c, cmi[k], argsN, "", &cb);
+            emit_cmethod_block_arg(c, id, &c->scopes[cmi[k]], -1, &cb);
+            buf_puts(&cb, ")");
+            TyKind mret = (TyKind)c->scopes[cmi[k]].ret;
+            if (mret == TY_POLY) buf_puts(b, cb.p ? cb.p : "sp_box_nil()");
+            else emit_boxed_text(c, mret, cb.p ? cb.p : "0", b);
+            free(cb.p);
+            buf_puts(b, " : ");
+          }
+          buf_printf(b, "%s) : %s; })", raise, raise);
+          return;
+        }
+      }
       if (warn_unresolved_pos(c, id)) {
         fprintf(stderr, "unresolved call '%s' on %s receiver -> %s\n",
                 nm ? nm : "?", ty_name(grt),

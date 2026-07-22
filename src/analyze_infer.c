@@ -5409,6 +5409,14 @@ else {
         if (oc_mi >= 0) return c->scopes[oc_mi].ret;
       }
     }
+    /* A poly receiver may hold a Class at runtime, where `name` is a class
+       method (`def self.name`) -- codegen dispatches it on the class tag (#3215).
+       Type the call poly (not unknown) so the result flows as a value instead of
+       being discarded as a void unresolved call. */
+    if (rt == TY_POLY && name) {
+      for (int k = 0; k < c->nclasses; k++)
+        if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) return TY_POLY;
+    }
   }
 
   return TY_UNKNOWN;
