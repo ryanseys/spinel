@@ -5822,7 +5822,11 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          operands and return whichever is chosen unchanged via sp_num_clamp. */
       else if (sp_streq(name, "clamp") && argc == 2 &&
                (comp_ntype(c, argv[0]) == TY_FLOAT || comp_ntype(c, argv[1]) == TY_FLOAT ||
-                comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY)) {
+                comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY ||
+                comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL)) {
+        /* a Rational bound (like a Float bound) makes the applied bound decide
+           the result class at runtime; box the operands and let sp_num_clamp
+           return whichever is chosen unchanged (#3232) */
         buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
       }
       /* clamp(lo, hi) with a Bignum bound: an mrb_int receiver is inside any
@@ -6228,6 +6232,12 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "clamp") && argc == 2 &&
                (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL)) {
         buf_printf(b, "sp_num_clamp_open(sp_box_float(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
+      }
+      /* a Rational bound: box the operands and clamp through sp_num_clamp, which
+         understands Rational and returns the applied operand unchanged (#3232) */
+      else if (sp_streq(name, "clamp") && argc == 2 &&
+               (comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL)) {
+        buf_printf(b, "sp_num_clamp(sp_box_float(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
       }
       /* Float#clamp with float bounds always yields a float (the returned bound
          is itself a float), so emit only when both bounds are float-typed; the

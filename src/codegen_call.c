@@ -2916,6 +2916,15 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
                    t, ta, ta, t, tb, tb, t);
         return 1;
       }
+      /* clamp with a non-Rational (Integer/Float) bound: the applied bound
+         keeps its own class, so box the operands and let sp_num_clamp return
+         whichever is chosen unchanged (#3233). */
+      if (argc == 2 && sp_streq(name, "clamp")) {
+        buf_puts(b, "sp_num_clamp(sp_box_rational("); emit_expr(c, recv, b);
+        buf_puts(b, "), "); emit_boxed(c, argv[0], b); buf_puts(b, ", ");
+        emit_boxed(c, argv[1], b); buf_puts(b, ")");
+        return 1;
+      }
       /* eql? / equal? on the unboxed Rational value: component equality for
          a Rational argument (no object identity; see the Complex arm),
          constant false otherwise. */
@@ -16174,6 +16183,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (comp_ntype(c, argv[1]) == TY_BIGINT) emit_expr(c, argv[1], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
       buf_puts(b, ") <= 0); })");
+      return;
+    }
+    /* An Integer/Float receiver with a Rational bound: `>=`/`<=` against an
+       sp_Rational struct will not compile. Box both sides and compare through
+       sp_poly_cmp_ck, which orders Rational against Integer/Float exactly (#3232). */
+    if ((rt == TY_INT || rt == TY_FLOAT) &&
+        (comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL)) {
+      int ts = hoist_boxed_rooted(c, recv);
+      int tlo = hoist_boxed_rooted(c, argv[0]), thi = hoist_boxed_rooted(c, argv[1]);
+      buf_printf(b, "(sp_poly_cmp_ck(_t%d, _t%d) >= 0 && sp_poly_cmp_ck(_t%d, _t%d) <= 0)",
+                 ts, tlo, ts, thi);
       return;
     }
     if (ty_is_numeric(rt)) {

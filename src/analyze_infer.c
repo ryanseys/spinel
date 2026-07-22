@@ -1101,6 +1101,11 @@ TyKind infer_call(Compiler *c, int id) {
   if ((rt == TY_INT || rt == TY_FLOAT) && sp_streq(name, "clamp") && argc == 2 &&
       (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL))
     return TY_POLY;
+  /* clamp(lo, hi) with a Rational bound: the applied bound decides the result
+     class at runtime, so the result is boxed (#3232). */
+  if ((rt == TY_INT || rt == TY_FLOAT) && sp_streq(name, "clamp") && argc == 2 &&
+      (infer_type(c, argv[0]) == TY_RATIONAL || infer_type(c, argv[1]) == TY_RATIONAL))
+    return TY_POLY;
   if (rt == TY_INT && sp_streq(name, "clamp") && argc == 1 &&
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
       ((nt_ref(nt, argv[0], "left") >= 0 && infer_type(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
@@ -1209,6 +1214,9 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 2 && sp_streq(name, "between?")) return TY_BOOL;
     if (argc == 2 && sp_streq(name, "clamp") &&
         infer_type(c, argv[0]) == TY_RATIONAL && infer_type(c, argv[1]) == TY_RATIONAL) return TY_RATIONAL;
+    /* clamp with a non-Rational (Integer/Float) bound: the applied bound keeps
+       its own class, so the result is boxed (#3233). */
+    if (argc == 2 && sp_streq(name, "clamp")) return TY_POLY;
     if (argc == 1 && (sp_streq(name, "%") || sp_streq(name, "modulo") ||
                       sp_streq(name, "remainder")))
       return infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_RATIONAL;
