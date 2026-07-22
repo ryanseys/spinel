@@ -1013,11 +1013,18 @@ def cmd_test(prj, files, regen)
     cmds.push(compile_cmd(prj, File.join(prj.root, "test", tests[i]), bins[i], "-O 1"))
   end
   unless cmds.empty?
-    nproc = `nproc`.to_i
+    # `nproc` is GNU coreutils; BSD/macOS answers via sysctl.
+    nproc = `nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null`.to_i
     nproc = 1 if nproc < 1
     cf = File.join(tdir, ".compile-cmds")
     File.write(cf, cmds.join("\n") + "\n")
-    system("xargs -P #{nproc} -d '\\n' -I CMD sh -c CMD < #{cf}")
+    # One compile command per input line. GNU xargs takes the delimiter
+    # explicitly (-d); BSD xargs has no -d, but -I already reads one
+    # line per command -- it just caps the substituted command at 255
+    # bytes unless -S raises the limit (65522 is the documented max),
+    # and GNU rejects -S. Pick the flag set by flavor.
+    flavor = `xargs --version 2>/dev/null`.include?("GNU") ? "-d '\\n'" : "-S 65522"
+    system("xargs -P #{nproc} #{flavor} -I CMD sh -c CMD < #{cf}")
     File.delete(cf) if File.exist?(cf)
   end
   # Phase 2: run each binary and compare, serial and in order (execution is
