@@ -3336,6 +3336,11 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   int arr = -1, off = -1;
   if (!ewi_chain(c, id, &arr, &off)) return 0;
   TyKind rt = comp_ntype(c, arr);
+  /* A union-typed source (e.g. a `= []`-defaulted param, inferred poly) is
+     materialized to a poly array, so the [elem, index] pair enumerator drains
+     it the same as a typed array with poly elements. */
+  int poly_src = (rt == TY_POLY);
+  if (poly_src) rt = TY_POLY_ARRAY;
   if (!ty_is_array(rt)) return 0;
   const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
@@ -3368,7 +3373,14 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   int ta = ++g_tmp, ti = ++g_tmp, tidx = ++g_tmp;
   int tres = 0, tcnt = 0, tflag = 0;
   TyKind toh_ht = TY_UNKNOWN; const char *toh_hcn = NULL;
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, arr, &rb);
+  /* Build the receiver expression first: it may push prelude decls (for a
+     literal source) that must precede this statement. */
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (poly_src) {
+    Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, arr, &bx);
+    buf_printf(&rb, "sp_poly_to_poly_array(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+  }
+  else emit_expr(c, arr, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = ", tidx);
