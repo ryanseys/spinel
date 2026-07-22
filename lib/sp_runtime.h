@@ -4943,6 +4943,7 @@ static sp_RbVal sp_OpenStruct_get(sp_OpenStruct *o, sp_sym k){
   return sp_SymPolyHash_get(o->tbl,k);
 }
 static void sp_OpenStruct_set(sp_OpenStruct *o, sp_sym k, sp_RbVal v){
+  if(o&&sp_gc_is_frozen(o)) sp_raise_cls("FrozenError","can't modify frozen OpenStruct");
   if(o&&o->tbl) sp_SymPolyHash_set(o->tbl,k,v);
 }
 static mrb_bool sp_OpenStruct_has(sp_OpenStruct *o, sp_sym k){

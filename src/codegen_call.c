@@ -7200,6 +7200,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
+    /* freeze / frozen? carry the GC-header frozen bit, like the container and
+       plain-object freeze paths -- a subsequent member write then raises
+       FrozenError (checked in sp_OpenStruct_set) (#3272). */
+    if (sp_streq(name, "freeze") && argc == 0) {
+      buf_puts(b, "((sp_OpenStruct *)sp_gc_freeze("); emit_expr(c, recv, b); buf_puts(b, "))");
+      return;
+    }
+    if (sp_streq(name, "frozen?") && argc == 0) {
+      buf_puts(b, "sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
     /* a bare member read `o.k`, unless it is an Object/Kernel method that must
        keep its normal behaviour */
     if (argc == 0) {
