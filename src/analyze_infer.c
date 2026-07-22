@@ -517,7 +517,11 @@ static int range_each_is_external(Compiler *c, int id) {
     const char *m = nt_str(nt, n, "name");
     if (m && (sp_streq(m, "next") || sp_streq(m, "peek") ||
               sp_streq(m, "rewind") || sp_streq(m, "size") ||
-              sp_streq(m, "class") || sp_streq(m, "inspect"))) return 1;
+              sp_streq(m, "class") || sp_streq(m, "inspect") ||
+              /* Enumerator-only chains (Array has no such method): the each
+                 must stay an Enumerator, not materialize to an int array (#3228) */
+              sp_streq(m, "with_index") || sp_streq(m, "with_object") ||
+              sp_streq(m, "each_with_index") || sp_streq(m, "each_index"))) return 1;
     return 0;   /* receiver of a collection method -> materialize to an array */
   }
   return 1;     /* standalone -> enumerator */
@@ -569,6 +573,7 @@ int range_enum_redispatch(Compiler *c, int id) {
   if (block >= 0 &&
       (sp_streq(name, "partition") || sp_streq(name, "each_with_index") ||
        sp_streq(name, "sort_by") || sp_streq(name, "chunk_while") ||
+       sp_streq(name, "slice_when") ||
        sp_streq(name, "chunk") ||
        sp_streq(name, "sum") || sp_streq(name, "each_with_object") ||
        sp_streq(name, "take_while") || sp_streq(name, "drop_while")))
@@ -1322,7 +1327,8 @@ TyKind infer_call(Compiler *c, int id) {
        ((sp_streq(name, "slice_before") || sp_streq(name, "slice_after")) &&
         nt_ref(nt, id, "arguments") < 0))) {
     TyKind crt = infer_type(c, recv);
-    if (crt == TY_POLY_ARRAY || crt == TY_INT_ARRAY || crt == TY_STR_ARRAY) {
+    if (crt == TY_POLY_ARRAY || crt == TY_INT_ARRAY || crt == TY_STR_ARRAY ||
+        (crt == TY_RANGE && range_enum_redispatch(c, id))) {
       int wrapped = 0;
       NT_FOREACH_KIND(nt, NK_CallNode, w) {
         if (nt_ref(nt, w, "receiver") != id) continue;
