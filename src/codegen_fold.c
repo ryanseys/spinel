@@ -3069,6 +3069,16 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
              (bt == TY_RATIONAL || bt == TY_COMPLEX))
       acc_ty = TY_POLY;
   }
+  /* A hash/array/object seed whose block body evaluates to a boxed poly value
+     (e.g. a method returning poly because it is also folded in a poly context)
+     cannot take that value back into the concrete accumulator slot -- keep the
+     accumulator boxed (mirrors the inference widening, #3240). A body that just
+     returns the accumulator param (`h[x]=...; h`) keeps the seed's type. */
+  if (acc_ty != TY_POLY && init >= 0 &&
+      (ty_is_hash(acc_ty) || ty_is_array(acc_ty) || ty_is_object(acc_ty)) &&
+      !reduce_tail_from_acc(c, bb[bn - 1], p0_orig) &&
+      comp_ntype(c, bb[bn - 1]) == TY_POLY)
+    acc_ty = TY_POLY;
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b); buf_puts(b, "; ");

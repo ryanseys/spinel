@@ -640,6 +640,26 @@ int hash_enum_redispatch(Compiler *c, int id) {
   return 0;
 }
 
+/* True if a reduce/inject block's tail value flows FROM the accumulator param
+   `accp`: a bare read of it (`...; acc`) or a call whose receiver is it
+   (`acc << x`, `acc.merge(...)`). Such a tail carries the accumulator's own
+   (seed) type even when the param currently infers poly, so it must not trip
+   the poly-widening of the fold's result type (#3240). */
+int reduce_tail_from_acc(Compiler *c, int tail, const char *accp) {
+  const NodeTable *nt = c->nt;
+  if (tail < 0 || !accp) return 0;
+  const char *ty = nt_type(nt, tail);
+  if (!ty) return 0;
+  if (sp_streq(ty, "LocalVariableReadNode"))
+    return nt_str(nt, tail, "name") && sp_streq(nt_str(nt, tail, "name"), accp);
+  if (sp_streq(ty, "CallNode")) {
+    int rcv = nt_ref(nt, tail, "receiver");
+    if (rcv >= 0 && nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "LocalVariableReadNode"))
+      return nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), accp);
+  }
+  return 0;
+}
+
 TyKind infer_call(Compiler *c, int id) {
   /* the redirect recorded that this call yields its original receiver (#2981) */
   {
@@ -3794,6 +3814,22 @@ else {
                  seed cannot unbox the boxed accumulator without reinterpreting
                  the bits. Keep the result boxed (#3238). */
               else if (arith && et == TY_POLY) it = TY_POLY;
+            }
+            /* A hash/array/object seed whose block body reassigns the
+               accumulator to a boxed poly value (e.g. a method that returns
+               poly because it is also used in a poly context elsewhere) widens
+               the fold to poly: the concrete seed slot cannot hold the boxed
+               block result each iteration (#3240). A body that simply returns
+               the accumulator param (`h[x]=...; h`) is the seed's own type --
+               it only infers poly because the block param is poly -- so it must
+               not trip the widening. */
+            if (rbn > 0 && it != TY_POLY &&
+                (ty_is_hash(it) || ty_is_array(it) || ty_is_object(it))) {
+              int rblk2 = nt_ref(nt, id, "block");
+              const char *accp = rblk2 >= 0 ? block_param_name(c, rblk2, 0) : NULL;
+              if (!reduce_tail_from_acc(c, rbb[rbn - 1], accp) &&
+                  infer_type(c, rbb[rbn - 1]) == TY_POLY)
+                it = TY_POLY;
             }
             return it;
           }
