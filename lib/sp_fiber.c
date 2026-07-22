@@ -205,7 +205,17 @@ SP_TLS sp_Fiber *sp_fiber_current = &sp_fiber_root;    /* extern: read by the ge
    per worker before it runs any green thread (worker 0 from sp_sched_init; helper
    workers from their startup). A no-op-shaped reset in the single-threaded build
    (sp_fiber_current already equals &sp_fiber_root). */
-void sp_fiber_worker_init(void) { sp_fiber_current = &sp_fiber_root; }
+void sp_fiber_worker_init(void) {
+  sp_fiber_current = &sp_fiber_root;
+#ifdef SP_TSAN
+  /* Register this worker's root fiber on its own OS thread, so every worker --
+     including a helper spawned mid-run that only ever runs fibers created by
+     another thread -- has a valid tsan handle to switch back to. Without this,
+     switching to the root (SP_TSAN_SWITCH) is a silent no-op and TSan loses the
+     thread's current-fiber tracking, faulting on the next real switch. */
+  if (!sp_fiber_root.tsan_fiber) sp_fiber_root.tsan_fiber = __tsan_get_current_fiber();
+#endif
+}
 sp_Fiber *sp_fiber_worker_root(void) { return &sp_fiber_root; }
 static sp_Fiber *sp_fiber_list_head = NULL;
 
