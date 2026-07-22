@@ -7789,6 +7789,16 @@ static void sp_endless_range_gen(sp_Fiber *f) {
   mrb_int v = cap->first;
   for (;;) { sp_Fiber_yield(sp_box_int(v)); v += cap->step; }
 }
+/* Blockless Kernel#loop: an infinite Enumerator that yields nil forever (#3236). */
+static void sp_loop_gen(sp_Fiber *f) {
+  (void)f;
+  for (;;) sp_Fiber_yield(sp_box_nil());
+}
+static sp_Enumerator *sp_loop_enum(void) {
+  sp_Enumerator *e = sp_Enumerator_new_gen(sp_loop_gen, NULL, sp_box_nil());
+  e->meth = "loop";
+  return e;
+}
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   if (arr.tag == SP_TAG_OBJ && arr.cls_id == SP_BUILTIN_RANGE && arr.v.p &&
       ((sp_Range *)arr.v.p)->last == INTPTR_MAX) {

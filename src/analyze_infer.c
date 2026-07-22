@@ -1455,8 +1455,10 @@ TyKind infer_call(Compiler *c, int id) {
         TyKind bt = scan_break_type(c, body, 0);
         if (bt != TY_UNKNOWN) return bt;
       }
+      return TY_NIL;
     }
-    return TY_NIL;
+    /* blockless `loop` is an infinite Enumerator yielding nil (#3236) */
+    return TY_ENUMERATOR;
   }
 
   /* catch(:tag) { ... } -> unify the block's last value with every throw

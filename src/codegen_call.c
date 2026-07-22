@@ -7357,6 +7357,12 @@ void emit_call(Compiler *c, int id, Buf *b) {
         return;
       }
     }
+    /* blockless `loop` is an infinite Enumerator yielding nil (#3236). The
+       full `loop.with_index.<terminal>` chain over an infinite generator is not
+       wired yet (it is unsupported for endless ranges too), but the bare
+       Enumerator and its #next / #first / #take / #each work. */
+    buf_puts(b, "sp_loop_enum()");
+    return;
   }
 
   /* catch(:tag) { ... [throw :tag, val] ... } as expression: a setjmp scope
