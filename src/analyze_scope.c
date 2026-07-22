@@ -1013,7 +1013,10 @@ void register_locals(Compiler *c) {
     }
     if (sp_streq(ty, "InstanceVariableWriteNode") ||
         sp_streq(ty, "InstanceVariableReadNode") ||
-        sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
+        sp_streq(ty, "InstanceVariableOperatorWriteNode") ||
+        /* the multi-assign target form (`@a, @b = ...`) also defines the ivar,
+           so it must be interned for the struct field (#3273). */
+        sp_streq(ty, "InstanceVariableTargetNode")) {
       const char *nm = nt_str(nt, id, "name");
       Scope *s = comp_scope_of(c, id);
       if (nm && s->class_id >= 0) comp_ivar_intern(&c->classes[s->class_id], nm);
