@@ -8577,10 +8577,61 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
   if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
     TyKind et = ty_array_elem(rt);
+    /* Any splat arg (`arr.push(*other)`) spreads its array's elements at
+       runtime; materialize the receiver once so the per-element loop pushes into
+       the same array (#3208). A literal splat is pre-expanded upstream, but a
+       variable/expression splat arrives as a SplatNode. */
+    int has_splat = 0;
     for (int a = 0; a < argc; a++) {
+      const char *aty = nt_type(nt, argv[a]);
+      if (aty && sp_streq(aty, "SplatNode")) { has_splat = 1; break; }
+    }
+    int tr = -1;
+    if (has_splat) {
+      tr = ++g_tmp;
       emit_indent(b, indent);
+      buf_printf(b, "{ sp_%sArray *_t%d = ", k, tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
+    }
+    for (int a = 0; a < argc; a++) {
+      const char *aty = nt_type(nt, argv[a]);
+      if (aty && sp_streq(aty, "SplatNode")) {
+        int inner = nt_ref(nt, argv[a], "expression");
+        TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+        const char *ak = (at == TY_POLY_ARRAY) ? "Poly" : (array_kind(at) ? array_kind(at) : NULL);
+        int tsrc = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+        emit_indent(b, indent + 1);
+        if (ak && ty_is_array(at)) {
+          buf_printf(b, "{ sp_%sArray *_t%d = ", ak, tsrc); emit_expr(c, inner, b); buf_puts(b, "; ");
+          buf_printf(b, "mrb_int _t%d = sp_%sArray_length(_t%d); ", tn, ak, tsrc);
+          buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, ", ti, ti, tn, ti, k, tr);
+          char getx[128]; snprintf(getx, sizeof getx, "sp_%sArray_get(_t%d, _t%d)", ak, tsrc, ti);
+          TyKind selem = ty_array_elem(at);
+          if (et == TY_POLY && !sp_streq(ak, "Poly")) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, selem, getx, &bx); buf_puts(b, bx.p ? bx.p : getx); free(bx.p); }
+          else if (sp_streq(ak, "Poly") && et == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", getx);
+          else if (sp_streq(ak, "Poly") && et == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", getx);
+          else if (sp_streq(ak, "Poly") && et == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", getx);
+          else buf_puts(b, getx);
+          buf_puts(b, "); }\n");
+        }
+        else {
+          /* unknown/poly splat source: normalize to a PolyArray and spread boxed */
+          buf_printf(b, "{ sp_PolyArray *_t%d = sp_poly_to_poly_array(", tsrc); emit_boxed(c, inner, b); buf_puts(b, "); ");
+          buf_printf(b, "mrb_int _t%d = _t%d->len; ", tn, tsrc);
+          buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, ", ti, ti, tn, ti, k, tr);
+          char getx[64]; snprintf(getx, sizeof getx, "sp_PolyArray_get(_t%d, _t%d)", tsrc, ti);
+          if (et == TY_POLY) buf_puts(b, getx);
+          else if (et == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", getx);
+          else if (et == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", getx);
+          else if (et == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", getx);
+          else buf_puts(b, getx);
+          buf_puts(b, "); }\n");
+        }
+        continue;
+      }
+      emit_indent(b, indent + (has_splat ? 1 : 0));
       buf_printf(b, "sp_%sArray_push(", k);
-      emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (has_splat) buf_printf(b, "_t%d", tr); else emit_expr(c, recv, b);
+      buf_puts(b, ", ");
       /* coerce a poly value (holds the element type at runtime) to the typed
          array's element representation */
       TyKind vt = comp_ntype(c, argv[a]);
@@ -8593,6 +8644,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       else emit_expr(c, argv[a], b);
       buf_puts(b, ");\n");
     }
+    if (has_splat) { emit_indent(b, indent); buf_puts(b, "}\n"); }
     return 1;
   }
   if (sp_streq(name, "concat") && argc >= 1) {
