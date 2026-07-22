@@ -6479,6 +6479,56 @@ void analyze_program(Compiler *c) {
     free(self_ids); free(self_scopes);
   }
 
+  /* A receiverless call to a Struct/Data-inherited builtin (to_h, with, to_a,
+     members, deconstruct, ...) inside an instance method of that Struct/Data
+     class operates on self; give it an explicit self receiver so it lowers
+     through the object-receiver struct emit instead of failing as an undefined
+     method (to_h) or an unsupported bare call (with) (#3226). Skip names the
+     class shadows with a member accessor or a user method -- those already
+     resolve. The SelfNode inherits the call's scope so self infers as the
+     instance (mirrors the instance_variable_get rewrite above). */
+  {
+    /* Data and Struct expose different inherited surfaces: `with` is Data-only,
+       while to_a/values/size/length/dig/each_pair are Struct-only. Rewriting a
+       name the class does not actually inherit would turn a correct NameError
+       into a bad self-dispatch, so gate each list by the class kind. */
+    static const char *const data_native[] = {
+      "to_h", "with", "members", "deconstruct", "deconstruct_keys", NULL };
+    static const char *const struct_native[] = {
+      "to_h", "to_a", "values", "members", "size", "length",
+      "dig", "deconstruct", "deconstruct_keys", "each_pair", NULL };
+    NodeTable *ntm = (NodeTable *)c->nt;
+    int nend = ntm->count;
+    int *self_ids = NULL, *self_scopes = NULL, npend = 0, cap = 0;
+    for (int id = 0; id < nend; id++) {
+      if (nt_kind(ntm, id) != NK_CallNode) continue;
+      if (nt_ref(ntm, id, "receiver") >= 0) continue;
+      const char *nm = nt_str(ntm, id, "name");
+      if (!nm) continue;
+      Scope *s = comp_scope_of(c, id);
+      if (!s || s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
+      if (!c->classes[s->class_id].is_struct) continue;
+      const char *const *native = c->classes[s->class_id].is_data ? data_native : struct_native;
+      int is_native = 0;
+      for (int t = 0; native[t]; t++) if (sp_streq(nm, native[t])) { is_native = 1; break; }
+      if (!is_native) continue;
+      /* a member accessor of that name beats the inherited builtin */
+      char mn[272]; snprintf(mn, sizeof mn, "@%s", nm);
+      if (comp_ivar_index(&c->classes[s->class_id], mn) >= 0) continue;
+      /* a user method of that name is dispatched directly, not as self.builtin */
+      if (comp_method_in_chain(c, s->class_id, nm, NULL) >= 0) continue;
+      int sid = nt_new_node(ntm, "SelfNode");
+      nt_node_set_ref(ntm, id, "receiver", sid);
+      if (npend == cap) { cap = cap ? cap * 2 : 8;
+        self_ids = realloc(self_ids, (size_t)cap * sizeof(int));
+        self_scopes = realloc(self_scopes, (size_t)cap * sizeof(int)); }
+      self_ids[npend] = sid; self_scopes[npend] = c->nscope[id]; npend++;
+    }
+    if (ntm->count != nend) comp_grow_node_arrays(c);
+    for (int k = 0; k < npend; k++) c->nscope[self_ids[k]] = self_scopes[k];
+    free(self_ids); free(self_scopes);
+  }
+
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
      its call sites exactly like a yielding method. The block-param slot is
