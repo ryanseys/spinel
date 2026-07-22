@@ -1832,6 +1832,41 @@ static int block_stored_in_ivar(Compiler *c, int id, const char *bp) {
   return 0;
 }
 
+/* The unified value type of every `return <expr>` that returns from a lambda
+   whose body is `id`: the lambda's own body plus any lexically nested
+   (non-lambda, non-def) block, since a block's `return` is a non-local return
+   from the enclosing lambda. TY_UNKNOWN when the lambda has no such return.
+   Used to widen the lambda's C return type so an early boxed return does not
+   disagree with a scalar-typed fall-through tail (#3241). */
+static TyKind lambda_nonlocal_return_ty(Compiler *c, int id) {
+  const char *ty = nt_type(c->nt, id);
+  if (!ty) return TY_UNKNOWN;
+  if (sp_streq(ty, "ReturnNode")) {
+    int a = nt_ref(c->nt, id, "arguments"); int an = 0;
+    const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &an) : NULL;
+    return (an == 1) ? comp_ntype(c, av[0]) : TY_NIL;
+  }
+  if (sp_streq(ty, "DefNode") || sp_streq(ty, "LambdaNode")) return TY_UNKNOWN;
+  TyKind r = TY_UNKNOWN;
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(c->nt, id, i);
+    if (ch < 0 || !proc_return_descend(c, id, ch)) continue;
+    TyKind s = lambda_nonlocal_return_ty(c, ch);
+    if (s != TY_UNKNOWN) r = (r == TY_UNKNOWN) ? s : ty_unify(r, s);
+  }
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n);
+    for (int k = 0; k < n; k++) {
+      if (ids[k] < 0 || !proc_return_descend(c, id, ids[k])) continue;
+      TyKind s = lambda_nonlocal_return_ty(c, ids[k]);
+      if (s != TY_UNKNOWN) r = (r == TY_UNKNOWN) ? s : ty_unify(r, s);
+    }
+  }
+  return r;
+}
+
 /* Lower a `proc {}` / `lambda {}` / `Proc.new {}` / `->(){}` literal: emit a
    standalone `static mrb_int _proc_N(void *cap, mrb_int argc, mrb_int *args)`
    (sp_proc_call's ABI) into g_procs, and emit the boxing `sp_proc_new_meta(...)`
@@ -2040,6 +2075,14 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   int brk_proc = !is_lambda && !is_block_node && block_has_top_break(c, body);
   /* a lambda whose body can top-level-break returns that value: box the ret */
   if (is_lambda && block_has_top_break(c, body)) ret = TY_POLY;
+  /* A lambda with an early `return <e>` (possibly non-local, inside a nested
+     block) whose type diverges from the fall-through tail must publish the
+     wider (boxed) type: otherwise the early boxed return disagrees with the
+     scalar C signature the tail implies (#3241). */
+  if (is_lambda && ret != TY_POLY) {
+    TyKind lr = lambda_nonlocal_return_ty(c, body);
+    if (lr != TY_UNKNOWN && lr != ret) ret = TY_POLY;
+  }
   if (ret_proc && tail_is_return) { tail_ret_arg = -1; ret = TY_NIL; }
   /* A block passed as a method's &block argument must return the value type the
      method expects across all its call sites (its blk_ret): if that unified type

@@ -764,13 +764,20 @@ static TyKind proc_interior_return_ty(Compiler *c, int node) {
   const char *ty = nt_type(nt, node);
   if (!ty) return TY_UNKNOWN;
   if (sp_streq(ty, "ReturnNode")) return return_node_type(c, node);
+  /* A nested def/class/module/lambda owns its own returns; stop there. A plain
+     block is return-transparent -- a `return` lexically inside a `do..end`
+     block returns non-locally from the enclosing proc/lambda, so its type must
+     fold in (#3241). A block that IS a nested proc literal's block owns its own
+     frame, so it is not descended into. */
   if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") ||
-      sp_streq(ty, "ModuleNode") || sp_streq(ty, "LambdaNode") ||
-      sp_streq(ty, "BlockNode")) return TY_UNKNOWN;
+      sp_streq(ty, "ModuleNode") || sp_streq(ty, "LambdaNode")) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
-    TyKind s = proc_interior_return_ty(c, nt_ref_at(nt, node, i));
+    int ch = nt_ref_at(nt, node, i);
+    if (ch >= 0 && nt_type(nt, ch) && sp_streq(nt_type(nt, ch), "BlockNode") &&
+        is_proc_literal(c, node)) continue;   /* a nested proc's own block */
+    TyKind s = proc_interior_return_ty(c, ch);
     if (s != TY_UNKNOWN) r = (r == TY_UNKNOWN) ? s : ty_unify(r, s);
   }
   int na = nt_num_arrs(nt, node);
