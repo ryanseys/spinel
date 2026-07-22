@@ -3582,6 +3582,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            skip the arm. Mirrors the key-type-mismatch handling for typed hashes. */
         int arm_key_incompat = 0;
         for (int a = 0; a < c->scopes[mi].nparams && a < argc; a++) {
+          /* A `*rest` parameter packs any argument type into a PolyArray, so a
+             param-vs-arg type mismatch there is not a real incompatibility --
+             comparing the rest's TY_POLY_ARRAY against a String arg wrongly
+             dropped the whole arm, so `obj.set("x")` on `def set(*names)` reached
+             through a poly receiver became an empty switch (call dropped) (#3218).
+             Positional args at/after the rest map to the rest/tail, not to param
+             slot `a`, so skip from the rest index on. */
+          if (c->scopes[mi].rest_idx >= 0 && a >= c->scopes[mi].rest_idx) break;
           LocalVar *pv0 = (c->scopes[mi].pnames && c->scopes[mi].pnames[a])
                             ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[a]) : NULL;
           TyKind pt0 = pv0 ? pv0->type : TY_UNKNOWN;
