@@ -3679,7 +3679,7 @@ static void sp_PolyArray_set(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) r
 static sp_PolyArray *sp_PolyArray_slice(sp_PolyArray *a, mrb_int start, mrb_int len) { SP_GC_ROOT(a); if (start < 0) start += a->len; if (start < 0) start = 0; sp_PolyArray *b = sp_PolyArray_new(); if (start >= a->len || len <= 0) return b; if (start + len > a->len) len = a->len - start; for (mrb_int i = 0; i < len; i++) sp_PolyArray_push(b, a->data[start + i]); return b; }
 static sp_PolyArray *sp_PolyArray_slice_range(sp_PolyArray *a, mrb_int start, mrb_int end_, mrb_int excl) { if (end_ < 0) end_ += a->len; if (start < 0) start += a->len; mrb_int n = end_ - start + (excl ? 0 : 1); if (n < 0 || start < 0) n = 0; return sp_PolyArray_slice(a, start, n); }
 /* 2-arg slice on a poly receiver: dispatch to the typed slice functions. */
-typedef struct sp_BoundMethod { void *self; mrb_int fn; const char *name; } sp_BoundMethod;
+typedef struct sp_BoundMethod { void *self; mrb_int fn; const char *name; mrb_int arity; } sp_BoundMethod;
 static sp_RbVal sp_poly_slice(sp_RbVal a, mrb_int start, mrb_int len) {
   if (a.tag == SP_TAG_STR) return sp_box_nullable_str(sp_str_sub_range(a.v.s ? a.v.s : "", start, len));
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
@@ -7638,7 +7638,7 @@ static sp_Proc *sp_method_to_proc(sp_BoundMethod *m) {
    (cast to the right signature at the call site), `name` the method name
    (a string literal). Only `self` is GC-managed. */
 static void sp_BoundMethod_scan(void *p) { sp_BoundMethod *m = (sp_BoundMethod *)p; if (m->self) sp_gc_mark(m->self); }
-static sp_BoundMethod *sp_bound_method_new(void *self, mrb_int fn, const char *name) { sp_BoundMethod *m = (sp_BoundMethod *)sp_gc_alloc(sizeof(sp_BoundMethod), NULL, sp_BoundMethod_scan); m->self = self; m->fn = fn; m->name = name; return m; }
+static sp_BoundMethod *sp_bound_method_new(void *self, mrb_int fn, const char *name, mrb_int arity) { sp_BoundMethod *m = (sp_BoundMethod *)sp_gc_alloc(sizeof(sp_BoundMethod), NULL, sp_BoundMethod_scan); m->self = self; m->fn = fn; m->name = name; m->arity = arity; return m; }
 
 /* External Enumerator: a cursor over a snapshot of a collection's elements
    (boxed into a PolyArray at creation). #next / #peek walk the cursor and raise

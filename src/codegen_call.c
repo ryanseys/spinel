@@ -663,6 +663,46 @@ int builtin_method_known(const char *cls, const char *m) {
   int a;
   return builtin_method_arity(cls, m, &a);
 }
+/* Arity of a user method target scope (same rule as the Method#arity emit for
+   a statically-known TY_METHOD receiver). Returns 1 and writes *out on
+   success; 0 if the target has no def node or an unrepresentable signature.
+   Used to stamp a Method object's arity so it survives being read back out of
+   a container as a poly value (#3231). */
+static int method_scope_arity(Compiler *c, int target, int *out) {
+  if (target < 0 || c->scopes[target].def_node < 0) return 0;
+  const NodeTable *nt = c->nt;
+  int pn = nt_ref(nt, c->scopes[target].def_node, "parameters");
+  int n_req = 0, n_opt = 0, n_post = 0;
+  int has_rest = 0, has_forward = 0, kw_block = 0, has_req_kw = 0;
+  if (pn >= 0) {
+    nt_arr(nt, pn, "requireds", &n_req);
+    nt_arr(nt, pn, "optionals", &n_opt);
+    nt_arr(nt, pn, "posts", &n_post);
+    if (c->scopes[target].name && strncmp(c->scopes[target].name, "__bam_", 6) == 0 && n_req > 0)
+      n_req--;
+    int rp = nt_ref(nt, pn, "rest");
+    if (rp >= 0) {
+      const char *rty = nt_type(nt, rp);
+      if (rty && sp_streq(rty, "RestParameterNode")) has_rest = 1; else return 0;
+    }
+    int kn = 0; const int *kws = nt_arr(nt, pn, "keywords", &kn);
+    if (kn > 0) kw_block = 1;
+    for (int i = 0; i < kn; i++) {
+      const char *kty = nt_type(nt, kws[i]);
+      if (kty && sp_streq(kty, "RequiredKeywordParameterNode")) has_req_kw = 1;
+    }
+    int kwrp = nt_ref(nt, pn, "keyword_rest");
+    if (kwrp >= 0) {
+      const char *kty = nt_type(nt, kwrp);
+      if (kty && sp_streq(kty, "KeywordRestParameterNode")) kw_block = 1;
+      else if (kty && sp_streq(kty, "ForwardingParameterNode")) has_forward = 1;
+    }
+  }
+  int req = n_req + n_post + (has_req_kw ? 1 : 0);
+  int variadic = n_opt > 0 || has_rest || has_forward || (kw_block && !has_req_kw);
+  *out = variadic ? -(req + 1) : req;
+  return 1;
+}
 int builtin_object_method_known(const char *m) {
   static const char *const OBJM2[] = {
     "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
@@ -7927,6 +7967,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* poly_val.arity — a Method read out of a container widened to poly. The
+     arity was stamped onto the sp_BoundMethod at creation, so read it back
+     (a non-Method poly here is a genuine NoMethodError, as before) (#3231). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY && argc == 0 && sp_streq(name, "arity")) {
+    int has_user_arity = 0;
+    for (int _k = 0; _k < c->nclasses && !has_user_arity; _k++)
+      if (comp_method_in_class(c, _k, name) >= 0) has_user_arity = 1;
+    if (!has_user_arity) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d.cls_id == SP_BUILTIN_METHOD ? ((sp_BoundMethod *)_t%d.v.p)->arity"
+                    " : _t%d.cls_id == SP_BUILTIN_PROC ? sp_proc_arity((sp_Proc *)_t%d.v.p)"
+                    " : (sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method 'arity'\")[1])), (mrb_int)0); })",
+                 t, t, t, t);
+      return;
+    }
+  }
   /* poly_val.call — the poly value is a proc; unbox then call.
      Only applies when no user-defined class has a `call` method (otherwise
      use the existing poly dispatch switch which handles user-defined call). */
@@ -8028,7 +8085,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
       /* both arms yield a BOXED result now that the call types poly: the
          Method arm's legacy int ABI result boxes, the Proc arm reads the
          boxed return slot intact */
-      buf_printf(b, "(_t%d.cls_id == SP_BUILTIN_METHOD ? %s((%s (*)(void *", t, mabi_poly ? "" : "sp_box_int(", aty);
+      /* The bound Method may wrap an instance method (self-ful C ABI:
+         fn(self, args)) or a top-level def (self-less: fn(args)); the latter
+         is created with a NULL self. Branch at run time so a top-level Method
+         read out of a container is not invoked with a spurious leading self
+         arg -- which would shift every real argument by one (#3231). */
+      buf_printf(b, "(_t%d.cls_id == SP_BUILTIN_METHOD ? (((sp_BoundMethod *)_t%d.v.p)->self != NULL ? ", t, t);
+      /* self-ful arm: fn((void *)self, args...) */
+      buf_printf(b, "%s((%s (*)(void *", mabi_poly ? "" : "sp_box_int(", aty);
       for (int k = 0; k < argc; k++) buf_printf(b, ", %s", aty);
       buf_printf(b, "))(uintptr_t)((sp_BoundMethod *)_t%d.v.p)->fn)((void *)((sp_BoundMethod *)_t%d.v.p)->self", t, t);
       for (int k = 0; k < argc; k++) {
@@ -8036,11 +8100,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
         if (mabi_poly) emit_boxed(c, argv[k], b);
         else EMIT_POLY_CALL_SLOT(k);
       }
+      buf_printf(b, ")%s : ", mabi_poly ? "" : ")");
+      /* self-less arm: fn(args...) with no leading self */
+      buf_printf(b, "%s((%s (*)(", mabi_poly ? "" : "sp_box_int(", aty);
+      for (int k = 0; k < argc; k++) buf_printf(b, "%s%s", k ? ", " : "", aty);
+      if (argc == 0) buf_puts(b, "void");
+      buf_printf(b, "))(uintptr_t)((sp_BoundMethod *)_t%d.v.p)->fn)(", t);
+      for (int k = 0; k < argc; k++) {
+        if (k) buf_puts(b, ", ");
+        if (mabi_poly) emit_boxed(c, argv[k], b);
+        else EMIT_POLY_CALL_SLOT(k);
+      }
+      buf_printf(b, ")%s)", mabi_poly ? "" : ")");
       /* the Proc publishes its result in _sp_proc_poly_ret (universal return
          ABI); evaluate for effect and read the boxed sp_RbVal intact, matching
          the Method branch's now-boxed result so the ternary's two arms are a
          single type. */
-      buf_printf(b, ")%s : ((void)sp_proc_call((sp_Proc *)_t%d.v.p, %d, (mrb_int[16]){", mabi_poly ? "" : ")", t, argc);
+      buf_printf(b, " : ((void)sp_proc_call((sp_Proc *)_t%d.v.p, %d, (mrb_int[16]){", t, argc);
       for (int k = 0; k < argc; k++) {
         if (k) buf_puts(b, ", ");
         EMIT_POLY_CALL_SLOT(k);
@@ -8062,6 +8138,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       emit_method_cname(c, &c->scopes[umi], b);
       buf_puts(b, ", ");
       emit_str_literal(b, method_sym_arg(c, id));
+      { int ar; if (method_scope_arity(c, umi, &ar)) buf_printf(b, ", (mrb_int)%d", ar); else buf_puts(b, ", SP_INT_NIL"); }
       buf_puts(b, ")");
       return;
     }
@@ -8086,6 +8163,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       emit_method_cname(c, &c->scopes[t2], b);
       buf_puts(b, ", ");
       emit_str_literal(b, method_sym_arg(c, mn2));
+      { int ar; if (method_scope_arity(c, t2, &ar)) buf_printf(b, ", (mrb_int)%d", ar); else buf_puts(b, ", SP_INT_NIL"); }
       buf_puts(b, ")");
       return;
     }
@@ -8212,6 +8290,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       }
     }
     emit_str_literal(b, disp);
+    { int ar; if (mi >= 0 && method_scope_arity(c, mi, &ar)) buf_printf(b, ", (mrb_int)%d", ar); else buf_puts(b, ", SP_INT_NIL"); }
     buf_puts(b, ")");
     return;
   }

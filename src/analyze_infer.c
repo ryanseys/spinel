@@ -4128,6 +4128,9 @@ else {
          result is a boxed value -- so the static type stays poly (#2401). */
       if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
         return TY_POLY;
+      /* poly.arity on a Method read out of a container: the stamped arity, an
+         Integer (#3231). */
+      if (argc == 0 && sp_streq(name, "arity")) return TY_INT;
       /* String transforms on a boxed value: emit_poly_call routes these
          through sp_poly_to_s and re-boxes the result, so the value stays
          poly (mirrors the codegen list in codegen_call_recv.c). */
