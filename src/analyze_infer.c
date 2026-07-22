@@ -4139,6 +4139,12 @@ else {
            sp_streq(name, "succ") || sp_streq(name, "next") ||
            sp_streq(name, "chr")))
         return TY_POLY;
+      /* poly.ljust/rjust/center(width[, pad]): a String read from a container
+         widened to poly; emit_poly_call pads via sp_poly_to_s and re-boxes, so
+         the result stays poly (#3222). */
+      if ((sp_streq(name, "ljust") || sp_streq(name, "rjust") || sp_streq(name, "center")) &&
+          (argc == 1 || argc == 2))
+        return TY_POLY;
       /* poly.bytes / poly.codepoints on a value that is really a String (a
          binary lump read whose method widened to poly): a concrete int array,
          emitted via sp_str_bytes(sp_poly_to_s(...)) with no boxing. */

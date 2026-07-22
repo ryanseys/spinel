@@ -8710,6 +8710,27 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "freeze"))     { buf_puts(b, "sp_poly_freeze("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
   }
+  /* poly.ljust/rjust/center(width[, pad]): a String read from a container
+     widened to poly. Pad via sp_poly_to_s and re-box (#3222). Outside the
+     argc==0 block above since these take a width (and optional pad) arg. Skip
+     when a user class overrides the name (the runtime value may be it). */
+  if (recv >= 0 && rt == TY_POLY &&
+      (sp_streq(name, "ljust") || sp_streq(name, "rjust") || sp_streq(name, "center")) &&
+      (argc == 1 || argc == 2)) {
+    int has_user = 0;
+    for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+      if (comp_method_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+    if (!has_user) {
+      const char *fn = sp_streq(name, "ljust") ? "sp_str_ljust"
+                     : sp_streq(name, "rjust") ? "sp_str_rjust" : "sp_str_center";
+      buf_printf(b, "sp_box_str(%s%s(sp_poly_to_s(", fn, argc == 2 ? "2" : "");
+      emit_expr(c, recv, b); buf_puts(b, "), ");
+      emit_int_expr(c, argv[0], b);
+      if (argc == 2) { buf_puts(b, ", "); emit_expr(c, argv[1], b); }
+      buf_puts(b, "))");
+      return 1;
+    }
+  }
   /* Data#with on a poly receiver (a Data read out of a container): build a
      symbol-keyed override hash from the keyword args, then dispatch by cls_id
      to a copy-update constructor (#2890). */
