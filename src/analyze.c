@@ -6365,6 +6365,19 @@ void analyze_program(Compiler *c) {
     }
   }
 
+  /* `iterator?` is the deprecated alias of `block_given?`; rename it up front
+     (implicit/self receiver) so the block-aware marking and codegen below serve
+     it identically (#3251). */
+  for (int id = 0; id < c->nt->count; id++) {
+    if (nt_kind(c->nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(c->nt, id, "name");
+    if (!nm || !sp_streq(nm, "iterator?")) continue;
+    int r = nt_ref(c->nt, id, "receiver");
+    const char *rty = r >= 0 ? nt_type(c->nt, r) : NULL;
+    if (r < 0 || (rty && sp_streq(rty, "SelfNode")))
+      nt_node_set_str((NodeTable *)c->nt, id, "name", "block_given?");
+  }
+
   /* mark block-aware methods (contain yield or block_given?) -- these are
      inlined at every call site so block_given? reflects the actual site */
   for (int id = 0; id < c->nt->count; id++) {
