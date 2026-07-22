@@ -3220,6 +3220,10 @@ else {
         }
         return TY_INT;
       }
+      /* rand(int range held in a variable): an Integer, or nil if the range is
+         empty at runtime -> a poly (#3221). (A Float range in a variable is
+         TY_FLOAT_RANGE, handled above.) */
+      if (infer_type(c, argv[0]) == TY_RANGE) return TY_POLY;
       /* rand(literal 0) is a Float in [0,1) like rand(); nonzero -> Integer */
       if (atype && sp_streq(atype, "IntegerNode") && nt_int(nt, argv[0], "value", 0) == 0)
         return TY_FLOAT;

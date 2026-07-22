@@ -10160,8 +10160,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, av[0], b); buf_puts(b, "; ");
         if (is_float)
           buf_printf(b, "(mrb_float)_t%d.first + sp_Random_rand_float(sp_random_default_get()) * (mrb_float)(_t%d.last - _t%d.first); })", tr, tr, tr);
-        else
+        else if (islit)
           buf_printf(b, "_t%d.first + sp_Random_rand_int(sp_random_default_get(), _t%d.last - _t%d.first + 1 - _t%d.excl); })", tr, tr, tr, tr);
+        else
+          /* a range held in a variable can be empty at runtime -> nil, like CRuby;
+             otherwise an Integer. The result is a poly (Integer or nil) (#3221). */
+          buf_printf(b, "((_t%d.last - _t%d.excl) < _t%d.first) ? sp_box_nil() : sp_box_int(_t%d.first + sp_Random_rand_int(sp_random_default_get(), _t%d.last - _t%d.first + 1 - _t%d.excl)); })", tr, tr, tr, tr, tr, tr, tr);
         return;
       }
       /* rand(int): 0 behaves like rand() (a Float in [0,1)); a nonzero magnitude
