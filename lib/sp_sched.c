@@ -80,6 +80,7 @@ static int            g_stw_active = 0; /* a collection is in progress */
 static unsigned       g_stw_epoch = 0;  /* bumped each collection; scopes g_nparked to one */
 static SP_TLS int     g_collector_active = 0;  /* this worker is mid-collection (re-entrancy guard) */
 static int            g_shutdown = 0;   /* set at drain so helper workers exit their loop */
+static int            g_workers_started = 0;  /* helper pool + monitor spawned lazily on the first Thread */
 static pthread_cond_t g_sched_work = PTHREAD_COND_INITIALIZER;   /* idle workers wait for runnable work */
 static pthread_cond_t g_stw_request = PTHREAD_COND_INITIALIZER;  /* collector waits for parks */
 static pthread_cond_t g_stw_release = PTHREAD_COND_INITIALIZER;  /* parked workers wait for clear */
@@ -380,9 +381,24 @@ void sp_sched_init(void) {
   sp_worker_id = 0;                          /* main is worker 0 */
   g_wslot[0].tid = pthread_self();
   g_wslot[0].active = 1;
-  sp_sched_start_workers();   /* spawn N-1 helper OS workers (see below) */
+  /* Helpers + monitor are spawned lazily on the first Thread (sp_sched_ensure_workers),
+     not here: a program that only uses Mutex/Queue/ConditionVariable/sleep for its
+     structure -- but never spawns a second thread -- then runs entirely on main with
+     no idle helper OS threads and no monitor. */
 #endif
 }
+
+#ifdef SP_THREADS
+/* Spawn the helper pool + monitor the first time a green thread is created. The
+   first Thread ever always originates on main (no helper exists to run user code
+   before this), so this runs single-threaded the one time it does work; later
+   calls (a green thread spawning another) see the flag set and return. */
+static void sp_sched_ensure_workers(void) {
+  if (g_workers_started) return;
+  g_workers_started = 1;
+  sp_sched_start_workers();
+}
+#endif
 
 static void sp_thread_report(sp_thread *t) {
   fprintf(stderr, "#<Thread:%u> terminated with exception: %s (%s)\n",
@@ -599,6 +615,9 @@ sp_thread *sp_Thread_spawn_fiber_at(sp_Fiber *f, sp_RbVal arg, const char *file,
   return t;
 }
 sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
+#ifdef SP_THREADS
+  sp_sched_ensure_workers();   /* first Thread: bring the helper pool + monitor up now */
+#endif
   SP_GC_ROOT(f);   /* root the freshly-built fiber across the allocation below */
   SP_GC_ROOT_RBVAL(arg);
   sp_thread *volatile t = (sp_thread *)sp_gc_alloc(sizeof(sp_thread), NULL, sp_thread_scan);
