@@ -81,6 +81,8 @@ static unsigned       g_stw_epoch = 0;  /* bumped each collection; scopes g_npar
 static SP_TLS int     g_collector_active = 0;  /* this worker is mid-collection (re-entrancy guard) */
 static int            g_shutdown = 0;   /* set at drain so helper workers exit their loop */
 static int            g_workers_started = 0;  /* helper pool + monitor spawned lazily on the first Thread */
+static int            g_worker_cap = 0;       /* max helper workers = min(cores, SPINEL_WORKERS) */
+static int            g_helpers_spawned = 0;  /* helpers created so far; ids 1..g_helpers_spawned */
 static pthread_cond_t g_sched_work = PTHREAD_COND_INITIALIZER;   /* idle workers wait for runnable work */
 static pthread_cond_t g_stw_request = PTHREAD_COND_INITIALIZER;  /* collector waits for parks */
 static pthread_cond_t g_stw_release = PTHREAD_COND_INITIALIZER;  /* parked workers wait for clear */
@@ -260,10 +262,16 @@ static sp_thread *g_all = NULL;          /* registry of live threads, for GC roo
 static unsigned   g_next_id = 1;
 static unsigned char g_report_default = 1;  /* Thread.report_on_exception default */
 
+#ifdef SP_THREADS
+static void sp_sched_maybe_grow(void);   /* grow the helper pool toward demand */
+#endif
 static void runq_push(sp_runq *q, sp_thread *t) {
   t->state = SP_TH_RUNNABLE; t->rq_next = NULL;
   if (q->tail) q->tail->rq_next = t; else q->head = t;
   q->tail = t; g_runnable++;
+#ifdef SP_THREADS
+  sp_sched_maybe_grow();   /* one execution helper per live green thread, up to the cap */
+#endif
 }
 static sp_thread *runq_pop(sp_runq *q) {
   sp_thread *t = q->head;
@@ -395,6 +403,7 @@ void sp_sched_init(void) {
    calls (a green thread spawning another) see the flag set and return. */
 static void sp_sched_ensure_workers(void) {
   if (g_workers_started) return;
+  sp_alloc_stress_init();   /* set the stress flags once here, before any helper reads them */
   g_workers_started = 1;
   sp_sched_start_workers();
 }
@@ -632,11 +641,13 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   t->id = g_next_id++;
   reg_add(t);
   /* Prefer the spawning worker's local queue (locality) -- but only when that
-     worker actually drains it. Main does not run green threads at N>1, so a
-     thread it spawns would starve in its local queue (stealing only kicks in
-     when the global queue is empty); send those to the global queue. */
+     worker actually drains it. Main is a coordinator: it hands work to helpers
+     and only runs a thread itself in the sole-worker fallback (no helper could
+     be spawned), which drains the global queue too. So a main-spawned thread
+     always goes to the global queue -- never main's local queue, where it would
+     wait on a steal. (g_worker_cap > 0 whenever threads are in use.) */
 #ifdef SP_THREADS
-  if (g_current == &g_main_thread && sp_active_workers > 1) rq_push(t);
+  if (g_current == &g_main_thread && g_worker_cap > 0) rq_push(t);
   else
 #endif
   lrq_push(sp_worker_id, t);
@@ -1044,9 +1055,12 @@ static void sp_sched_start_workers(void) {
      its write (pthread_create of the workers is the happens-before edge). The
      monitor idles on g_sysmon_cv until a thread sleeps; if it fails to spawn,
      sleep falls back to a plain blocking nanosleep. */
-  /* Fix the worker count before spawning anything, so the monitor and helpers
-     read it through the pthread_create happens-before edge (no lock needed). */
-  sp_active_workers = sp_worker_count();
+  /* Fix the helper cap before spawning anything, so the monitor and helpers read
+     it through the pthread_create happens-before edge (no lock needed). Helpers
+     themselves are spawned on demand (sp_sched_maybe_grow), not here -- main
+     stays worker 0 and starts as the only participant (sp_active_workers 1). */
+  g_worker_cap = sp_worker_count();
+  if (g_worker_cap > SP_MAX_WORKERS - 1) g_worker_cap = SP_MAX_WORKERS - 1;
   /* Install the preemption signal handler before any worker can be targeted.
      SA_RESTART so an in-flight library syscall resumes rather than failing with
      EINTR -- the yield itself is cooperative (at the next safepoint poll), the
@@ -1070,8 +1084,35 @@ static void sp_sched_start_workers(void) {
     for (int e = 0; e < 2; e++) { int fl = fcntl(g_sysmon_pipe[e], F_GETFL, 0); if (fl >= 0) fcntl(g_sysmon_pipe[e], F_SETFL, fl | O_NONBLOCK); }
   } else { g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1; }
   if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
-  for (int i = 1; i < sp_active_workers; i++)
-    if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, (void *)(intptr_t)i) != 0) { sp_active_workers = i; break; }
+}
+
+/* Create one helper worker (next id). PRE: g_sched_lock held, below the cap, and
+   no collection in progress (sp_sched_maybe_grow enforces the last two). The id
+   count (sp_active_workers) is bumped only after pthread_create succeeds, so the
+   STW barrier never waits on a worker that failed to start. */
+static void sp_sched_spawn_helper(void) {
+  int wid = g_helpers_spawned + 1;
+  if (wid > g_worker_cap || wid >= SP_MAX_WORKERS) return;
+  if (pthread_create(&g_worker_threads[wid], NULL, sp_worker_main, (void *)(intptr_t)wid) != 0) return;
+  g_helpers_spawned = wid;
+  sp_active_workers = g_helpers_spawned + 1;   /* participants: main (0) + helpers */
+}
+
+/* Grow the helper pool toward one execution worker per live green thread, capped
+   at g_worker_cap. Called under the lock wherever a thread becomes runnable; a
+   no-op once at the cap or while a collection is reading the participant count
+   (we never change it mid-STW). This turns "SPINEL_WORKERS=N" into up to N real
+   parallel execution threads while never starting a helper the workload has no
+   runnable thread for -- a lone background thread brings up exactly one. */
+static void sp_sched_maybe_grow(void) {
+  if (!g_workers_started || g_stw_active) return;
+  int live = g_runnable + g_nrunning;
+  int want = live < g_worker_cap ? live : g_worker_cap;
+  while (g_helpers_spawned < want) {
+    int before = g_helpers_spawned;
+    sp_sched_spawn_helper();
+    if (g_helpers_spawned == before) break;   /* spawn failed: stop, main will cope */
+  }
 }
 #endif
 
