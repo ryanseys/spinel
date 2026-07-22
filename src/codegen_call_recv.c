@@ -6075,6 +6075,15 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                         " double _f = pow(10, (double)(-_t%d)); sp_box_int(isinf(_f) ? 0 : (mrb_int)(%s(_t%d / _f) * _f)); }); })",
                      tv, tv, tv, tn, cfn, tv);
         }
+        else if (ndig > 0 && sp_streq(name, "round")) {
+          /* CRuby normalizes a nonzero value that rounds to zero to +0.0
+             (a genuine -0.0 input keeps its sign) (#3235). */
+          int tx = ++g_tmp;
+          buf_printf(b, "({ double _t%d = (%s); double _f = pow(10, %d);"
+                        " double _r = round(_t%d * _f) / _f;"
+                        " (_t%d != 0.0 && _r == 0.0) ? 0.0 : _r; })",
+                     tx, r, ndig, tx, tx);
+        }
         else if (ndig > 0)
           buf_printf(b, "({ double _f = pow(10, %d); %s((%s) * _f) / _f; })", ndig, cfn, r);
         else if (ndig < 0) {  /* round to a power of ten left of the decimal -> Integer */

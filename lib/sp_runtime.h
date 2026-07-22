@@ -3002,7 +3002,8 @@ static sp_RbVal sp_poly_round(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_f
 static sp_RbVal sp_poly_round_n(sp_RbVal v, mrb_int n) {
   if (v.tag == SP_TAG_FLT) {
     double x = v.v.f;
-    if (n > 0) { double f = pow(10, (double)n); return sp_box_float(isinf(f) ? x : round(x * f) / f); }
+    if (n > 0) { double f = pow(10, (double)n); if (isinf(f)) return sp_box_float(x);
+      double r = round(x * f) / f; return sp_box_float((x != 0.0 && r == 0.0) ? 0.0 : r); }  /* +0.0 normalize (#3235) */
     sp_poly_flo_domain_ck(x);
     double f = pow(10, (double)(-n));
     return sp_box_int(isinf(f) ? 0 : (mrb_int)(round(x / f) * f));
