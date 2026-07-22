@@ -3188,13 +3188,20 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     return 1;
   }
   /* String#start_with? / #end_with? on a poly value (a `string?` param widened
-     over a nil/string union): dispatch on the string tag (#3211). */
-  if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc == 1) {
+     over a nil/string union, or a string element read out of a container):
+     dispatch on the string tag. Several candidate prefixes/suffixes OR together
+     (any match), the same as the direct-String path (#3211, #3254). */
+  if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc >= 1 && argv) {
     const char *fn = sp_streq(name, "start_with?") ? "sp_str_start_with" : "sp_str_end_with";
     int tv = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? %s(_t%d.v.s, ", tv, fn, tv);
-    emit_str_expr(c, argv[0], b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? (", tv);
+    for (int j = 0; j < argc; j++) {
+      if (j) buf_puts(b, " || ");
+      buf_printf(b, "%s(_t%d.v.s, ", fn, tv);
+      emit_str_expr(c, argv[j], b);
+      buf_puts(b, ")");
+    }
     buf_printf(b, ") : (mrb_bool)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), 0); })", name, tv);
     return 1;
   }
