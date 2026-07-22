@@ -6406,6 +6406,24 @@ int dispatch_impl_count(Compiler *c, int cid, const char *name) {
   return n;
 }
 
+/* Append `, <arg>` for dispatch arm `arm`'s parameter `a`, coercing the shared
+   pre-evaluated temp `atmp[a]` (of C type `from`) to that arm's declared param
+   type: a concrete value flowing into an sp_RbVal (untyped/poly) param is boxed,
+   a poly temp flowing into a concrete param is unboxed, matching types pass raw.
+   Different overrides of one method may type the same param differently (#3214). */
+static void emit_arm_arg(Compiler *c, Scope *arm, int a, int atmp_id, TyKind from, Buf *b) {
+  char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp_id);
+  TyKind pt = TY_POLY;
+  if (arm && arm->pnames && a < arm->nparams && arm->pnames[a]) {
+    LocalVar *pl = scope_local(arm, arm->pnames[a]);
+    pt = (pl && pl->type != TY_UNKNOWN) ? pl->type : TY_POLY;
+  }
+  buf_puts(b, ", ");
+  if (pt == TY_POLY && from != TY_POLY && from != TY_UNKNOWN) emit_boxed_text(c, from, tn, b);
+  else if (from == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, tn, b);
+  else buf_puts(b, tn);
+}
+
 /* Emit a (possibly virtual) method call. `selfptr` is a reusable C
    expression yielding sp_<static>* (e.g. "self", "&lv_x", "&_t3"). Args
    are pre-evaluated into temps so they're emitted once.
@@ -6462,6 +6480,11 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   /* evaluate each param value (provided arg or default) into a temp so the
      virtual-dispatch cases reuse them without re-evaluating */
   int *atmp = np ? malloc(sizeof(int) * np) : NULL;
+  /* C type each atmp[k] temp was declared with (the base method's param type).
+     A subclass override may declare the same param differently (e.g. base
+     `(Symbol)` vs override `(untyped)` -> sp_RbVal), so each dispatch arm coerces
+     the shared temp to ITS param type instead of passing it raw (#3214). */
+  TyKind *atmp_ty = np ? malloc(sizeof(TyKind) * np) : NULL;
   const char *saved_self = g_self;
   /* A positional SplatNode `obj.f(*args)` expands across the fixed params, the
      same way emit_args_filled handles it for free-function calls: pre-evaluate
@@ -6513,6 +6536,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       emit_rest_pack(c, k, pos_argc_d, argv, &ab);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", atmp[k], ab.p ? ab.p : "sp_PolyArray_new()");
+      atmp_ty[k] = TY_POLY_ARRAY;
     }
     else if (fwd_encl && fwd_base_d + k < fwd_encl->nparams) {
       LocalVar *ep = scope_local(fwd_encl, fwd_encl->pnames[fwd_base_d + k]);
@@ -6525,6 +6549,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       emit_ctype(c, att, g_pre);
       buf_printf(g_pre, " _t%d = ", atmp[k]);
       buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
+      atmp_ty[k] = att;
       if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
       free(ab.p);
       continue;
@@ -6603,6 +6628,7 @@ else {
       }
       TyKind att = p ? p->type : comp_ntype(c, k < argc ? argv[k] : -1);
       if (p && att == TY_UNKNOWN) att = TY_POLY;  /* poly in the callee signature */
+      atmp_ty[k] = att;
       emit_indent(g_pre, g_indent);
       emit_ctype(c, att, g_pre);
       buf_printf(g_pre, " _t%d = ", atmp[k]);
@@ -6661,7 +6687,7 @@ else {
       else buf_puts(b, ", NULL");
     }
     buf_puts(b, ")");
-    free(atmp);
+    free(atmp); free(atmp_ty);
     return;
   }
 
@@ -6687,7 +6713,7 @@ else {
          ret, or initialize) -- call it, assign nil/zero to the result temp */
       buf_printf(b, " case %d: sp_%s_%s((sp_%s *)%s", k,
                  c->classes[kd].c_name, kfn, c->classes[kd].c_name, selfptr);
-      for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
+      for (int a = 0; a < np; a++) emit_arm_arg(c, &c->scopes[kmi], a, atmp[a], atmp_ty[a], b);
       buf_printf(b, "); _t%d = %s; break;", rtmp, default_value(disp_ret));
     }
     else if (arm_ret != ret && ret == TY_POLY) {
@@ -6696,7 +6722,7 @@ else {
       Buf _bx; memset(&_bx, 0, sizeof _bx);
       buf_printf(&_bx, "sp_%s_%s((sp_%s *)%s",
                  c->classes[kd].c_name, kfn, c->classes[kd].c_name, selfptr);
-      for (int a = 0; a < np; a++) buf_printf(&_bx, ", _t%d", atmp[a]);
+      for (int a = 0; a < np; a++) emit_arm_arg(c, &c->scopes[kmi], a, atmp[a], atmp_ty[a], &_bx);
       buf_puts(&_bx, ")");
       buf_printf(b, "_t%d = ", rtmp);
       emit_boxed_text(c, arm_ret, _bx.p ? _bx.p : "0", b);
@@ -6706,7 +6732,7 @@ else {
     else {
       buf_printf(b, " case %d: _t%d = sp_%s_%s((sp_%s *)%s", k, rtmp,
                  c->classes[kd].c_name, kfn, c->classes[kd].c_name, selfptr);
-      for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
+      for (int a = 0; a < np; a++) emit_arm_arg(c, &c->scopes[kmi], a, atmp[a], atmp_ty[a], b);
       buf_puts(b, "); break;");
     }
   }
@@ -6717,7 +6743,7 @@ else {
   if (!m) {
     buf_printf(b, " default: _t%d = %s; break; } _t%d; })", rtmp,
                ret == TY_POLY ? "sp_box_nil()" : default_value(disp_ret), rtmp);
-    free(atmp);
+    free(atmp); free(atmp_ty);
     return;
   }
   /* default arm uses the base-class (defcls) implementation */
@@ -6747,7 +6773,7 @@ else {
     buf_puts(b, "); break;");
   }
   buf_printf(b, " } _t%d; })", rtmp);
-  free(atmp);
+  free(atmp); free(atmp_ty);
 }
 
 /* array.group_by { |x| key_expr } -> sp_PolyPolyHash (pre-statements to g_pre) */
