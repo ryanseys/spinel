@@ -2607,6 +2607,16 @@ int infer_global_const_types(Compiler *c) {
         TyKind hv = gvar_hash_variant_from_writes(c, rn);
         if (ty_is_hash(hv)) vt = hv;
       }
+      /* an empty `[]` RHS leaves vt UNKNOWN (no element type); a global still
+         needs a concrete slot to be declared and iterated, so give it a poly
+         array (it can hold anything pushed later) (#3263). */
+      if (vt == TY_UNKNOWN && rn) {
+        const char *vnty = nt_type(nt, vnode);
+        if (vnty && sp_streq(vnty, "ArrayNode")) {
+          int en = 0; nt_arr(nt, vnode, "elements", &en);
+          if (en == 0) vt = TY_POLY_ARRAY;
+        }
+      }
       if (vt == TY_NIL) continue;
     }
     else if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {
