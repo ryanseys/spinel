@@ -3062,6 +3062,12 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
              (bt == TY_POLY || ty_is_object(bt) || bt == TY_RATIONAL ||
               bt == TY_COMPLEX || bt == TY_BIGINT))
       acc_ty = TY_POLY;
+    /* Even over a concretely-typed (int/float) element array, a block whose
+       value is a boxed Rational/Complex cannot fold back into a scalar numeric
+       accumulator slot -- keep the accumulator boxed (#3220). */
+    else if (acc_ty != TY_POLY && init >= 0 && ty_is_numeric(acc_ty) &&
+             (bt == TY_RATIONAL || bt == TY_COMPLEX))
+      acc_ty = TY_POLY;
   }
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
   buf_puts(b, "({ ");

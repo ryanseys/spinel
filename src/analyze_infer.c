@@ -3753,6 +3753,10 @@ else {
               else if (it != TY_POLY && ty_array_elem(rt) == TY_POLY &&
                        (bt == TY_POLY || ty_is_object(bt) || bt == TY_RATIONAL ||
                         bt == TY_COMPLEX || bt == TY_BIGINT)) it = TY_POLY;
+              /* a block yielding a boxed Rational/Complex cannot fold back into
+                 a scalar numeric seed slot, even over an int/float array (#3220) */
+              else if (it != TY_POLY && ty_is_numeric(it) &&
+                       (bt == TY_RATIONAL || bt == TY_COMPLEX)) it = TY_POLY;
             }
             /* reduce(init, :op) symbol-operator form has no block, so the block
                promotion above cannot fire: an int seed folded over floats with
@@ -3761,10 +3765,24 @@ else {
             else if (rbn == 0 && ty_is_numeric(it)) {
               const char *sop = argc >= 2 ? sym_static_value(c, argv[argc - 1]) : NULL;
               TyKind et = ty_array_elem(rt);
-              if (sop && ty_is_numeric(et) &&
-                  (sp_streq(sop, "+") || sp_streq(sop, "-") || sp_streq(sop, "*") ||
-                   sp_streq(sop, "/") || sp_streq(sop, "%") || sp_streq(sop, "**")))
+              int arith = sop && (sp_streq(sop, "+") || sp_streq(sop, "-") || sp_streq(sop, "*") ||
+                                  sp_streq(sop, "/") || sp_streq(sop, "%") || sp_streq(sop, "**"));
+              if (arith && ty_is_numeric(et))
                 it = ty_promote_numeric(it, et);
+              /* fold over a literal array of boxed Rationals/Complex with an
+                 arithmetic operator: the accumulator promotes to the boxed
+                 element and the result is a boxed poly (#3220). A plain poly
+                 array's element type is unknown, so gate on the literal. */
+              else if (arith && rt == TY_POLY_ARRAY && recv >= 0 &&
+                       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+                int ren = 0; const int *rev = nt_arr(nt, recv, "elements", &ren);
+                int boxed_num = 0;
+                for (int e = 0; rev && e < ren; e++) {
+                  TyKind eet = infer_type(c, rev[e]);
+                  if (eet == TY_RATIONAL || eet == TY_COMPLEX) { boxed_num = 1; break; }
+                }
+                if (boxed_num) it = TY_POLY;
+              }
             }
             return it;
           }
