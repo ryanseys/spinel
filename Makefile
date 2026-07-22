@@ -481,12 +481,28 @@ PCH_USE_NOPOLY = -I$(PCH_ROOT)/nopoly
 TEST_SINGLE_INVOKE :=
 endif
 
+# Host CPU count (Linux nproc, macOS sysctl), a safe fallback of 4.
+NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+# Default the standalone suite to parallel: inject -j<nproc> ONLY when the
+# invocation supplied no job count of its own. Under `make -j gate` the leg
+# already inherits the jobserver (a -j is in MAKEFLAGS), so this stays empty and
+# there is no oversubscription; a bare `make test` / `make check` now fans the
+# per-test .ok builds across the cores (~5x). An explicit `make -jN test` wins.
+TEST_JOBS := $(if $(filter -j%,$(MAKEFLAGS)),,-j$(NPROC))
+# `bench` is one monolithic recipe (a shell loop), so it can't fan out through
+# the .ok pattern the way `test` does. Parallelize its loop with `xargs -P`
+# instead -- but only when there is no jobserver to respect: under `make -j gate`
+# the leg runs alongside test/optcarrot on the shared jobserver, so keep it
+# serial (-P 1) there and let the jobserver schedule; a bare `make bench` uses
+# all cores.
+BENCH_PJOBS := $(if $(filter -j%,$(MAKEFLAGS)),1,$(NPROC))
+
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone — a stale `.ok` reading PASS was a recurring foot-gun.)
 test:
 	+@$(MAKE) --no-print-directory clean-test-results
-	+@$(MAKE) --no-print-directory test-run
+	+@$(MAKE) $(TEST_JOBS) --no-print-directory test-run
 
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
@@ -778,52 +794,45 @@ test/%.rb.expected: test/%.rb
 test/%.rb.err.expected: test/%.rb
 	$(call regen-snapshot,2>$@.tmp >/dev/null)
 
+# Each benchmark is independent: compile it, run it, diff against CRuby (or its
+# .expected), and drop a one-word verdict file. `xargs -P` runs them across the
+# cores (serial under a jobserver -- see BENCH_PJOBS). Scratch paths are keyed by
+# the benchmark's basename: unique per benchmark (so parallel workers never
+# collide) AND stable across runs, so the generated C's embedded __FILE__ stays
+# constant and the cc (ccache) cache keeps hitting -- a per-run mktemp path would
+# defeat it. Verdicts are aggregated in benchmark order (deterministic).
 bench: $(SPINEL) $(SP_RT_LIB)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
-	@total=$$(ls benchmark/*.rb | wc -l); \
-	if [ -t 1 ]; then tty=1; else tty=0; fi; \
-	pass=0; fail=0; err=0; skip=0; i=0; \
-	for f in benchmark/*.rb; do \
-	  i=$$((i+1)); \
-	  bn=$$(basename "$$f" .rb); \
-	  if [ "$$tty" = 1 ]; then printf '\r\033[K  [%d/%d] %s' "$$i" "$$total" "$$bn"; fi; \
-	  $(TIMEOUT10) $(SPINEL) "$$f" -c --no-line-map -o /tmp/_sp_b.c 2>/dev/null && \
-	  $(CC) $(CFLAGS) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib -c /tmp/_sp_b.c -o /tmp/_sp_b.c.o 2>/dev/null && \
-	  $(CC) $(CFLAGS) /tmp/_sp_b.c.o $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o /tmp/_sp_b_bin 2>/dev/null; \
-	  if [ $$? -eq 0 ]; then \
-	    if [ -f "$$f.expected" ]; then \
-	      cp "$$f.expected" /tmp/_sp_b_exp; ruby_rc=0; \
-	    else \
-	    $(TIMEOUT60) $(REF_RUBY) "$$f" >/tmp/_sp_b_exp 2>/dev/null; \
-	    ruby_rc=$$?; \
-	    if [ $$ruby_rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
-	      $(TIMEOUT60) ruby "$$f" >/tmp/_sp_b_exp 2>/dev/null; \
-	      ruby_rc=$$?; \
+	@rm -rf build/bench-results; mkdir -p build/bench-results
+	@ls benchmark/*.rb | xargs -P $(BENCH_PJOBS) -n 1 sh -c '\
+	  f="$$1"; bn=$$(basename "$$f" .rb); d=build/bench-results; res="$$d/$$bn.res"; \
+	  c="$$d/$$bn.c"; o="$$d/$$bn.o"; bin="$$d/$$bn.bin"; exp="$$d/$$bn.exp"; act="$$d/$$bn.act"; \
+	  if $(TIMEOUT10) $(SPINEL) "$$f" -c --no-line-map -o "$$c" 2>/dev/null \
+	     && $(CC) $(CFLAGS) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib -c "$$c" -o "$$o" 2>/dev/null \
+	     && $(CC) $(CFLAGS) "$$o" $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; then \
+	    if [ -f "$$f.expected" ]; then cp "$$f.expected" "$$exp"; rc=0; \
+	    else $(TIMEOUT60) $(REF_RUBY) "$$f" >"$$exp" 2>/dev/null; rc=$$?; \
+	      if [ $$rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then $(TIMEOUT60) ruby "$$f" >"$$exp" 2>/dev/null; rc=$$?; fi; \
 	    fi; \
+	    if [ $$rc -eq 124 ]; then echo SKIP >"$$res"; \
+	    else $(TIMEOUT60) "$$bin" >"$$act" 2>/dev/null; \
+	      LC_ALL=C sed "s/\r$$//" "$$exp" >"$$exp.n"; LC_ALL=C sed "s/\r$$//" "$$act" >"$$act.n"; \
+	      if cmp -s "$$exp.n" "$$act.n"; then echo PASS >"$$res"; \
+	      else { echo FAIL; diff -u "$$exp.n" "$$act.n" 2>&1 | head -40; } >"$$res"; fi; \
 	    fi; \
-	    if [ $$ruby_rc -eq 124 ]; then \
-	      if [ "$$tty" = 1 ]; then printf '\r\033[K'; fi; \
-	      echo "SKIP: $$bn (ruby timeout)"; skip=$$((skip+1)); \
-	    else \
-	      $(TIMEOUT60) /tmp/_sp_b_bin >/tmp/_sp_b_act 2>/dev/null; \
-	      LC_ALL=C sed 's/\r$$//' /tmp/_sp_b_exp >/tmp/_sp_b_exp.n; \
-	      LC_ALL=C sed 's/\r$$//' /tmp/_sp_b_act >/tmp/_sp_b_act.n; \
-	      if cmp -s /tmp/_sp_b_exp.n /tmp/_sp_b_act.n; then \
-	        pass=$$((pass+1)); \
-	      else \
-	        if [ "$$tty" = 1 ]; then printf '\r\033[K'; fi; \
-	        echo "FAIL: $$bn"; \
-	        diff -u /tmp/_sp_b_exp.n /tmp/_sp_b_act.n 2>&1 | head -40; \
-	        fail=$$((fail+1)); \
-	      fi; \
-	    fi; \
-	  else \
-	    if [ "$$tty" = 1 ]; then printf '\r\033[K'; fi; \
-	    echo "ERR:  $$bn"; err=$$((err+1)); \
-	  fi; \
+	  else echo ERR >"$$res"; fi' sh
+	@pass=0; fail=0; err=0; skip=0; \
+	for r in build/bench-results/*.res; do \
+	  [ -e "$$r" ] || continue; \
+	  bn=$$(basename "$$r" .res); s=$$(head -1 "$$r"); \
+	  case "$$s" in \
+	    PASS) pass=$$((pass+1));; \
+	    SKIP) echo "SKIP: $$bn (ruby timeout)"; skip=$$((skip+1));; \
+	    FAIL) echo "FAIL: $$bn"; tail -n +2 "$$r" | head -40; fail=$$((fail+1));; \
+	    *) echo "ERR:  $$bn"; err=$$((err+1));; \
+	  esac; \
 	done; \
-	if [ "$$tty" = 1 ]; then printf '\r\033[K'; fi; \
-	rm -f /tmp/_sp_b.ast /tmp/_sp_b.ir /tmp/_sp_b.c /tmp/_sp_b.c.o /tmp/_sp_b_bin /tmp/_sp_b_exp /tmp/_sp_b_act /tmp/_sp_b_exp.n /tmp/_sp_b_act.n; \
+	rm -rf build/bench-results; \
 	echo "Benchmarks: $$pass pass, $$fail fail, $$err error, $$skip skip"; \
 	if [ $$fail -ne 0 ] || [ $$err -ne 0 ]; then exit 1; fi
 
