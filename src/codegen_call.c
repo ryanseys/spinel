@@ -412,6 +412,16 @@ static void emit_ie_param_default(Compiler *c, TyKind t, Buf *b) {
    nil/0 (where CRuby would raise or do real work) can be audited. Returns 1
    when a warning line was started -- the caller appends its message + newline.
    Zero runtime/codegen effect: opt-in stderr only. */
+/* 1 iff `node` is statically typed as a StringIO object (the native-struct
+   class from packages/stringio). */
+static int node_is_stringio(Compiler *c, int node) {
+  if (node < 0) return 0;
+  TyKind t = comp_ntype(c, node);
+  return ty_is_object(t) && ty_object_class(t) >= 0 &&
+         c->classes[ty_object_class(t)].c_name &&
+         sp_streq(c->classes[ty_object_class(t)].c_name, "StringIO");
+}
+
 static int warn_unresolved_pos(Compiler *c, int id) {
   if (!getenv("SPINEL_WARN_UNRESOLVED")) return 0;
   const NodeTable *nt = c->nt;
@@ -12741,6 +12751,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (tcn && sp_streq(tcn, "IO")) {
       if (sp_streq(name, "pipe") && argc == 0) { buf_puts(b, "sp_io_pipe()"); return; }
       if (sp_streq(name, "copy_stream") && argc == 2) {
+        /* IO.copy_stream(src, dst) with StringIO endpoints: read src from its
+           current position to the end and append it to dst, returning the byte
+           count -- sp_io_copy_stream takes two path strings, so a StringIO arg
+           passed straight in was an incompatible-pointer error (#3216). */
+        int a0_sio = node_is_stringio(c, argv[0]);
+        int a1_sio = node_is_stringio(c, argv[1]);
+        if (a0_sio && a1_sio) {
+          buf_puts(b, "sp_StringIO_write("); emit_expr(c, argv[1], b);
+          buf_puts(b, ", sp_StringIO_read("); emit_expr(c, argv[0], b);
+          buf_puts(b, "))"); return;
+        }
         buf_puts(b, "sp_io_copy_stream("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
         emit_expr(c, argv[1], b); buf_puts(b, ")"); return;
       }
