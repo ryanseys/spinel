@@ -1722,6 +1722,17 @@ sp_Enumerator *sp_loop_enum(void) {
   e->meth = "loop";
   return e;
 }
+
+/* Array#combination / permutation over an int array (lib-only; the recursion
+   helpers stay file-static, the four entry points are declared in sp_runtime.h). */
+static void sp_int_combination_recur(sp_IntArray*src,mrb_int start,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=start;i<=src->len-k;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_combination_recur(src,i+1,k-1,acc,out);acc->len--;}}
+sp_PtrArray*sp_IntArray_combination(sp_IntArray*a,mrb_int k){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a||k<0||k>a->len)return out;sp_IntArray*acc=sp_IntArray_new();SP_GC_ROOT(acc);sp_int_combination_recur(a,0,k,acc,out);return out;}
+static void sp_int_repeated_combination_recur(sp_IntArray*src,mrb_int start,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=start;i<src->len;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_repeated_combination_recur(src,i,k-1,acc,out);acc->len--;}}
+sp_PtrArray*sp_IntArray_repeated_combination(sp_IntArray*a,mrb_int k){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a||k<0)return out;sp_IntArray*acc=sp_IntArray_new();SP_GC_ROOT(acc);sp_int_repeated_combination_recur(a,0,k,acc,out);return out;}
+static void sp_int_permutation_recur(sp_IntArray*src,mrb_int k,sp_IntArray*used,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=0;i<src->len;i++){if(used->data[used->start+i])continue;used->data[used->start+i]=1;sp_IntArray_push(acc,src->data[src->start+i]);sp_int_permutation_recur(src,k-1,used,acc,out);acc->len--;used->data[used->start+i]=0;}}
+static void sp_int_repeated_permutation_recur(sp_IntArray*src,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();SP_GC_ROOT(cp);for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=0;i<src->len;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_repeated_permutation_recur(src,k-1,acc,out);acc->len--;}}
+sp_PtrArray*sp_IntArray_repeated_permutation(sp_IntArray*a,mrb_int k){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a||k<0)return out;sp_IntArray*acc=sp_IntArray_new();SP_GC_ROOT(acc);sp_int_repeated_permutation_recur(a,k,acc,out);return out;}
+sp_PtrArray*sp_IntArray_permutation(sp_IntArray*a,mrb_int k){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a||k<0||k>a->len)return out;sp_IntArray*used=sp_IntArray_new();SP_GC_ROOT(used);for(mrb_int i=0;i<a->len;i++)sp_IntArray_push(used,0);sp_IntArray*acc=sp_IntArray_new();SP_GC_ROOT(acc);sp_int_permutation_recur(a,k,used,acc,out);return out;}
 sp_RbVal sp_enum_gen_pull(sp_Enumerator *e) {
   if (!e->fib) {
     e->fib = sp_Fiber_new(e->gen);
