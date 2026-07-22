@@ -6154,7 +6154,13 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "to_r") && argc == 0) buf_printf(b, "sp_float_to_rational(%s)", r);
       else if (sp_streq(name, "rationalize") && argc == 0) buf_printf(b, "sp_float_rationalize0(%s)", r);
       else if (sp_streq(name, "rationalize") && argc == 1) {
-        buf_printf(b, "sp_float_rationalize(%s, ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+        /* The epsilon must reach sp_float_rationalize as a float. emit_float_expr
+           casts a Rational arg with (mrb_float)(<struct>), which the C compiler
+           rejects; convert it through sp_rational_to_f instead (#3224). */
+        buf_printf(b, "sp_float_rationalize(%s, ", r);
+        if (comp_ntype(c, argv[0]) == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else emit_float_expr(c, argv[0], b);
+        buf_puts(b, ")");
       }
       else if (sp_streq(name, "abs"))   buf_printf(b, "fabs(%s)", r);
       /* Float arg/angle/phase: Integer 0 for >= 0, Float PI for < 0 -> poly (#2316) */
