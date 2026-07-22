@@ -7063,6 +7063,26 @@ else {
       /* A nil (or void) element has no scalar C type; hold it as a boxed poly
          temp so the slot is valid and a poly target can read it directly. */
       TyKind elt = comp_ntype(c, els[i]);
+      /* An empty array/hash literal has no element type of its own, so elt stays
+         UNKNOWN and the temp would be declared `void`. Two independent empty
+         literals (`numbers, strings = [], []`) each take their matching target's
+         concrete container type and materialize a fresh container of it, so each
+         slot is typed from its own later use rather than merged/voided (#3213). */
+      const char *elty = nt_type(nt, els[i]);
+      int el_ec = 0;
+      int el_empty_arr = elty && sp_streq(elty, "ArrayNode") &&
+                         (nt_arr(nt, els[i], "elements", &el_ec), el_ec == 0);
+      int el_empty_hash = elty && (sp_streq(elty, "HashNode") || sp_streq(elty, "KeywordHashNode")) &&
+                          (nt_arr(nt, els[i], "elements", &el_ec), el_ec == 0);
+      if ((el_empty_arr || el_empty_hash) && (elt == TY_UNKNOWN || elt == TY_VOID) && i < ln &&
+          nt_type(nt, lefts[i]) && sp_streq(nt_type(nt, lefts[i]), "LocalVariableTargetNode")) {
+        const char *lnm = nt_str(nt, lefts[i], "name");
+        LocalVar *tlv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
+        if (tlv && ((el_empty_arr && ty_is_array(tlv->type)) ||
+                    (el_empty_hash && ty_is_hash(tlv->type)))) elt = tlv->type;
+      }
+      int adopt_empty_arr = el_empty_arr && ty_is_array(elt);
+      int adopt_empty_hash = el_empty_hash && ty_is_hash(elt);
       int nilish = (elt == TY_NIL || elt == TY_VOID);
       emit_ctype(c, nilish ? TY_POLY : elt, b);
       buf_printf(b, " _t%d = ", tmps[i]);
@@ -7076,6 +7096,15 @@ else {
           free(vb.p);
         }
         else buf_puts(b, "sp_box_nil()");
+      }
+      else if (adopt_empty_arr) {
+        if (elt == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
+        else buf_printf(b, "sp_%sArray_new()", array_kind(elt) ? array_kind(elt) : "Int");
+      }
+      else if (adopt_empty_hash) {
+        const char *hcn = ty_hash_cname(elt);
+        if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
+        else { Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb); buf_puts(b, vb.p ? vb.p : ""); free(vb.p); }
       }
       else {
         Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
