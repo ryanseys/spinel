@@ -1723,6 +1723,21 @@ sp_Enumerator *sp_loop_enum(void) {
   return e;
 }
 
+/* IO.copy_stream(src_path, dst_path): stream one file to another, byte count. */
+mrb_int sp_io_copy_stream(const char *src, const char *dst) {
+  FILE *in = fopen(src ? src : "", "rb");
+  if (!in)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", src ? src : ""));
+  FILE *out = fopen(dst ? dst : "", "wb");
+  if (!out) { fclose(in); sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", dst ? dst : "")); }
+  char buf[8192]; size_t got; mrb_int total = 0;
+  while ((got = fread(buf, 1, sizeof buf, in)) > 0) { fwrite(buf, 1, got, out); total += (mrb_int)got; }
+  fclose(in); fclose(out);
+  return total;
+}
+
 /* Array#combination / permutation over an int array (lib-only; the recursion
    helpers stay file-static, the four entry points are declared in sp_runtime.h). */
 static void sp_int_combination_recur(sp_IntArray*src,mrb_int start,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=start;i<=src->len-k;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_combination_recur(src,i+1,k-1,acc,out);acc->len--;}}

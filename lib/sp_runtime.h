@@ -1313,19 +1313,8 @@ mrb_int sp_File_fsync(sp_File *f);
    returning the argument */
 sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v);
 /* IO.copy_stream(src, dst): both path strings (#2815); returns bytes copied */
-static mrb_int sp_io_copy_stream(const char *src, const char *dst) {
-  FILE *in = fopen(src ? src : "", "rb");
-  if (!in)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_sysopen - %s", src ? src : ""));
-  FILE *out = fopen(dst ? dst : "", "wb");
-  if (!out) { fclose(in); sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_sysopen - %s", dst ? dst : "")); }
-  char buf[8192]; size_t got; mrb_int total = 0;
-  while ((got = fread(buf, 1, sizeof buf, in)) > 0) { fwrite(buf, 1, got, out); total += (mrb_int)got; }
-  fclose(in); fclose(out);
-  return total;
-}
+/* IO.copy_stream(src_path, dst_path): defined out-of-line in sp_cold.c. */
+mrb_int sp_io_copy_stream(const char *src, const char *dst);
 static inline const char *sp_File_read(sp_File *f) {
   if (!f || !f->fp) return sp_str_empty;
   if (f->is_sock) sp_sock_wait_readable(f);
