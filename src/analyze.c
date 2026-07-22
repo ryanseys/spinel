@@ -7974,6 +7974,46 @@ void analyze_program(Compiler *c) {
     lv->type = TY_STRBUF;
   }
 
+  /* Shared-mutable strings (#3227): a string local that is a pure ALIAS of an
+     in-place-mutated string (`s2 = s1` where s1 is now TY_STRBUF) must share
+     s1's one sp_String* handle, so a later `s1 << x` is visible through s2 and
+     `s1.equal?(s2)` is true (CRuby's mutable-String-object semantics). Promote
+     the alias to TY_STRBUF and flag the whole set str_shared, which flips reads
+     from copy-on-read to the live buffer and assignment to a handle copy.
+     Conservative (Phase 1): the alias's every write must be `= <a TY_STRBUF
+     local>`; other shapes keep today's value-copy behavior. Runs after the
+     TY_STRBUF promotion above so the source's type is settled. */
+  for (int w = 0; w < c->nt->count; w++) {
+    const char *wty = nt_type(c->nt, w);
+    if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
+    int wv = nt_ref(c->nt, w, "value");
+    if (wv < 0 || !nt_type(c->nt, wv) ||
+        !sp_streq(nt_type(c->nt, wv), "LocalVariableReadNode")) continue;
+    const char *srcn = nt_str(c->nt, wv, "name");
+    Scope *ws = comp_scope_of(c, w);
+    LocalVar *src = (srcn && ws) ? scope_local(ws, srcn) : NULL;
+    if (!src || src->type != TY_STRBUF) continue;   /* aliases an in-place-mutated string */
+    const char *tgtn = nt_str(c->nt, w, "name");
+    LocalVar *tgt = tgtn ? scope_local(ws, tgtn) : NULL;
+    if (!tgt || tgt == src || tgt->is_param || tgt->is_cell || tgt->rbs_seeded) continue;
+    if (tgt->type != TY_STRING && tgt->type != TY_STRBUF) continue;
+    /* every write to the alias must itself be a bare local read (a pure alias) */
+    int pure_alias = 1;
+    for (int u = 0; u < c->nt->count; u++) {
+      const char *uty = nt_type(c->nt, u);
+      if (!uty || !sp_streq(uty, "LocalVariableWriteNode")) continue;
+      const char *un = nt_str(c->nt, u, "name");
+      if (!un || !sp_streq(un, tgtn) || comp_scope_of(c, u) != ws) continue;
+      int uv = nt_ref(c->nt, u, "value");
+      if (uv < 0 || !nt_type(c->nt, uv) ||
+          !sp_streq(nt_type(c->nt, uv), "LocalVariableReadNode")) { pure_alias = 0; break; }
+    }
+    if (!pure_alias) continue;
+    src->str_shared = 1;
+    tgt->type = TY_STRBUF;
+    tgt->str_shared = 1;
+  }
+
   /* Value-type object detection (Stage 1, conservative). A user class is
      represented by value (sp_X, no heap/GC) when it is a small, immutable,
      scalar-only leaf whose instances never need a heap pointer (never boxed,

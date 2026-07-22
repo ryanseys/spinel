@@ -55,6 +55,13 @@ typedef struct {
   int const_def_write; /* (consts) has a definite (non-or/and) assignment; an
                           or/and-write-only const is nil-defaulted (poly) so its
                           `||=` truthiness check fires on first use */
+  int str_shared;   /* (TY_STRBUF) a shared-mutable string: it is aliased
+                       (`s2 = s1`) AND mutated in place, so the whole alias set
+                       holds the one sp_String* handle -- reads hand out the live
+                       buffer (no copy), assignment copies the handle, and
+                       `equal?` is handle identity, matching CRuby's mutable
+                       String object semantics (#3227). Plain TY_STRBUF (this
+                       flag 0) stays the copy-on-read build-in-a-loop refinement. */
 } LocalVar;
 
 typedef struct {

@@ -905,9 +905,21 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     else buf_puts(b, default_value(lv->type));
   }
   else if (lv && lv->type == TY_STRBUF) {
-    /* a mutable-string local: wrap the (const char*) RHS in a fresh sp_String
-       so later `<<` appends are amortized O(1). */
-    buf_puts(b, "sp_String_new("); emit_expr(c, v, b); buf_puts(b, ")");
+    /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
+       HANDLE, not the buffer, so the two names denote one object: a later
+       `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
+    LocalVar *svl = NULL;
+    if (lv->str_shared && vty && sp_streq(vty, "LocalVariableReadNode")) {
+      Scope *vsc = comp_scope_of(c, v);
+      svl = vsc ? scope_local(vsc, nt_str(c->nt, v, "name")) : NULL;
+    }
+    if (svl && svl->type == TY_STRBUF && svl->str_shared)
+      buf_printf(b, "lv_%s", rename_local(nt_str(c->nt, v, "name")));
+    else {
+      /* otherwise a mutable-string local wraps the (const char*) RHS in a fresh
+         sp_String so later `<<` appends are amortized O(1). */
+      buf_puts(b, "sp_String_new("); emit_expr(c, v, b); buf_puts(b, ")");
+    }
   }
   else if (is_empty_array && lv && array_kind(lv->type)) {
     /* `a = []` -> a new array of the variable's resolved element type */

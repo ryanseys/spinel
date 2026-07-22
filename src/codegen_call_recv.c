@@ -5600,10 +5600,25 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
             const char *an0 = nt_str(nt, argv[0], "name");
             LocalVar *alv0 = an0 ? scope_local(comp_scope_of(c, argv[0]), an0) : NULL;
             if (alv0 && alv0->type == TY_STRBUF) {
-              int teq = ++g_tmp;
-              buf_printf(b, "({ const char *_t%d = %s; "
-                            "(const void *)_t%d == (const void *)sp_String_cstr(lv_%s); })",
-                         teq, r, teq, rename_local(an0));
+              /* If the receiver is ALSO a strbuf local, compare the two
+                 sp_String handles directly: a shared alias (`s2 = s1`) is one
+                 object, so `s1.equal?(s2)` is true (#3227). Otherwise `r` is a
+                 live-buffer expr (e.g. `(s << "x")`) and its cstr is compared. */
+              const char *rty0 = recv >= 0 ? nt_type(nt, recv) : NULL;
+              const char *rn0 = (rty0 && sp_streq(rty0, "LocalVariableReadNode"))
+                                  ? nt_str(nt, recv, "name") : NULL;
+              LocalVar *rlv0 = rn0 ? scope_local(comp_scope_of(c, recv), rn0) : NULL;
+              if (rlv0 && rlv0->type == TY_STRBUF) {
+                char rn2[128], an2[128];
+                snprintf(rn2, sizeof rn2, "%s", rename_local(rn0));
+                snprintf(an2, sizeof an2, "%s", rename_local(an0));
+                buf_printf(b, "(lv_%s == lv_%s)", rn2, an2);
+              } else {
+                int teq = ++g_tmp;
+                buf_printf(b, "({ const char *_t%d = %s; "
+                              "(const void *)_t%d == (const void *)sp_String_cstr(lv_%s); })",
+                           teq, r, teq, rename_local(an0));
+              }
               eq_sblv = 1;
             }
           }
