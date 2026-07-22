@@ -5309,7 +5309,31 @@ else {
   }
 
   /* tap: run block, return self */
-  if (sp_streq(name, "tap") && recv >= 0) return rt;
+  if (sp_streq(name, "tap") && recv >= 0) {
+    /* `[].tap { |a| a << x }`: the empty-array-literal receiver has no element
+       type of its own (rt stays unknown/poly), so the block param -- typed from
+       its pushes -- carries the real container type. Return it so the tap result
+       and any chained `.join` (or the `p` that inspects it) agree with the
+       container codegen materializes for the receiver (#3200, #3208). */
+    const char *rty = nt_type(nt, recv);
+    int rel = 0;
+    if (rty && sp_streq(rty, "ArrayNode")) nt_arr(nt, recv, "elements", &rel);
+    int tblk = nt_ref(nt, id, "block");
+    if (rty && sp_streq(rty, "ArrayNode") && rel == 0 && tblk >= 0) {
+      const char *bp = block_param_name(c, tblk, 0);
+      Scope *bs = bp ? comp_scope_of(c, tblk) : NULL;
+      LocalVar *blv = (bs && bp) ? scope_local(bs, bp) : NULL;
+      if (blv) {
+        /* the tap node may be inferred before the block body typed the param;
+           infer the body now so blv->type is settled before we read it. */
+        int bdy = nt_ref(nt, tblk, "body");
+        int bbn = 0; const int *bbb = bdy >= 0 ? nt_arr(nt, bdy, "body", &bbn) : NULL;
+        for (int j = 0; j < bbn; j++) infer_subtree(c, bbb[j]);
+        if (ty_is_array(blv->type)) return blv->type;
+      }
+    }
+    return rt;
+  }
   /* then / yield_self: run block, return block result */
   if (sp_streq(name, "then") || sp_streq(name, "yield_self")) {
     int blk_id = nt_ref(nt, id, "block");

@@ -1272,6 +1272,23 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind et = comp_ntype(c, recv);
+  /* An empty array literal receiver (`[].tap { |a| a << x }.join`) has no
+     element type of its own, so comp_ntype leaves it unknown. Adopt the block
+     param's container type (it was typed from the pushes) and materialize a
+     FRESH container of it below -- matching the analyze-side tap result type so
+     a downstream `.join` / `p` dispatches correctly (#3200, #3208). */
+  int empty_arr_adopt = 0;
+  if (is_tap) {
+    const char *rty = nt_type(nt, recv);
+    int rel = 0;
+    if (rty && sp_streq(rty, "ArrayNode")) nt_arr(nt, recv, "elements", &rel);
+    if (rty && sp_streq(rty, "ArrayNode") && rel == 0) {
+      const char *bp = block_param_name(c, block, 0);
+      Scope *bsc2 = bp ? comp_scope_of(c, block) : NULL;
+      LocalVar *blv = bsc2 ? scope_local(bsc2, rename_local(bp)) : NULL;
+      if (blv && ty_is_array(blv->type)) { et = blv->type; empty_arr_adopt = 1; }
+    }
+  }
   if (et == TY_UNKNOWN) return 0;
   /* a nil receiver (`nil.tap { }`) has no scalar C type: carry it boxed */
   int et_nil = (et == TY_NIL);
@@ -1285,7 +1302,14 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
 
   int tr = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
-  if (et_nil) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
+  /* the adopted empty-literal receiver materializes as a FRESH mutable container
+     of the block-param type -- emit_expr would render `[]` as its own untyped
+     default (sp_IntArray_new()), mismatching et (#3200). */
+  if (empty_arr_adopt) {
+    if (et == TY_POLY_ARRAY) buf_puts(&rb, "sp_PolyArray_new()");
+    else buf_printf(&rb, "sp_%sArray_new()", array_kind(et) ? array_kind(et) : "Int");
+  }
+  else if (et_nil) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
   if (needs_root(et)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr); }
