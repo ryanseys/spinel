@@ -569,6 +569,7 @@ int range_enum_redispatch(Compiler *c, int id) {
   if (block >= 0 &&
       (sp_streq(name, "partition") || sp_streq(name, "each_with_index") ||
        sp_streq(name, "sort_by") || sp_streq(name, "chunk_while") ||
+       sp_streq(name, "chunk") ||
        sp_streq(name, "sum") || sp_streq(name, "each_with_object") ||
        sp_streq(name, "take_while") || sp_streq(name, "drop_while")))
     return 1;
