@@ -984,7 +984,12 @@ def cmd_test(prj, files, regen)
       next
     end
     bin = File.join(tdir, t[0..-4])
-    compile(prj, src, bin, "")
+    # Test binaries are built to run once and check output, not for runtime
+    # speed, so compile at -O1 rather than the -O2 release default: -O1 still
+    # prunes the unreferenced runtime-header statics (unlike -O0) but skips the
+    # expensive optimization passes, cutting per-file cc time ~2x on a real-app
+    # translation unit (#3202).
+    compile(prj, src, bin, "-O 1")
     outf = bin + ".out"
     system("#{bin} > #{outf} 2>&1")
     actual = File.exist?(outf) ? File.read(outf) : ""
