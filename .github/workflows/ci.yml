@@ -66,18 +66,23 @@ jobs:
         run: make -j$(getconf _NPROCESSORS_ONLN) all
 
       - name: Run tests
-        # OPT=-O1, counter-intuitively, compiles each test ~3x FASTER than
-        # -O0: the generated C pulls in lib/sp_runtime.h (800+ static fns), and
-        # at -O1 gcc/clang prune unreferenced statics + DCE before the costly
-        # codegen stages, emitting far less than -O0 does. -j overlaps the
-        # per-test cc invocations.
-        # The clang legs bypass sccache for this step (CC override): sccache
-        # declines to cache clang's -include-pch compiles, so wrapping ~2000
-        # per-test compile+link invocations only adds client-spawn overhead
-        # on top of the PCH speedup. gcc keeps the wrapper -- its PCH rides
-        # the implicit .gch lookup, which sccache's preprocessor hashing
-        # doesn't see, so gcc tests get cache hits AND the PCH fallback.
-        run: make -j$(getconf _NPROCESSORS_ONLN) test OPT=-O1 ${{ matrix.cc == 'clang' && 'CC=clang' || '' }}
+        # Opt level is compiler-specific -- they behave oppositely on the
+        # sp_runtime.h-heavy per-test TUs (800+ static fns):
+        #   gcc:   -O1 prunes unreferenced statics + DCEs before the costly
+        #          codegen, so -O1 compiles ~9x FASTER than -O0 (2.7 vs 25ms).
+        #   clang: -O1 still runs the full optimizer over every emitted inline
+        #          static, so -O1 is ~2.5x SLOWER than -O0 (213 vs 88ms/file).
+        # So gcc builds tests at -O1 and clang at -O0. Correctness is opt-level
+        # independent (tests diff output, not codegen), and the gcc -O1 leg still
+        # exercises the optimizing path; the clang leg's job is that clang accepts
+        # the emitted C and runs it, which -O0 covers.
+        # The clang legs also bypass sccache (CC override): sccache declines to
+        # cache clang's -include-pch compiles, so wrapping ~2000 compile+link
+        # invocations only adds client-spawn overhead on top of the PCH speedup.
+        # gcc keeps the wrapper -- its PCH rides the implicit .gch lookup, which
+        # sccache's preprocessor hashing doesn't see, so gcc tests get cache hits
+        # AND the PCH fallback.
+        run: make -j$(getconf _NPROCESSORS_ONLN) test ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1' }}
 
       # Benchmark integration test. Compiles every benchmark/*.rb through
       # the full pipeline (cc -Werror) and diffs the output against CRuby.
