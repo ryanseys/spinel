@@ -970,6 +970,11 @@ def cmd_test(prj, files, regen)
   tdir = File.join(prj.root, "build/test")
   Dir.mkdir(File.join(prj.root, "build")) unless Dir.exist?(File.join(prj.root, "build"))
   Dir.mkdir(tdir) unless Dir.exist?(tdir)
+  # Incremental-build freshness bound: a test binary newer than every project
+  # input AND the compiler binary may be reused without recompiling (#3202).
+  need = inputs_mtime(prj)
+  cm = File.exist?(spinel_bin) ? File.mtime(spinel_bin).to_i : 0
+  need = cm if cm > need
   fails = 0
   tests.each do |t|
     src = File.join(prj.root, "test", t)
@@ -984,12 +989,15 @@ def cmd_test(prj, files, regen)
       next
     end
     bin = File.join(tdir, t[0..-4])
+    # Incremental cache: a binary newer than the freshness bound is still valid
+    # -- skip the (expensive) recompile and just re-run it.
+    cached = File.exist?(bin) && File.mtime(bin).to_i > need
     # Test binaries are built to run once and check output, not for runtime
     # speed, so compile at -O1 rather than the -O2 release default: -O1 still
     # prunes the unreferenced runtime-header statics (unlike -O0) but skips the
     # expensive optimization passes, cutting per-file cc time ~2x on a real-app
     # translation unit (#3202).
-    compile(prj, src, bin, "-O 1")
+    compile(prj, src, bin, "-O 1") unless cached
     outf = bin + ".out"
     system("#{bin} > #{outf} 2>&1")
     actual = File.exist?(outf) ? File.read(outf) : ""
@@ -1003,7 +1011,7 @@ def cmd_test(prj, files, regen)
       expected = File.exist?(cexp) ? File.read(cexp) : ""
     end
     if actual == expected
-      puts "ok   #{t}"
+      puts "ok   #{t}" + (cached ? " (cached)" : "")
     else
       puts "FAIL #{t}"
       puts "--- expected"
