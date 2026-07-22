@@ -692,7 +692,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "; _t%d.tag == SP_TAG_STR ? ", tv);
     if (argc == 0) buf_printf(b, "sp_str_split_ws(_t%d.v.s)", tv);
     else if (argc == 1) {
-      buf_printf(b, "sp_str_split_drop_trailing(_t%d.v.s, ", tv); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+      /* a regex separator splits with sp_re_split, not the string-separator path
+         (which would coerce the pattern to a bogus literal separator) (#3212). */
+      if (comp_ntype(c, argv[0]) == TY_REGEX) {
+        buf_puts(b, "sp_re_split("); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d.v.s)", tv);
+      } else {
+        buf_printf(b, "sp_str_split_drop_trailing(_t%d.v.s, ", tv); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+      }
     } else {
       buf_printf(b, "sp_str_split_limit(_t%d.v.s, ", tv); emit_str_expr(c, argv[0], b);
       buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
