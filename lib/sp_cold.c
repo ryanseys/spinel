@@ -1711,6 +1711,17 @@ sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVa
   e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size; e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = "each";
   return e;
 }
+/* Blockless Kernel#loop: an infinite Enumerator that yields nil forever (#3236).
+   The generator is internal; only sp_loop_enum is exposed (sp_runtime.h). */
+static void sp_loop_gen(sp_Fiber *f) {
+  (void)f;
+  for (;;) sp_Fiber_yield(sp_box_nil());
+}
+sp_Enumerator *sp_loop_enum(void) {
+  sp_Enumerator *e = sp_Enumerator_new_gen(sp_loop_gen, NULL, sp_box_nil());
+  e->meth = "loop";
+  return e;
+}
 sp_RbVal sp_enum_gen_pull(sp_Enumerator *e) {
   if (!e->fib) {
     e->fib = sp_Fiber_new(e->gen);
