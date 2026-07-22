@@ -4982,7 +4982,9 @@ static const char *sp_OpenStruct_inspect(sp_OpenStruct *o){
     sp_String_append(s, sp_poly_inspect(sp_SymPolyHash_get(o->tbl,k)));
   }
   sp_String_append(s,">");
-  return sp_String_cstr(s);
+  /* an independent GC heap string, not the sp_String's own buffer: the wrapper
+     is unrooted on return and its data would dangle if the result is stored. */
+  return sp_str_concat(sp_String_cstr(s), (&("\xff")[1]));
 }
 /* MatchData#named_captures(symbolize_names: true) and #deconstruct_keys: the
    named captures as a symbol-keyed hash (#2503, #2530). */

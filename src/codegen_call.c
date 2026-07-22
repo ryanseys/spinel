@@ -7137,7 +7137,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
     if (sp_streq(name, "inspect") || (sp_streq(name, "to_s") && argc == 0)) {
-      buf_puts(b, "sp_String_new(sp_OpenStruct_inspect("); emit_expr(c, recv, b); buf_puts(b, "))");
+      /* inspect/to_s is a TY_STRING (const char*); wrapping it in sp_String_new
+         produced an sp_String* that was then cast straight to const char*, so
+         puts printed the struct's raw bytes (#3270). Return the const char*. */
+      buf_puts(b, "sp_OpenStruct_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "respond_to?") && argc >= 1) {
