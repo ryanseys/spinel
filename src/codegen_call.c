@@ -12759,15 +12759,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (tcn && sp_streq(tcn, "IO")) {
       if (sp_streq(name, "pipe") && argc == 0) { buf_puts(b, "sp_io_pipe()"); return; }
       if (sp_streq(name, "copy_stream") && argc == 2) {
-        /* IO.copy_stream(src, dst) with StringIO endpoints: read src from its
-           current position to the end and append it to dst, returning the byte
-           count -- sp_io_copy_stream takes two path strings, so a StringIO arg
-           passed straight in was an incompatible-pointer error (#3216). */
-        int a0_sio = node_is_stringio(c, argv[0]);
-        int a1_sio = node_is_stringio(c, argv[1]);
-        if (a0_sio && a1_sio) {
-          buf_puts(b, "sp_StringIO_write("); emit_expr(c, argv[1], b);
-          buf_puts(b, ", sp_StringIO_read("); emit_expr(c, argv[0], b);
+        /* IO.copy_stream(src, dst): read the whole source, write it to the dest,
+           returning the byte count. sp_io_copy_stream takes two path strings, so
+           a StringIO (#3216) or an IO/socket (#3217, an sp_File*) endpoint passed
+           straight in was an incompatible-pointer error. When both endpoints are
+           stream objects (StringIO or IO), read/write them by kind; two path
+           strings keep the filename copy. */
+        int a0_sio = node_is_stringio(c, argv[0]), a0_io = comp_ntype(c, argv[0]) == TY_IO;
+        int a1_sio = node_is_stringio(c, argv[1]), a1_io = comp_ntype(c, argv[1]) == TY_IO;
+        if ((a0_sio || a0_io) && (a1_sio || a1_io)) {
+          buf_puts(b, a1_sio ? "sp_StringIO_write(" : "sp_File_write(");
+          emit_expr(c, argv[1], b);
+          buf_puts(b, a0_sio ? ", sp_StringIO_read(" : ", sp_File_read(");
+          emit_expr(c, argv[0], b);
           buf_puts(b, "))"); return;
         }
         buf_puts(b, "sp_io_copy_stream("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
