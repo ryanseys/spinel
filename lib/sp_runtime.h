@@ -7777,7 +7777,27 @@ void sp_Enumerator_scan(void *p);
    hash's values / keys (each pair from the generic walker, second/first
    element taken). */
 static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside);
+sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size);
+/* Lazy stepping for a blockless #each over an endless integer range: rather
+   than materialize (impossible -- sp_enum_items_from raises RangeError), yield
+   first, first+step, ... forever through the fiber-generator path, so #next /
+   #peek step one value at a time and #rewind restarts from `first` (#3229). */
+typedef struct { mrb_int first; mrb_int step; } sp_endless_range_cap;
+static void sp_endless_range_gen(sp_Fiber *f) {
+  sp_endless_range_cap *cap = (sp_endless_range_cap *)f->user_data;
+  mrb_int v = cap->first;
+  for (;;) { sp_Fiber_yield(sp_box_int(v)); v += cap->step; }
+}
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
+  if (arr.tag == SP_TAG_OBJ && arr.cls_id == SP_BUILTIN_RANGE && arr.v.p &&
+      ((sp_Range *)arr.v.p)->last == INTPTR_MAX) {
+    sp_Range *r = (sp_Range *)arr.v.p;
+    sp_endless_range_cap *cap = (sp_endless_range_cap *)sp_gc_alloc(sizeof *cap, NULL, NULL);
+    cap->first = r->first; cap->step = r->step ? r->step : 1;
+    sp_Enumerator *e = sp_Enumerator_new_gen(sp_endless_range_gen, cap, sp_box_nil());
+    e->source = arr; e->meth = "each";
+    return e;
+  }
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
