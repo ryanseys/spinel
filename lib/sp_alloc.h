@@ -62,6 +62,9 @@ extern size_t sp_str_heap_bytes;         /* live string-heap bytes */
 extern size_t sp_str_threshold;          /* string-GC trigger (own heuristic) */
 extern size_t sp_str_threshold_init;     /* recompute floor */
 extern int    sp_str_stress_checked;     /* one-shot SPINEL_GC_STRESS check */
+#ifdef SP_THREADS
+void sp_alloc_stress_init(void);         /* race-free one-shot stress check (pre-helpers) */
+#endif
 
 extern const char sp_str_empty_data[];
 #define sp_str_empty (sp_str_empty_data + 1)
@@ -115,7 +118,7 @@ static inline char *sp_str_alloc(size_t len) {
      per worker independent of N. A shared aggregate check (threshold/N) instead
      multiplied the collection count by N and left allocation-heavy parallel
      workloads STW-bound; this keeps them flat. */
-  if (sp_str_heap_bytes_w[wid] > sp_str_threshold) sp_stw_collect();
+  if (SP_GC_CTR_GET(sp_str_heap_bytes_w[wid]) > sp_str_threshold) sp_stw_collect();
   h = (sp_str_hdr *)malloc(total);
   if (!h) sp_oom_die();
   h->size = (uint32_t)total;
@@ -126,7 +129,7 @@ static inline char *sp_str_alloc(size_t len) {
      head; the sweep runs under stop-the-world). */
   h->next = sp_str_heap_w[wid];
   sp_str_heap_w[wid] = h;
-  sp_str_heap_bytes_w[wid] += total;
+  SP_GC_CTR_ADD(sp_str_heap_bytes_w[wid], total);
 #else
   SP_HEAP_LOCK();
   if (!sp_str_stress_checked) { sp_str_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { SP_GC_CTR_SET(sp_str_threshold, 2048); sp_str_threshold_init = 2048; } }

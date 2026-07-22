@@ -14,7 +14,7 @@ size_t sp_str_heap_bytes_w[SP_MAX_WORKERS];      /* zero-init: 0 bytes */
 static size_t sp_str_bytes_total(void) {
   size_t s = 0;
   int n = sp_active_workers; if (n < 1) n = 1; if (n > SP_MAX_WORKERS) n = SP_MAX_WORKERS;
-  for (int i = 0; i < n; i++) s += sp_str_heap_bytes_w[i];
+  for (int i = 0; i < n; i++) s += SP_GC_CTR_GET(sp_str_heap_bytes_w[i]);
   return s;
 }
 #else
@@ -35,6 +35,26 @@ int sp_gc_stress_checked = 0;
 
 #ifdef SP_THREADS
 pthread_mutex_t sp_heap_lock = PTHREAD_MUTEX_INITIALIZER;   /* see sp_alloc.h */
+
+/* One-time SPINEL_GC_STRESS check, run single-threaded before the first helper
+   worker spawns (sp_sched_ensure_workers). The alloc fast paths keep their lazy
+   `if (!checked)` guard for the single-threaded build, but under threads letting
+   workers race to first-write that flag on the hot path is a data race; doing it
+   here once means every worker only ever reads it (the pthread_create of the
+   helpers is the happens-before edge). Idempotent: safe if main already tripped
+   the lazy guard during startup. */
+void sp_alloc_stress_init(void) {
+  const char *e = getenv("SPINEL_GC_STRESS");
+  int stress = (e && *e && *e != '0');
+  if (!sp_str_stress_checked) {
+    sp_str_stress_checked = 1;
+    if (stress) { sp_str_threshold = 2048; sp_str_threshold_init = 2048; }
+  }
+  if (!sp_gc_stress_checked) {
+    sp_gc_stress_checked = 1;
+    if (stress) { SP_GC_CTR_SET(sp_gc_threshold, 2048); sp_gc_threshold_init = 2048; }
+  }
+}
 #endif
 
 /* Re-tune the object / string GC thresholds from the pre-collect live bytes
