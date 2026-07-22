@@ -7036,6 +7036,9 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     /* Bind accumulator to memo param before loop */
     if (mname) {
       emit_indent(g_pre, g_indent);
+      /* An unread memo param is never registered as an enclosing-scope local,
+         so the decl pass emits no `lv_<memo>` declaration; declare it inline. */
+      if (!memo_lv) { emit_ctype(c, memo_decl, g_pre); buf_puts(g_pre, " "); }
       buf_printf(g_pre, "lv_%s = _t%d;\n", mname, tacc);
     }
     /* Loop */
@@ -7250,6 +7253,11 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     if (p1) {
       emit_indent(g_pre, g_indent);
       TyKind p1_type = outer_p1 ? outer_p1->type : accT;
+      /* A memo param the block never reads is not registered as an
+         enclosing-scope local, so the decl pass emits no `lv_<memo>`
+         declaration (this bites the empty-`{}` seed, whose accumulator type is
+         only settled here). Declare it inline so the dead binding compiles. */
+      if (!outer_p1) { emit_ctype(c, accT, g_pre); buf_puts(g_pre, " "); }
       if (p1_type == TY_POLY && accT != TY_POLY) {
         char tacc_s[32]; snprintf(tacc_s, sizeof tacc_s, "_t%d", tacc);
         Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, accT, tacc_s, &bx);
