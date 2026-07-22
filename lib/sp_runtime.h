@@ -884,9 +884,18 @@ static sp_StrIntHash*sp_gc_stat(void){
      node. Unlock before building the hash -- sp_gc_alloc takes the same
      (non-recursive) lock. */
   size_t str_bytes=0; mrb_int str_count=0;
+#ifdef SP_THREADS
+  /* Per-worker lists (see sp_alloc.h): each has a single pusher, and only the
+     head moves, so a snapshot walk reaches fully-linked nodes -- at worst it
+     misses a just-pushed one (benign undercount for an introspection stat). */
+  { int nw = sp_active_workers; if (nw < 1) nw = 1; if (nw > SP_MAX_WORKERS) nw = SP_MAX_WORKERS;
+    for (int wi = 0; wi < nw; wi++)
+      for(sp_str_hdr*sh=sp_str_heap_w[wi]; sh; sh=sh->next){ str_bytes+=sh->size; str_count++; } }
+#else
   SP_HEAP_LOCK();
   for(sp_str_hdr*sh=sp_str_heap; sh; sh=sh->next){ str_bytes+=sh->size; str_count++; }
   SP_HEAP_UNLOCK();
+#endif
   sp_StrIntHash*h=sp_StrIntHash_new();sp_StrIntHash_set(h,SPL("bytes"),(mrb_int)SP_GC_CTR_GET(sp_gc_bytes));sp_StrIntHash_set(h,SPL("old_bytes"),(mrb_int)sp_gc_old_bytes);sp_StrIntHash_set(h,SPL("threshold"),(mrb_int)sp_gc_threshold);sp_StrIntHash_set(h,SPL("cycle"),(mrb_int)sp_gc_cycle);sp_StrIntHash_set(h,SPL("full_runs"),(mrb_int)(sp_gc_cycle/SP_GC_FULL_INTERVAL));sp_StrIntHash_set(h,SPL("str_bytes"),(mrb_int)str_bytes);sp_StrIntHash_set(h,SPL("str_count"),str_count);return h;}
 
 static void sp_StrStrHash_fin(void*p){sp_StrStrHash*h=(sp_StrStrHash*)p;free(h->keys);free(h->vals);free(h->order);}

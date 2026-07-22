@@ -6,8 +6,21 @@
 #include "sp_alloc.h"
 #include "sp_dtoa.h"   /* sp_format_float for locale-independent Float#to_s */
 
+#ifdef SP_THREADS
+sp_str_hdr *sp_str_heap_w[SP_MAX_WORKERS];       /* zero-init: NULL lists */
+size_t sp_str_heap_bytes_w[SP_MAX_WORKERS];      /* zero-init: 0 bytes */
+/* Aggregate live string bytes across every worker's list. Called only off the
+   fast path (collection trigger uses the per-worker slice; sweep/retune here). */
+static size_t sp_str_bytes_total(void) {
+  size_t s = 0;
+  int n = sp_active_workers; if (n < 1) n = 1; if (n > SP_MAX_WORKERS) n = SP_MAX_WORKERS;
+  for (int i = 0; i < n; i++) s += sp_str_heap_bytes_w[i];
+  return s;
+}
+#else
 sp_str_hdr *sp_str_heap = NULL;
 size_t sp_str_heap_bytes = 0;
+#endif
 size_t sp_str_threshold = 256 * 1024;
 size_t sp_str_threshold_init = 256 * 1024;
 int sp_str_stress_checked = 0;
@@ -32,10 +45,23 @@ void sp_gc_retune_object(size_t before) {
   else if (sp_gc_bytes > 0) { sp_gc_threshold = sp_gc_bytes * 4; if (sp_gc_threshold < sp_gc_threshold_init) sp_gc_threshold = sp_gc_threshold_init; }
   else { sp_gc_threshold = sp_gc_threshold_init; }
 }
+/* `before` is the pre-sweep live bytes; `after` the survivors. The threshold is
+   the PER-WORKER budget (each worker triggers on its own list, so the aggregate
+   heap is bounded by N * threshold). Retune on the per-worker average so the
+   budget tracks a single worker's survivor size and does NOT inflate by N each
+   cycle -- retuning on the aggregate would grow it geometrically for long-lived
+   strings. The single-threaded build works in absolute bytes (N == 1). */
 static void sp_str_retune(size_t before) {
-  size_t freed = before - sp_str_heap_bytes;
+#ifdef SP_THREADS
+  int nw = sp_active_workers; if (nw < 1) nw = 1;
+  size_t after = sp_str_bytes_total() / (size_t)nw;
+  before /= (size_t)nw;
+#else
+  size_t after = sp_str_heap_bytes;
+#endif
+  size_t freed = before - after;
   if (freed < before / 4) { sp_str_threshold = before * 2; }
-  else if (sp_str_heap_bytes > 0) { sp_str_threshold = sp_str_heap_bytes * 4; if (sp_str_threshold < sp_str_threshold_init) sp_str_threshold = sp_str_threshold_init; }
+  else if (after > 0) { sp_str_threshold = after * 4; if (sp_str_threshold < sp_str_threshold_init) sp_str_threshold = sp_str_threshold_init; }
   else { sp_str_threshold = sp_str_threshold_init; }
 }
 
@@ -70,8 +96,13 @@ int sp_gc_collection_wanted(void) {
      is set, and this is only called with it clear, under the same lock
      that publishes it. A stale read at worst skips one redundant
      collection. */
+#ifdef SP_THREADS
+  return SP_GC_CTR_GET(sp_gc_bytes) > SP_GC_CTR_GET(sp_gc_threshold) ||
+         sp_str_bytes_total() > SP_GC_CTR_GET(sp_str_threshold);
+#else
   return SP_GC_CTR_GET(sp_gc_bytes) > SP_GC_CTR_GET(sp_gc_threshold) ||
          SP_GC_CTR_GET(sp_str_heap_bytes) > SP_GC_CTR_GET(sp_str_threshold);
+#endif
 }
 
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
@@ -123,8 +154,11 @@ void sp_str_lcache_clear(void) {
    mark phase; sweep keeps the marked ones and frees the rest. A frozen heap
    string (0xf1) is kept across sweeps (a live frozen global must survive, and
    frozen literals are immortal). */
-void sp_str_sweep(void) {
-  sp_str_hdr **pp = &sp_str_heap;
+/* Sweep one worker's list head (or the single st list). Runs under stop-the-
+   world (threaded) or the held heap lock (st), so no concurrent push races it.
+   `bytes` is decremented per freed string to keep the live-byte count in step. */
+static void sp_str_sweep_list(sp_str_hdr **head, size_t *bytes) {
+  sp_str_hdr **pp = head;
   while (*pp) {
     sp_str_hdr *h = *pp;
     char *body = (char *)(h + 1);
@@ -137,10 +171,19 @@ void sp_str_sweep(void) {
     }
     else {
       *pp = h->next;
-      sp_str_heap_bytes -= h->size;   /* keep the string-heap live-byte count in step */
+      *bytes -= h->size;
       free(h);
     }
   }
+}
+
+void sp_str_sweep(void) {
+#ifdef SP_THREADS
+  int n = sp_active_workers; if (n < 1) n = 1; if (n > SP_MAX_WORKERS) n = SP_MAX_WORKERS;
+  for (int i = 0; i < n; i++) sp_str_sweep_list(&sp_str_heap_w[i], &sp_str_heap_bytes_w[i]);
+#else
+  sp_str_sweep_list(&sp_str_heap, &sp_str_heap_bytes);
+#endif
   sp_str_lcache_clear();
 }
 
@@ -187,8 +230,12 @@ void sp_PolyArray_pool_recycle(sp_gc_hdr *h) {
    marks for the next cycle. Retuning here (with the collector-side retunes
    removed) keeps the trigger tracking the live size in one place. */
 static void sp_str_sweep_gated(void) {
-  if (SP_GC_CTR_GET(sp_str_heap_bytes) <= SP_GC_CTR_GET(sp_str_threshold)) return;
-  size_t before = sp_str_heap_bytes;
+#ifdef SP_THREADS
+  size_t before = sp_str_bytes_total();
+#else
+  size_t before = SP_GC_CTR_GET(sp_str_heap_bytes);
+#endif
+  if (before <= SP_GC_CTR_GET(sp_str_threshold)) return;
   sp_str_sweep();
   sp_str_retune(before);
 }

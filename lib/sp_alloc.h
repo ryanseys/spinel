@@ -42,9 +42,27 @@ extern pthread_mutex_t sp_heap_lock;
 #define SP_HEAP_UNLOCK() ((void)0)
 #endif
 
-/* ---- shared string-heap state (defined in sp_alloc.c) ---- */
+/* ---- shared string-heap state (defined in sp_alloc.c) ----
+   Threaded build: the string heap is per-worker (one singly-linked list + live-
+   byte counter per OS worker), so sp_str_alloc pushes lock-free onto its own
+   worker's list -- the shared sp_heap_lock serialized every string allocation
+   and made allocation-heavy parallel workloads scale NEGATIVELY. A started green
+   thread is pinned to its worker (home_wid), so only that worker's M ever pushes
+   onto its list, and it pumps one green thread at a time: no concurrent push.
+   The collector reaches every list under stop-the-world (all workers parked).
+   The single-threaded build keeps one global list and stays byte-identical. */
+#ifdef SP_THREADS
+# ifndef SP_MAX_WORKERS
+#  define SP_MAX_WORKERS 256
+# endif
+extern SP_TLS int sp_worker_id;                    /* this worker's slot (sp_sched.c) */
+extern int sp_active_workers;                      /* live worker count (sp_sched.c) */
+extern sp_str_hdr *sp_str_heap_w[SP_MAX_WORKERS];  /* per-worker live-string lists */
+extern size_t sp_str_heap_bytes_w[SP_MAX_WORKERS]; /* per-worker live string bytes */
+#else
 extern sp_str_hdr *sp_str_heap;          /* live-string singly-linked list head */
 extern size_t sp_str_heap_bytes;         /* live string-heap bytes */
+#endif
 extern size_t sp_str_threshold;          /* string-GC trigger (own heuristic) */
 extern size_t sp_str_threshold_init;     /* recompute floor */
 extern int    sp_str_stress_checked;     /* one-shot SPINEL_GC_STRESS check */
@@ -85,27 +103,41 @@ void sp_stw_collect(void);   /* lib/sp_sched.c: stop-the-world collect (threaded
 
 static inline char *sp_str_alloc(size_t len) {
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
-  SP_HEAP_LOCK();
+  sp_str_hdr *h;
   /* String-heap pressure drives its own collection (see sp_str_heap_bytes).
      Collect BEFORE the new allocation, like sp_gc_alloc, so the string being
      built isn't yet live during the sweep. Operands of the calling op (e.g. the
      arguments to sp_str_concat) must be reachable across this point -- they are
      for rooted locals; the codegen's SP_GC_ROOT discipline is what keeps them
      so. Threshold recompute mirrors sp_gc_alloc's. */
+#ifdef SP_THREADS
+  int wid = sp_worker_id;
+  if (!sp_str_stress_checked) { sp_str_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { sp_str_threshold = 2048; sp_str_threshold_init = 2048; } }
+  /* Per-worker trigger: the fast path reads only this worker's own byte count,
+     no shared state. Each worker fires at the full threshold, so the aggregate
+     bound scales with the worker count -- keeping the stop-the-world frequency
+     per worker independent of N. A shared aggregate check (threshold/N) instead
+     multiplied the collection count by N and left allocation-heavy parallel
+     workloads STW-bound; this keeps them flat. */
+  if (sp_str_heap_bytes_w[wid] > sp_str_threshold) sp_stw_collect();
+  h = (sp_str_hdr *)malloc(total);
+  if (!h) sp_oom_die();
+  h->size = (uint32_t)total;
+  h->len = (uint32_t)len;
+  h->hash = 0;
+  /* Publish h->next before the head store so a concurrent GC.stat walk that
+     observes the new head reaches a fully-linked node (only pushes touch the
+     head; the sweep runs under stop-the-world). */
+  h->next = sp_str_heap_w[wid];
+  sp_str_heap_w[wid] = h;
+  sp_str_heap_bytes_w[wid] += total;
+#else
+  SP_HEAP_LOCK();
   if (!sp_str_stress_checked) { sp_str_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { SP_GC_CTR_SET(sp_str_threshold, 2048); sp_str_threshold_init = 2048; } }
   if (SP_GC_CTR_GET(sp_str_heap_bytes) > sp_str_threshold) {
-#ifdef SP_THREADS
-    /* Same as sp_gc_alloc: a string-heap collection must stop the world too,
-       else a worker still mutating the object/string heap races the sweep.
-       Drop the heap lock before the barrier so we stay parkable. */
-    SP_HEAP_UNLOCK();
-    sp_stw_collect();
-    SP_HEAP_LOCK();
-#else
     sp_str_collect_retune();         /* sp_gc_collect runs sp_str_sweep */
-#endif
   }
-  sp_str_hdr *h = (sp_str_hdr *)malloc(total);
+  h = (sp_str_hdr *)malloc(total);
   if (!h) sp_oom_die();
   h->next = sp_str_heap;
   h->size = (uint32_t)total;
@@ -114,6 +146,7 @@ static inline char *sp_str_alloc(size_t len) {
   sp_str_heap = h;
   SP_GC_CTR_ADD(sp_str_heap_bytes, total);
   SP_HEAP_UNLOCK();
+#endif
   /* Don't fold string-heap pressure into sp_gc_bytes: the threshold heuristic
      in sp_gc_alloc is keyed on object-heap survivors, and the str-heap sweep
      that runs alongside (sp_str_sweep, from sp_gc_collect) doesn't add surviving

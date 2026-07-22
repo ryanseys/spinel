@@ -50,7 +50,9 @@ void (*sp_safepoint_publish_hook)(void) = NULL;   /* set by the generated TU (sp
  * are entered and left with the lock held, bracketing their transfers. In the
  * single-threaded archive the macros are no-ops, so that build is byte-identical
  * and the N=1 path is unchanged save for the (uncontended) lock calls. */
+#ifndef SP_MAX_WORKERS
 #define SP_MAX_WORKERS 256   /* both builds: sizes the per-worker run-queue array */
+#endif
 #ifdef SP_THREADS
 #include <pthread.h>
 static pthread_mutex_t g_sched_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -65,7 +67,7 @@ static pthread_mutex_t g_sched_lock = PTHREAD_MUTEX_INITIALIZER;
  * or, if one is already running, parks like everyone else -- there is no
  * separate collector lock to block on, so a worker that crossed the threshold
  * can never stall the collector by being un-parkable. */
-static int            g_nworkers = 1;   /* worker count; C-3b raises it past 1 */
+int                   sp_active_workers = 1;   /* exported: worker count */   /* worker count; C-3b raises it past 1 */
 static int            g_nparked  = 0;   /* workers parked at the barrier right now */
 /* The fiber each parked worker was running when it published its roots (a green
    thread, or the worker's root fiber for an idle/main worker). The collector
@@ -154,7 +156,7 @@ static void sp_stw_park_locked(void) {
      set (then sweeping a still-live root). */
   unsigned my_epoch = g_stw_epoch;
   g_nparked++;
-  if (g_nparked >= g_nworkers - 1) pthread_cond_signal(&g_stw_request);
+  if (g_nparked >= sp_active_workers - 1) pthread_cond_signal(&g_stw_request);
   while (g_stw_active && g_stw_epoch == my_epoch) pthread_cond_wait(&g_stw_release, &g_sched_lock);
   if (g_stw_epoch == my_epoch) g_nparked--;
 }
@@ -204,7 +206,7 @@ void sp_stw_collect(void) {
   /* wake idle workers (and main waiting in its pump) so they park at the barrier
      rather than sit through the collection without publishing their roots. */
   pthread_cond_broadcast(&g_sched_work);
-  while (g_nparked < g_nworkers - 1) pthread_cond_wait(&g_stw_request, &g_sched_lock);
+  while (g_nparked < sp_active_workers - 1) pthread_cond_wait(&g_stw_request, &g_sched_lock);
   /* Our own root fiber holds this worker's suspended context (the main thread's
      top-level locals if it triggered the collection while pumping a green
      thread). We do not park, so record it here for the mark like a parked worker
@@ -242,7 +244,7 @@ static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread thi
    lock itself would mean reworking the off-cpu handshake (deferred, see git log).
    g_runnable is the total parked-runnable count across every queue, for the
    quiescence/deadlock predicate. */
-static SP_TLS int g_worker_id = 0;       /* this worker's run-queue slot (0 = main); both builds */
+SP_TLS int sp_worker_id = 0;       /* exported: sp_alloc.h indexes the per-worker string heaps */       /* this worker's run-queue slot (0 = main); both builds */
 typedef struct { sp_thread *head, *tail; } sp_runq;
 static sp_runq    g_grq;                 /* global run queue: spawned + woken threads */
 static sp_runq    g_lrq[SP_MAX_WORKERS]; /* per-worker local run queues (rerun locality) */
@@ -294,7 +296,7 @@ static sp_thread *sched_pick(int wid) {
   t = runq_pop(&g_grq);
   if (t) return t;
 #ifdef SP_THREADS
-  for (int i = 0; i < g_nworkers; i++) {   /* steal one from a busier worker */
+  for (int i = 0; i < sp_active_workers; i++) {   /* steal one from a busier worker */
     if (i == wid) continue;
     /* Only an UNSTARTED thread may be stolen: a started one is pinned to its
        home worker's TLS (home_wid) and must not resume elsewhere. Unstarted
@@ -375,7 +377,7 @@ void sp_sched_init(void) {
   g_prev_globals_hook = sp_gc_mark_globals_hook;
   sp_gc_mark_globals_hook = sp_sched_globals_mark;
 #ifdef SP_THREADS
-  g_worker_id = 0;                          /* main is worker 0 */
+  sp_worker_id = 0;                          /* main is worker 0 */
   g_wslot[0].tid = pthread_self();
   g_wslot[0].active = 1;
   sp_sched_start_workers();   /* spawn N-1 helper OS workers (see below) */
@@ -418,13 +420,13 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
   g_nrunning++;
   t->state = SP_TH_RUNNING;
   t->off_cpu = 0;        /* on-cpu now: no other worker may pick it up */
-  if (t->home_wid < 0) t->home_wid = (short)g_worker_id;   /* pin to this worker (TLS affinity) */
+  if (t->home_wid < 0) t->home_wid = (short)sp_worker_id;   /* pin to this worker (TLS affinity) */
 #ifdef SP_THREADS
   /* Publish to the monitor that this worker is now running t, and when -- it uses
      this to enforce the timeslice. Nudge the monitor if it is idle so it starts
      ticking. */
-  g_wslot[g_worker_id].cur = t;
-  g_wslot[g_worker_id].since = sp_monotonic_now();
+  g_wslot[sp_worker_id].cur = t;
+  g_wslot[sp_worker_id].since = sp_monotonic_now();
   sp_sysmon_wake();
 #endif
   int raised = 0;
@@ -440,7 +442,7 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
   SCHED_LOCK();
   g_current = saved;
 #ifdef SP_THREADS
-  g_wslot[g_worker_id].cur = NULL;   /* no longer timing t on this worker */
+  g_wslot[sp_worker_id].cur = NULL;   /* no longer timing t on this worker */
   /* If the monitor flagged t but it yielded/blocked/died before reaching a poll,
      retire the request here so the flag does not stay stuck set. */
   if (t->preempt_request) { t->preempt_request = 0; g_npreempt--; sp_recompute_safepoint_flag(); }
@@ -534,14 +536,14 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
        main is the only worker that can finish it, so run it here -- otherwise
        the pump and that thread deadlock waiting on each other. */
 #ifdef SP_THREADS
-    if (g_nworkers > 1) {
+    if (sp_active_workers > 1) {
       sp_thread *t = runq_pop(&g_lrq[0]);
       if (t) { run_thread_once(t); continue; }
     }
     else
 #endif
     {
-      sp_thread *t = sched_pick(g_worker_id);
+      sp_thread *t = sched_pick(sp_worker_id);
       if (t) { run_thread_once(t); continue; }
     }
 #ifdef SP_THREADS
@@ -574,7 +576,7 @@ static void sp_sched_pass(void) {
      snapshot and waits for the next sweep, so it cannot starve main. */
   int n = g_runnable;
   while (n-- > 0) {
-    sp_thread *t = sched_pick(g_worker_id);
+    sp_thread *t = sched_pick(sp_worker_id);
     if (!t) return;
     run_thread_once(t);
   }
@@ -615,10 +617,10 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
      thread it spawns would starve in its local queue (stealing only kicks in
      when the global queue is empty); send those to the global queue. */
 #ifdef SP_THREADS
-  if (g_current == &g_main_thread && g_nworkers > 1) rq_push(t);
+  if (g_current == &g_main_thread && sp_active_workers > 1) rq_push(t);
   else
 #endif
-  lrq_push(g_worker_id, t);
+  lrq_push(sp_worker_id, t);
   SCHED_WAKE();   /* a helper worker may be idle: hand it the new thread */
   SCHED_UNLOCK();
   return t;
@@ -806,7 +808,7 @@ static void *sp_sysmon_main(void *arg) {
     }
     /* Timeslice enforcement: flag any worker over the quantum, once per slice. */
     int busy = 0;
-    for (int i = 0; i < g_nworkers; i++) {
+    for (int i = 0; i < sp_active_workers; i++) {
       sp_thread *r = g_wslot[i].active ? g_wslot[i].cur : NULL;
       if (!r) continue;
       busy = 1;
@@ -969,7 +971,7 @@ int sp_sched_wait_io(int fd, short events) {
    collection is in progress and exits when main signals shutdown at drain. */
 static void *sp_worker_main(void *arg) {
   int wid = (int)(intptr_t)arg;
-  g_worker_id = wid;          /* TLS: read only by this worker */
+  sp_worker_id = wid;          /* TLS: read only by this worker */
   sp_fiber_worker_init();
   SCHED_LOCK();
   g_wslot[wid].tid = pthread_self();   /* publish under the lock; the monitor reads it there */
@@ -1025,7 +1027,7 @@ static void sp_sched_start_workers(void) {
      sleep falls back to a plain blocking nanosleep. */
   /* Fix the worker count before spawning anything, so the monitor and helpers
      read it through the pthread_create happens-before edge (no lock needed). */
-  g_nworkers = sp_worker_count();
+  sp_active_workers = sp_worker_count();
   /* Install the preemption signal handler before any worker can be targeted.
      SA_RESTART so an in-flight library syscall resumes rather than failing with
      EINTR -- the yield itself is cooperative (at the next safepoint poll), the
@@ -1049,8 +1051,8 @@ static void sp_sched_start_workers(void) {
     for (int e = 0; e < 2; e++) { int fl = fcntl(g_sysmon_pipe[e], F_GETFL, 0); if (fl >= 0) fcntl(g_sysmon_pipe[e], F_SETFL, fl | O_NONBLOCK); }
   } else { g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1; }
   if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
-  for (int i = 1; i < g_nworkers; i++)
-    if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, (void *)(intptr_t)i) != 0) { g_nworkers = i; break; }
+  for (int i = 1; i < sp_active_workers; i++)
+    if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, (void *)(intptr_t)i) != 0) { sp_active_workers = i; break; }
 }
 #endif
 
@@ -1069,7 +1071,7 @@ void sp_sched_drain(void) {
   sp_sysmon_wake();   /* wake the monitor (idle or in poll) so it sees shutdown */
   int sysmon_running = g_sysmon_started;
   SCHED_UNLOCK();
-  for (int i = 1; i < g_nworkers; i++) pthread_join(g_worker_threads[i], NULL);
+  for (int i = 1; i < sp_active_workers; i++) pthread_join(g_worker_threads[i], NULL);
   if (sysmon_running) pthread_join(g_sysmon, NULL);
   return;
 #endif
