@@ -879,7 +879,9 @@ end
 
 # --- build -------------------------------------------------------------------
 
-def compile(prj, entry, out, extra)
+# The spinel command line that compiles `entry` to `out`. Split out from
+# compile() so `spin test` can collect commands and run them in parallel.
+def compile_cmd(prj, entry, out, extra)
   # Inside a spin project the dependency universe is fully known (manifest +
   # lock), so an unresolvable require is a bug, not a maybe: flip the
   # compiler's require gate from warning to hard error. This also makes
@@ -900,7 +902,11 @@ def compile(prj, entry, out, extra)
   prj.native_build_libs.split("\n").each { |l| cmd += " --link #{l}" if l != "" }
   cmd += " #{extra}" if extra != ""
   cmd += " -o #{out}"
-  ok = system(cmd)
+  cmd
+end
+
+def compile(prj, entry, out, extra)
+  ok = system(compile_cmd(prj, entry, out, extra))
   unless ok
     # close the add-a-package loop: wrap the compiler's unsatisfiable-require error
     $stderr.puts "spin: build failed (hint: an unresolved require may need a dependency: spin add <name> --path <dir>)"
@@ -970,48 +976,75 @@ def cmd_test(prj, files, regen)
   tdir = File.join(prj.root, "build/test")
   Dir.mkdir(File.join(prj.root, "build")) unless Dir.exist?(File.join(prj.root, "build"))
   Dir.mkdir(tdir) unless Dir.exist?(tdir)
+  inc = ""
+  prj.dep_paths.each { |d| inc += " -I #{d}" }
+  inc += " -I #{prj.root}"
+  tests.each do |t|
+    spin_die("no such test: test/#{t}") unless File.exist?(File.join(prj.root, "test", t))
+  end
+  # regen rewrites each snapshot from CRuby; kept serial (it only runs ruby).
+  if regen
+    tests.each do |t|
+      src = File.join(prj.root, "test", t)
+      system("ruby#{inc} #{src} > #{src}.expected 2>/dev/null")
+      puts "regen #{t}"
+    end
+    return
+  end
   # Incremental-build freshness bound: a test binary newer than every project
   # input AND the compiler binary may be reused without recompiling (#3202).
   need = inputs_mtime(prj)
   cm = File.exist?(spinel_bin) ? File.mtime(spinel_bin).to_i : 0
   need = cm if cm > need
+  bins = tests.map { |t| File.join(tdir, t[0..-4]) }
+  # A binary newer than the freshness bound is still valid -- reuse it (marked
+  # "(cached)") and skip the dominant recompile cost.
+  cached = tests.map { |t| b = File.join(tdir, t[0..-4]); File.exist?(b) && File.mtime(b).to_i > need }
+  # Phase 1: compile every stale test in PARALLEL. cc is the whole cost (the
+  # spinel frontend is ~1ms) and the files are independent, so hand the compile
+  # commands to `xargs -P` and let it saturate the cores -- ~ncores faster than
+  # the old one-at-a-time build. Test binaries run once to check output, not for
+  # speed, so compile at -O1 not the -O2 release default: -O1 still prunes the
+  # unreferenced runtime-header statics (unlike -O0) while skipping the expensive
+  # passes (~2x less cc per file). (#3202)
+  cmds = []
+  tests.each_index do |i|
+    next if cached[i]
+    cmds.push(compile_cmd(prj, File.join(prj.root, "test", tests[i]), bins[i], "-O 1"))
+  end
+  unless cmds.empty?
+    nproc = `nproc`.to_i
+    nproc = 1 if nproc < 1
+    cf = File.join(tdir, ".compile-cmds")
+    File.write(cf, cmds.join("\n") + "\n")
+    system("xargs -P #{nproc} -d '\\n' -I CMD sh -c CMD < #{cf}")
+    File.delete(cf) if File.exist?(cf)
+  end
+  # Phase 2: run each binary and compare, serial and in order (execution is
+  # milliseconds; only the compile above was worth parallelizing).
   fails = 0
-  tests.each do |t|
-    src = File.join(prj.root, "test", t)
-    spin_die("no such test: test/#{t}") unless File.exist?(src)
-    exp = src + ".expected"
-    inc = ""
-    prj.dep_paths.each { |d| inc += " -I #{d}" }
-    inc += " -I #{prj.root}"
-    if regen
-      system("ruby#{inc} #{src} > #{exp} 2>/dev/null")
-      puts "regen #{t}"
+  tests.each_index do |i|
+    t = tests[i]
+    bin = bins[i]
+    unless File.exist?(bin)
+      puts "FAIL #{t} (build failed)"
+      fails += 1
       next
     end
-    bin = File.join(tdir, t[0..-4])
-    # Incremental cache: a binary newer than the freshness bound is still valid
-    # -- skip the (expensive) recompile and just re-run it.
-    cached = File.exist?(bin) && File.mtime(bin).to_i > need
-    # Test binaries are built to run once and check output, not for runtime
-    # speed, so compile at -O1 rather than the -O2 release default: -O1 still
-    # prunes the unreferenced runtime-header statics (unlike -O0) but skips the
-    # expensive optimization passes, cutting per-file cc time ~2x on a real-app
-    # translation unit (#3202).
-    compile(prj, src, bin, "-O 1") unless cached
+    exp = File.join(prj.root, "test", t) + ".expected"
     outf = bin + ".out"
     system("#{bin} > #{outf} 2>&1")
     actual = File.exist?(outf) ? File.read(outf) : ""
-    expected = ""
     if File.exist?(exp)
       expected = File.read(exp)
     else
       # no snapshot: diff directly against CRuby (the subset-parity check)
       cexp = bin + ".cruby"
-      system("ruby#{inc} #{src} > #{cexp} 2>&1")
+      system("ruby#{inc} #{File.join(prj.root, "test", t)} > #{cexp} 2>&1")
       expected = File.exist?(cexp) ? File.read(cexp) : ""
     end
     if actual == expected
-      puts "ok   #{t}" + (cached ? " (cached)" : "")
+      puts "ok   #{t}" + (cached[i] ? " (cached)" : "")
     else
       puts "FAIL #{t}"
       puts "--- expected"
