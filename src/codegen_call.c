@@ -9291,6 +9291,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "path") || sp_streq(name, "to_path")) && argc == 0) {
       buf_printf(b, "sp_Dir_path(%s)", dr); free(drb.p); return;
     }
+    /* Dir#inspect renders as #<Dir:PATH> (#3250). */
+    if (sp_streq(name, "inspect") && argc == 0) {
+      buf_printf(b, "sp_sprintf(\"#<Dir:%%s>\", sp_Dir_path(%s))", dr);
+      free(drb.p); return;
+    }
     if (sp_streq(name, "close") && argc == 0) { buf_printf(b, "sp_Dir_close(%s)", dr); free(drb.p); return; }
     if (sp_streq(name, "rewind") && argc == 0) { buf_printf(b, "sp_Dir_rewind(%s)", dr); free(drb.p); return; }
     if ((sp_streq(name, "tell") || sp_streq(name, "pos")) && argc == 0) {
