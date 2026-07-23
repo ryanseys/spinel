@@ -2988,7 +2988,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
         buf_puts(b, "self");
         for (int i = 0; i < si->nparams; i++) buf_printf(b, ", lv_%s", si->pnames[i]);
         buf_puts(b, ");\n");
-      } else {
+      }
+      else {
         /* The body runs inlined at the .new site, so these params are unused
            here; the signature exists only to match the inliner's call. */
         for (int i = 0; i < si->nparams; i++) buf_printf(b, "  (void)lv_%s;\n", si->pnames[i]);
@@ -3065,7 +3066,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
           /* a struct/data (or user-#inspect) member recurses into its own inspect */
           buf_printf(b, "  sp_String_append(s, self->iv_%s ? sp_%s_inspect((sp_%s *)self->iv_%s) : \"nil\");\n",
                      iv_c(ci->ivars[i] + 1), mcn, mcn, iv_c(ci->ivars[i] + 1));
-        } else {
+        }
+        else {
           Buf ivb; memset(&ivb, 0, sizeof ivb); buf_printf(&ivb, "self->iv_%s", iv_c(ci->ivars[i] + 1));
           Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, ci->ivar_types[i], ivb.p, &bx);
           buf_printf(b, "  sp_String_append(s, sp_poly_inspect(%s));\n", bx.p);
@@ -3943,18 +3945,22 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
       snprintf(argbuf, sizeof argbuf, "%s(sp_%s *)b.v.p",
                c->classes[pcls].is_value_type ? "*" : "", pcn);
       obj_operand = 1;
-    } else if (pt == TY_POLY) {
+    }
+    else if (pt == TY_POLY) {
       snprintf(argbuf, sizeof argbuf, "b");
-    } else if (pt == TY_INT) {
+    }
+    else if (pt == TY_INT) {
       /* a scalar-typed `<=>` param (bound from scalar call sites) still gets
          an arm: guard the operand's tag, unbox, and let the body's own nil
          return (the is_a? mismatch branch) drive the not-comparable path */
       scalar_guard = "SP_TAG_INT";
       snprintf(argbuf, sizeof argbuf, "b.v.i");
-    } else if (pt == TY_FLOAT) {
+    }
+    else if (pt == TY_FLOAT) {
       scalar_guard = "SP_TAG_FLT";
       snprintf(argbuf, sizeof argbuf, "b.v.f");
-    } else {
+    }
+    else {
       continue;
     }
     buf_printf(b, "    case %d: {\n", cid);
@@ -3979,12 +3985,14 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     if (m->ret == TY_INT) {
       buf_printf(b, "      *comparable = TRUE; return (mrb_int)sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
                  dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
-    } else if (m->ret == TY_FLOAT) {
+    }
+    else if (m->ret == TY_FLOAT) {
       /* a Float `<=>` result is a valid comparison (CRuby): use its sign */
       buf_printf(b, "      mrb_float _rf = sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
                  dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
       buf_puts(b, "      *comparable = TRUE; return (_rf > 0) - (_rf < 0);\n");
-    } else {
+    }
+    else {
       /* poly `<=>`: an Integer or Float result is comparable (use its sign);
          nil or any other type (String, ...) is incomparable -> ArgumentError */
       buf_printf(b, "      sp_RbVal _r = sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
@@ -4153,7 +4161,8 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
       int pcls = ty_object_class(pt);
       snprintf(argbuf, sizeof argbuf, "%s(sp_%s *)b_",
                c->classes[pcls].is_value_type ? "*" : "", c->classes[pcls].c_name);
-    } else {
+    }
+    else {
       snprintf(argbuf, sizeof argbuf, "sp_box_obj(b_, cls_id)");
     }
     const char *dcn = c->classes[defcls].c_name;
@@ -4325,7 +4334,7 @@ void emit_regex_section(Buf *b) {
       buf_printf(b, "    sp_re_pat_%d = re_compile(", i);
       emit_str_literal(b, g_re_src[i]);
       buf_printf(b, ", %d, %d);\n", (int)strlen(g_re_src[i]), g_re_flg[i]);
-      buf_printf(b, "  } else {\n    sp_re_pat_%d = NULL;\n  }\n", i);
+      buf_printf(b, "  }\nelse {\n    sp_re_pat_%d = NULL;\n  }\n", i);
     }
   }
   /* From here on (runtime Regexp.new / dynamic patterns), a compile error
@@ -5746,7 +5755,8 @@ char *codegen_program(const NodeTable *nt) {
         if (want_message) {
           if (mi_msg >= 0)      { mi = mi_msg; dcls = dmsg; fn = "message"; }
           else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
-        } else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
+        }
+        else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
         if (mi < 0) continue;
         if ((TyKind)c->scopes[mi].ret != TY_STRING) continue;  /* string-returning only */
         const char *dcn = c->classes[dcls].c_name;

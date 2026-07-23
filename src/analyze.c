@@ -3017,7 +3017,8 @@ static int desugar_builtin_method_obj(Compiler *c) {
             memcpy(basew, sym, sl - 1); basew[sl - 1] = '\0';
             if (comp_writer_in_chain(c, ocid, basew, NULL)) { obj_accessor = 1; binop = 1; }
           }
-        } else if (comp_reader_in_chain(c, ocid, sym, NULL)) {
+        }
+        else if (comp_reader_in_chain(c, ocid, sym, NULL)) {
           obj_accessor = 1;
         }
       }
@@ -4680,7 +4681,8 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
         Scope *self = comp_scope_of(c, id);
         if (self && self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL);
       }
-    } else {
+    }
+    else {
       TyKind rt = infer_type(c, recv);
       if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
     }
@@ -4698,7 +4700,8 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
       const char *ivn = NULL;
       if (sp_streq(aty, "InstanceVariableReadNode")) {
         ivn = nt_str(nt, av[k], "name");             /* already "@name" */
-      } else if (sp_streq(aty, "CallNode") && nt_ref(nt, av[k], "receiver") < 0) {
+      }
+      else if (sp_streq(aty, "CallNode") && nt_ref(nt, av[k], "receiver") < 0) {
         const char *cn = nt_str(nt, av[k], "name");  /* a bare attr_reader call */
         if (cn && cn[0] != '@' && strlen(cn) < sizeof ivbuf - 1) {
           ivbuf[0] = '@'; strcpy(ivbuf + 1, cn); ivn = ivbuf;
@@ -5700,7 +5703,8 @@ static void mark_empty_literal_tails(Compiler *c) {
     if (sp_streq(lty, "ArrayNode")) {
       nt_arr(nt, last, "elements", &en);
       if (en == 0) c->empty_arr_recv[last] = 1;
-    } else if (sp_streq(lty, "HashNode") || sp_streq(lty, "KeywordHashNode")) {
+    }
+    else if (sp_streq(lty, "HashNode") || sp_streq(lty, "KeywordHashNode")) {
       nt_arr(nt, last, "elements", &en);
       if (en == 0) c->empty_hash_recv[last] = 1;
     }

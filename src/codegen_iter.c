@@ -477,7 +477,8 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
   else if (at == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) {
     Buf t; memset(&t, 0, sizeof t); emit_expr(c, node, &t);
     emit_unbox_text(c, ot, t.p ? t.p : "", b); free(t.p);
-  } else emit_expr(c, node, b);
+  }
+  else emit_expr(c, node, b);
 }
 
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr) {
@@ -615,11 +616,14 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       if (dv >= 0) emit_block_arg_coerced(c, dv, ot, b); else buf_puts(b, odflt);
       buf_puts(b, ")");
       free(eb.p);
-    } else if (oi < ot_static) {
+    }
+    else if (oi < ot_static) {
       emit_block_arg_coerced(c, yargs[yi], ot, b);
-    } else if (dv >= 0) {
+    }
+    else if (dv >= 0) {
       emit_block_arg_coerced(c, dv, ot, b);
-    } else {
+    }
+    else {
       buf_puts(b, odflt);
     }
     buf_puts(b, as_expr ? "; " : ";\n");
@@ -1093,7 +1097,8 @@ static int call_targets_yielding_method(Compiler *c, int id) {
         if (mi < 0 && encl->is_cmethod) mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
       }
     }
-  } else {
+  }
+  else {
     TyKind rt = comp_ntype(c, recv);
     const char *rty = nt_type(nt, recv);
     const char *cn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
@@ -1465,7 +1470,8 @@ int emit_takewhile_with_index(Compiler *c, int id, Buf *b) {
   if (is_take) {
     buf_printf(g_pre, "if (!(%s)) break;\n", cb.p ? cb.p : "0");
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, tr, es);
-  } else {
+  }
+  else {
     buf_printf(g_pre, "if (_t%d && (%s)) continue;\n", tdrop, cb.p ? cb.p : "0");
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "_t%d = 0;\n", tdrop);
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, tr, es);
@@ -1615,7 +1621,8 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(&ab, "({ sp_FloatRange _t%d = ", trf); emit_expr(c, recv, &ab);
       buf_printf(&ab, "; sp_frange_step(_t%d, ", trf); emit_float_expr(c, sargv[0], &ab); buf_puts(&ab, "); })");
       at = TY_FLOAT_ARRAY; et = TY_FLOAT; aty = "sp_FloatArray";
-    } else {
+    }
+    else {
       at = emit_range_step_array(c, id, &ab);
       aty = at == TY_FLOAT_ARRAY ? "sp_FloatArray" : "sp_IntArray";
       et = at == TY_FLOAT_ARRAY ? TY_FLOAT : TY_INT;
@@ -1962,7 +1969,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         free(cexpr2.p);
         emit_indent(b, indent + 2);
         buf_printf(b, "sp_%sHash_delete(_t%d, _t%d->order[_t%d]);\n", hn, tr2, tr2, ti2);
-        emit_indent(b, indent + 1); buf_puts(b, "} else {\n");
+        emit_indent(b, indent + 1); buf_puts(b, "}\nelse {\n");
         emit_indent(b, indent + 2); buf_printf(b, "_t%d++;\n", ti2);
         emit_indent(b, indent + 1); buf_puts(b, "}\n");
         emit_indent(b, indent); buf_puts(b, "}\n");
@@ -2201,7 +2208,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent + 2);
         emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
       }
-      emit_indent(b, indent + 1); buf_puts(b, "} else {\n");
+      emit_indent(b, indent + 1); buf_puts(b, "}\nelse {\n");
       for (int pj = 0; pj < npp_poly; pj++) {
         const char *pnj = block_param_name(c, block, pj);
         if (!pnj) break;
@@ -2211,7 +2218,8 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         if (pj == 0) {
           char src[32]; snprintf(src, sizeof src, "_t%d", telem);
           emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
-        } else {
+        }
+        else {
           buf_printf(b, "lv_%s = ", rename_local(pnj));
           emit_block_param_nil(c, pt, b);
           buf_puts(b, ";\n");
@@ -2388,7 +2396,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
           emit_indent(b, indent + 2);
           emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
         }
-        emit_indent(b, indent + 1); buf_puts(b, "} else {\n");
+        emit_indent(b, indent + 1); buf_puts(b, "}\nelse {\n");
         for (int pj = 0; pj < npp; pj++) {
           const char *pnj = block_param_name(c, block, pj);
           if (!pnj) break;
@@ -2398,7 +2406,8 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
           if (pj == 0) {
             char src[32]; snprintf(src, sizeof src, "_t%d", telem);
             emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
-          } else {
+          }
+          else {
             buf_printf(b, "lv_%s = ", rename_local(pnj));
             emit_block_param_nil(c, pt, b);
             buf_puts(b, ";\n");
@@ -2772,7 +2781,8 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
           buf_printf(b, "lv_%s = ", p0);
           emit_boxed_text(c, et, src, b);
           buf_puts(b, ";\n");
-        } else {
+        }
+        else {
           buf_printf(b, "lv_%s = _t%d;\n", p0, tr);
         }
       }

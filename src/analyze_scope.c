@@ -1470,7 +1470,8 @@ void register_structs(Compiler *c) {
         ClassInfo *ex = &c->classes[ci];
         if (!ex->is_struct && !ex->is_data)
           register_struct_members(c, ex, val);
-      } else {
+      }
+      else {
         register_struct_members(c, comp_class_new(c, cname, id), val);
       }
     }
@@ -1941,7 +1942,8 @@ static void ffi_path_collapse(char *p, size_t size) {
       if (!abs && (o == 0 || prev_dotdot)) {
         if (o + 4 >= sizeof out) return;
         out[o++] = '/'; out[o++] = '.'; out[o++] = '.';
-      } else {
+      }
+      else {
         while (o > 0 && out[o - 1] != '/') o--;  /* pop the previous segment */
         if (o > 0) o--;
       }
@@ -3810,7 +3812,8 @@ int infer_ivar_types(Compiler *c) {
               Scope *s = comp_scope_of(c, id);
               tcid = s->class_id;
               if (tcid < 0 && c->node_cbody[id] >= 0) tcid = c->node_cbody[id];
-            } else {
+            }
+            else {
               TyKind rt = comp_ntype(c, ivrecv);
               if (ty_is_object(rt)) tcid = ty_object_class(rt);
             }

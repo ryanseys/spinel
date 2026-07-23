@@ -706,10 +706,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
          (which would coerce the pattern to a bogus literal separator) (#3212). */
       if (comp_ntype(c, argv[0]) == TY_REGEX) {
         buf_puts(b, "sp_re_split("); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d.v.s)", tv);
-      } else {
+      }
+      else {
         buf_printf(b, "sp_str_split_drop_trailing(_t%d.v.s, ", tv); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       }
-    } else {
+    }
+    else {
       buf_printf(b, "sp_str_split_limit(_t%d.v.s, ", tv); emit_str_expr(c, argv[0], b);
       buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
     }
@@ -930,7 +932,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           for (int j = 0; j + 1 < fbn; j++) emit_stmt(c, fbb[j], b, 0);
           buf_printf(b, "sp_PolyArray_push(_t%d, ", to);
           if (fbn > 0) emit_boxed(c, fbb[fbn - 1], b); else buf_puts(b, "sp_box_nil()");
-          buf_puts(b, "); } else { ");
+          buf_puts(b, "); }\nelse { ");
           { char getx[96]; snprintf(getx, sizeof getx, "sp_%sArray_get(_t%d, _ix)", an, tr);
             buf_printf(b, "sp_PolyArray_push(_t%d, ", to);
             if (rt == TY_POLY_ARRAY) buf_puts(b, getx);
@@ -3891,7 +3893,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
           free(cexpr.p);
           emit_indent(g_pre, g_indent + 2);
           buf_printf(g_pre, "sp_%sHash_delete(_t%d, _t%d->order[_t%d]);\n", hn, tr, tr, ti);
-          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "} else {\n");
+          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\nelse {\n");
           emit_indent(g_pre, g_indent + 2); buf_printf(g_pre, "_t%d++;\n", ti);
           emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
@@ -4332,7 +4334,8 @@ else {
             if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[0], b);
             else emit_expr(c, argv[0], b);
             buf_printf(b, ", _t%d->dproc_self) : (_t%d ? _t%d->default_v : sp_box_nil()); })", t, t, t);
-          } else {
+          }
+          else {
             buf_printf(b, "; _t%d ? _t%d->default_v : sp_box_nil(); })", t, t);
           }
         }
@@ -4476,7 +4479,7 @@ else {
             else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
             buf_puts(b, "; })");
           }
-          buf_printf(b, "); } else { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }", hn, tr, tk, hn, to, tk);
+          buf_printf(b, "); }\nelse { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }", hn, tr, tk, hn, to, tk);
         }
         else {
           buf_printf(b, " sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d));", hn, tr, tk, hn, to, tk);
@@ -4543,7 +4546,7 @@ else {
           free(lpre.p); free(lval.p);
         }
         buf_puts(b, "; })");
-        buf_printf(b, "); } else { sp_PolyPolyHash_set(_t%d, _t%d, _t%d); } }", tr, tk, tv);
+        buf_printf(b, "); }\nelse { sp_PolyPolyHash_set(_t%d, _t%d, _t%d); } }", tr, tk, tv);
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
@@ -4584,7 +4587,7 @@ else {
           else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
           buf_puts(b, "; })");
         }
-        buf_printf(b, "); } else { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); } }", hn, tr, tk, hn, to, tk);
+        buf_printf(b, "); }\nelse { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); } }", hn, tr, tk, hn, to, tk);
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
@@ -4963,7 +4966,7 @@ else {
           { char getx[96]; snprintf(getx, sizeof getx, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
             if (vt == TY_POLY) buf_puts(b, getx);
             else emit_boxed_text(c, vt, getx, b); }
-          buf_printf(b, "; sp_%sHash_delete(_t%d, _t%d); } else {", hn, th, tk);
+          buf_printf(b, "; sp_%sHash_delete(_t%d, _t%d); }\nelse {", hn, th, tk);
           if (dp0) {
             char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
             buf_printf(b, " lv_%s = ", rename_local(dp0));
@@ -5317,7 +5320,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_new();"
                       " if (sp_re_match(sp_re_pat_%d, %s) >= 0) {"
                       " sp_StrArray_push(_t%d, sp_re_match_pre); sp_StrArray_push(_t%d, sp_re_match_str);"
-                      " sp_StrArray_push(_t%d, sp_re_match_post); } else {"
+                      " sp_StrArray_push(_t%d, sp_re_match_post); }\nelse {"
                       " sp_StrArray_push(_t%d, %s); sp_StrArray_push(_t%d, SPL(\"\")); sp_StrArray_push(_t%d, SPL(\"\")); }"
                       " _t%d; })",
                    tr, re_lit_index(c, argv[0]), r, tr, tr, tr, tr, r, tr, tr, tr);
@@ -5648,7 +5651,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                 snprintf(rn2, sizeof rn2, "%s", rename_local(rn0));
                 snprintf(an2, sizeof an2, "%s", rename_local(an0));
                 buf_printf(b, "(lv_%s == lv_%s)", rn2, an2);
-              } else {
+              }
+              else {
                 int teq = ++g_tmp;
                 buf_printf(b, "({ const char *_t%d = %s; "
                               "(const void *)_t%d == (const void *)sp_String_cstr(lv_%s); })",
@@ -5991,7 +5995,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
            receiver can share (#2470). */
         if (sp_streq(name, "allbits?")) {
           buf_printf(b, "((void)(%s), (void)(", r); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
-        } else {
+        }
+        else {
           buf_printf(b, "(((%s) & sp_bigint_to_int(", r); emit_expr(c, argv[0], b);
           buf_printf(b, ")) %s 0)", sp_streq(name, "anybits?") ? "!=" : "==");
         }
@@ -6232,8 +6237,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                       /* an infinite divisor: same sign -> [0, x], opposite -> [-1, divisor] */
                       " if (_t%d == 0.0 || (_t%d > 0) == (_t%d > 0)) {"
                       " sp_PolyArray_push(_t%d, sp_box_int(0)); sp_PolyArray_push(_t%d, sp_box_float(_t%d)); }"
-                      " else { sp_PolyArray_push(_t%d, sp_box_int(-1)); sp_PolyArray_push(_t%d, sp_box_float(_t%d)); } }"
-                      " else {"
+                      "\nelse { sp_PolyArray_push(_t%d, sp_box_int(-1)); sp_PolyArray_push(_t%d, sp_box_float(_t%d)); } }"
+                      "\nelse {"
                       " mrb_int _t%d = (mrb_int)floor(_t%d / _t%d);"
                       " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
                       " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (mrb_float)_t%d * _t%d)); } _t%d; })",
@@ -6964,7 +6969,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           TyKind vt = comp_ntype(c, val);
           if (mt == TY_POLY && vt != TY_POLY) {
             emit_boxed(c, val, b);  /* box a concrete value into a poly member */
-          } else if (mt != TY_POLY && vt == TY_POLY) {
+          }
+          else if (mt != TY_POLY && vt == TY_POLY) {
             /* A poly (sp_RbVal) value into a concrete member: coerce it, mirroring
                the poly-arg path in emit_arg_or_default. The regular `.new` call
                goes through that path; this hand-rolled constructor call did not,
@@ -6981,10 +6987,12 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
               emit_unbox_text(c, mt, ub.p ? ub.p : "", b); free(ub.p);
             }
             else emit_expr(c, val, b);
-          } else {
+          }
+          else {
             emit_expr(c, val, b);
           }
-        } else if (th >= 0) {
+        }
+        else if (th >= 0) {
           /* member not given literally: take it from the **hash if present,
              else copy from the receiver (#2972) */
           buf_printf(b, "({ mrb_bool _f = 0; sp_RbVal _v = sp_poly_hash_get_pair_val(_t%d, "
@@ -6992,7 +7000,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           if (sc->ivar_types[i] == TY_POLY) buf_puts(b, "_v");
           else emit_unbox_text(c, sc->ivar_types[i], "_v", b);
           buf_printf(b, ") : _t%d->iv_%s; })", t, iv_c(sc->ivars[i] + 1));
-        } else {
+        }
+        else {
           buf_printf(b, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
         }
       }
@@ -7101,7 +7110,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                      tk, comp_sym_intern(c, sc->ivars[i]+1), tk, (long long)i);
           char fld2[300]; snprintf(fld2, sizeof fld2, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
           emit_boxed_text(c, sc->ivar_types[i], fld2, b);
-          buf_printf(b, ";} else");
+          buf_printf(b, ";}\nelse");
         }
         buf_puts(b, " sp_box_nil(); })");
         return 1;
@@ -7259,7 +7268,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
         buf_puts(b, "("); emit_expr(c, recv, b);
         buf_printf(b, ")%siv_%s", acc, iv_c(sym + 1));
-      } else {
+      }
+      else {
         if (recv >= 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), "); }
         else buf_puts(b, "(");
         buf_printf(b, "sp_raise_cls(\"NameError\", \"instance variable %s not defined\"), sp_box_nil())",
@@ -7461,7 +7471,8 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
         int tt = ++g_tmp, tu = ++g_tmp;
         buf_printf(b, "({ sp_Time _t%d = %s; sp_Time _t%d = ", tt, r, tu); emit_expr(c, argv[0], b);
         buf_printf(b, "; sp_time_cmp(_t%d, _t%d) == 0; })", tt, tu);
-      } else { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+      }
+      else { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
     }
     else if (sp_streq(name, "to_a") && argc == 0) {
       /* [sec, min, hour, mday, mon, year, wday, yday, isdst, zone] */
@@ -7518,7 +7529,8 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
           for (int t = 0; TK[t].k; t++)
             if (sp_streq(sk, TK[t].k)) { SG_EMIT_KEY(TK[t].k, TK[t].vfmt); break; }
         }
-      } else {
+      }
+      else {
         /* CRuby's full key set, in order */
         static const char *const allk[] = {"year","month","day","yday","wday","hour","min","sec","subsec","dst","zone",NULL};
         for (int a = 0; allk[a]; a++)

@@ -248,10 +248,12 @@ static void emit_re_opts_flags(Compiler *c, int argc, const int *argv, Buf *out)
   TyKind ot = comp_ntype(c, argv[1]);
   if (ot == TY_INT) {
     buf_puts(out, "sp_re_opts_to_flags("); emit_int_expr(c, argv[1], out); buf_puts(out, ")");
-  } else if (ot == TY_BOOL) {
+  }
+  else if (ot == TY_BOOL) {
     /* internal RE_FLAG_IGNORECASE == 1 */
     buf_puts(out, "(("); emit_expr(c, argv[1], out); buf_puts(out, ") ? 1u : 0u)");
-  } else {
+  }
+  else {
     /* a truthy non-integer means IGNORECASE; nil/false means none */
     buf_puts(out, "(sp_poly_truthy("); emit_boxed(c, argv[1], out); buf_puts(out, ") ? 1u : 0u)");
   }
@@ -1186,7 +1188,8 @@ static void emit_poly_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b)
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, recv, b);
     buf_printf(b, "; sp_poly_eq(_t%d, ", t); emit_boxed(c, arg, b); buf_puts(b, "); })");
-  } else {
+  }
+  else {
     buf_puts(b, "sp_poly_eq("); emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, arg, b); buf_puts(b, ")");
   }
@@ -1299,7 +1302,8 @@ int emit_lazy_size_expr(Compiler *c, int id, Buf *b) {
       excl = (nt_int(nt, lazy_src, "flags", 0) & 4) ? 1 : 0;
       hi = nt_ref(nt, lazy_src, "right"); lo = nt_ref(nt, lazy_src, "left");
       endless = lazy_endpoint_is_infinite(c, hi);
-    } else {
+    }
+    else {
       trange = ++g_tmp; Buf sb = expr_buf(c, lazy_src);
       emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_Range _t%d = %s;\n", trange, sb.p ? sb.p : "(sp_Range){0}"); free(sb.p);
     }
@@ -1315,7 +1319,8 @@ int emit_lazy_size_expr(Compiler *c, int id, Buf *b) {
     if (endless) buf_puts(&lenb, "INTPTR_MAX");
     else if (range_lit) { buf_puts(&lenb, "("); emit_int_expr(c, hi, &lenb); buf_puts(&lenb, " - "); emit_int_expr(c, lo, &lenb); buf_printf(&lenb, " + %d)", 1 - excl); }
     else buf_printf(&lenb, "(_t%d.last - _t%d.first + 1 - (mrb_int)_t%d.excl)", trange, trange, trange);
-  } else {
+  }
+  else {
     buf_puts(&lenb, "sp_poly_length("); emit_boxed(c, lazy_src, &lenb); buf_puts(&lenb, ")");
   }
   int tsz = ++g_tmp;
@@ -1330,7 +1335,8 @@ int emit_lazy_size_expr(Compiler *c, int id, Buf *b) {
     if (ops[i].kind == LK_TAKE) {
       buf_puts(g_pre, "{ mrb_int _n = "); emit_int_expr(c, ops[i].arg, g_pre);
       buf_printf(g_pre, "; if (_n < 0) _n = 0; if (_n < _t%d) _t%d = _n; }\n", tsz, tsz);
-    } else {
+    }
+    else {
       buf_puts(g_pre, "{ mrb_int _n = "); emit_int_expr(c, ops[i].arg, g_pre);
       buf_printf(g_pre, "; _t%d = _t%d > _n ? _t%d - _n : 0; }\n", tsz, tsz, tsz);
     }
@@ -1458,7 +1464,8 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       right = nt_ref(nt, lazy_src, "right");
       endless = lazy_endpoint_is_infinite(c, right);
       left_n = nt_ref(nt, lazy_src, "left");
-    } else {
+    }
+    else {
       /* a range held in a variable or returned from a method: materialize it
          once and read the bounds from the runtime sp_Range value. */
       Buf sb = expr_buf(c, lazy_src);
@@ -1791,7 +1798,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       if (pre.p && pre.len) buf_puts(b, pre.p);
       buf_printf(b, "_r%d = ", t);
       emit_boxed_text(c, at, body.p ? body.p : "0", b);
-      buf_puts(b, "; } else ");
+      buf_puts(b, "; }\nelse ");
     }
     free(pre.p); free(body.p);
   }
@@ -3320,11 +3327,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          (rewind's return is rarely consumed through a poly union) */
       if (is_io_rewind) {
         buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO)"
-                      " { sp_File_rewind((sp_File *)_t%d.v.p); } else ", tv, tv, tv);
+                      " { sp_File_rewind((sp_File *)_t%d.v.p); }\nelse ", tv, tv, tv);
         int sio_cid3 = comp_class_index(c, "StringIO");
         if (sio_cid3 >= 0)
           buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d)"
-                        " { sp_StringIO_rewind((sp_StringIO *)_t%d.v.p); } else ",
+                        " { sp_StringIO_rewind((sp_StringIO *)_t%d.v.p); }\nelse ",
                      tv, tv, sio_cid3, tv);
       }
       /* class 0 emits a `case 0:` arm here when it defines/inherits the method
@@ -3660,14 +3667,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       buf_puts(b, "; ");
       /* include? on a TAG_STR receiver: check tag before entering cls_id switch */
       if (is_include && infer_type(c, argv[0]) == TY_STRING)
-        buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_include(_t%d.v.s, _t%d); } else ", tv, tr, tv, atmp[0]);
+        buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_include(_t%d.v.s, _t%d); }\nelse ", tv, tr, tv, atmp[0]);
       /* delete(chars) on a TAG_STR receiver: String#delete, boxed when the
          dispatch result stays poly. */
       if (is_strdel && (ret == TY_POLY || ret == TY_STRING)) {
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
         if (ret == TY_POLY) buf_printf(b, "sp_box_str(sp_str_delete(_t%d.v.s, _t%d))", tv, atmp[0]);
         else buf_printf(b, "sp_str_delete(_t%d.v.s, _t%d)", tv, atmp[0]);
-        buf_puts(b, "; } else ");
+        buf_puts(b, "; }\nelse ");
       }
       /* The builtin index/bit-ref arms use the index as a raw mrb_int; unbox it
          when the index temp widened to poly (promote mode). */
@@ -3677,18 +3684,18 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* Integer#[N] bit-extraction: poly recv may hold a tagged int */
       if (is_index) {
         if (ret == TY_POLY)
-          buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = sp_box_int((_t%d.v.i >> %s) & 1); } else ", tv, tr, tv, idxref);
+          buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = sp_box_int((_t%d.v.i >> %s) & 1); }\nelse ", tv, tr, tv, idxref);
         else
-          buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = (_t%d.v.i >> %s) & 1; } else ", tv, tr, tv, idxref);
+          buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = (_t%d.v.i >> %s) & 1; }\nelse ", tv, tr, tv, idxref);
         /* String#[int]: a poly value that is really a String (e.g. a method
            with multiple return paths widened to poly) answers `[]` with the
            single character at the index, or nil. The cls_id switch below only
            covers SP_TAG_OBJ variants, so without this tag arm a String receiver
            fell through and returned the seed (nil/0). */
         if (ret == TY_POLY)
-          buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_box_nullable_str(sp_str_char_at_or_nil(_t%d.v.s, %s)); } else ", tv, tr, tv, idxref);
+          buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_box_nullable_str(sp_str_char_at_or_nil(_t%d.v.s, %s)); }\nelse ", tv, tr, tv, idxref);
         else if (ret == TY_STRING)
-          buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_char_at_or_nil(_t%d.v.s, %s); } else ", tv, tr, tv, idxref);
+          buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_char_at_or_nil(_t%d.v.s, %s); }\nelse ", tv, tr, tv, idxref);
       }
       /* class 0 emits a `case 0:` arm here when it defines/inherits the method
          with its arity satisfied; guard the key so a boxed scalar (cls_id 0)
@@ -4571,7 +4578,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
                     int vv = nt_ref(nt, els2[i], "value");
                     if (vv >= 0) { buf_puts(b, "(void)("); emit_boxed(c, vv, b); buf_puts(b, "); "); }
                   }
-              } else { buf_puts(b, "(void)("); emit_boxed(c, argv[a], b); buf_puts(b, "); "); }
+              }
+              else { buf_puts(b, "(void)("); emit_boxed(c, argv[a], b); buf_puts(b, "); "); }
             }
             buf_puts(b, "sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"wrong number of arguments\")[1])); ");
             buf_printf(b, "sp_%s_new(", cls->c_name);
@@ -5309,7 +5317,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
               if (kty && sp_streq(kty, "SymbolNode")) {
                 const char *kn = nt_str(nt, key, "value");
                 buf_printf(b, "sp_sym_intern(\"%s\")", kn ? kn : "");
-              } else {
+              }
+              else {
                 buf_puts(b, "sp_sym_intern(sp_poly_to_s("); emit_boxed(c, key, b); buf_puts(b, "))");
               }
               buf_puts(b, ", "); emit_boxed(c, val, b); buf_puts(b, ");");
@@ -5452,7 +5461,8 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     if (ty_is_object(a0) && !comp_ty_value_obj(c, a0)) {
       buf_puts(b, "((void *)("); emit_expr(c, recv, b); buf_puts(b, ") == (void *)(");
       emit_expr(c, argv[0], b); buf_puts(b, "))");
-    } else {
+    }
+    else {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
       emit_expr(c, argv[0], b); buf_puts(b, "), FALSE)");
     }
@@ -5945,7 +5955,8 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, recv, b);
         buf_puts(b, "), (sp_Exception *)(");
         emit_expr(c, argv[0], b); buf_puts(b, ")))");
-      } else {
+      }
+      else {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
         emit_boxed(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
       }
@@ -5956,7 +5967,8 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       if (a0 == TY_MATCHDATA) {
         buf_printf(b, "(%ssp_MatchData_eq(", eq ? "" : "!"); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, "))");
-      } else {
+      }
+      else {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
         emit_boxed(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
       }
@@ -5986,13 +5998,14 @@ static void emit_splice_bounds(Compiler *c, int ta, int tg,
                ta, tg, tg, tg, tg, tg);
     buf_printf(b, " mrb_int _l%d;"
                   " if(_t%d.last==INTPTR_MAX){_l%d=_al%d-_s%d;if(_l%d<0)_l%d=0;}"
-                  " else{mrb_int _e%d=_t%d.last<0?_t%d.last+_al%d:_t%d.last;"
+                  "\nelse{mrb_int _e%d=_t%d.last<0?_t%d.last+_al%d:_t%d.last;"
                   " _l%d=_e%d-_s%d+(_t%d.excl?0:1);if(_l%d<0)_l%d=0;} ",
                ta,
                tg, ta, tg, ta, ta, ta,
                tg, tg, tg, tg, tg,
                ta, tg, ta, tg, ta, ta);
-  } else {
+  }
+  else {
     buf_printf(b, "mrb_int _s%d = ", ta); emit_int_expr(c, start_node, b);
     buf_printf(b, "; mrb_int _l%d = ", ta); emit_int_expr(c, len_node, b);
     buf_puts(b, "; ");
@@ -6094,7 +6107,8 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
     /* pure delete: the source is a fresh empty array (also the yielded value) */
     buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); _src%d = NULL; _srcn%d = 0; ",
                k, ts, k, ta, ta);
-  } else if (rhs_is_arr) {
+  }
+  else if (rhs_is_arr) {
     /* source array must share the receiver's element type; a poly/mismatched
        source would mix types into a flat typed array (reject loudly). */
     TyKind rhs_elem = ty_array_elem(rhs_ty);
@@ -6111,7 +6125,8 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
     if (elem == TY_INT) buf_printf(b, "_t%d->data + _t%d->start", ts, ts);
     else buf_printf(b, "_t%d->data", ts);
     buf_printf(b, "; _srcn%d = _t%d->len; ", ta, ts);
-  } else if (tam >= 0 && (TyKind)c->scopes[tam].ret != TY_POLY_ARRAY &&
+  }
+  else if (tam >= 0 && (TyKind)c->scopes[tam].ret != TY_POLY_ARRAY &&
              ty_array_elem((TyKind)c->scopes[tam].ret) == elem) {
     /* object RHS whose to_ary returns this element kind: splice the coerced
        array; the OBJECT is the yielded value (CRuby rb_ary_to_ary) */
@@ -6125,7 +6140,8 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
     else buf_printf(b, "_t%d->data", ts);
     buf_printf(b, "; _srcn%d = _t%d->len; ", ta, ts);
     snprintf(valtmp, sizeof valtmp, "_tq%d", ta);
-  } else if (rhs_ty == TY_POLY) {
+  }
+  else if (rhs_ty == TY_POLY) {
     /* A poly RHS can be a same-kind array boxed as poly (e.g. `poly_arr.first`,
        statically TY_POLY but an IntArray at runtime) or a genuine scalar. Decide
        at runtime: use the array's elements when the class id matches the
@@ -6145,9 +6161,10 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
                ts, ts, bcon, k, ta, k, ts, ta);
     if (elem == TY_INT) buf_printf(b, "_sa%d->data + _sa%d->start", ta, ta);
     else buf_printf(b, "_sa%d->data", ta);
-    buf_printf(b, "; _srcn%d = _sa%d->len; } else { _v%d = %s(_t%d); _src%d = &_v%d; _srcn%d = 1; } ",
+    buf_printf(b, "; _srcn%d = _sa%d->len; }\nelse { _v%d = %s(_t%d); _src%d = &_v%d; _srcn%d = 1; } ",
                ta, ta, ta, conv, ts, ta, ta, ta);
-  } else {
+  }
+  else {
     /* scalar RHS: replace the slice with a single element */
     int scalar_ok = (elem == TY_INT    && rhs_ty == TY_INT) ||
                     (elem == TY_STRING && rhs_ty == TY_STRING) ||
@@ -6570,7 +6587,8 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
       if (spill >= 0) buf_printf(&inner, "_t%d", spill);
       else emit_expr(c, wrecv, &inner);
     }
-  } else {
+  }
+  else {
     emit_call(c, id, &inner);   /* emits the loop into g_pre, result expr into inner */
   }
   g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_exc_base = sv_bexc; g_brk_skip_id = sv_skip;
@@ -6583,7 +6601,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_brk_top--;\n");
   free(inner.p); free(boxed.p);
   g_indent--;
-  emit_indent(g_pre, g_indent); buf_puts(g_pre, "} else {\n");
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\nelse {\n");
   /* the goto delivery lands here too; restore every depth to the entry
      snapshot (correct for both paths -- after an ensure-running longjmp the
      handlers have already popped down to these) */
@@ -8215,7 +8233,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
                                 " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
                                 " sp_PolyArray_push(_t%d, _t%d->data[_t%d]); }\n",
                          ts, ab.p ? ab.p : "sp_box_nil()", ts, ti, ti, ts, ti, ta, ts, ti);
-            } else {
+            }
+            else {
               emit_boxed(c, argv[k], &ab);
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", ta, ab.p ? ab.p : "sp_box_nil()");
@@ -8268,7 +8287,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
           else if (proc_slot_is_ptr(_at)) buf_printf(b, "(mrb_int)(uintptr_t)_t%d", aptmp[k]); \
           else if (_at == TY_FLOAT) buf_puts(b, "0"); \
           else buf_printf(b, "_t%d", aptmp[k]); \
-        } else emit_expr(c, argv[k], b); \
+        } \
+        else emit_expr(c, argv[k], b); \
       } while (0)
       /* both arms yield a BOXED result now that the call types poly: the
          Method arm's legacy int ABI result boxes, the Proc arm reads the
@@ -9414,7 +9434,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; sp_Random_rand_float_range(", tr);
           emit_expr(c, recv, b);
           buf_printf(b, ", (mrb_float)_t%d.first, (mrb_float)_t%d.last); })", tr, tr);
-        } else {
+        }
+        else {
           buf_puts(b, "sp_Random_rand_range("); emit_expr(c, recv, b); buf_puts(b, ", ");
           emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
@@ -9462,7 +9483,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) {
       if (comp_ntype(c, argv[0]) == TY_RANDOM) {
         buf_puts(b, "sp_Random_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else {
+      }
+      else {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), FALSE)");
       }
       return;
@@ -10550,7 +10572,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (xcls >= 0 && (comp_reader_in_chain(c, xcls, name, NULL) ||
                       comp_method_in_chain(c, xcls, name, NULL) >= 0)) {
       /* not Kernel#exit: leave it to the reader/method dispatch below */
-    } else {
+    }
+    else {
     /* exit raises a rescuable SystemExit (#2761); exit! terminates directly.
        A boolean status maps true -> 0, false -> 1, as in CRuby. */
     const char *xfn = sp_streq(name, "exit!") ? "exit" : "sp_exit_raise";
@@ -10888,7 +10911,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (comp_ntype(c, argv[0]) == TY_EXCEPTION) {
         buf_puts(b, "(((sp_Exception *)("); emit_expr(c, recv, b);
         buf_puts(b, ")) == ((sp_Exception *)("); emit_expr(c, argv[0], b); buf_puts(b, ")))");
-      } else {
+      }
+      else {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
         emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
       }
@@ -11026,11 +11050,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         Buf rb = expr_buf(c, recv), ab = expr_buf(c, argv[0]);
         buf_printf(b, "((void *)(%s) == (void *)(%s))", rb.p ? rb.p : "0", ab.p ? ab.p : "0");
         free(rb.p); free(ab.p);
-      } else if (at == TY_NIL) {
+      }
+      else if (at == TY_NIL) {
         Buf rb = expr_buf(c, recv);
         buf_printf(b, "((void *)(%s) == NULL)", rb.p ? rb.p : "0");
         free(rb.p);
-      } else {
+      }
+      else {
         buf_puts(b, "0");
       }
       return;
@@ -11053,7 +11079,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (sp_streq(name, "instance_of?")) {
           buf_puts(b, "(strcmp(sp_exc_class_name("); emit_expr(c, recv, b);
           buf_printf(b, "), \"%s\") == 0)", cn);
-        } else {
+        }
+        else {
           buf_puts(b, "sp_exc_is_a("); emit_expr(c, recv, b);
           buf_printf(b, ", \"%s\")", cn);
         }
@@ -11331,7 +11358,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     if (comp_ntype(c, argv[0]) == TY_REGEX) {
       buf_puts(b, "sp_box_regexp((void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
-    } else {
+    }
+    else {
       buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     }
     return;
@@ -11416,7 +11444,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_printf(&ab, "sp_re_to_s_str((void *)sp_re_pat_%d)", rli);
         else
           emit_str_literal(&ab, resrc);
-      } else {
+      }
+      else {
         TyKind at = comp_ntype(c, ops[i]);
         if (at != TY_STRING && at != TY_POLY)
           unsupported(c, id, "Regexp.union operand without a compile-time source (runtime Regexp or non-String value)");
@@ -14608,7 +14637,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (ugv) {
         if (ugv->type == TY_STRING) buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, gv_%s)", rre, urn);
         else buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, sp_poly_to_s(gv_%s))", rre, urn);
-      } else {
+      }
+      else {
         buf_puts(b, "sp_box_nil()");  /* $_ unset: no line to match against */
       }
       return;
@@ -14712,7 +14742,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                     " sp_RbVal _cur%d = sp_StrPolyHash_get(_t%d, _nm%d); sp_IntArray *_ia%d;"
                     " if (_cur%d.tag == SP_TAG_NIL) { _ia%d = sp_IntArray_new();"
                     " sp_StrPolyHash_set(_t%d, sp_str_dup(_nm%d), sp_box_int_array(_ia%d)); }"
-                    " else _ia%d = (sp_IntArray *)_cur%d.v.p;"
+                    "\nelse _ia%d = (sp_IntArray *)_cur%d.v.p;"
                     " sp_IntArray_push(_ia%d, _g%d); } } _t%d; })",
                  th, th,
                  ti, tp,
@@ -15715,7 +15745,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "({ sp_%s *_t%d = ", cn, ta); emit_expr(c, recv, b);
       buf_printf(b, "; sp_%s *_t%d = ", cn, tb); emit_expr(c, argv[0], b);
       buf_printf(b, "; _t%d == _t%d ? sp_box_int(0) : sp_box_nil(); })", ta, tb);
-    } else {
+    }
+    else {
       /* a different-class operand is never the same object: nil */
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
       emit_boxed(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
@@ -16329,7 +16360,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (sp_streq(name, "&")) {
         buf_puts(b, "((void)("); emit_expr(c, recv, b);
         buf_puts(b, "), (void)("); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
-      } else {
+      }
+      else {
         buf_puts(b, "((void)("); emit_expr(c, recv, b);
         buf_puts(b, "), sp_poly_truthy("); emit_boxed(c, argv[0], b); buf_puts(b, "))");
       }
@@ -17825,7 +17857,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (is_mx) {
       g_ensure_depth--;
       g_exc_frame_depth--;
-      buf_printf(b, "sp_exc_top--; } else { sp_exc_top--; sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; if (sp_unwind_kind == SP_UNWIND_NONE) { sp_proc_homes_unwind(); _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; } } ",
+      buf_printf(b, "sp_exc_top--; }\nelse { sp_exc_top--; sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; if (sp_unwind_kind == SP_UNWIND_NONE) { sp_proc_homes_unwind(); _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; } } ",
                  eid, eid, eid);
       buf_printf(b, "_ensure%d: ; sp_Mutex_unlock(_t%d); ", eid, mtmp);
       buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume(); ");

@@ -6018,12 +6018,14 @@ TyKind infer_uncached(Compiler *c, int id) {
         if (ty_is_hash(sh)) {
           kt = ty_unify(kt, ty_hash_key(sh));
           vt = ty_unify(vt, ty_hash_val(sh));
-        } else if (sh == TY_POLY) {
+        }
+        else if (sh == TY_POLY) {
           /* a poly spread source (a hash reached through a poly binding) merges
              at runtime into a fully-poly hash. */
           kt = ty_unify(kt, TY_POLY);
           vt = ty_unify(vt, TY_POLY);
-        } else {
+        }
+        else {
           return TY_UNKNOWN;  /* unresolved or non-hash splat */
         }
         continue;

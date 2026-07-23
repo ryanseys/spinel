@@ -2069,7 +2069,8 @@ else {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_%sHash_update(_t%d, %s);\n", hn, t, sb.p ? sb.p : "");
           free(sb.p);
-        } else if (sh == TY_POLY && poly_poly) {
+        }
+        else if (sh == TY_POLY && poly_poly) {
           /* a poly spread source into a poly-poly literal: iterate its boxed
              (key,value) pairs at runtime (any hash variant) and set them. */
           int st = ++g_tmp;
@@ -2081,7 +2082,8 @@ else {
           buf_printf(g_pre, "for (mrb_int _si = 0, _sn = sp_poly_length(_t%d); _si < _sn; _si++) "
                             "{ sp_RbVal _sk, _sv; sp_poly_hash_pair(_t%d, _si, &_sk, &_sv); "
                             "sp_PolyPolyHash_set(_t%d, _sk, _sv); }\n", st, st, t);
-        } else {
+        }
+        else {
           unsupported(c, id, "hash double-splat of an unmergeable source"); return;
         }
         continue;
@@ -2197,7 +2199,7 @@ else {
            temp keeps its default (never read, since the arm never returns) */
         if (then_raise) buf_printf(b, " %s;\n", ta.p ? ta.p : "0");
         else buf_printf(b, " _t%d = %s;\n", tr, ta.p ? ta.p : "0");
-        buf_puts(b, "} else {\n");
+        buf_puts(b, "}\nelse {\n");
         buf_puts(b, pe.p ? pe.p : "");
         if (else_raise) buf_printf(b, " %s;\n", te.p ? te.p : "0");
         else buf_printf(b, " _t%d = %s;\n", tr, te.p ? te.p : "0");
@@ -2332,9 +2334,9 @@ else {
         int tr = ++g_tmp;
         buf_printf(b, "({ mrb_bool _t%d; if (", tr);
         emit_expr(c, left, b);
-        if (is_and) buf_printf(b, ") {\n%s_t%d = %s;\n} else { _t%d = 0; } _t%d; })",
+        if (is_and) buf_printf(b, ") {\n%s_t%d = %s;\n}\nelse { _t%d = 0; } _t%d; })",
                                rpre.p, tr, rarm.p ? rarm.p : "0", tr, tr);
-        else        buf_printf(b, ") { _t%d = 1; } else {\n%s_t%d = %s;\n} _t%d; })",
+        else        buf_printf(b, ") { _t%d = 1; }\nelse {\n%s_t%d = %s;\n} _t%d; })",
                                tr, rpre.p, tr, rarm.p ? rarm.p : "0", tr);
       }
       free(rarm.p); free(rpre.p);
@@ -2425,9 +2427,9 @@ else {
       TyKind rres = (res == TY_VOID || res == TY_NIL) ? TY_POLY : res;
       int tr = ++g_tmp;
       emit_ctype(c, rres, b); buf_printf(b, " _t%d = {0}; if (%s) {\n", tr, tcond.p ? tcond.p : "1");
-      if (is_and) buf_printf(b, "%s_t%d = %s;\n} else { _t%d = %s; } _t%d; })",
+      if (is_and) buf_printf(b, "%s_t%d = %s;\n}\nelse { _t%d = %s; } _t%d; })",
                              rpre.p ? rpre.p : "", tr, rarm.p ? rarm.p : "0", tr, larm.p ? larm.p : "0", tr);
-      else        buf_printf(b, "_t%d = %s;\n} else { %s_t%d = %s; } _t%d; })",
+      else        buf_printf(b, "_t%d = %s;\n}\nelse { %s_t%d = %s; } _t%d; })",
                              tr, larm.p ? larm.p : "0", rpre.p ? rpre.p : "", tr, rarm.p ? rarm.p : "0", tr);
     }
     free(tcond.p); free(larm.p); free(rarm.p); free(rpre.p);

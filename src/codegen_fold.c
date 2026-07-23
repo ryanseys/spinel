@@ -15,7 +15,8 @@ int resolve_forwarded_block(Compiler *c, int block) {
   int forwards_param = 0;
   if (fwd_expr < 0) {
     forwards_param = 1;  /* anonymous `&` */
-  } else if (g_block_param_name) {
+  }
+  else if (g_block_param_name) {
     const char *fwd_type = nt_type(nt, fwd_expr);
     if (fwd_type && sp_streq(fwd_type, "LocalVariableReadNode")) {
       const char *en = nt_str(nt, fwd_expr, "name");
@@ -1242,7 +1243,8 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
     emit_block_value_into(c, block, tbvb, 1, g_indent + 1);
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_PolyArray_flatten_into_n(_t%d, _t%d, 1);\n", tres, tbv);
-  } else if (scalar_ret) {
+  }
+  else if (scalar_ret) {
     /* a scalar return is one element -- push it directly (map semantics). The
        result array kind `bk` matches the scalar (Poly for non Int/Float/Str). */
     int box = sp_streq(bk, "Poly");
@@ -1258,7 +1260,8 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
       free(bx.p);
     }
     else buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", bk, tres, tbv);
-  } else {
+  }
+  else {
     int tj = ++g_tmp;
     /* collect the block's value (next-aware) into the per-iteration array temp,
        then splat its elements -- so `next [..]` flattens its array like the tail. */
@@ -1424,7 +1427,8 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
     if (is_min) {
       emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tg, tg, ttake, tg);
       emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, pushb.p ? pushb.p : "");
-    } else {
+    }
+    else {
       /* Descending by key with tied elements in encounter order (#3255): the
          index sort is a stable ascending merge, so walk it from the top but
          emit each equal-key run FORWARD, stopping after `take` pushes (a plain
@@ -1477,7 +1481,8 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", telem, trecv, ti);
       emit_autosplat_params(c, block, np_mb, telem, g_indent + 1);
       snprintf(mmelem, sizeof mmelem, "_t%d", telem);
-    } else {
+    }
+    else {
       if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti); }
       snprintf(mmelem, sizeof mmelem, "lv_%s", p0 ? p0 : "");
     }
@@ -1546,7 +1551,8 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", telem, trecv, ti);
     emit_autosplat_params(c, block, np_mb, telem, g_indent + 1);
     snprintf(mmelem, sizeof mmelem, "_t%d", telem);
-  } else {
+  }
+  else {
     if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti); }
     snprintf(mmelem, sizeof mmelem, "lv_%s", p0 ? p0 : "");
   }
@@ -1646,7 +1652,8 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "mrb_int _t%d = _t%d->len; _t%d->len = 0; for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
                  tn, tres, trecv, tm, tm, tn, tm, rk, trecv, rk, tres, tm);
       buf_printf(b, "_t%d", trecv);
-    } else {
+    }
+    else {
       buf_printf(b, "_t%d", tres);
     }
     return 1;
@@ -4443,11 +4450,13 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_iter_elem(_t%d, _t%d); SP_GC_ROOT_RBVAL(_t%d);\n",
                  te2, trecv2, ti2, te2);
       emit_autosplat_params(c, block, np2, te2, g_indent + 2);
-    } else if (p0p) {
+    }
+    else if (p0p) {
       emit_indent(g_pre, g_indent + 2);
       buf_printf(g_pre, "sp_RbVal lv_%s = sp_poly_iter_elem(_t%d, _t%d);\n",
                  p0p, trecv2, ti2);
-    } else if (!has_rest2) {
+    }
+    else if (!has_rest2) {
       emit_indent(g_pre, g_indent + 2);
       buf_printf(g_pre, "sp_RbVal lv__dummy = sp_poly_iter_elem(_t%d, _t%d); (void)lv__dummy;\n",
                  trecv2, ti2);
@@ -4996,7 +5005,8 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "lv_%s = ", p0);
       emit_boxed_text(c, ty_array_elem(rt), es_pr, g_pre);
       buf_puts(g_pre, ";\n");
-    } else {
+    }
+    else {
       buf_printf(g_pre, "lv_%s = %s;\n", p0, es_pr);
     }
   }
@@ -5758,7 +5768,8 @@ int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "sp_box_nil()");
         free(hb.p);
       }
-    } else {
+    }
+    else {
       /* Anonymous `**`: materialize the enclosing __anon_kwrest (SymPolyHash)
          so the per-param extraction and kwrest collection can read it. */
       const char *akw = anon_kwrest_name(c, elems2[e]);
@@ -5889,7 +5900,8 @@ static int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
             continue;
           }
           src = ds_hash_tmp;  /* first splat already materialized above */
-        } else {
+        }
+        else {
           src = ++g_tmp;
           /* Render into a side buffer first: a hash LITERAL (`**{ ... }`) drains
              its own construction into g_pre, which must land before -- not

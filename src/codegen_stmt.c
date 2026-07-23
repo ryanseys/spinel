@@ -788,7 +788,7 @@ else {
         buf_puts(b, ";\n");
         emit_indent(b, indent);
         buf_printf(b, "if (gv_stderr) { sp_StringIO_write(gv_stderr, _t%d); sp_StringIO_write(gv_stderr, \"\\n\"); }"
-                      " else { fputs(_t%d, stderr); fputc('\\n', stderr); }\n", wt, wt);
+                      "\nelse { fputs(_t%d, stderr); fputc('\\n', stderr); }\n", wt, wt);
         continue;
       }
       emit_indent(b, indent); buf_puts(b, "fputs(");
@@ -2862,7 +2862,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
 
     if (sp_streq(pty, "LocalVariableTargetNode")) {
       const char *lnm = nt_str(nt, pat, "name");
-      if (lnm) { emit_indent(b, body_indent); buf_printf(b, "lv_%s = ", lnm); LocalVar *plv = scope_local(comp_scope_of(c, id), lnm); if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) { char ex[24]; snprintf(ex, sizeof ex, "_t%d", t); Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, pt, ex, &bx); buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); } else buf_printf(b, "_t%d", t); buf_puts(b, ";\n"); }
+      if (lnm) { emit_indent(b, body_indent); buf_printf(b, "lv_%s = ", lnm); LocalVar *plv = scope_local(comp_scope_of(c, id), lnm); if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) { char ex[24]; snprintf(ex, sizeof ex, "_t%d", t); Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, pt, ex, &bx); buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+      else buf_printf(b, "_t%d", t); buf_puts(b, ";\n"); }
     }
     else if (sp_streq(pty, "IfNode")) {
       guard = nt_ref(nt, pat, "predicate");
@@ -2874,7 +2875,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           const char *bty = nt_type(nt, body[k]);
           if (bty && sp_streq(bty, "LocalVariableTargetNode")) {
             const char *lnm = nt_str(nt, body[k], "name");
-            if (lnm) { emit_indent(b, body_indent); buf_printf(b, "lv_%s = ", lnm); LocalVar *plv = scope_local(comp_scope_of(c, id), lnm); if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) { char ex[24]; snprintf(ex, sizeof ex, "_t%d", t); Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, pt, ex, &bx); buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); } else buf_printf(b, "_t%d", t); buf_puts(b, ";\n"); }
+            if (lnm) { emit_indent(b, body_indent); buf_printf(b, "lv_%s = ", lnm); LocalVar *plv = scope_local(comp_scope_of(c, id), lnm); if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) { char ex[24]; snprintf(ex, sizeof ex, "_t%d", t); Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, pt, ex, &bx); buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+            else buf_printf(b, "_t%d", t); buf_puts(b, ";\n"); }
           }
         }
       }
@@ -2884,7 +2886,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       if (tgt >= 0 && nt_type(nt, tgt) &&
           sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
         const char *lnm = nt_str(nt, tgt, "name");
-        if (lnm) { emit_indent(b, body_indent); buf_printf(b, "lv_%s = ", lnm); LocalVar *plv = scope_local(comp_scope_of(c, id), lnm); if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) { char ex[24]; snprintf(ex, sizeof ex, "_t%d", t); Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, pt, ex, &bx); buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); } else buf_printf(b, "_t%d", t); buf_puts(b, ";\n"); }
+        if (lnm) { emit_indent(b, body_indent); buf_printf(b, "lv_%s = ", lnm); LocalVar *plv = scope_local(comp_scope_of(c, id), lnm); if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) { char ex[24]; snprintf(ex, sizeof ex, "_t%d", t); Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, pt, ex, &bx); buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+        else buf_printf(b, "_t%d", t); buf_puts(b, ";\n"); }
       }
       int val = nt_ref(nt, pat, "value");
       if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode"))
@@ -3802,12 +3805,12 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
     }
     buf_puts(b, ") { ");
     emit_case_branch_value(c, nt_ref(nt, wn, "statements"), rt, cr, b);
-    buf_puts(b, "} ");
+    buf_puts(b, "}\n");   /* newline so the next arm's `else if` never forms `} else` */
   }
   if (else_c >= 0) {
     buf_puts(b, "else { ");
     emit_case_branch_value(c, nt_ref(nt, else_c, "statements"), rt, cr, b);
-    buf_puts(b, "} ");
+    buf_puts(b, "}\n");
   }
   buf_printf(b, "_cr%d; })", cr);
 }
@@ -4589,7 +4592,8 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
     if (bare) {
     /* bare rescue: match StandardError and its subclasses only */
     buf_printf(b, "sp_exc_is_standard_error(_rcls_%d)", rc);
-    } else {
+    }
+    else {
     int first = 1;
     for (int i = 0; i < nexc; i++) {
       const char *en = nt_type(nt, exc[i]);
@@ -7165,7 +7169,8 @@ else {
              than emit_local_ref's non-assignable cast form (see emit_assign). */
           if (emit_proc_cell_lvalue(c, id, lvn, b)) {
             buf_printf(b, "%s);\n", nilv);
-          } else {
+          }
+          else {
             emit_local_ref(c, id, lvn, b);
             buf_printf(b, " = %s;\n", nilv);
           }
@@ -7916,7 +7921,8 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
           Buf bx; memset(&bx, 0, sizeof bx);
           emit_boxed_text(c, ct, rb.p ? rb.p : "0", &bx);
           buf_printf(b, "%s;\n", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-        } else {
+        }
+        else {
           buf_printf(b, "%s;\n", rb.p ? rb.p : "0");
         }
         free(rb.p);

@@ -1814,7 +1814,8 @@ int infer_write_types(Compiler *c) {
         snprintf(reader_iv, sizeof reader_iv, "@%s", mname);
         inm2 = reader_iv;
         defcls2 = rdefcls;
-      } else {
+      }
+      else {
         int last2 = scope_body_last(c, getter_mi);
         if (last2 < 0 || !nt_type(nt, last2) ||
             !sp_streq(nt_type(nt, last2), "InstanceVariableReadNode")) continue;
@@ -2194,7 +2195,8 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
              `map { |c| f(**c) }` block param) forwards poly values -- bind the
              callee's keyword params poly, not the source's hash type (#2885). */
           else if (ht == TY_POLY) ds_val = TY_POLY;
-        } else {
+        }
+        else {
           /* Anonymous `**` forwards the enclosing __anon_kwrest (a SymPolyHash
              with poly values). Bind the callee's keyword params as poly rather
              than falling through to the no-keyword backstop, which would mis-seed
@@ -5925,7 +5927,8 @@ int desugar_block_destructure_params(Compiler *c) {
         if (is_stmts) {
           for (int i = 0; i < obn; i++) bb[nmw + i] = ob0[i];
           nt_node_set_arr(nt, body, "body", bb, cnt);
-        } else {
+        }
+        else {
           if (keep_body) bb[nmw] = body;
           int st = nt_new_node(nt, "StatementsNode");
           if (st < 0) ok = 0;
@@ -6249,7 +6252,8 @@ int infer_block_params(Compiler *c) {
       /* tap/then/yield_self yield self to the block param for ANY receiver
          type (a string, an int, an object), so type the param as rt. */
       if (rt == TY_UNKNOWN) continue;
-    } else {
+    }
+    else {
       if (!ty_is_object(rt)) continue;
       if (!sp_streq(cname, "instance_eval") &&
           comp_trampoline_kind(c, ty_object_class(rt), cname, NULL) != 1) continue;
