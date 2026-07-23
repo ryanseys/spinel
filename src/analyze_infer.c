@@ -5928,7 +5928,11 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (cls_id < 0) return TY_UNKNOWN;
     ClassInfo *ci = &c->classes[cls_id];
     int iv = nm ? comp_ivar_index(ci, nm) : -1;
-    return iv >= 0 ? ci->ivar_types[iv] : TY_UNKNOWN;
+    if (iv < 0) return TY_UNKNOWN;
+    /* an UNMARKED read of a shared-mutable string slot demotes to the plain
+       string type (copy-read), mirroring the local-read demotion (#3227) */
+    if (ci->ivar_types[iv] == TY_STRBUF) return TY_STRING;
+    return ci->ivar_types[iv];
   }
   if (nk == NK_ClassVariableReadNode) {
     const char *nm = nt_str(nt, id, "name");

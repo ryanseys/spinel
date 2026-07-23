@@ -6283,12 +6283,80 @@ static int strbuf_mut_kind(Compiler *c, const char *vn, Scope *vs) {
   }
   return mutated;
 }
+/* In-place mutation status of ivar `nm` of class `cid` (same contract as
+   strbuf_mut_kind). The supported set is narrower: the shadow-copy shim
+   cannot rename an ivar, so []=/insert/slice!/setbyte disqualify. */
+static int strbuf_ivar_mut_kind(Compiler *c, int cid, const char *nm) {
+  static const char *const IV_MUT[] = {
+    "<<", "concat", "prepend", "replace", "clear",
+    "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
+    "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
+    "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
+    "reverse!", "succ!", "next!", NULL };
+  const NodeTable *nt = c->nt;
+  int mutated = 0;
+  for (int u = 0; u < nt->count; u++) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int ur = nt_ref(nt, u, "receiver");
+    if (ur < 0 || nt_kind(nt, ur) != NK_InstanceVariableReadNode) continue;
+    const char *urn = nt_str(nt, ur, "name");
+    if (!urn || !sp_streq(urn, nm)) continue;
+    Scope *us = comp_scope_of(c, ur);
+    int ucid = -1;
+    if (us && !us->is_cmethod && us->class_id >= 0) ucid = us->class_id;
+    else if (us && !us->is_cmethod && us->class_id < 0) ucid = comp_class_index(c, "Toplevel");
+    if (ucid != cid) continue;
+    const char *un = nt_str(nt, u, "name");
+    if (!un) continue;
+    size_t ul = strlen(un);
+    int inplace = 0;
+    for (int q = 0; IV_MUT[q]; q++)
+      if (sp_streq(un, IV_MUT[q])) { inplace = 1; break; }
+    if (inplace) mutated = 1;
+    else if (sp_streq(un, "insert") || sp_streq(un, "slice!") ||
+             sp_streq(un, "[]=") || sp_streq(un, "setbyte") ||
+             sp_streq(un, "bytesplice") || (ul > 0 && un[ul - 1] == '!'))
+      return -1;
+  }
+  return mutated;
+}
+/* The owning class of an ivar READ/WRITE node under the same storage rules
+   the emitters use (instance method -> class, top-level -> Toplevel; class
+   methods / instance_eval contexts return -1). */
+static int an_ivar_owner(Compiler *c, int node) {
+  Scope *cs = comp_scope_of(c, node);
+  if (!cs || cs->is_cmethod) return -1;
+  if (cs->class_id >= 0) return cs->class_id;
+  return comp_class_index(c, "Toplevel");
+}
+/* Promote ivar slot (cid, iv) to the shared handle if eligible; returns 1
+   on a state change. */
+static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
+  if (cid < 0) return 0;
+  ClassInfo *ci = &c->classes[cid];
+  int iv = comp_ivar_index(ci, nm);
+  if (iv < 0) return 0;
+  if (ci->ivars[iv] && class_ivar_pinned(ci, ci->ivars[iv])) return 0;
+  if (ci->ivar_types[iv] != TY_STRING && ci->ivar_types[iv] != TY_STRBUF) return 0;
+  if (ci->ivar_types[iv] == TY_STRBUF && ci->ivar_str_shared[iv]) return 0;
+  ci->ivar_types[iv] = TY_STRBUF;
+  ci->ivar_str_shared[iv] = 1;
+  return 1;
+}
+
 /* Slot-shape eligibility for the shared handle: parameters, cells, byref
    out-params and rbs-pinned slots wait for the cross-method phase. */
+static int strbuf_slot_eligible_shape(Compiler *c, const char *vn, Scope *vs, LocalVar *lv);
 static int strbuf_slot_eligible(Compiler *c, const char *vn, Scope *vs, LocalVar *lv) {
+  if (!lv) return 0;
+  if (lv->type != TY_STRING && lv->type != TY_STRBUF) return 0;
+  return strbuf_slot_eligible_shape(c, vn, vs, lv);
+}
+/* shape-only eligibility (no type gate): the ALIAS arm may see the local
+   while its type is still a transient UNKNOWN/POLY mid-fixpoint */
+static int strbuf_slot_eligible_shape(Compiler *c, const char *vn, Scope *vs, LocalVar *lv) {
   const NodeTable *nt = c->nt;
   if (!lv || lv->is_param || lv->rbs_seeded || lv->is_cell) return 0;
-  if (lv->type != TY_STRING && lv->type != TY_STRBUF) return 0;
   for (int u = 0; u < nt->count; u++) {
     const char *uty = nt_type(nt, u);
     if (!uty || !sp_streq(uty, "CallNode")) continue;
@@ -6360,6 +6428,18 @@ static int promote_shared_stored_strings(Compiler *c) {
     for (int e3 = 0; e3 < nc3; e3++) {
       int vnode = cand3[e3];
       if (vnode < 0 || c->strbuf_box[vnode]) continue;
+      /* a container-stored IVAR read: the slot itself promotes (#3227 P4) */
+      if (nt_kind(nt, vnode) == NK_InstanceVariableReadNode) {
+        const char *ivn3 = nt_str(nt, vnode, "name");
+        int icid3 = ivn3 ? an_ivar_owner(c, vnode) : -1;
+        if (icid3 >= 0 && strbuf_ivar_mut_kind(c, icid3, ivn3) == 1) {
+          if (strbuf_promote_ivar(c, icid3, ivn3)) changed = 1;
+          if (c->classes[icid3].ivar_str_shared[comp_ivar_index(&c->classes[icid3], ivn3)]) {
+            c->strbuf_box[vnode] = 1; changed = 1;
+          }
+        }
+        continue;
+      }
       if (!nt_type(nt, vnode) ||
           !sp_streq(nt_type(nt, vnode), "LocalVariableReadNode")) continue;
       const char *vn3 = nt_str(nt, vnode, "name");
@@ -6501,6 +6581,45 @@ static int promote_shared_stored_strings(Compiler *c) {
       { srcv->type = TY_STRBUF; srcv->str_shared = 1; changed = 1; }
     if (tgtv->type != TY_STRBUF || !tgtv->str_shared)
       { tgtv->type = TY_STRBUF; tgtv->str_shared = 1; changed = 1; }
+  }
+  /* local <-> ivar alias pairs: `l = @s` / `@s = l`. When either side is
+     in-place mutated, the ivar slot and the local share the handle. */
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind wk2 = nt_kind(nt, w);
+    int lval = -1, ivnode = -1;
+    const char *lname = NULL, *ivname = NULL;
+    if (wk2 == NK_LocalVariableWriteNode) {
+      int wv2 = nt_ref(nt, w, "value");
+      if (wv2 < 0 || nt_kind(nt, wv2) != NK_InstanceVariableReadNode) continue;
+      lname = nt_str(nt, w, "name"); ivnode = wv2; ivname = nt_str(nt, wv2, "name");
+      lval = w;
+    }
+    else if (wk2 == NK_InstanceVariableWriteNode) {
+      int wv2 = nt_ref(nt, w, "value");
+      if (wv2 < 0 || nt_kind(nt, wv2) != NK_LocalVariableReadNode) continue;
+      ivname = nt_str(nt, w, "name"); ivnode = w;
+      lname = nt_str(nt, wv2, "name"); lval = wv2;
+    }
+    else continue;
+    if (!lname || !ivname) continue;
+    Scope *ls = comp_scope_of(c, lval);
+    LocalVar *llv = ls ? scope_local(ls, lname) : NULL;
+    int icid = an_ivar_owner(c, ivnode);
+    if (icid < 0 || !llv) continue;
+    if (!strbuf_slot_eligible_shape(c, lname, ls, llv)) continue;
+    if (llv->type != TY_UNKNOWN && llv->type != TY_STRING &&
+        llv->type != TY_STRBUF && llv->type != TY_POLY) continue;
+    int lmk = strbuf_mut_kind(c, lname, ls);
+    int imk = strbuf_ivar_mut_kind(c, icid, ivname);
+    if (lmk < 0 || imk < 0) continue;
+    if (lmk != 1 && imk != 1) continue;
+    int ch2 = strbuf_promote_ivar(c, icid, ivname);
+    { ClassInfo *ci2 = &c->classes[icid];
+      int iv2 = comp_ivar_index(ci2, ivname);
+      if (iv2 < 0 || !ci2->ivar_str_shared[iv2]) continue; }
+    if (ch2) changed = 1;
+    if (llv->type != TY_STRBUF || !llv->str_shared)
+      { llv->type = TY_STRBUF; llv->str_shared = 1; changed = 1; }
   }
   return changed;
 }
@@ -7147,6 +7266,10 @@ void analyze_program(Compiler *c) {
         ch |= infer_global_const_types(c);
         ch |= infer_multiwrite_const_types(c);
         ch |= infer_ivar_types(c);
+        /* AFTER the ivar write-merge: the re-clear zeroes recorded ivars at
+           each iteration's top, so a promote gated on STRING must see the
+           freshly re-derived type, not the cleared UNKNOWN (#3227 P4) */
+        ch |= promote_shared_stored_strings(c);
         ch |= infer_cvar_types(c);
         ch |= infer_inherited_ivars(c);
         ch |= infer_return_types(c);
@@ -8254,6 +8377,12 @@ void analyze_program(Compiler *c) {
       if (lv->str_shared && lv->type == TY_STRING) lv->type = TY_STRBUF;
     }
   }
+  for (int ci2 = 0; ci2 < c->nclasses; ci2++) {
+    ClassInfo *ci = &c->classes[ci2];
+    for (int iv = 0; iv < ci->nivars; iv++)
+      if (ci->ivar_str_shared[iv] && ci->ivar_types[iv] == TY_STRING)
+        ci->ivar_types[iv] = TY_STRBUF;
+  }
 
   /* Shared-mutable strings (#3227): a string local that is a pure ALIAS of an
      in-place-mutated string (`s2 = s1` where s1 is now TY_STRBUF) must share
@@ -8321,6 +8450,10 @@ void analyze_program(Compiler *c) {
       /* int/float/bool need no GC; string fields are heap pointers but get
          GC-rooted per value-type local (the field slot is a stable root). */
       if (t != TY_INT && t != TY_FLOAT && t != TY_BOOL && t != TY_STRING) { scalar = 0; break; }
+      /* an in-place-mutated string ivar (`@s << x` in a method) needs the
+         mutation visible through every reference; a by-value struct copy
+         would swallow it (#3227 P4) */
+      if (t == TY_STRING && strbuf_ivar_mut_kind(c, i, ci->ivars[j]) != 0) { scalar = 0; break; }
     }
     if (!scalar) continue;
     int has_sub = 0;

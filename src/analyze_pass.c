@@ -1790,6 +1790,29 @@ int infer_write_types(Compiler *c) {
         }
         if (has_typed_write) continue;
       }
+      /* `@s << x` on an ivar with a STRING write anywhere is a string
+         append, not an array push: without this the push promoted the
+         still-UNKNOWN slot to str_array before the write merge saw the
+         string, and the union settled poly (#3227 P4). */
+      if (is_push && (*slot == TY_UNKNOWN || *slot == TY_STRING ||
+                      *slot == TY_STRBUF) && inm) {
+        int has_string_write = 0;
+        for (int _r = ivw_index_first(&ivw_ix, inm); _r >= 0 && !has_string_write; _r = ivw_ix.next[_r]) {
+          int _wi = ivw_ix.node[_r];
+          if (nt_kind(nt, _wi) != NK_InstanceVariableWriteNode) continue;
+          const char *_wnm = nt_str(nt, _wi, "name");
+          if (!_wnm || !sp_streq(_wnm, inm)) continue;
+          Scope *_ws = comp_scope_of(c, _wi);
+          int _ws_cls = _ws ? _ws->class_id : -1;
+          if (_ws_cls < 0) _ws_cls = comp_class_index(c, "Toplevel");
+          if (_ws_cls != ivar_cls_id) continue;
+          int _wval = nt_ref(nt, _wi, "value");
+          if (_wval < 0) continue;
+          TyKind _wt = infer_type(c, _wval);
+          if (_wt == TY_STRING || _wt == TY_STRBUF) { has_string_write = 1; break; }
+        }
+        if (has_string_write) continue;
+      }
     }
     else if (is_push && rty && sp_streq(rty, "CallNode")) {
       /* `getter_method << x` where getter returns @ivar: trace through

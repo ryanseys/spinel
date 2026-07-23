@@ -289,14 +289,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       /* A shared-mutable (STRBUF) local mutates its buffer IN PLACE so every
          alias/container observes it: recompute via the non-bang transform of
          the current contents, then replace the buffer (#3227). */
-      if (rvt2 && sp_streq(rvt2, "LocalVariableReadNode")) {
-        const char *rnmB = nt_str(nt, recv, "name");
-        Scope *rscB = rnmB ? comp_scope_of(c, recv) : NULL;
-        LocalVar *rlvB = rscB ? scope_local(rscB, rnmB) : NULL;
-        if (rlvB && rlvB->type == TY_STRBUF) {
+      { char srefB[192];
+        if (strbuf_slot_ref(c, recv, srefB, sizeof srefB)) {
           int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
-          buf_printf(b, "({ sp_String *_t%d = lv_%s; const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ",
-                     tsb, rename_local(rnmB), tob, tsb, tob);
+          buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ",
+                     tsb, srefB, tob, tsb, tob);
           nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
           Buf nbB; memset(&nbB, 0, sizeof nbB);
           emit_expr(c, id, &nbB);
@@ -334,14 +331,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
          form sp_String_cstr(lv) is not an lvalue, so the generic write-back
          below would emit an invalid assignment (#2020). prepend replaces the
          buffer with args-then-contents, keeping the handle stable (#3227). */
-      const char *rvt0 = nt_type(nt, recv);
-      if (rvt0 && sp_streq(rvt0, "LocalVariableReadNode")) {
-        const char *rnm0 = nt_str(nt, recv, "name");
-        Scope *rsc0 = rnm0 ? comp_scope_of(c, recv) : NULL;
-        LocalVar *rlv0 = rsc0 ? scope_local(rsc0, rnm0) : NULL;
-        if (rlv0 && rlv0->type == TY_STRBUF) {
+      { char sref0[192];
+        if (strbuf_slot_ref(c, recv, sref0, sizeof sref0)) {
           int tb2 = ++g_tmp;
-          buf_printf(b, "({ sp_String *_t%d = lv_%s;", tb2, rename_local(rnm0));
+          buf_printf(b, "({ sp_String *_t%d = %s;", tb2, sref0);
           if (sp_streq(name, "prepend")) {
             int tp3 = ++g_tmp;
             buf_printf(b, " const char *_t%d = ", tp3);
@@ -473,14 +466,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "replace") && argc == 1) {
       const char *rvt2 = nt_type(nt, recv);
       /* shared-mutable local: swap the buffer contents in place (#3227) */
-      if (rvt2 && sp_streq(rvt2, "LocalVariableReadNode")) {
-        const char *rnmR = nt_str(nt, recv, "name");
-        Scope *rscR = rnmR ? comp_scope_of(c, recv) : NULL;
-        LocalVar *rlvR = rscR ? scope_local(rscR, rnmR) : NULL;
-        if (rlvR && rlvR->type == TY_STRBUF) {
+      { char srefR[192];
+        if (strbuf_slot_ref(c, recv, srefR, sizeof srefR)) {
           int tbR = ++g_tmp;
-          buf_printf(b, "({ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, ",
-                     tbR, rename_local(rnmR), tbR);
+          buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
+                     tbR, srefR, tbR);
           emit_str_expr(c, argv[0], b);
           buf_printf(b, "); sp_String_cstr(_t%d); })", tbR);
           return 1;
@@ -5767,33 +5757,22 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
            before the argument's cstr is read. */
         int eq_sblv = 0;
         {
-          const char *aty0 = nt_type(nt, argv[0]);
-          if (aty0 && sp_streq(aty0, "LocalVariableReadNode")) {
-            const char *an0 = nt_str(nt, argv[0], "name");
-            LocalVar *alv0 = an0 ? scope_local(comp_scope_of(c, argv[0]), an0) : NULL;
-            if (alv0 && alv0->type == TY_STRBUF) {
-              /* If the receiver is ALSO a strbuf local, compare the two
-                 sp_String handles directly: a shared alias (`s2 = s1`) is one
-                 object, so `s1.equal?(s2)` is true (#3227). Otherwise `r` is a
-                 live-buffer expr (e.g. `(s << "x")`) and its cstr is compared. */
-              const char *rty0 = recv >= 0 ? nt_type(nt, recv) : NULL;
-              const char *rn0 = (rty0 && sp_streq(rty0, "LocalVariableReadNode"))
-                                  ? nt_str(nt, recv, "name") : NULL;
-              LocalVar *rlv0 = rn0 ? scope_local(comp_scope_of(c, recv), rn0) : NULL;
-              if (rlv0 && rlv0->type == TY_STRBUF) {
-                char rn2[128], an2[128];
-                snprintf(rn2, sizeof rn2, "%s", rename_local(rn0));
-                snprintf(an2, sizeof an2, "%s", rename_local(an0));
-                buf_printf(b, "(lv_%s == lv_%s)", rn2, an2);
-              }
-              else {
-                int teq = ++g_tmp;
-                buf_printf(b, "({ const char *_t%d = %s; "
-                              "(const void *)_t%d == (const void *)sp_String_cstr(lv_%s); })",
-                           teq, r, teq, rename_local(an0));
-              }
-              eq_sblv = 1;
+          char arefE[192];
+          if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {
+            /* If the receiver is ALSO a strbuf slot (local or ivar), compare
+               the two sp_String handles directly: a shared alias is one
+               object, so `s1.equal?(s2)` is true (#3227). Otherwise `r` is a
+               live-buffer expr (e.g. `(s << "x")`) and its cstr is compared. */
+            char rrefE[192];
+            if (strbuf_slot_ref(c, recv, rrefE, sizeof rrefE))
+              buf_printf(b, "(%s == %s)", rrefE, arefE);
+            else {
+              int teq = ++g_tmp;
+              buf_printf(b, "({ const char *_t%d = %s; "
+                            "(const void *)_t%d == (const void *)sp_String_cstr(%s); })",
+                         teq, r, teq, arefE);
             }
+            eq_sblv = 1;
           }
         }
         if (eq_sblv) { /* emitted above */ }
@@ -7429,6 +7408,24 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
       if (reader_wins) {
         const char *rn2 = comp_resolve_alias(c, cid, name);
+        /* a shared-mutable string slot reads out as a GC COPY of the current
+           contents (the raw sp_String* handle must not leak into a plain
+           string context); a demand-marked read hands out the handle (#3227) */
+        char ivfull[300]; snprintf(ivfull, sizeof ivfull, "@%s", rn2);
+        int rdiv = comp_ivar_index(&c->classes[rdc >= 0 ? rdc : cid], ivfull);
+        if (rdiv >= 0 &&
+            c->classes[rdc >= 0 ? rdc : cid].ivar_types[rdiv] == TY_STRBUF) {
+          int tvR = ++g_tmp;
+          buf_printf(b, "({ sp_String *_t%d = (", tvR);
+          emit_expr(c, recv, b);
+          buf_printf(b, ")%siv_%s; ", comp_ty_value_obj(c, rt) ? "." : "->", iv_c(rn2));
+          if (c->strbuf_box[id])
+            buf_printf(b, "_t%d; })", tvR);
+          else
+            buf_printf(b, "_t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
+                       tvR, tvR);
+          return 1;
+        }
         buf_puts(b, "("); emit_expr(c, recv, b);
         buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", iv_c(rn2));
         return 1;

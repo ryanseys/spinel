@@ -438,6 +438,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
                         sp_streq(nt_type(c->nt, node), "LocalVariableReadNode")
                           ? nt_str(c->nt, node, "name") : NULL;
       if (bn0) { buf_printf(b, "sp_box_obj(lv_%s, SP_BUILTIN_STRBUF)", rename_local(bn0)); return; }
+      { char srefX[192];
+        if (nt_kind(c->nt, node) == NK_InstanceVariableReadNode &&
+            strbuf_slot_ref(c, node, srefX, sizeof srefX)) {
+          buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", srefX);
+          return;
+        } }
       /* a demanded literal / expression store: wrap a FRESH handle so the
          container element is mutable in place (#3227 P3) */
       buf_puts(b, "sp_box_obj(sp_String_new_shared(");

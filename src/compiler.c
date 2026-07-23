@@ -305,9 +305,11 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
     ci->civars = ci->civars ? ci->civars * 2 : 8;
     ci->ivars = realloc(ci->ivars, sizeof(char *) * (size_t)ci->civars);
     ci->ivar_types = realloc(ci->ivar_types, sizeof(TyKind) * (size_t)ci->civars);
+    ci->ivar_str_shared = realloc(ci->ivar_str_shared, (size_t)ci->civars);
   }
   ci->ivars[ci->nivars] = strdup(name);
   ci->ivar_types[ci->nivars] = TY_UNKNOWN;
+  ci->ivar_str_shared[ci->nivars] = 0;
   return ci->nivars++;
 }
 

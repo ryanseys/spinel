@@ -1315,6 +1315,19 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   if (sp_streq(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
     Scope *cs = comp_scope_of(c, id);
+    /* a shared-mutable string slot: a marked read yields the live HANDLE, an
+       ordinary read a GC copy of the current contents (NULL stays nil) (#3227) */
+    { char srefI[192];
+      int svm = c->strbuf_box[id];
+      c->strbuf_box[id] = 1;   /* let slot_ref resolve regardless of mark */
+      int is_sb = strbuf_slot_ref(c, id, srefI, sizeof srefI);
+      c->strbuf_box[id] = (unsigned char)svm;
+      if (is_sb) {
+        if (svm) buf_printf(b, "%s", srefI);
+        else buf_printf(b, "(%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
+                        srefI, srefI);
+        return;
+      } }
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       buf_printf(b, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));  /* module/class-level ivar */
     else if (cs && cs->class_id < 0 && g_ie_class_id >= 0)

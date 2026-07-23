@@ -634,6 +634,38 @@ const char *strbuf_local_name(Compiler *c, int recv) {
   LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
   return (rl && rl->type == TY_STRBUF) ? rn : NULL;
 }
+/* The owning class slot of an ivar READ node, mirroring the read emitter's
+   storage resolution: instance method -> its class; top-level method ->
+   the Toplevel pseudo-class; class-method / instance_eval contexts return
+   -1 (their storage is not a per-instance field). */
+int strbuf_ivar_owner(Compiler *c, int node) {
+  Scope *cs = comp_scope_of(c, node);
+  if (!cs) return -1;
+  if (cs->is_cmethod) return -1;
+  if (cs->class_id >= 0) return cs->class_id;
+  if (g_ie_class_id >= 0) return -1;
+  return comp_class_index(c, "Toplevel");
+}
+/* Emit-side lvalue for a shared-mutable string receiver: lv_<x> for a
+   strbuf local, <self>-><iv_x> (or civ_Toplevel_x) for a strbuf ivar.
+   Returns 1 and fills `out`, or 0 when the receiver is neither (#3227). */
+int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
+  const char *rn = strbuf_local_name(c, recv);
+  if (rn) { snprintf(out, cap, "lv_%s", rename_local(rn)); return 1; }
+  if (recv < 0 || nt_kind(c->nt, recv) != NK_InstanceVariableReadNode) return 0;
+  const char *nm = nt_str(c->nt, recv, "name");
+  if (!nm) return 0;
+  int cid = strbuf_ivar_owner(c, recv);
+  if (cid < 0) return 0;
+  int iv = comp_ivar_index(&c->classes[cid], nm);
+  if (iv < 0 || c->classes[cid].ivar_types[iv] != TY_STRBUF) return 0;
+  Scope *cs = comp_scope_of(c, recv);
+  if (cs && cs->class_id < 0)
+    snprintf(out, cap, "civ_Toplevel_%s", nm + 1);
+  else
+    snprintf(out, cap, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+  return 1;
+}
 const char *rename_local(const char *nm) {
   for (int i = 0; i < g_nren; i++)
     if (sp_streq(g_ren_from[i], nm)) return g_ren_to[i];

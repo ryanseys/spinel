@@ -920,13 +920,9 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
        HANDLE, not the buffer, so the two names denote one object: a later
        `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
-    LocalVar *svl = NULL;
-    if (lv->str_shared && vty && sp_streq(vty, "LocalVariableReadNode")) {
-      Scope *vsc = comp_scope_of(c, v);
-      svl = vsc ? scope_local(vsc, nt_str(c->nt, v, "name")) : NULL;
-    }
-    if (svl && svl->type == TY_STRBUF && svl->str_shared)
-      buf_printf(b, "lv_%s", rename_local(nt_str(c->nt, v, "name")));
+    char srefV[192];
+    if (lv->str_shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
+      buf_puts(b, srefV);
     else {
       /* otherwise a mutable-string local wraps the (const char*) RHS in a fresh
          sp_String so later `<<` appends are amortized O(1). */
@@ -5782,6 +5778,19 @@ else {
       if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
       else emit_expr(c, v, b);
     }
+    else if (ivt == TY_STRBUF) {
+      /* shared handle slot: an alias RHS (a shared local/ivar read) copies
+         the handle; anything else wraps a fresh handle, inheriting the
+         source's frozen state (#3227 P4) */
+      char srefW[192];
+      if (vty && sp_streq(vty, "NilNode")) buf_puts(b, "NULL");
+      else if (strbuf_slot_ref(c, v, srefW, sizeof srefW)) buf_puts(b, srefW);
+      else {
+        buf_puts(b, "sp_String_new_shared(");
+        emit_str_expr(c, v, b);
+        buf_puts(b, ")");
+      }
+    }
     else if (ivt == TY_POLY && comp_ntype(c, v) != TY_POLY) {
       /* a poly ivar slot needs a boxed RHS */
       emit_boxed(c, v, b);
@@ -8251,16 +8260,13 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       chain[nchain++] = cav[0];
       cur = crecv;
     }
-    const char *bty = nt_type(nt, cur);
-    LocalVar *blv = (bty && sp_streq(bty, "LocalVariableReadNode"))
-                    ? scope_local(comp_scope_of(c, cur), nt_str(nt, cur, "name")) : NULL;
-    if (nchain > 0 && blv && blv->type == TY_STRBUF) {
-      const char *bn2 = rename_local(nt_str(nt, cur, "name"));
+    char srefC[192];
+    if (nchain > 0 && strbuf_slot_ref(c, cur, srefC, sizeof srefC)) {
       for (int j = nchain - 1; j >= 0; j--) {
         int arg = chain[j];
         TyKind at = comp_ntype(c, arg);
         emit_indent(b, indent);
-        buf_printf(b, "sp_String_append_bin(lv_%s, ", bn2);
+        buf_printf(b, "sp_String_append_bin(%s, ", srefC);
         if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")"); }
         else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, arg, b); buf_puts(b, ")"); }
         /* a string-typed arg whose value is really the unresolved-call gate's
@@ -8362,15 +8368,12 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (base) {
       const char *rty = nt_type(nt, recv);
       /* shared-mutable local: transform + replace the buffer in place (#3227) */
-      if (rty && sp_streq(rty, "LocalVariableReadNode")) {
-        const char *rnmS = nt_str(nt, recv, "name");
-        Scope *rscS = rnmS ? comp_scope_of(c, recv) : NULL;
-        LocalVar *rlvS = rscS ? scope_local(rscS, rnmS) : NULL;
-        if (rlvS && rlvS->type == TY_STRBUF) {
+      { char srefS[192];
+        if (strbuf_slot_ref(c, recv, srefS, sizeof srefS)) {
           int tbS = ++g_tmp;
           emit_indent(b, indent);
-          buf_printf(b, "{ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d))); }\n",
-                     tbS, rename_local(rnmS), tbS, base, tbS);
+          buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d))); }\n",
+                     tbS, srefS, tbS, base, tbS);
           return 1;
         }
       }
@@ -8400,13 +8403,13 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     else if (sp_streq(name, "delete!")) { abase = "delete"; abang = "delete!"; }
     if (abase) {
       /* shared-mutable local: transform + replace the buffer in place (#3227) */
-      const char *sbnm = NULL; STRBUF_LOCAL_OF(recv, sbnm);
-      if (sbnm) {
+      char srefA[192];
+      if (strbuf_slot_ref(c, recv, srefA, sizeof srefA)) {
         int tbA = ++g_tmp;
         nt_node_set_str((NodeTable *)nt, id, "name", abase);
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, ",
-                   tbA, rename_local(sbnm), tbA);
+        buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
+                   tbA, srefA, tbA);
         emit_expr(c, id, b);
         buf_puts(b, "); }\n");
         nt_node_set_str((NodeTable *)nt, id, "name", abang);
@@ -8505,12 +8508,12 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     }
     if ((sp_streq(name, "replace") || sp_streq(name, "prepend")) && argc == 1) {
       /* shared-mutable local: swap/prepend the buffer contents in place (#3227) */
-      const char *sbnm2 = NULL; STRBUF_LOCAL_OF(recv, sbnm2);
-      if (sbnm2) {
+      char srefR2[192];
+      if (strbuf_slot_ref(c, recv, srefR2, sizeof srefR2)) {
         int tbR = ++g_tmp;
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, ",
-                   tbR, rename_local(sbnm2), tbR);
+        buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
+                   tbR, srefR2, tbR);
         if (sp_streq(name, "prepend")) {
           buf_puts(b, "sp_str_concat("); emit_expr(c, argv[0], b);
           buf_printf(b, ", sp_String_cstr(_t%d))", tbR);
@@ -8550,13 +8553,13 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       return 1;
     }
     if ((sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!")) && argc == 1) {
-      const char *sbnm3 = NULL; STRBUF_LOCAL_OF(recv, sbnm3);
-      if (sbnm3) {
+      char srefD[192];
+      if (strbuf_slot_ref(c, recv, srefD, sizeof srefD)) {
         const char *base3 = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
         int tbD = ++g_tmp;
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d), ",
-                   tbD, rename_local(sbnm3), tbD, base3, tbD);
+        buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d), ",
+                   tbD, srefD, tbD, base3, tbD);
         emit_expr(c, argv[0], b);
         buf_puts(b, ")); }\n");
         return 1;

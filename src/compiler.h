@@ -122,6 +122,9 @@ typedef struct {
   int parent;          /* superclass index, or -1 */
   char **ivars;        /* instance variable names, incl. leading '@' */
   TyKind *ivar_types;
+  unsigned char *ivar_str_shared; /* (#3227) the slot is a shared-mutable
+                                     string handle (sp_String *): survives
+                                     re-clears; post-fixpoint reasserts it */
   int nivars, civars;
   char **rbs_pin_ivars; /* ivar names (incl '@') pinned by an --rbs seed: the
                            fixpoint must not widen their type */
