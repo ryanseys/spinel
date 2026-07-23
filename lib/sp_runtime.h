@@ -1665,80 +1665,11 @@ static sp_RbVal sp_box_range(sp_Range v) {
 }
 /* Float range (1.0..3.0). Endpoints stay mrb_float, so cover?/include?/begin/end
    are exact. -HUGE_VAL / +HUGE_VAL are the beginless / endless sentinels. */
-static sp_FloatRange sp_frange_new(mrb_float f, mrb_float l, mrb_int e) __attribute__((unused));
-static sp_FloatRange sp_frange_new(mrb_float f, mrb_float l, mrb_int e) {
-  sp_FloatRange r; r.first = f; r.last = l; r.excl = e; return r;
-}
-static mrb_bool sp_frange_cover(sp_FloatRange r, mrb_float x) __attribute__((unused));
-static mrb_bool sp_frange_cover(sp_FloatRange r, mrb_float x) {
-  if (r.first != -HUGE_VAL && x < r.first) return 0;
-  if (r.last != HUGE_VAL && (r.excl ? x >= r.last : x > r.last)) return 0;
-  return 1;
-}
-static mrb_bool sp_frange_eq(sp_FloatRange a, sp_FloatRange b) __attribute__((unused));
-static mrb_bool sp_frange_eq(sp_FloatRange a, sp_FloatRange b) {
-  return a.first == b.first && a.last == b.last && a.excl == b.excl;
-}
-static const char *sp_frange_inspect(sp_FloatRange r) __attribute__((unused));
-static const char *sp_frange_inspect(sp_FloatRange r) {
-  const char *lo = r.first == -HUGE_VAL ? "" : sp_float_to_s(r.first);
-  const char *hi = r.last == HUGE_VAL ? "" : sp_float_to_s(r.last);
-  return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
-}
-static sp_RbVal sp_box_frange(sp_FloatRange v) __attribute__((unused));
-static sp_RbVal sp_box_frange(sp_FloatRange v) {
-  sp_FloatRange *p = (sp_FloatRange *)sp_gc_alloc(sizeof(sp_FloatRange), NULL, NULL);
-  *p = v;
-  return sp_box_obj(p, SP_BUILTIN_FLOAT_RANGE);
-}
 /* String range ("a".."e"). The endpoints are the value; every traversal
    materializes the element array, which is how a string range behaved before
    it became a value of its own (#3064). */
-static sp_StrRange sp_srange_new(const char *f, const char *l, mrb_int e) __attribute__((unused));
-static sp_StrRange sp_srange_new(const char *f, const char *l, mrb_int e) {
-  sp_StrRange r; r.first = f; r.last = l; r.excl = e; return r;
-}
-static sp_StrArray *sp_srange_to_a(sp_StrRange r) __attribute__((unused));
-static sp_StrArray *sp_srange_to_a(sp_StrRange r) {
-  return sp_StrArray_from_string_range(r.first ? r.first : sp_str_empty,
-                                       r.last ? r.last : sp_str_empty, r.excl);
-}
-static mrb_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) __attribute__((unused));
-static mrb_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
-  return a.excl == b.excl && sp_str_eq(a.first ? a.first : sp_str_empty, b.first ? b.first : sp_str_empty) &&
-         sp_str_eq(a.last ? a.last : sp_str_empty, b.last ? b.last : sp_str_empty);
-}
 /* #cover? / #=== compare lexicographically, no materialization. */
-static mrb_bool sp_srange_cover(sp_StrRange r, const char *x) __attribute__((unused));
-static mrb_bool sp_srange_cover(sp_StrRange r, const char *x) {
-  if (!x) return 0;
-  if (r.first && strcmp(x, r.first) < 0) return 0;
-  if (r.last) { int d = strcmp(x, r.last); if (r.excl ? d >= 0 : d > 0) return 0; }
-  return 1;
-}
-static const char *sp_srange_to_s(sp_StrRange r) __attribute__((unused));
-static const char *sp_srange_to_s(sp_StrRange r) {
-  return sp_sprintf("%s%s%s", r.first ? r.first : sp_str_empty,
-                    r.excl ? "..." : "..", r.last ? r.last : sp_str_empty);
-}
-static const char *sp_srange_inspect(sp_StrRange r) __attribute__((unused));
-static const char *sp_srange_inspect(sp_StrRange r) {
-  const char *lo = sp_str_inspect(r.first ? r.first : sp_str_empty);
-  const char *hi = sp_str_inspect(r.last ? r.last : sp_str_empty);
-  return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
-}
-static sp_RbVal sp_box_srange(sp_StrRange v) __attribute__((unused));
-static sp_RbVal sp_box_srange(sp_StrRange v) {
-  sp_StrRange *p = (sp_StrRange *)sp_gc_alloc(sizeof(sp_StrRange), NULL, NULL);
-  *p = v;
-  return sp_box_obj(p, SP_BUILTIN_STR_RANGE);
-}
 /* Float#max: the exclusive form has no greatest element (Ruby raises). */
-static mrb_float sp_frange_max(sp_FloatRange r) __attribute__((unused));
-static mrb_float sp_frange_max(sp_FloatRange r) {
-  if (r.excl) sp_raise_cls("TypeError", "cannot exclude end value with non Integer begin value");
-  return r.last;
-}
 /* #step(n) over a Float range -> a Float array toward last. A negative step walks
    descending; a wrong-direction step yields an empty array; the count is derived
    so accumulated float rounding does not drift. */

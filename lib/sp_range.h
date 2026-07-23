@@ -44,4 +44,20 @@ static inline mrb_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.firs
 mrb_bool sp_range_include(sp_Range *r, mrb_int x);
 const char *sp_range_str(sp_Range r);
 
+/* Float/String Range value-type ops -- 0 optcarrot uses, bodies in
+   lib/sp_cold.c (see sp_types.h for sp_FloatRange/sp_StrRange). */
+sp_FloatRange sp_frange_new(mrb_float f, mrb_float l, mrb_int e);
+mrb_bool sp_frange_cover(sp_FloatRange r, mrb_float x);
+mrb_bool sp_frange_eq(sp_FloatRange a, sp_FloatRange b);
+const char *sp_frange_inspect(sp_FloatRange r);
+sp_RbVal sp_box_frange(sp_FloatRange v);
+mrb_float sp_frange_max(sp_FloatRange r);
+sp_StrRange sp_srange_new(const char *f, const char *l, mrb_int e);
+sp_StrArray *sp_srange_to_a(sp_StrRange r);
+mrb_bool sp_srange_eq(sp_StrRange a, sp_StrRange b);
+mrb_bool sp_srange_cover(sp_StrRange r, const char *x);
+const char *sp_srange_to_s(sp_StrRange r);
+const char *sp_srange_inspect(sp_StrRange r);
+sp_RbVal sp_box_srange(sp_StrRange v);
+
 #endif

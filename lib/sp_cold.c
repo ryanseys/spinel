@@ -2170,3 +2170,64 @@ const char *sp_argf_filename(void) {
   return sp_argv.len > 0 ? sp_argv.data[0] : "-";
 }
 mrb_bool sp_argf_eof(void) { return !sp_argf_ensure(); }
+
+/* ---- Float/String Range value-type ops -- relocated from sp_runtime.h.
+   0 optcarrot uses; reach only sp_range.h + lib-visible sp_float_to_s/
+   sp_str_inspect/sp_str_eq/sp_StrArray_from_string_range/sp_sprintf. ---- */
+
+sp_FloatRange sp_frange_new(mrb_float f, mrb_float l, mrb_int e) {
+  sp_FloatRange r; r.first = f; r.last = l; r.excl = e; return r;
+}
+mrb_bool sp_frange_cover(sp_FloatRange r, mrb_float x) {
+  if (r.first != -HUGE_VAL && x < r.first) return 0;
+  if (r.last != HUGE_VAL && (r.excl ? x >= r.last : x > r.last)) return 0;
+  return 1;
+}
+mrb_bool sp_frange_eq(sp_FloatRange a, sp_FloatRange b) {
+  return a.first == b.first && a.last == b.last && a.excl == b.excl;
+}
+const char *sp_frange_inspect(sp_FloatRange r) {
+  const char *lo = r.first == -HUGE_VAL ? "" : sp_float_to_s(r.first);
+  const char *hi = r.last == HUGE_VAL ? "" : sp_float_to_s(r.last);
+  return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
+}
+sp_RbVal sp_box_frange(sp_FloatRange v) {
+  sp_FloatRange *p = (sp_FloatRange *)sp_gc_alloc(sizeof(sp_FloatRange), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_FLOAT_RANGE);
+}
+mrb_float sp_frange_max(sp_FloatRange r) {
+  if (r.excl) sp_raise_cls("TypeError", "cannot exclude end value with non Integer begin value");
+  return r.last;
+}
+sp_StrRange sp_srange_new(const char *f, const char *l, mrb_int e) {
+  sp_StrRange r; r.first = f; r.last = l; r.excl = e; return r;
+}
+sp_StrArray *sp_srange_to_a(sp_StrRange r) {
+  return sp_StrArray_from_string_range(r.first ? r.first : sp_str_empty,
+                                       r.last ? r.last : sp_str_empty, r.excl);
+}
+mrb_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
+  return a.excl == b.excl && sp_str_eq(a.first ? a.first : sp_str_empty, b.first ? b.first : sp_str_empty) &&
+         sp_str_eq(a.last ? a.last : sp_str_empty, b.last ? b.last : sp_str_empty);
+}
+mrb_bool sp_srange_cover(sp_StrRange r, const char *x) {
+  if (!x) return 0;
+  if (r.first && strcmp(x, r.first) < 0) return 0;
+  if (r.last) { int d = strcmp(x, r.last); if (r.excl ? d >= 0 : d > 0) return 0; }
+  return 1;
+}
+const char *sp_srange_to_s(sp_StrRange r) {
+  return sp_sprintf("%s%s%s", r.first ? r.first : sp_str_empty,
+                    r.excl ? "..." : "..", r.last ? r.last : sp_str_empty);
+}
+const char *sp_srange_inspect(sp_StrRange r) {
+  const char *lo = sp_str_inspect(r.first ? r.first : sp_str_empty);
+  const char *hi = sp_str_inspect(r.last ? r.last : sp_str_empty);
+  return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
+}
+sp_RbVal sp_box_srange(sp_StrRange v) {
+  sp_StrRange *p = (sp_StrRange *)sp_gc_alloc(sizeof(sp_StrRange), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_STR_RANGE);
+}
