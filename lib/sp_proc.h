@@ -46,4 +46,19 @@ sp_Curry *sp_curry_new(sp_Proc *p);
 sp_Curry *sp_curry_apply(sp_Curry *c, sp_RbVal arg);
 void sp_curry_publish_args(sp_Curry *c);
 
+/* ---- BoundMethod (Method object): sp_bound_method_new is hot in
+   optcarrot (69 uses), so it stays static inline here -- pure textual
+   move, same per-TU inlining as before. sp_BoundMethod_scan is a GC
+   callback (only ever invoked indirectly through the function pointer
+   sp_bound_method_new hands to sp_gc_alloc), so moving its body to
+   lib/sp_proc.c costs nothing -- taking its address from an inline
+   context is just an embedded constant, not a call site. ---- */
+typedef struct sp_BoundMethod { void *self; mrb_int fn; const char *name; mrb_int arity; } sp_BoundMethod;
+void sp_bm_cap_scan(void *p);
+mrb_int sp_method_proc_tramp(void *cap, mrb_int argc, mrb_int *args);
+sp_Proc *sp_method_to_proc(sp_BoundMethod *m);
+void sp_BoundMethod_scan(void *p);
+
+static inline sp_BoundMethod *sp_bound_method_new(void *self, mrb_int fn, const char *name, mrb_int arity) { sp_BoundMethod *m = (sp_BoundMethod *)sp_gc_alloc(sizeof(sp_BoundMethod), NULL, sp_BoundMethod_scan); m->self = self; m->fn = fn; m->name = name; m->arity = arity; return m; }
+
 #endif

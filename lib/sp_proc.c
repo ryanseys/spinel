@@ -62,3 +62,20 @@ void sp_curry_publish_args(sp_Curry *c) {
   for (mrb_int i = 0; i < c->nargs && i < 16; i++)
     _sp_proc_poly_args[i] = c->args[i];
 }
+
+void sp_bm_cap_scan(void *p) { sp_gc_mark(p); }
+mrb_int sp_method_proc_tramp(void *cap, mrb_int argc, mrb_int *args) {
+  sp_BoundMethod *m = (sp_BoundMethod *)cap;
+  if (!m || !m->fn) return 0;
+  switch (argc) {
+    case 0: return ((mrb_int (*)(void *))(uintptr_t)m->fn)(m->self);
+    case 1: return ((mrb_int (*)(void *, mrb_int))(uintptr_t)m->fn)(m->self, args[0]);
+    case 2: return ((mrb_int (*)(void *, mrb_int, mrb_int))(uintptr_t)m->fn)(m->self, args[0], args[1]);
+    case 3: return ((mrb_int (*)(void *, mrb_int, mrb_int, mrb_int))(uintptr_t)m->fn)(m->self, args[0], args[1], args[2]);
+    default: return ((mrb_int (*)(void *, mrb_int, mrb_int, mrb_int, mrb_int))(uintptr_t)m->fn)(m->self, args[0], args[1], args[2], args[3]);
+  }
+}
+sp_Proc *sp_method_to_proc(sp_BoundMethod *m) {
+  return sp_proc_new_meta((void *)sp_method_proc_tramp, m, sp_bm_cap_scan, 1, TRUE, 0, NULL, NULL);
+}
+void sp_BoundMethod_scan(void *p) { sp_BoundMethod *m = (sp_BoundMethod *)p; if (m->self) sp_gc_mark(m->self); }
