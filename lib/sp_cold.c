@@ -2408,3 +2408,24 @@ mrb_int sp_io_sysopen(const char *path) {
                  sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
   return (mrb_int)fd;
 }
+
+/* ---- Kernel#sleep -- relocated from sp_runtime.h. 0 optcarrot uses;
+   sp_sched_sleep already lib-visible (sp_sched.h, included transitively
+   via sp_io.h/sp_time.h -> check explicitly below). ---- */
+#include "sp_sched.h"
+
+void sp_sleep(mrb_float s) {
+  if (!(s > 0.0)) return;
+#ifdef SP_THREADS
+  /* Scheduler-aware: park the green thread and free its OS worker for others; a
+     monitor thread wakes it after the duration (see lib/sp_sched.c). */
+  sp_sched_sleep((double)s);
+#else
+  struct timespec req;
+  req.tv_sec = (time_t)s;
+  req.tv_nsec = (long)((s - (double)req.tv_sec) * 1e9);
+  if (req.tv_nsec < 0) req.tv_nsec = 0;
+  if (req.tv_nsec >= 1000000000L) req.tv_nsec = 999999999L;
+  while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
+#endif
+}
