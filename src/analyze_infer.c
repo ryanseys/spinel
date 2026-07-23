@@ -2457,6 +2457,10 @@ else {
   /* TY_ENUMERATOR instance methods */
   if (recv >= 0 && rt == TY_ENUMERATOR) {
     if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;
+    /* find/detect with a block: driven lazily via #next (works on infinite
+       generator enums like blockless Kernel#loop); nil on no match (#3236) */
+    if ((sp_streq(name, "find") || sp_streq(name, "detect")) &&
+        nt_ref(nt, id, "block") >= 0) return TY_POLY;
     if (sp_streq(name, "next_values") || sp_streq(name, "peek_values")) return TY_POLY_ARRAY;   /* #2482 */
     if (sp_streq(name, "+") && argc == 1 && infer_type(c, argv[0]) == TY_ENUMERATOR) return TY_ENUMERATOR;  /* #2481 */
     if (sp_streq(name, "rewind")) return TY_ENUMERATOR;

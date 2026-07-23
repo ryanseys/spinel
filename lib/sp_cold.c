@@ -1691,7 +1691,45 @@ sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = "each";
   return e;
 }
+/* Lazy with_index over a generator-backed source (blockless Kernel#loop,
+   external enumerators): pull one value at a time and pair it with the
+   running index, so an infinite source stays drivable via #next (#3236). */
+typedef struct { sp_Enumerator *src; mrb_int off; } sp_WiCap;
+static void sp_wi_cap_scan(void *p) {
+  sp_WiCap *cap = (sp_WiCap *)p;
+  if (cap->src) sp_gc_mark(cap->src);
+}
+static void sp_with_index_gen(sp_Fiber *f) {
+  sp_WiCap *cap = (sp_WiCap *)f->user_data;
+  sp_Enumerator *s = cap->src;
+  mrb_int i = cap->off;
+  for (;;) {
+    sp_RbVal v;
+    if (s->gen) {
+      if (!s->fib) { s->fib = sp_Fiber_new(s->gen); if (s->gen_cap) s->fib->user_data = s->gen_cap; }
+      if (!sp_Fiber_alive(s->fib)) break;
+      v = sp_Fiber_resume(s->fib, sp_box_nil());
+      if (!sp_Fiber_alive(s->fib)) break;
+    }
+    else {
+      if (!s->items || s->cursor >= s->items->len) break;
+      v = s->items->data[s->cursor++];
+    }
+    sp_PolyArray *pair = sp_PolyArray_new();
+    SP_GC_ROOT(pair);
+    sp_PolyArray_push(pair, v);
+    sp_PolyArray_push(pair, sp_box_int(i++));
+    sp_Fiber_yield(sp_box_poly_array(pair));
+  }
+}
 sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, mrb_int off) {
+  if (e && e->gen) {
+    sp_WiCap *cap = (sp_WiCap *)sp_gc_alloc(sizeof(sp_WiCap), NULL, sp_wi_cap_scan);
+    cap->src = e; cap->off = off;
+    sp_Enumerator *r = sp_Enumerator_new_gen(sp_with_index_gen, cap, e->size);
+    r->source = e->source;
+    return r;
+  }
   sp_PolyArray *src = e ? e->items : NULL;
   mrb_int n = src ? src->len : 0;
   /* Root the source enumerator (a temp `arr.each` is otherwise unreachable): the

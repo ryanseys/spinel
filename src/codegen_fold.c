@@ -4801,6 +4801,103 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
    collector enumerator, whose result we cannot rebuild here). The statement
    form is served by the iter emitter; immediate array chains by
    emit_with_index_expr above. Returns 1 if handled. */
+/* enum.find/detect { |v| pred } driven lazily via #next inside a
+   StopIteration setjmp frame (the Kernel#loop pattern), so an infinite
+   generator enum (blockless `loop`, possibly .with_index-chained) works and
+   a finite enum without a match yields nil (#3236). A user `break val` in
+   the block routes through the enclosing break wrapper as usual. */
+int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || (!sp_streq(name, "find") && !sp_streq(name, "detect"))) return 0;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || comp_ntype(c, recv) != TY_ENUMERATOR) return 0;
+  const char *p0_orig = block_param_name(c, block, 0);
+  const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
+  const char *p1_orig = block_param_name(c, block, 1);
+  const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  Scope *bsc = comp_scope_of(c, block);
+
+  int te = ++g_tmp, tres = ++g_tmp, tv = ++g_tmp, tg = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n", te, rb.p ? rb.p : "", te);
+  free(rb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tres, tres);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tv, tv);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "int _t%d = sp_gc_nroots; (void)_t%d;\n", tg, tg);
+  emit_indent(g_pre, g_indent);
+  buf_puts(g_pre, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
+  emit_indent(g_pre, g_indent);
+  buf_puts(g_pre, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_puts(g_pre, "for (;;) {\n");
+  int din = g_indent + 2;
+  emit_indent(g_pre, din);
+  buf_printf(g_pre, "_t%d = sp_Enumerator_next(_t%d);\n", tv, te);
+  /* bind block params: two params autosplat an array element; one binds it */
+  LocalVar *lv0f = p0_orig && bsc ? scope_local(bsc, p0_orig) : NULL;
+  if (p0 && lv0f) {   /* a discard param (`_`) has no declared local: skip */
+    TyKind pt0 = lv0f->type;
+    emit_indent(g_pre, din);
+    buf_printf(g_pre, "lv_%s = ", p0);
+    { char vx[32]; snprintf(vx, sizeof vx, p1 ? "sp_poly_arr_get(_t%d, 0)" : "_t%d", tv);
+      if (pt0 == TY_POLY) buf_puts(g_pre, vx);
+      else emit_unbox_text(c, pt0, vx, g_pre); }
+    buf_puts(g_pre, ";\n");
+  }
+  LocalVar *lv1f = p1_orig && bsc ? scope_local(bsc, p1_orig) : NULL;
+  if (p1 && lv1f) {
+    TyKind pt1 = lv1f->type;
+    emit_indent(g_pre, din);
+    buf_printf(g_pre, "lv_%s = ", p1);
+    { char vx[32]; snprintf(vx, sizeof vx, "sp_poly_arr_get(_t%d, 1)", tv);
+      if (pt1 == TY_POLY) buf_puts(g_pre, vx);
+      else emit_unbox_text(c, pt1, vx, g_pre); }
+    buf_puts(g_pre, ";\n");
+  }
+  { int sv_in = g_indent; g_indent = din;
+    for (int j = 0; j + 1 < bn; j++) emit_stmt(c, bb[j], g_pre, din);
+    if (bn > 0) {
+      int tt = ++g_tmp;
+      Buf tb; memset(&tb, 0, sizeof tb);
+      emit_boxed(c, bb[bn - 1], &tb);
+      emit_indent(g_pre, din);
+      buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tt, tb.p ? tb.p : "sp_box_nil()");
+      free(tb.p);
+      emit_indent(g_pre, din);
+      buf_printf(g_pre, "if (sp_poly_truthy(_t%d)) { _t%d = _t%d; break; }\n", tt, tres, tv);
+    }
+    g_indent = sv_in; }
+  emit_indent(g_pre, g_indent + 1);
+  buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_puts(g_pre, "sp_exc_top--;\n");
+  emit_indent(g_pre, g_indent);
+  buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent);
+  buf_puts(g_pre, "else {\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_puts(g_pre, "sp_exc_top--;\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_gc_nroots = _t%d;\n", tg);
+  emit_indent(g_pre, g_indent + 1);
+  buf_puts(g_pre, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_puts(g_pre, "if (!sp_exc_cls_matches((const char *)sp_last_exc_cls, \"StopIteration\")) sp_raise_cls(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n");
+  emit_indent(g_pre, g_indent);
+  buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
 int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
