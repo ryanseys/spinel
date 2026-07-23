@@ -233,4 +233,14 @@ sp_FloatArray *sp_FloatArray_slice_bang(sp_FloatArray *a, mrb_int from, mrb_int 
 sp_StrArray *sp_StrArray_slice_bang(sp_StrArray *a, mrb_int from, mrb_int n);
 sp_PtrArray *sp_PtrArray_slice_bang(sp_PtrArray *a, mrb_int from, mrb_int n);
 
+/* ---- more cold StrArray ops relocated from sp_runtime.h (0 optcarrot
+   uses). #include here (not near the top): by this point array.h's own
+   hot inline core (sp_StrArray_push et al) is already defined, so
+   sp_str.h's nested processing (it needs sp_StrArray_push for
+   sp_str_split_push) sees it; the reverse order undeclares it. ---- */
+#include "sp_str.h"     /* sp_str_eq, for the cold StrArray ops below */
+const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init);
+sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a);
+mrb_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b);
+
 #endif /* SP_ARRAY_H */

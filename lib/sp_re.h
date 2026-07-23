@@ -124,4 +124,10 @@ const char *sp_MatchData_pre_match(sp_MatchData *m);
 const char *sp_MatchData_post_match(sp_MatchData *m);
 void sp_re_default_error_handler(const char *msg);
 
+/* ---- sp_str_re_match_p_at relocated from sp_runtime.h (0 optcarrot uses).
+   Lives here (not sp_str.h) because sp_runtime.h includes sp_re.h before
+   sp_str.h -- placing it in sp_str.h would see mrb_regexp_pattern
+   undeclared on that first (nested) pass. ---- */
+mrb_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_int cpos);
+
 #endif /* SP_RE_H */

@@ -1144,7 +1144,6 @@ sp_StrArray *sp_file_readlines_chomp(const char *path);
    malloc buffer, return an sp_str_alloc'd copy. (Not sp_String#data, whose owner
    isn't GC-rooted across the return.) sp_float_to_s's result is copied
    immediately, before the next call can reuse its buffer. */
-static mrb_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(!sp_str_eq(a->data[i],b->data[i]))return FALSE;return TRUE;}
 /* Symbol arrays share the IntArray representation (sp_sym = mrb_int),
    but each element is rendered as ":name" via sp_sym_to_s. */
 static inline const char*sp_SymArray_inspect(sp_IntArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_SYM_ARRAY)):"[]";}
@@ -1308,15 +1307,6 @@ __attribute__((constructor)) static void sp_gc_install_tu_hooks(void) {
 /* String#match?(/re/, pos) — pos is a codepoint index (CRuby semantics),
    unlike Regexp#match?(str, pos) which uses byte offset. Convert the
    codepoint index to a byte offset before dispatching to re_exec. */
-static mrb_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_int cpos) {
-  mrb_int cl = sp_str_length(str);
-  if (cpos < 0) cpos += cl;
-  if (cpos < 0 || cpos > cl) return FALSE;
-  size_t boff = sp_utf8_byte_offset(str, cpos);
-  int64_t slen = (int64_t)strlen(str);
-  int caps[2];
-  return re_exec(pat, str, slen, (mrb_int)boff, caps, 2, 0) > 0;
-}
 
 /* Issue #855: expand `\1`..`\9` / `\&` / `\0` backreferences in
    the replacement string against the current caps[] array. `\\`
@@ -1409,23 +1399,6 @@ static const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *s
 
 /* Issue #910: sub(string, hash) — literal-substring pattern
    with a hash replacement. Replaces only the first match. */
-static const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h) {
-  if (!str || !pat) return str;
-  const char *found = strstr(str, pat);
-  if (!found) return str;
-  size_t before = (size_t)(found - str);
-  size_t plen = strlen(pat);
-  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : "";
-  size_t rlen = strlen(rep);
-  size_t rest = strlen(str) - before - plen;
-  size_t total = before + rlen + rest;
-  char *out = sp_str_alloc_raw(total + 1);
-  memcpy(out, str, before);
-  memcpy(out + before, rep, rlen);
-  memcpy(out + before + rlen, found + plen, rest);
-  out[total] = 0;
-  return out;
-}
 
 
 
@@ -1565,9 +1538,6 @@ static inline mrb_int sp_obj_cls_id_of(void *p) { return p ? *(mrb_int *)p : 0; 
    from the underlying sp_str_*_index helpers; we widen here at the
    boxing layer so existing call sites that want the raw int still
    work via `sp_str_index` directly. */
-static sp_RbVal sp_str_index_poly(const char *s, const char *sub) { mrb_int n = sp_str_index(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
-static sp_RbVal sp_str_index_from_poly(const char *s, const char *sub, mrb_int start) { mrb_int n = sp_str_index_from(s, sub, start); return n < 0 ? sp_box_nil() : sp_box_int(n); }
-static sp_RbVal sp_str_rindex_poly(const char *s, const char *sub) { mrb_int n = sp_str_rindex(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 /* int? siblings of the String#index family. Same not-found
    semantics as the _poly variants, but the result is the int?
    sentinel (SP_INT_NIL) rather than a boxed sp_RbVal — keeps the
@@ -1945,10 +1915,6 @@ static const char *sp_poly_class_name(sp_RbVal v) {
    keyed off the runtime class name so every Array variant shares one list.
    Deliberately conservative: an unlisted name answers false rather than
    guessing, which is also what an undispatchable method would do. */
-static mrb_bool sp_str_in_list(const char *m, const char *const *list) {
-  for (int i = 0; list[i]; i++) if (strcmp(m, list[i]) == 0) return 1;
-  return 0;
-}
 static mrb_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   static const char *const uni[] = {
     "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze", "frozen?",
@@ -3750,14 +3716,6 @@ static sp_PolyArray *sp_bigint_range_array(sp_Bigint *lo, sp_Bigint *hi, int up)
 }
 /* Array#sum with a String initial value: concatenation fold ("abc" from
    ["a","b","c"].sum("")), CRuby's + on each element. */
-static const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init) {
-  size_t n = init ? strlen(init) : 0;
-  if (a) for (mrb_int i = 0; i < a->len; i++) if (a->data[i]) n += strlen(a->data[i]);
-  char *r = sp_str_alloc(n); size_t o = 0;
-  if (init) { memcpy(r, init, strlen(init)); o = strlen(init); }
-  if (a) for (mrb_int i = 0; i < a->len; i++) if (a->data[i]) { size_t l = strlen(a->data[i]); memcpy(r + o, a->data[i], l); o += l; }
-  r[o] = 0; sp_str_set_len(r, o); return r;
-}
 /* Array#sum with an Array initial value over an array of arrays: one-level
    concatenation into a fresh poly array ([[1],[2]].sum([]) == [1, 2]). */
 static sp_PolyArray *sp_PolyArray_sum_concat(sp_PolyArray *a, sp_RbVal init) {
@@ -4031,12 +3989,6 @@ static sp_RbVal sp_IntArray_uniq_bangq(sp_IntArray *a) {
   mrb_int n = a->len;
   sp_IntArray_uniq_bang(a);
   return a->len != n ? sp_box_int_array(a) : sp_box_nil();
-}
-static sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {
-  if (!a) return sp_box_nil();
-  mrb_int n = a->len;
-  sp_StrArray_uniq_bang(a);
-  return a->len != n ? sp_box_str_array(a) : sp_box_nil();
 }
 /* uniq dedups with eql? (class-strict: 1 and 1.0 both survive), as CRuby. */
 static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
@@ -7416,17 +7368,6 @@ sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, mrb_int off);
    allocate and then copy. */
 /* sp_str_chars_poly: moved to lib/sp_cold.c */
 sp_PolyArray *sp_str_chars_poly(const char *s);
-static sp_PolyArray *sp_str_lines_poly(const char *s) {
-  sp_StrArray *ls = sp_str_lines(s); SP_GC_ROOT(ls);
-  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
-  if (ls) {
-    mrb_int len = sp_StrArray_length(ls);
-    for (mrb_int i = 0; i < len; i++) {
-      sp_PolyArray_push(a, sp_box_str(sp_StrArray_get(ls, i)));
-    }
-  }
-  return a;
-}
 sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size);
 
 /* Enumerator#inspect: the CRuby "#<Enumerator: <source>:<method>>" for a

@@ -192,4 +192,12 @@ static inline uint64_t sp_str_hash(const char*s){
 }
 static inline mrb_int _sp_istr_idx(mrb_int mask,mrb_int k){return(mrb_int)(((uint64_t)(unsigned long long)k*11400714819323198485ULL)&(uint64_t)mask);}
 
+/* ---- more cold string ops relocated from sp_runtime.h (0 optcarrot
+   uses; deps already visible via sp_str.h's own sp_array.h include). ---- */
+mrb_bool sp_str_in_list(const char *m, const char *const *list);
+sp_RbVal sp_str_index_poly(const char *s, const char *sub);
+sp_RbVal sp_str_index_from_poly(const char *s, const char *sub, mrb_int start);
+sp_RbVal sp_str_rindex_poly(const char *s, const char *sub);
+sp_PolyArray *sp_str_lines_poly(const char *s);
+
 #endif /* SP_STR_H */

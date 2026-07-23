@@ -2287,3 +2287,66 @@ sp_RbVal sp_box_tms(sp_Tms v) {
   return sp_box_obj(p, SP_BUILTIN_TMS);
 }
 sp_RbVal sp_box_openstruct(sp_OpenStruct *o){ return sp_box_obj(o, SP_BUILTIN_OPENSTRUCT); }
+
+/* ---- More cold String/StrArray ops -- relocated from sp_runtime.h. ---- */
+#include "sp_re.h"   /* mrb_regexp_pattern/re_exec for sp_str_re_match_p_at */
+
+mrb_bool sp_str_in_list(const char *m, const char *const *list) {
+  for (int i = 0; list[i]; i++) if (strcmp(m, list[i]) == 0) return 1;
+  return 0;
+}
+sp_RbVal sp_str_index_poly(const char *s, const char *sub) { mrb_int n = sp_str_index(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+sp_RbVal sp_str_index_from_poly(const char *s, const char *sub, mrb_int start) { mrb_int n = sp_str_index_from(s, sub, start); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+sp_RbVal sp_str_rindex_poly(const char *s, const char *sub) { mrb_int n = sp_str_rindex(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+sp_PolyArray *sp_str_lines_poly(const char *s) {
+  sp_StrArray *ls = sp_str_lines(s); SP_GC_ROOT(ls);
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  if (ls) {
+    mrb_int len = sp_StrArray_length(ls);
+    for (mrb_int i = 0; i < len; i++) {
+      sp_PolyArray_push(a, sp_box_str(sp_StrArray_get(ls, i)));
+    }
+  }
+  return a;
+}
+mrb_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_int cpos) {
+  mrb_int cl = sp_str_length(str);
+  if (cpos < 0) cpos += cl;
+  if (cpos < 0 || cpos > cl) return FALSE;
+  size_t boff = sp_utf8_byte_offset(str, cpos);
+  int64_t slen = (int64_t)strlen(str);
+  int caps[2];
+  return re_exec(pat, str, slen, (mrb_int)boff, caps, 2, 0) > 0;
+}
+const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h) {
+  if (!str || !pat) return str;
+  const char *found = strstr(str, pat);
+  if (!found) return str;
+  size_t before = (size_t)(found - str);
+  size_t plen = strlen(pat);
+  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : "";
+  size_t rlen = strlen(rep);
+  size_t rest = strlen(str) - before - plen;
+  size_t total = before + rlen + rest;
+  char *out = sp_str_alloc_raw(total + 1);
+  memcpy(out, str, before);
+  memcpy(out + before, rep, rlen);
+  memcpy(out + before + rlen, found + plen, rest);
+  out[total] = 0;
+  return out;
+}
+const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init) {
+  size_t n = init ? strlen(init) : 0;
+  if (a) for (mrb_int i = 0; i < a->len; i++) if (a->data[i]) n += strlen(a->data[i]);
+  char *r = sp_str_alloc(n); size_t o = 0;
+  if (init) { memcpy(r, init, strlen(init)); o = strlen(init); }
+  if (a) for (mrb_int i = 0; i < a->len; i++) if (a->data[i]) { size_t l = strlen(a->data[i]); memcpy(r + o, a->data[i], l); o += l; }
+  r[o] = 0; sp_str_set_len(r, o); return r;
+}
+sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {
+  if (!a) return sp_box_nil();
+  mrb_int n = a->len;
+  sp_StrArray_uniq_bang(a);
+  return a->len != n ? sp_box_str_array(a) : sp_box_nil();
+}
+mrb_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(!sp_str_eq(a->data[i],b->data[i]))return FALSE;return TRUE;}

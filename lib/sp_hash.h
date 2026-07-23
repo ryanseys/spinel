@@ -111,4 +111,7 @@ sp_PolyArray*sp_StrIntHash_to_a(sp_StrIntHash*h);
 sp_PolyArray*sp_StrStrHash_to_a(sp_StrStrHash*h);
 sp_PolyArray*sp_IntStrHash_to_a(sp_IntStrHash*h);
 
+/* ---- sp_str_sub_str_str_hash relocated from sp_runtime.h (0 optcarrot uses). ---- */
+const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h);
+
 #endif
