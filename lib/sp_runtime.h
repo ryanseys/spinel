@@ -15,6 +15,13 @@
 #include "sp_re.h"      /* regexp wrappers + MatchData (lib/sp_re.c); engine = build/regexp/*.o */
 #include "sp_str.h"     /* cold string transforms (lib/sp_str.c); hot/utf8 core stays here */
 #include "sp_hash.h"    /* StrInt/StrStr/IntStr/IntInt hash cold ops (lib/sp_hash.c) */
+sp_RbVal sp_env_shift(void);
+mrb_int sp_env_size(void);
+sp_StrStrHash *sp_env_to_h(void);
+sp_StrStrHash *sp_env_clear(void);
+sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace);
+sp_StrIntHash*sp_gc_stat(void);
+const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v);
 #include "sp_random.h"  /* shared Kernel-level PRNG stream (lib/sp_random.c) */
 
 #include <stdio.h>
@@ -455,7 +462,6 @@ static mrb_bool sp_range_include(sp_Range *r, mrb_int x){
    dup_external), sp_str_empty, and the UTF-8 length cache now live in
    sp_alloc.h / sp_alloc.c, shared (extern) so standalone lib C files can
    allocate onto the same heap. sp_str_sweep moved to sp_alloc.c. */
-#define SPL(s) (&("\xff" s)[1])
 
 /* RUBY_PLATFORM string -- host arch + OS. Detected at C compile time
    so cross-builds report the target platform. Issue #890. */
@@ -826,29 +832,6 @@ static mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len) {
 /* Keys are spinel rodata literals (SPL: 0xff marker prefix) so the str-hash
    header cache's s[-1] read is in-bounds -- a bare C literal here would
    overread (and could alias a heap marker on some rodata layouts). */
-static sp_StrIntHash*sp_gc_stat(void){
-  /* The string heap (sp_str_heap) is malloc'd separately and deliberately
-     excluded from sp_gc_bytes (see sp_str_alloc). Surface its footprint so
-     GC.stat can explain "RSS huge but bytes tiny" for string-heavy workloads.
-     Prototype: O(n) walk; a production version maintains a running counter.
-     The walk holds the heap lock: sp_str_alloc pushes onto this list under
-     it from any worker, and an unlocked traversal could read a half-linked
-     node. Unlock before building the hash -- sp_gc_alloc takes the same
-     (non-recursive) lock. */
-  size_t str_bytes=0; mrb_int str_count=0;
-#ifdef SP_THREADS
-  /* Per-worker lists (see sp_alloc.h): each has a single pusher, and only the
-     head moves, so a snapshot walk reaches fully-linked nodes -- at worst it
-     misses a just-pushed one (benign undercount for an introspection stat). */
-  { int nw = sp_active_workers; if (nw < 1) nw = 1; if (nw > SP_MAX_WORKERS) nw = SP_MAX_WORKERS;
-    for (int wi = 0; wi < nw; wi++)
-      for(sp_str_hdr*sh=sp_str_heap_w[wi]; sh; sh=sh->next){ str_bytes+=sh->size; str_count++; } }
-#else
-  SP_HEAP_LOCK();
-  for(sp_str_hdr*sh=sp_str_heap; sh; sh=sh->next){ str_bytes+=sh->size; str_count++; }
-  SP_HEAP_UNLOCK();
-#endif
-  sp_StrIntHash*h=sp_StrIntHash_new();sp_StrIntHash_set(h,SPL("bytes"),(mrb_int)SP_GC_CTR_GET(sp_gc_bytes));sp_StrIntHash_set(h,SPL("old_bytes"),(mrb_int)sp_gc_old_bytes);sp_StrIntHash_set(h,SPL("threshold"),(mrb_int)sp_gc_threshold);sp_StrIntHash_set(h,SPL("cycle"),(mrb_int)sp_gc_cycle);sp_StrIntHash_set(h,SPL("full_runs"),(mrb_int)(sp_gc_cycle/SP_GC_FULL_INTERVAL));sp_StrIntHash_set(h,SPL("str_bytes"),(mrb_int)str_bytes);sp_StrIntHash_set(h,SPL("str_count"),str_count);return h;}
 
 
 static void sp_IntStrHash_clear(sp_IntStrHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->used[i]=0;h->len=0;}
@@ -1014,10 +997,6 @@ static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
    so sp_str_freeze_val can set it.  The frozen? predicate and mutation
    guards check for 0xf1; plain rodata 0xff literals are NOT reported
    as frozen (they behave as immutable value-semantics objects). */
-static inline mrb_bool sp_str_is_frozen_val(const char *s) {
-  if (!s) return TRUE;
-  return ((const unsigned char *)s)[-1] == 0xf1;
-}
 /* String#-@: an already-frozen receiver (or an immutable rodata literal)
    returns ITSELF -- CRuby's uminus is an interning hint, and `(-a).equal?(a)`
    is true for a frozen `a`. Only a mutable string takes the freeze-copy. */
@@ -1115,9 +1094,6 @@ static inline const char *sp_str_clone_val(const char *s) {
    raises IndexError. Over-long spans clamp to the tail. */
 /* sp_str_splice_at: moved to lib/sp_cold.c */
 const char *sp_str_splice_at(const char *s, mrb_int from, mrb_int n, const char *val, int range_form);
-static inline void sp_str_check_mutable(const char *s) {
-  if (sp_str_is_frozen_val(s)) sp_raise_frozen_str(s);
-}
 
 /* sp_String (mutable-String builder) moved to sp_string.h / lib/sp_string.c:
    the hot construction/append core is inline in the header, the cold in-place
@@ -2426,84 +2402,14 @@ static const char *sp_env_aset(const char *k, sp_RbVal v) {
   if (v.v.s) setenv(k, v.v.s, 1); else unsetenv(k);
   return v.v.s;
 }
-static mrb_int sp_env_size(void) {
-  extern char **environ;
-  mrb_int n = 0;
-  for (char **e = environ; e && *e; e++) n++;
-  return n;
-}
 /* ENV mutators (#2832). Each returns the fresh snapshot so the expression
    value renders like ENV does. */
-static sp_StrStrHash *sp_env_to_h(void);
-static sp_StrStrHash *sp_env_clear(void) {
-  extern char **environ;
-  for (;;) {   /* environ shifts under unsetenv: restart until empty */
-    char **e = environ;
-    if (!e || !*e) break;
-    const char *eq = strchr(*e, '=');
-    size_t n = eq ? (size_t)(eq - *e) : strlen(*e);
-    char k[512];
-    if (n >= sizeof k) n = sizeof k - 1;
-    memcpy(k, *e, n); k[n] = 0;
-    unsetenv(k);
-  }
-  return sp_env_to_h();
-}
 /* ENV.shift: remove and return the first [key, value] pair, or nil */
-static sp_RbVal sp_env_shift(void) {
-  extern char **environ;
-  if (!environ || !*environ) return sp_box_nil();
-  const char *ent = *environ;
-  const char *eq = strchr(ent, '=');
-  size_t n = eq ? (size_t)(eq - ent) : strlen(ent);
-  char *k = sp_str_alloc(n);
-  memcpy(k, ent, n); k[n] = 0;
-  SP_GC_ROOT_STR(k);
-  const char *v = sp_sprintf("%s", eq ? eq + 1 : "");
-  SP_GC_ROOT_STR(v);
-  sp_PolyArray *a = sp_PolyArray_new();
-  SP_GC_ROOT(a);
-  sp_PolyArray_push(a, sp_box_str(k));
-  sp_PolyArray_push(a, sp_box_str(v));
-  unsetenv(k);
-  return sp_box_poly_array(a);
-}
 /* ENV.update/merge!/replace with a string-pair hash */
-static sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace) {
-  if (replace) sp_env_clear();
-  if (h) {
-    SP_GC_ROOT(h);
-    for (mrb_int i = 0; i < h->len; i++) {
-      const char *v = sp_StrStrHash_get(h, h->order[i]);
-      if (v) setenv(h->order[i], v, 1); else unsetenv(h->order[i]);
-    }
-  }
-  return sp_env_to_h();
-}
 /* A snapshot of the environment as a StrStr hash: ENV's enumeration surface
    (keys/each/select/count{...}/inspect/...) is desugared onto it, so the
    whole Hash machinery serves it (#2742). Keys/values are copied onto the
    GC string heap -- environ storage may move under setenv. */
-static sp_StrStrHash *sp_env_to_h(void) __attribute__((unused));
-static sp_StrStrHash *sp_env_to_h(void) {
-  extern char **environ;
-  sp_StrStrHash *h = sp_StrStrHash_new();
-  SP_GC_ROOT(h);
-  for (char **e = environ; e && *e; e++) {
-    const char *eq = strchr(*e, '=');
-    if (!eq) continue;
-    /* copy the VALUE first and root it: the key below is a fresh unreachable
-       heap string until the set, and the value copy may GC (#2842 -- a large
-       environment collected mid-loop and swept the just-built key) */
-    const char *v = sp_str_dup_external(eq + 1);
-    SP_GC_ROOT_STR(v);
-    size_t kl = (size_t)(eq - *e);
-    char *k = sp_str_alloc_raw(kl + 1);
-    memcpy(k, *e, kl); k[kl] = 0;
-    sp_StrStrHash_set(h, k, v);
-  }
-  return h;
-}
 static mrb_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b);
 static mrb_float sp_poly_to_f(sp_RbVal v);  /* defined below; used by the bigint+float arms */
 static mrb_int sp_poly_to_i(sp_RbVal v);    /* defined below; used by the rational helper */
@@ -2614,37 +2520,6 @@ static mrb_float sp_poly_to_f_opt(sp_RbVal v) { return v.tag == SP_TAG_NIL ? sp_
    optional [+-]imag i tail, or a bare "Ni"; unparseable input is (0+0i). */
 /* String#setbyte over value-semantics strings: copy-on-write (a literal's
    bytes are static storage). The caller re-binds an lvalue receiver. */
-static const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
-  if (!s) s = "";
-  /* an explicitly frozen string (or a frozen-string-literal file's literal,
-     both carry the 0xf1 marker) still raises; a HEAP string mutates in
-     place so aliases observe the write (CRuby identity semantics); only a
-     plain literal -- static storage, marker 0xff -- copies (#2029). */
-  sp_str_check_mutable(s);
-  /* NUL-safe stored length: strlen would stop at the first NUL byte, making
-     every setbyte on a NUL-prefixed buffer (e.g. Array.new(n, 0).pack("C*"))
-     raise IndexError. */
-  mrb_int n = (mrb_int)sp_str_byte_len(s);
-  if (i < 0) i += n;
-  if (i < 0 || i >= n) {
-    sp_raise_cls("IndexError", sp_sprintf("index %lld out of string", (long long)i));
-    return s;
-  }
-  {
-    unsigned char m = ((const unsigned char *)s)[-1];
-    if (m == 0xfe || m == 0xfc) {
-      (((sp_str_hdr *)(s - 1)) - 1)->hash = 0;  /* invalidate cached key hash */
-      ((char *)s)[i] = (char)(v & 0xff);
-      return s;
-    }
-    if (m == 0xfd) { ((char *)s)[i] = (char)(v & 0xff); return s; }
-  }
-  char *r = sp_str_alloc((size_t)n);
-  memcpy(r, s, (size_t)n);
-  r[n] = 0;
-  r[i] = (char)(v & 0xff);
-  return r;
-}
 /* sp_str_to_c: moved to lib/sp_cold.c */
 sp_Complex sp_str_to_c(const char *s);
 /* Hash subset/superset comparisons (boxed, any variant pairing): every pair
@@ -3786,9 +3661,6 @@ static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) {
 static sp_PolyArray *sp_PolyArray_compact(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b); if (!a) return b; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) sp_PolyArray_push(b, a->data[i]); } return b; }
 static sp_PolyArray *sp_PolyArray_compact_bang(sp_PolyArray *a) { if (!a) return a; mrb_int w = 0; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) a->data[w++] = a->data[i]; } a->len = w; return a; }
 /* Issue #738: Hash#to_a as poly_array of [key, value] poly_array pairs. */
-static sp_PolyArray*sp_StrIntHash_to_a(sp_StrIntHash*h){sp_PolyArray*r=sp_PolyArray_new();if(!h)return r;for(mrb_int i=0;i<h->len;i++){sp_PolyArray*p=sp_PolyArray_new();sp_PolyArray_push(p,sp_box_str(h->order[i]));sp_PolyArray_push(p,sp_box_int(sp_StrIntHash_get(h,h->order[i])));sp_PolyArray_push(r,sp_box_poly_array(p));}return r;}
-static sp_PolyArray*sp_StrStrHash_to_a(sp_StrStrHash*h){sp_PolyArray*r=sp_PolyArray_new();if(!h)return r;for(mrb_int i=0;i<h->len;i++){sp_PolyArray*p=sp_PolyArray_new();sp_PolyArray_push(p,sp_box_str(h->order[i]));sp_PolyArray_push(p,sp_box_str(sp_StrStrHash_get(h,h->order[i])));sp_PolyArray_push(r,sp_box_poly_array(p));}return r;}
-static sp_PolyArray*sp_IntStrHash_to_a(sp_IntStrHash*h){sp_PolyArray*r=sp_PolyArray_new();if(!h)return r;for(mrb_int i=0;i<h->len;i++){sp_PolyArray*p=sp_PolyArray_new();sp_PolyArray_push(p,sp_box_int(h->order[i]));sp_PolyArray_push(p,sp_box_str(sp_IntStrHash_get(h,h->order[i])));sp_PolyArray_push(r,sp_box_poly_array(p));}return r;}
 /* Array#flatten -- walk into nested array values recursively. Each
    array-tagged element (IntArray / StrArray / SymArray / FloatArray /
    PolyArray) is expanded inline; scalars are appended as-is. Issue

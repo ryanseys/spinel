@@ -385,4 +385,17 @@ static inline sp_PolyArray *sp_PolyArray_new(void) {
 }
 static inline void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes_sub(sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; a->cap = (a->cap * 2) + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes_add(sizeof(sp_RbVal) * a->cap); } a->data[a->len++] = v; }
 static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); return a->data[i]; }
+/* ---- relocated from sp_runtime.h: frozen-string check primitives used
+   by lib/sp_cold.c's sp_str_setbyte_cow, and the SPL frozen-literal macro
+   used by lib/sp_cold.c's sp_gc_stat. Pure textual move (still static
+   inline / object-like macro), no codegen change. ---- */
+#define SPL(s) (&("\xff" s)[1])
+static inline mrb_bool sp_str_is_frozen_val(const char *s) {
+  if (!s) return TRUE;
+  return ((const unsigned char *)s)[-1] == 0xf1;
+}
+static inline void sp_str_check_mutable(const char *s) {
+  if (sp_str_is_frozen_val(s)) sp_raise_frozen_str(s);
+}
+
 #endif /* SP_ALLOC_H */

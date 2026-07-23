@@ -107,4 +107,8 @@ const char*sp_StrStrHash_inspect(sp_StrStrHash*h);
 const char*sp_IntStrHash_inspect(sp_IntStrHash*h);
 const char*sp_IntIntHash_inspect(sp_IntIntHash*h);
 
+sp_PolyArray*sp_StrIntHash_to_a(sp_StrIntHash*h);
+sp_PolyArray*sp_StrStrHash_to_a(sp_StrStrHash*h);
+sp_PolyArray*sp_IntStrHash_to_a(sp_IntStrHash*h);
+
 #endif

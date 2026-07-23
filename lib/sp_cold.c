@@ -1898,3 +1898,132 @@ sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {
   }
   return e->size;
 }
+
+/* ---- ENV core (StrStrHash-backed, #2832/#2842) + GC.stat + String#setbyte
+   COW -- relocated from sp_runtime.h. All reach only lib-visible helpers
+   (sp_StrStrHash_*, sp_str_alloc/_raw, sp_str_check_mutable in sp_alloc.h,
+   SP_HEAP_LOCK/UNLOCK, sp_gc_* counters in sp_gc.h). ---- */
+#include "sp_hash.h"
+
+sp_RbVal sp_env_shift(void) {
+  extern char **environ;
+  if (!environ || !*environ) return sp_box_nil();
+  const char *ent = *environ;
+  const char *eq = strchr(ent, '=');
+  size_t n = eq ? (size_t)(eq - ent) : strlen(ent);
+  char *k = sp_str_alloc(n);
+  memcpy(k, ent, n); k[n] = 0;
+  SP_GC_ROOT_STR(k);
+  const char *v = sp_sprintf("%s", eq ? eq + 1 : "");
+  SP_GC_ROOT_STR(v);
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  sp_PolyArray_push(a, sp_box_str(k));
+  sp_PolyArray_push(a, sp_box_str(v));
+  unsetenv(k);
+  return sp_box_poly_array(a);
+}
+mrb_int sp_env_size(void) {
+  extern char **environ;
+  mrb_int n = 0;
+  for (char **e = environ; e && *e; e++) n++;
+  return n;
+}
+sp_StrStrHash *sp_env_to_h(void) {
+  extern char **environ;
+  sp_StrStrHash *h = sp_StrStrHash_new();
+  SP_GC_ROOT(h);
+  for (char **e = environ; e && *e; e++) {
+    const char *eq = strchr(*e, '=');
+    if (!eq) continue;
+    /* copy the VALUE first and root it: the key below is a fresh unreachable
+       heap string until the set, and the value copy may GC (#2842 -- a large
+       environment collected mid-loop and swept the just-built key) */
+    const char *v = sp_str_dup_external(eq + 1);
+    SP_GC_ROOT_STR(v);
+    size_t kl = (size_t)(eq - *e);
+    char *k = sp_str_alloc_raw(kl + 1);
+    memcpy(k, *e, kl); k[kl] = 0;
+    sp_StrStrHash_set(h, k, v);
+  }
+  return h;
+}
+sp_StrStrHash *sp_env_clear(void) {
+  extern char **environ;
+  for (;;) {   /* environ shifts under unsetenv: restart until empty */
+    char **e = environ;
+    if (!e || !*e) break;
+    const char *eq = strchr(*e, '=');
+    size_t n = eq ? (size_t)(eq - *e) : strlen(*e);
+    char k[512];
+    if (n >= sizeof k) n = sizeof k - 1;
+    memcpy(k, *e, n); k[n] = 0;
+    unsetenv(k);
+  }
+  return sp_env_to_h();
+}
+sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace) {
+  if (replace) sp_env_clear();
+  if (h) {
+    SP_GC_ROOT(h);
+    for (mrb_int i = 0; i < h->len; i++) {
+      const char *v = sp_StrStrHash_get(h, h->order[i]);
+      if (v) setenv(h->order[i], v, 1); else unsetenv(h->order[i]);
+    }
+  }
+  return sp_env_to_h();
+}
+sp_StrIntHash*sp_gc_stat(void){
+  /* The string heap (sp_str_heap) is malloc'd separately and deliberately
+     excluded from sp_gc_bytes (see sp_str_alloc). Surface its footprint so
+     GC.stat can explain "RSS huge but bytes tiny" for string-heavy workloads.
+     Prototype: O(n) walk; a production version maintains a running counter.
+     The walk holds the heap lock: sp_str_alloc pushes onto this list under
+     it from any worker, and an unlocked traversal could read a half-linked
+     node. Unlock before building the hash -- sp_gc_alloc takes the same
+     (non-recursive) lock. */
+  size_t str_bytes=0; mrb_int str_count=0;
+#ifdef SP_THREADS
+  /* Per-worker lists (see sp_alloc.h): each has a single pusher, and only the
+     head moves, so a snapshot walk reaches fully-linked nodes -- at worst it
+     misses a just-pushed one (benign undercount for an introspection stat). */
+  { int nw = sp_active_workers; if (nw < 1) nw = 1; if (nw > SP_MAX_WORKERS) nw = SP_MAX_WORKERS;
+    for (int wi = 0; wi < nw; wi++)
+      for(sp_str_hdr*sh=sp_str_heap_w[wi]; sh; sh=sh->next){ str_bytes+=sh->size; str_count++; } }
+#else
+  SP_HEAP_LOCK();
+  for(sp_str_hdr*sh=sp_str_heap; sh; sh=sh->next){ str_bytes+=sh->size; str_count++; }
+  SP_HEAP_UNLOCK();
+#endif
+  sp_StrIntHash*h=sp_StrIntHash_new();sp_StrIntHash_set(h,SPL("bytes"),(mrb_int)SP_GC_CTR_GET(sp_gc_bytes));sp_StrIntHash_set(h,SPL("old_bytes"),(mrb_int)sp_gc_old_bytes);sp_StrIntHash_set(h,SPL("threshold"),(mrb_int)sp_gc_threshold);sp_StrIntHash_set(h,SPL("cycle"),(mrb_int)sp_gc_cycle);sp_StrIntHash_set(h,SPL("full_runs"),(mrb_int)(sp_gc_cycle/SP_GC_FULL_INTERVAL));sp_StrIntHash_set(h,SPL("str_bytes"),(mrb_int)str_bytes);sp_StrIntHash_set(h,SPL("str_count"),str_count);return h;}
+const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
+  if (!s) s = "";
+  /* an explicitly frozen string (or a frozen-string-literal file's literal,
+     both carry the 0xf1 marker) still raises; a HEAP string mutates in
+     place so aliases observe the write (CRuby identity semantics); only a
+     plain literal -- static storage, marker 0xff -- copies (#2029). */
+  sp_str_check_mutable(s);
+  /* NUL-safe stored length: strlen would stop at the first NUL byte, making
+     every setbyte on a NUL-prefixed buffer (e.g. Array.new(n, 0).pack("C*"))
+     raise IndexError. */
+  mrb_int n = (mrb_int)sp_str_byte_len(s);
+  if (i < 0) i += n;
+  if (i < 0 || i >= n) {
+    sp_raise_cls("IndexError", sp_sprintf("index %lld out of string", (long long)i));
+    return s;
+  }
+  {
+    unsigned char m = ((const unsigned char *)s)[-1];
+    if (m == 0xfe || m == 0xfc) {
+      (((sp_str_hdr *)(s - 1)) - 1)->hash = 0;  /* invalidate cached key hash */
+      ((char *)s)[i] = (char)(v & 0xff);
+      return s;
+    }
+    if (m == 0xfd) { ((char *)s)[i] = (char)(v & 0xff); return s; }
+  }
+  char *r = sp_str_alloc((size_t)n);
+  memcpy(r, s, (size_t)n);
+  r[n] = 0;
+  r[i] = (char)(v & 0xff);
+  return r;
+}
