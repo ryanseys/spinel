@@ -531,4 +531,23 @@ mrb_bool sp_class_frozen_id(mrb_int cls_id);
 double sp_round_half_even(double x);
 double sp_round_half_down(double x);
 
+/* ---- BigRational (Bignum-denominator Rational, #2469): 0 optcarrot
+   uses. sp_Bigint is forward-declared above (box_bigint); the specific
+   sp_bigint_* ops below are resolved at the final link against the
+   generated TU, same as sp_sprintf. ---- */
+typedef struct { sp_Bigint *num, *den; } sp_BigRational;
+int sp_bigint_sign(sp_Bigint *b);
+sp_Bigint *sp_bigint_sub(sp_Bigint *a, sp_Bigint *b);
+sp_Bigint *sp_bigint_new_int(int64_t v);
+sp_Bigint *sp_bigint_gcd(sp_Bigint *a, sp_Bigint *b);
+sp_Bigint *sp_bigint_div(sp_Bigint *a, sp_Bigint *b);
+const char *sp_bigint_to_s(sp_Bigint *b);
+double sp_bigint_to_double(sp_Bigint *b);
+void sp_brat_scan(void *p);
+sp_RbVal sp_box_brat(sp_Bigint *num, sp_Bigint *den);
+sp_RbVal sp_brat_from_bigint(sp_Bigint *n);
+const char *sp_brat_to_s(sp_BigRational *r);
+const char *sp_brat_inspect(sp_BigRational *r);
+mrb_float sp_brat_to_f(sp_BigRational *r);
+
 #endif /* SP_ALLOC_H */

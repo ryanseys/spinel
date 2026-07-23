@@ -2429,3 +2429,32 @@ void sp_sleep(mrb_float s) {
   while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
 #endif
 }
+
+/* ---- BigRational box/scan/format ops -- relocated from sp_runtime.h.
+   0 optcarrot uses. ---- */
+#include "sp_str.h"   /* sp_str_concat for brat_to_s/inspect */
+
+void sp_brat_scan(void *p) {
+  sp_BigRational *r = (sp_BigRational *)p;
+  if (r->num) sp_gc_mark(r->num);
+  if (r->den) sp_gc_mark(r->den);
+}
+sp_RbVal sp_box_brat(sp_Bigint *num, sp_Bigint *den) {
+  if (sp_bigint_sign(den) < 0) { num = sp_bigint_sub(sp_bigint_new_int(0), num); den = sp_bigint_sub(sp_bigint_new_int(0), den); }
+  sp_Bigint *g = sp_bigint_gcd(num, den);
+  if (sp_bigint_sign(g) != 0) { num = sp_bigint_div(num, g); den = sp_bigint_div(den, g); }
+  sp_BigRational *p = (sp_BigRational *)sp_gc_alloc(sizeof(sp_BigRational), NULL, sp_brat_scan);
+  p->num = num; p->den = den;
+  return sp_box_obj(p, SP_BUILTIN_BIG_RATIONAL);
+}
+sp_RbVal sp_brat_from_bigint(sp_Bigint *n) { return sp_box_brat(n, sp_bigint_new_int(1)); }
+const char *sp_brat_to_s(sp_BigRational *r) {
+  const char *ns = sp_bigint_to_s(r->num), *ds = sp_bigint_to_s(r->den);
+  return sp_str_concat(sp_str_concat(ns, "/"), ds);
+}
+const char *sp_brat_inspect(sp_BigRational *r) {
+  return sp_str_concat(sp_str_concat(sp_str_concat("(", sp_brat_to_s(r)), ")"), "");
+}
+mrb_float sp_brat_to_f(sp_BigRational *r) {
+  return sp_bigint_to_double(r->num) / sp_bigint_to_double(r->den);
+}

@@ -1629,35 +1629,10 @@ sp_FloatArray *sp_frange_step(sp_FloatRange r, mrb_float st);
    it holds two sp_Bigint* instead of the by-value int Rational (#2469). The two
    representations coexist -- an int Rational stays the fast value type, a big
    Rational is a boxed object that flows through the poly paths. */
-typedef struct { sp_Bigint *num, *den; } sp_BigRational;
-static void sp_brat_scan(void *p) {
-  sp_BigRational *r = (sp_BigRational *)p;
-  if (r->num) sp_gc_mark(r->num);
-  if (r->den) sp_gc_mark(r->den);
-}
 /* Construct a reduced big Rational: normalize the sign onto the numerator and
    divide out the gcd. den must be non-zero (callers pass a literal or a checked
    value). */
-static sp_RbVal sp_box_brat(sp_Bigint *num, sp_Bigint *den) {
-  if (sp_bigint_sign(den) < 0) { num = sp_bigint_sub(sp_bigint_new_int(0), num); den = sp_bigint_sub(sp_bigint_new_int(0), den); }
-  sp_Bigint *g = sp_bigint_gcd(num, den);
-  if (sp_bigint_sign(g) != 0) { num = sp_bigint_div(num, g); den = sp_bigint_div(den, g); }
-  sp_BigRational *p = (sp_BigRational *)sp_gc_alloc(sizeof(sp_BigRational), NULL, sp_brat_scan);
-  p->num = num; p->den = den;
-  return sp_box_obj(p, SP_BUILTIN_BIG_RATIONAL);
-}
 /* Lift a bignum (or an int) to a big Rational num/1. */
-static sp_RbVal sp_brat_from_bigint(sp_Bigint *n) { return sp_box_brat(n, sp_bigint_new_int(1)); }
-static const char *sp_brat_to_s(sp_BigRational *r) {
-  const char *ns = sp_bigint_to_s(r->num), *ds = sp_bigint_to_s(r->den);
-  return sp_str_concat(sp_str_concat(ns, "/"), ds);
-}
-static const char *sp_brat_inspect(sp_BigRational *r) {
-  return sp_str_concat(sp_str_concat(sp_str_concat("(", sp_brat_to_s(r)), ")"), "");
-}
-static mrb_float sp_brat_to_f(sp_BigRational *r) {
-  return sp_bigint_to_double(r->num) / sp_bigint_to_double(r->den);
-}
 /* An Integer-classed (fl bit clear) whole component boxes as an Integer;
    anything else keeps the Float class. The INTPTR guard mirrors
    sp_complex_mag: casting an out-of-range double to mrb_int is UB. */
