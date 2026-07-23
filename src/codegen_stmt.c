@@ -930,7 +930,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     else {
       /* otherwise a mutable-string local wraps the (const char*) RHS in a fresh
          sp_String so later `<<` appends are amortized O(1). */
-      buf_puts(b, "sp_String_new("); emit_expr(c, v, b); buf_puts(b, ")");
+      buf_puts(b, "sp_String_new_shared("); emit_expr(c, v, b); buf_puts(b, ")");
     }
   }
   else if (is_empty_array && lv && array_kind(lv->type)) {

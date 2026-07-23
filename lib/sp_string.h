@@ -60,9 +60,6 @@ static inline sp_String*sp_String_new(const char*s){
   memcpy(data,s,len);data[len]=0;
   sp_String*r=(sp_String*)sp_gc_alloc(sizeof(sp_String),sp_String_fin,NULL);
   r->len=len;r->cap=cap;r->data=data;
-  /* a frozen source (an explicit .freeze, a frozen_string_literal) stays
-     frozen through the handle wrap, so in-place mutators keep raising (#3227) */
-  if(((const unsigned char*)s)[-1]==0xf1){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
   {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+SP_FD_OVH;sp_gc_bytes_add(r->cap+SP_FD_OVH);}
   sp_fd_publish(r);
   return r;
@@ -77,6 +74,17 @@ static inline void sp_String_append(sp_String*s,const char*t){if(!s||!t)return;i
    alias and container holding it observes the new value; #3227). */
 static inline void sp_String_set_bin(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}s->len=0;sp_fd_append_len(s,t,(int64_t)sp_str_byte_len(t));}
 static inline void sp_String_append_bin(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)sp_str_byte_len(t));}
+/* Handle wrap for CODEGEN-emitted sources only: every spinel-emitted string
+   carries a marker byte at s[-1], so the frozen state (0xf1: an explicit
+   .freeze / frozen_string_literal) can be inherited safely. Runtime-internal
+   callers pass bare C literals with NO marker -- they must use the plain
+   sp_String_new above (reading s[-1] there is OOB and, under clang's rodata
+   layout, misreads as frozen; cf. the #282 marker-probe lesson). */
+static inline sp_String*sp_String_new_shared(const char*s){
+  sp_String*r=sp_String_new(s);
+  if(((const unsigned char*)s)[-1]==0xf1){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
+  return r;
+}
 static inline const char*sp_String_cstr(sp_String*s){return s->data;}
 static inline int64_t sp_String_length(sp_String*s){return s->len;}
 

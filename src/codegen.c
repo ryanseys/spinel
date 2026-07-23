@@ -440,7 +440,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       if (bn0) { buf_printf(b, "sp_box_obj(lv_%s, SP_BUILTIN_STRBUF)", rename_local(bn0)); return; }
       /* a demanded literal / expression store: wrap a FRESH handle so the
          container element is mutable in place (#3227 P3) */
-      buf_puts(b, "sp_box_obj(sp_String_new(");
+      buf_puts(b, "sp_box_obj(sp_String_new_shared(");
       { TyKind sv_probe = comp_ntype(c, node);
         (void)sv_probe;
         Buf eb0; memset(&eb0, 0, sizeof eb0);
