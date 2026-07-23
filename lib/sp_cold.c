@@ -2027,3 +2027,26 @@ const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
   r[i] = (char)(v & 0xff);
   return r;
 }
+
+/* ---- Range#include?/#cover? + Range#to_s -- relocated from sp_runtime.h.
+   0 optcarrot uses; reach only sp_range.h's inline core + sp_sprintf
+   (resolved at final link against the generated TU). ---- */
+#include "sp_range.h"
+
+mrb_bool sp_range_include(sp_Range *r, mrb_int x){
+  /* beginless/endless sentinels (INTPTR_MIN/MAX) clamp one side open */
+  if (r->first == INTPTR_MIN || r->last == INTPTR_MAX) {
+    if (r->first != INTPTR_MIN && x < r->first) return 0;
+    if (r->last != INTPTR_MAX && (r->excl ? x >= r->last : x > r->last)) return 0;
+    return 1;
+  }
+  mrb_int lo=sp_range_min_v(*r),hi=sp_range_max_v(*r);
+  return sp_range_count(*r)>0 && lo<=x && x<=hi;
+}
+const char *sp_range_str(sp_Range r) {
+  const char *dots = r.excl ? "..." : "..";
+  if (r.first == INTPTR_MIN && r.last == INTPTR_MAX) return dots;
+  if (r.first == INTPTR_MIN) return sp_sprintf("%s%lld", dots, (long long)r.last);
+  if (r.last == INTPTR_MAX)  return sp_sprintf("%lld%s", (long long)r.first, dots);
+  return sp_sprintf("%lld%s%lld", (long long)r.first, dots, (long long)r.last);
+}

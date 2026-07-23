@@ -1,0 +1,47 @@
+#ifndef SP_RANGE_H
+#define SP_RANGE_H
+/* sp_range.h -- Range value-type helpers (see sp_types.h for sp_Range).
+ *
+ * sp_range_new / _to_ia are called from optcarrot's hot path (range
+ * literals / iteration), so they stay `static inline` here -- each
+ * generated TU still compiles its own copy, identical to when they lived
+ * directly in sp_runtime.h. sp_range_new_step / _eq are trivial
+ * single-expression constructors; marking them inline too is effectively a
+ * no-op (GCC already inlines such leaf functions at -O2) and keeps the
+ * whole small cluster together instead of splitting by a usage-count
+ * threshold that could drift under future edits.
+ *
+ * sp_range_include / sp_range_str see 0 optcarrot uses and have never been
+ * inline, so their bodies compile once into libspinel_rt.a (lib/sp_cold.c).
+ */
+#include "sp_types.h"   /* sp_Range */
+#include "sp_array.h"   /* sp_IntArray_from_range / _from_range_step */
+
+static inline sp_Range sp_range_new(mrb_int f,mrb_int l,mrb_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=0;return r;}
+static inline sp_Range sp_range_new_step(mrb_int f,mrb_int l,mrb_int e,mrb_int s){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=s;return r;}
+static inline mrb_int sp_range_step(sp_Range r){return r.step==0?1:r.step;}
+static inline mrb_int sp_range_count(sp_Range r){
+  mrb_int s=sp_range_step(r);
+  mrb_int lastv=r.excl?(r.last-(s>0?1:-1)):r.last;
+  mrb_int n=(lastv-r.first)/s+1;
+  return n<0?0:n;
+}
+static inline sp_IntArray *sp_range_to_ia(sp_Range r){
+  /* an endless range cannot materialize (CRuby raises instead of hanging) */
+  if(r.last==INTPTR_MAX)sp_raise_cls("RangeError","cannot convert endless range to an array");
+  mrb_int s=sp_range_step(r);
+  if(s==1)return sp_IntArray_from_range(r.first,r.last-r.excl);
+  return sp_IntArray_from_range_step(r.first,r.last,s,r.excl);
+}
+static inline mrb_int sp_range_last_elem(sp_Range r){
+  mrb_int n=sp_range_count(r);
+  return n<=0?r.first:r.first+(n-1)*sp_range_step(r);
+}
+static inline mrb_int sp_range_min_v(sp_Range r){ if(sp_range_count(r)<=0)return SP_INT_NIL; mrb_int a=r.first,b=sp_range_last_elem(r); return a<b?a:b; }
+static inline mrb_int sp_range_max_v(sp_Range r){ if(sp_range_count(r)<=0)return SP_INT_NIL; mrb_int a=r.first,b=sp_range_last_elem(r); return a>b?a:b; }
+static inline mrb_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.last==b.last&&a.excl==b.excl;}
+
+mrb_bool sp_range_include(sp_Range *r, mrb_int x);
+const char *sp_range_str(sp_Range r);
+
+#endif

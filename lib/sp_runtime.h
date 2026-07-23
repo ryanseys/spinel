@@ -15,6 +15,7 @@
 #include "sp_re.h"      /* regexp wrappers + MatchData (lib/sp_re.c); engine = build/regexp/*.o */
 #include "sp_str.h"     /* cold string transforms (lib/sp_str.c); hot/utf8 core stays here */
 #include "sp_hash.h"    /* StrInt/StrStr/IntStr/IntInt hash cold ops (lib/sp_hash.c) */
+#include "sp_range.h"   /* Range helpers: hot inline core + sp_range_include/str cold (lib/sp_cold.c) */
 sp_RbVal sp_env_shift(void);
 mrb_int sp_env_size(void);
 sp_StrStrHash *sp_env_to_h(void);
@@ -350,41 +351,18 @@ static inline mrb_float sp_math_atanh(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls
    tgamma already yields); negative non-integers are in-domain. */
 static inline mrb_float sp_math_gamma(mrb_float x){if(x<0.0&&x==floor(x))sp_raise_cls("Math::DomainError","Numerical argument is out of domain - gamma");return tgamma(x);}
 
-static sp_Range sp_range_new(mrb_int f,mrb_int l,mrb_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=0;return r;}
-static sp_Range sp_range_new_step(mrb_int f,mrb_int l,mrb_int e,mrb_int s){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=s;return r;}
 /* The effective stride: a literal `a..b` range stores 0, which iterates by +1. */
-static inline mrb_int sp_range_step(sp_Range r){return r.step==0?1:r.step;}
 /* Number of elements the range enumerates (0 for an empty one), honoring step. */
-static inline mrb_int sp_range_count(sp_Range r){
-  mrb_int s=sp_range_step(r);
-  mrb_int lastv=r.excl?(r.last-(s>0?1:-1)):r.last;
-  mrb_int n=(lastv-r.first)/s+1;
-  return n<0?0:n;
-}
 /* Materialize the range into an int array (ascending or descending per step).
    The +1 stride (every literal `a..b` range) keeps the tight from_range loop; a
    real step only appears for downto / explicit step, so it pays the general
    path only then. */
-static inline sp_IntArray *sp_range_to_ia(sp_Range r){
-  /* an endless range cannot materialize (CRuby raises instead of hanging) */
-  if(r.last==INTPTR_MAX)sp_raise_cls("RangeError","cannot convert endless range to an array");
-  mrb_int s=sp_range_step(r);
-  if(s==1)return sp_IntArray_from_range(r.first,r.last-r.excl);
-  return sp_IntArray_from_range_step(r.first,r.last,s,r.excl);
-}
 /* Last enumerated element (== first for an empty range), and the min/max of the
    enumerated set -- direction-aware, so a descending range reports them right. */
-static inline mrb_int sp_range_last_elem(sp_Range r){
-  mrb_int n=sp_range_count(r);
-  return n<=0?r.first:r.first+(n-1)*sp_range_step(r);
-}
 /* min/max of an EMPTY (backwards, or exclusive single-point) range is nil
    (SP_INT_NIL, the nullable-int sentinel) -- CRuby returns nil there. A
    descending step range (5.downto(1)) still enumerates, so only a
    positive-step empty span is nil (#2412). */
-static inline mrb_int sp_range_min_v(sp_Range r){ if(sp_range_count(r)<=0)return SP_INT_NIL; mrb_int a=r.first,b=sp_range_last_elem(r); return a<b?a:b; }
-static inline mrb_int sp_range_max_v(sp_Range r){ if(sp_range_count(r)<=0)return SP_INT_NIL; mrb_int a=r.first,b=sp_range_last_elem(r); return a>b?a:b; }
-static mrb_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.last==b.last&&a.excl==b.excl;}
 /* `Range#include?`/`#cover?` on the boxed (SP_TAG_OBJ cls_id
    SP_BUILTIN_RANGE) Range value. The direct sp_Range typed path
    inlines this same check via compile_range_method_expr; poly-recv
@@ -392,16 +370,6 @@ static mrb_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.la
    emit_poly_builtin_dispatch can land on a single C expression. An
    exclusive range stops one short of `last`, so the upper bound is
    `last - excl` (excl is 0 or 1). */
-static mrb_bool sp_range_include(sp_Range *r, mrb_int x){
-  /* beginless/endless sentinels (INTPTR_MIN/MAX) clamp one side open */
-  if (r->first == INTPTR_MIN || r->last == INTPTR_MAX) {
-    if (r->first != INTPTR_MIN && x < r->first) return 0;
-    if (r->last != INTPTR_MAX && (r->excl ? x >= r->last : x > r->last)) return 0;
-    return 1;
-  }
-  mrb_int lo=sp_range_min_v(*r),hi=sp_range_max_v(*r);
-  return sp_range_count(*r)>0 && lo<=x && x<=hi;
-}
 
 /* ---- Class object ----
    Value-type Class reference: a single class id that indexes into
@@ -3540,13 +3508,6 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, mrb_int start, mrb_int len, sp_RbV
   return sp_box_poly_array(p);
 }
 /* Render a Range for a RangeError message ("-10..1", "1...3", "-10..", "..2"). */
-static const char *sp_range_str(sp_Range r) {
-  const char *dots = r.excl ? "..." : "..";
-  if (r.first == INTPTR_MIN && r.last == INTPTR_MAX) return dots;
-  if (r.first == INTPTR_MIN) return sp_sprintf("%s%lld", dots, (long long)r.last);
-  if (r.last == INTPTR_MAX)  return sp_sprintf("%lld%s", (long long)r.first, dots);
-  return sp_sprintf("%lld%s%lld", (long long)r.first, dots, (long long)r.last);
-}
 /* `arr[range] = src` on a poly receiver: resolve beginless (INTPTR_MIN -> 0) and
    endless (INTPTR_MAX -> length) endpoints and negative endpoints against the
    runtime length, then splice. A begin index below -length raises RangeError
