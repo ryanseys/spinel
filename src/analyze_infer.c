@@ -3149,16 +3149,21 @@ else {
           }
         }
       }
-      /* Method defined only in descendants (not in base chain):
-         unify return types of all descendant implementations. */
-      if (self->is_cmethod) {
+      /* Method defined only in descendants (not in base chain): unify the
+         return types of all descendant implementations -- codegen emits a
+         cls_id virtual dispatch for exactly this shape, so leaving the node
+         UNKNOWN made emit_boxed discard the dispatch's value through the
+         effect-comma nil (a Comparable base <=> over int/float subclass
+         keys compared nil, #3237). Instance methods included. */
+      {
         TyKind r = TY_UNKNOWN; int found = 0;
         for (int k = 0; k < c->nclasses; k++) {
           int is_desc = 0;
           for (int p = c->classes[k].parent; p >= 0; p = c->classes[p].parent)
             if (p == self->class_id) { is_desc = 1; break; }
           if (!is_desc) continue;
-          int dmi = comp_cmethod_in_class(c, k, name);
+          int dmi = self->is_cmethod ? comp_cmethod_in_class(c, k, name)
+                                     : comp_method_in_class(c, k, name);
           if (dmi < 0) continue;
           r = found ? ty_unify(r, (TyKind)c->scopes[dmi].ret) : (TyKind)c->scopes[dmi].ret;
           found = 1;
