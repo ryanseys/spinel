@@ -17862,12 +17862,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            stored into a Hash[String, String]): unbox to the value type. */
         int unbox_poly_val = (!is_poly_hash && vt == TY_POLY &&
                               (hvt == TY_STRING || hvt == TY_INT || hvt == TY_FLOAT));
+        /* An UNRESOLVED rhs (a NameError/NoMethodError raise token, emitted
+           as a diverging sp_RbVal expression) into a typed-value hash:
+           declare the temp with the slot's type and coerce the token, so the
+           set argument and the expression's own value typecheck. The raise
+           fires before either is read (#3256). */
+        int coerce_unknown_val = (!is_poly_hash && vt == TY_UNKNOWN &&
+                                  (hvt == TY_STRING || hvt == TY_INT || hvt == TY_FLOAT));
         buf_puts(b, "({ ");
         /* For poly hashes with scalar values, store the scalar and box it for the hash call.
            A nil/void rhs (`return @cache[k] = nil`) has no C storage type --
            emit_ctype would print `void` -- so hold it boxed. */
         TyKind vt_eff = (vt == TY_NIL || vt == TY_VOID) ? TY_POLY : vt;
         TyKind decl_type = unbox_poly_val ? hvt
+                         : coerce_unknown_val ? hvt
                          : (is_poly_hash && vt_eff != TY_UNKNOWN && vt_eff != TY_POLY) ? vt_eff
                          : (vt_eff != TY_UNKNOWN ? vt_eff : TY_POLY);
         emit_ctype(c, decl_type, b);
@@ -17878,6 +17886,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           const char *fn = hvt == TY_STRING ? "sp_poly_to_s" : hvt == TY_INT ? "sp_poly_to_i" : "sp_poly_to_f";
           buf_printf(b, "%s(", fn); emit_expr(c, argv[1], b); buf_puts(b, ")");
         }
+        else if (coerce_unknown_val) emit_unresolved_coerced(c, argv[1], hvt, b);
         else if (decl_type == TY_POLY) emit_boxed(c, argv[1], b);
         else emit_expr(c, argv[1], b);
         buf_printf(b, "; if (sp_gc_is_frozen("); emit_expr(c, recv, b); { buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_expr(c, recv, b); buf_printf(b, ", %s); ", hash_box_cls(rt)); }
