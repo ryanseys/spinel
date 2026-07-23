@@ -2458,3 +2458,14 @@ const char *sp_brat_inspect(sp_BigRational *r) {
 mrb_float sp_brat_to_f(sp_BigRational *r) {
   return sp_bigint_to_double(r->num) / sp_bigint_to_double(r->den);
 }
+
+/* ---- Marshal.dump/load helpers -- relocated from sp_runtime.h. 0 optcarrot
+   uses. ---- */
+
+sp_RbVal sp_marv_arr_new(void) { return sp_box_poly_array(sp_PolyArray_new()); }
+void sp_marv_arr_push(sp_RbVal a, sp_RbVal v) { sp_PolyArray_push((sp_PolyArray *)a.v.p, v); }
+sp_RbVal sp_marv_hash_new(void) { return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH); }
+void sp_marv_hash_set(sp_RbVal h, sp_RbVal k, sp_RbVal v) { sp_PolyPolyHash_set((sp_PolyPolyHash *)h.v.p, k, v); }
+sp_RbVal sp_marv_box_complex(mrb_float re, mrb_float im) { sp_Complex c; c.re = re; c.im = im; return sp_box_complex(c); }
+sp_RbVal sp_marv_box_rational(mrb_int n, mrb_int d) { return sp_box_rational(sp_rational_new(n, d)); }
+void sp_marv_raise(const char *cls, const char *msg) { sp_raise_cls(cls, msg); }

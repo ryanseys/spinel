@@ -550,4 +550,22 @@ const char *sp_brat_to_s(sp_BigRational *r);
 const char *sp_brat_inspect(sp_BigRational *r);
 mrb_float sp_brat_to_f(sp_BigRational *r);
 
+/* ---- Marshal.dump/load helpers (lib/sp_marshal.c calls these): 0
+   optcarrot uses. sp_PolyPolyHash_new/set stay resident in
+   sp_runtime.h (still called there ~dozens of times, e.g. via
+   sp_PolyArray_tally) but no longer `static` -- a linkage-only change,
+   the local call sites still inline exactly as before; the body did
+   NOT move, so this is not the archive-de-inlining regression from
+   the 2026-06-24 poly-batch revert. ---- */
+typedef struct sp_PolyPolyHash sp_PolyPolyHash;
+sp_PolyPolyHash *sp_PolyPolyHash_new(void);
+void sp_PolyPolyHash_set(sp_PolyPolyHash *h, sp_RbVal k, sp_RbVal v);
+sp_RbVal sp_marv_arr_new(void);
+void sp_marv_arr_push(sp_RbVal a, sp_RbVal v);
+sp_RbVal sp_marv_hash_new(void);
+void sp_marv_hash_set(sp_RbVal h, sp_RbVal k, sp_RbVal v);
+sp_RbVal sp_marv_box_complex(mrb_float re, mrb_float im);
+sp_RbVal sp_marv_box_rational(mrb_int n, mrb_int d);
+void sp_marv_raise(const char *cls, const char *msg);
+
 #endif /* SP_ALLOC_H */

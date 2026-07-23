@@ -4536,7 +4536,7 @@ typedef sp_RbVal (*sp_polypoly_dproc_t)(sp_PolyPolyHash *, sp_RbVal, void *);
 typedef struct sp_PolyPolyHash{sp_RbVal*keys;sp_RbVal*vals;mrb_int*order;mrb_bool*occ;mrb_int len;mrb_int cap;mrb_int mask;sp_RbVal default_v;sp_polypoly_dproc_t dproc;void *dproc_self;}sp_PolyPolyHash;
 static void sp_PolyPolyHash_fin(void*p){sp_PolyPolyHash*h=(sp_PolyPolyHash*)p;free(h->keys);free(h->vals);free(h->order);free(h->occ);}
 static void sp_PolyPolyHash_scan(void*p){sp_PolyPolyHash*h=(sp_PolyPolyHash*)p;for(mrb_int i=0;i<h->cap;i++){if(h->occ[i]){sp_mark_rbval(h->keys[i]);sp_mark_rbval(h->vals[i]);}}sp_mark_rbval(h->default_v);if(h->dproc_self)sp_gc_mark(h->dproc_self);}
-static sp_PolyPolyHash*sp_PolyPolyHash_new(void){sp_PolyPolyHash*h=(sp_PolyPolyHash*)sp_gc_alloc(sizeof(sp_PolyPolyHash),sp_PolyPolyHash_fin,sp_PolyPolyHash_scan);h->cap=16;h->mask=15;h->keys=(sp_RbVal*)calloc((size_t)h->cap,sizeof(sp_RbVal));h->vals=(sp_RbVal*)calloc((size_t)h->cap,sizeof(sp_RbVal));h->order=(mrb_int*)malloc(sizeof(mrb_int)*(size_t)h->cap);h->occ=(mrb_bool*)calloc((size_t)h->cap,sizeof(mrb_bool));h->len=0;h->default_v=sp_box_nil();return h;}
+ sp_PolyPolyHash*sp_PolyPolyHash_new(void){sp_PolyPolyHash*h=(sp_PolyPolyHash*)sp_gc_alloc(sizeof(sp_PolyPolyHash),sp_PolyPolyHash_fin,sp_PolyPolyHash_scan);h->cap=16;h->mask=15;h->keys=(sp_RbVal*)calloc((size_t)h->cap,sizeof(sp_RbVal));h->vals=(sp_RbVal*)calloc((size_t)h->cap,sizeof(sp_RbVal));h->order=(mrb_int*)malloc(sizeof(mrb_int)*(size_t)h->cap);h->occ=(mrb_bool*)calloc((size_t)h->cap,sizeof(mrb_bool));h->len=0;h->default_v=sp_box_nil();return h;}
 static sp_PolyPolyHash*sp_PolyPolyHash_new_with_default(sp_RbVal d){sp_PolyPolyHash*h=sp_PolyPolyHash_new();h->default_v=d;return h;}
 static sp_PolyPolyHash*sp_PolyPolyHash_new_dproc(sp_polypoly_dproc_t fn,void*self){sp_PolyPolyHash*h=sp_PolyPolyHash_new();h->dproc=fn;h->dproc_self=self;return h;}
 static void sp_PolyPolyHash_grow(sp_PolyPolyHash*h){sp_RbVal*ok=h->keys;sp_RbVal*ov=h->vals;mrb_bool*oo=h->occ;mrb_int*oord=h->order;mrb_int olen=h->len;h->cap*=2;h->mask=h->cap-1;h->keys=(sp_RbVal*)calloc((size_t)h->cap,sizeof(sp_RbVal));h->vals=(sp_RbVal*)calloc((size_t)h->cap,sizeof(sp_RbVal));h->order=(mrb_int*)malloc(sizeof(mrb_int)*(size_t)h->cap);h->occ=(mrb_bool*)calloc((size_t)h->cap,sizeof(mrb_bool));for(mrb_int i=0;i<olen;i++){mrb_int oi=oord[i];sp_RbVal k=ok[oi];mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx])idx=(idx+1)&h->mask;h->keys[idx]=k;h->vals[idx]=ov[oi];h->occ[idx]=TRUE;h->order[i]=idx;}free(ok);free(ov);free(oo);free(oord);}
@@ -4557,7 +4557,7 @@ static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
     default: return sp_box_nil();
   }
 }
-static void sp_PolyPolyHash_set(sp_PolyPolyHash*h,sp_RbVal k,sp_RbVal v){if(h->len*2>=h->cap)sp_PolyPolyHash_grow(h);mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->occ[idx]=TRUE;h->order[h->len]=idx;h->len++;}
+ void sp_PolyPolyHash_set(sp_PolyPolyHash*h,sp_RbVal k,sp_RbVal v){if(h->len*2>=h->cap)sp_PolyPolyHash_grow(h);mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->occ[idx]=TRUE;h->order[h->len]=idx;h->len++;}
 /* Array#tally over a poly array keys the count hash by the ELEMENT VALUE (any
    type), matching CRuby's `#eql?`/`#hash` bucketing — not by symbol identity.
    Defined here so the PolyPolyHash helpers above are already in scope. */
@@ -5237,12 +5237,6 @@ default:return 0;}}
    the standalone serializer construction primitives that need sp_runtime.h
    types; sp_re_init (codegen) installs them into sp_marshal_v along with the
    generated sym_intern / obj_dump / obj_load. */
-static sp_RbVal sp_marv_arr_new(void) { return sp_box_poly_array(sp_PolyArray_new()); }
-static void sp_marv_arr_push(sp_RbVal a, sp_RbVal v) { sp_PolyArray_push((sp_PolyArray *)a.v.p, v); }
-static sp_RbVal sp_marv_hash_new(void) { return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH); }
-static void sp_marv_hash_set(sp_RbVal h, sp_RbVal k, sp_RbVal v) { sp_PolyPolyHash_set((sp_PolyPolyHash *)h.v.p, k, v); }
-static sp_RbVal sp_marv_box_complex(mrb_float re, mrb_float im) { sp_Complex c; c.re = re; c.im = im; return sp_box_complex(c); }
-static sp_RbVal sp_marv_box_rational(mrb_int n, mrb_int d) { return sp_box_rational(sp_rational_new(n, d)); }
 /* NilClass-aware conversions for a boxed receiver (a nil-holding local widens
    to poly): nil converts per NilClass, a value already of the target kind is
    itself, anything else raises NoMethodError like CRuby. */
@@ -5305,7 +5299,6 @@ static sp_RbVal sp_poly_to_c_m(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX) return v;
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_c' for %s", sp_poly_class_name(v)));
 }
-static void sp_marv_raise(const char *cls, const char *msg) { sp_raise_cls(cls, msg); }
 /* Array-reduction methods on a boxed array value -- an element of a poly array,
    e.g. a run produced by chunk_while / slice_when. Each switches on the boxed
    element's cls_id and returns a boxed result, so `runs.map { |r| r.sum }` and
