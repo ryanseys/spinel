@@ -876,7 +876,17 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); ", an, to, an);
         for (int a = 0; a < argc; a++) {
           TyKind at = comp_ntype(c, argv[a]);
-          if (at == TY_RANGE) {
+          if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "SplatNode")) {
+            /* values_at(*idx): each element of the splatted array is a
+               separate index (#3277). */
+            int ts = ++g_tmp, tk = ++g_tmp;
+            buf_printf(b, "{ sp_PolyArray *_t%d = ", ts); emit_expr(c, argv[a], b);
+            buf_printf(b, "; for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
+                          " sp_%sArray_push(_t%d, sp_%sArray_get(_t%d,"
+                          " sp_poly_to_i(sp_PolyArray_get(_t%d, _t%d)))); } ",
+                       tk, tk, ts, tk, an, to, an, tr, ts, tk);
+          }
+          else if (at == TY_RANGE) {
             int trng = ++g_tmp, ti = ++g_tmp;
             buf_printf(b, "{ sp_Range _t%d = ", trng); emit_expr(c, argv[a], b);
             buf_printf(b, "; for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl; _t%d++)"
@@ -4052,7 +4062,21 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
         for (int a = 0; a < argc; a++) {
           int tk = ++g_tmp;
-          buf_printf(b, " %s _t%d = ", c_type_name(kt), tk); emit_hash_key(c, argv[a], kt, b); buf_puts(b, ";");
+          int is_splat = nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "SplatNode");
+          int ts = 0, ti = 0;
+          if (is_splat) {
+            /* values_at(*keys): each element of the splatted array is a
+               separate key (#3277). */
+            ts = ++g_tmp; ti = ++g_tmp;
+            buf_printf(b, " { sp_PolyArray *_t%d = ", ts); emit_expr(c, argv[a], b);
+            buf_printf(b, "; for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ti, ti, ts, ti);
+            buf_printf(b, " %s _t%d = ", c_type_name(kt), tk);
+            if (kt == TY_STRING) buf_printf(b, "sp_poly_to_s(sp_PolyArray_get(_t%d, _t%d));", ts, ti);
+            else buf_printf(b, "(%s)sp_poly_to_i(sp_PolyArray_get(_t%d, _t%d));", c_type_name(kt), ts, ti);
+          }
+          else {
+            buf_printf(b, " %s _t%d = ", c_type_name(kt), tk); emit_hash_key(c, argv[a], kt, b); buf_puts(b, ";");
+          }
           buf_printf(b, " if (sp_%sHash_has_key(_t%d, _t%d)) sp_PolyArray_push(_t%d, ", hn, th, tk, tr);
           char getexpr[128]; snprintf(getexpr, sizeof getexpr, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
           if (vt == TY_POLY) buf_puts(b, getexpr);
@@ -4092,6 +4116,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
             buf_puts(b, "); }");
           }
           else buf_printf(b, " else sp_PolyArray_push(_t%d, sp_box_nil());", tr);
+          if (is_splat) buf_puts(b, " } }");
         }
         buf_printf(b, " _t%d; })", tr);
         return 1;
