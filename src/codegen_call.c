@@ -11039,7 +11039,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
-      const char *cn = isa_const_name(nt, argv[0]);
+      /* exception class names are registered fully qualified ("PG::Error"),
+         so a nested-path argument must compare with the whole path -- the
+         flat leaf name never matched (#3260) */
+      char qbuf[192];
+      const char *cn = isa_const_qualname(nt, argv[0], qbuf, sizeof qbuf);
       if (cn) {
         /* instance_of? is an exact-class test, not an ancestor walk: an
            ArgumentError is not instance_of?(StandardError) (#3013) */

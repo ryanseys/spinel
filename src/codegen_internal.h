@@ -50,6 +50,41 @@ static inline const char *isa_const_name(const NodeTable *nt, int arg) {
   return NULL;
 }
 
+/* Fully-qualified name of a constant argument ("PG::Error"), built by walking
+   a ConstantPathNode's parent chain into buf. Exception-class names are
+   registered qualified, so an is_a? compare against the flat leaf name never
+   matched a namespaced exception class (#3260). Returns the flat name for a
+   bare or root-anchored (`::X`) constant, buf for a nested path, or NULL for
+   a non-constant / overlong path. */
+static inline const char *isa_const_qualname(const NodeTable *nt, int arg, char *buf, size_t bufsz) {
+  const char *t = arg >= 0 ? nt_type(nt, arg) : NULL;
+  if (!t) return NULL;
+  if (sp_streq(t, "ConstantReadNode")) return nt_str(nt, arg, "name");
+  if (!sp_streq(t, "ConstantPathNode")) return NULL;
+  const char *leaf = nt_str(nt, arg, "name");
+  if (!leaf) return NULL;
+  char segs[8][64]; int nseg = 0; int ok = 1;
+  int qpar = nt_ref(nt, arg, "parent");
+  while (qpar >= 0 && nseg < 8) {
+    const char *pty = nt_type(nt, qpar);
+    const char *pn = nt_str(nt, qpar, "name");
+    if (!pty || !pn) { ok = 0; break; }
+    if (sp_streq(pty, "ConstantReadNode")) { snprintf(segs[nseg++], sizeof segs[0], "%s", pn); break; }
+    if (sp_streq(pty, "ConstantPathNode")) { snprintf(segs[nseg++], sizeof segs[0], "%s", pn); qpar = nt_ref(nt, qpar, "parent"); continue; }
+    ok = 0; break;
+  }
+  if (!ok) return NULL;
+  if (nseg == 0) return leaf;   /* root-anchored ::X */
+  size_t o = 0;
+  for (int si = nseg - 1; si >= 0; si--) {
+    int w = snprintf(buf + o, bufsz - o, "%s::", segs[si]);
+    if (w < 0 || (size_t)w >= bufsz - o) return NULL;
+    o += (size_t)w;
+  }
+  snprintf(buf + o, bufsz - o, "%s", leaf);
+  return buf;
+}
+
 /* Statement prelude: some expressions (array/hash literals) lower to
    temp-variable construction that must run before the statement that
    uses them. While a statement line is being built, g_pre collects those
