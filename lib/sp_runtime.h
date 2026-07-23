@@ -18,6 +18,7 @@
 #include "sp_range.h"   /* Range helpers: hot inline core + sp_range_include/str cold (lib/sp_cold.c) */
 #include "sp_argf.h"    /* ARGV/ARGF state (extern; defined by main()) + cold ops (lib/sp_cold.c) */
 #include "sp_proc.h"    /* sp_Proc/sp_Curry + cold ops (lib/sp_proc.c) */
+static const char *sp_method_desc_cstr(sp_BoundMethod *m);
 #include "sp_exc.h"     /* sp_Exception + cold ops (lib/sp_exc.c) */
 sp_RbVal sp_env_shift(void);
 mrb_int sp_env_size(void);
@@ -1552,6 +1553,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
         case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);
         case SP_BUILTIN_STRBUF: return sp_String_cstr((sp_String *)v.v.p);   /* live buffer (#3227) */
+        case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
         case SP_BUILTIN_COMPLEX: return sp_complex_to_s(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_BIG_RATIONAL: return sp_brat_to_s((sp_BigRational *)v.v.p);
@@ -1839,6 +1841,13 @@ static mrb_bool sp_poly_has_binop(sp_RbVal recv, const char *op) {
 /* User-defined binary operators on boxed operands. The generated TU installs
    a cls_id-switch dispatcher; sp_poly_binop_bad consults it before raising,
    so a fold whose accumulator widened to poly still reaches Money#+ (#2886). */
+/* Method/UnboundMethod #inspect/#to_s: the compile-time rendering stamped on
+   the object at construction; a target-unknown Method falls back to the name. */
+static const char *sp_method_desc_cstr(sp_BoundMethod *m) {
+  if (!m) return "#<Method>";
+  if (m->desc) return m->desc;
+  return sp_sprintf("#<Method: %s>", m->name ? m->name : "?");
+}
 /* A shared-mutable string handle (#3227 phase 3) behaves as its live string
    VALUE for any non-mutating op: deref to a plain boxed string and retry. */
 static inline sp_RbVal sp_poly_strbuf_deref(sp_RbVal v) {
@@ -3747,6 +3756,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
         case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
       case SP_BUILTIN_STRBUF: return sp_str_inspect(sp_String_cstr((sp_String *)v.v.p));   /* (#3227) */
+      case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
         case SP_BUILTIN_COMPLEX:   return sp_complex_inspect(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL:  return sp_rational_inspect(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_BIG_RATIONAL:  return sp_brat_inspect((sp_BigRational *)v.v.p);
@@ -6956,15 +6966,27 @@ typedef struct { sp_Proc *outer; sp_Proc *inner; } sp_ProcCompose;
 static void sp_proc_compose_scan(void *p) { sp_ProcCompose *c = (sp_ProcCompose *)p; if (c->outer) sp_gc_mark(c->outer); if (c->inner) sp_gc_mark(c->inner); }
 static mrb_int sp_proc_compose_fn(void *cap, mrb_int argc, mrb_int *args) {
   sp_ProcCompose *c = (sp_ProcCompose *)cap;
+  /* CRuby enforces the FIRST-CALLED function's arity on the composed call
+     (`(f << g).call(x)` runs g first, so g's arity governs). */
+  if (c->inner && c->inner->arity >= 0 && argc != c->inner->arity)
+    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected %lld)",
+                                             (long long)argc, (long long)c->inner->arity));
   mrb_int inner_args[16] = {0};
-  if (args && argc > 0) inner_args[0] = args[0];
-  /* the caller already published the boxed argument to the side-channel, so
-     the inner proc reads it back regardless of its parameter's static type */
-  sp_proc_call(c->inner, 1, inner_args);
+  mrb_int inner_argc = argc > 16 ? 16 : argc;
+  for (mrb_int _i = 0; _i < inner_argc; _i++) inner_args[_i] = args ? args[_i] : 0;
+  if (inner_argc < 1) inner_argc = 1;
+  /* the caller already published the boxed argument(s) to the side-channel, so
+     the inner proc reads them back regardless of its parameters' static types */
+  sp_proc_call(c->inner, inner_argc, inner_args);
   /* the inner proc publishes its (boxed) result through the return slot;
      thread it to the outer proc on BOTH channels -- a poly parameter reads
      the side-channel, a concrete one reads the mrb_int slot. */
   sp_RbVal mid = _sp_proc_poly_ret;
+  /* the outer function always receives the single threaded value; CRuby
+     raises when its arity disagrees (`(f >> g)` reaching a 2-ary g). */
+  if (c->outer && c->outer->arity >= 0 && c->outer->arity != 1)
+    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given 1, expected %lld)",
+                                             (long long)c->outer->arity));
   mrb_int outer_args[16] = {0};
   /* Thread the intermediate on the mrb_int slot too: a concrete-typed outer
      parameter reads it there, so a heap value (string/array/object) must pass

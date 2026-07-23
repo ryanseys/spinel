@@ -4463,11 +4463,11 @@ static void class_ruby_name_into(Buf *b, const char *cn) {
 
 /* Resolve the source file/line of a method's `def`, falling back gracefully
    when positions weren't stamped (no SPINEL_DEBUG / SPINEL_LINE_MAP). */
-static int scope_def_line(Compiler *c, Scope *s) {
+int scope_def_line(Compiler *c, Scope *s) {
   if (s->def_node < 0) return 0;
   return (int)nt_int(c->nt, s->def_node, "node_line", 0);
 }
-static const char *scope_def_file(Compiler *c, Scope *s) {
+const char *scope_def_file(Compiler *c, Scope *s) {
   int fid = s->def_node >= 0 ? (int)nt_int(c->nt, s->def_node, "node_file", 0) : 0;
   const char *path = nt_file_path(c->nt, fid);
   if (!path) path = c->nt->source_file;

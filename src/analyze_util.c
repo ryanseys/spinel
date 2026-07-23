@@ -939,6 +939,12 @@ int method_obj_target_mi(Compiler *c, int node) {
   if (sym[0] == '_' && sym[1] == '_' && sym[2] == 'b' && sym[3] == 'a' && sym[4] == 'm')
     return comp_method_index(c, sym);
   if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), sym, NULL);
+  /* Klass.method(:cmeth) / Module.method(:mf): the class-side method */
+  if (rt == TY_CLASS && nt_kind(nt, recv) == NK_ConstantReadNode) {
+    const char *rn2 = nt_str(nt, recv, "name");
+    int ci2 = rn2 ? comp_class_index(c, rn2) : -1;
+    if (ci2 >= 0) return comp_cmethod_in_chain(c, ci2, sym, NULL);
+  }
   return -1;
 }
 
@@ -952,6 +958,7 @@ int method_expr_is_unbound(Compiler *c, int recv) {
     const char *nm = nt_str(nt, recv, "name");
     if (nm && sp_streq(nm, "bind")) return 0;
     if (nm && sp_streq(nm, "instance_method") && method_sym_arg(c, recv) != NULL) return 1;
+    if (nm && sp_streq(nm, "unbind")) return 1;
     return 0;
   }
   if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {

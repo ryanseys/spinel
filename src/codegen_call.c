@@ -8406,20 +8406,83 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* "#<Method: Owner#name(a, b=..., *r)>" -- CRuby's Method#inspect
+     rendering, built at compile time from the target scope; " file:line" is
+     appended when positions were stamped (--line-map). Keyword parameters
+     are not rendered (they live outside pnames). */
+  #define BUILD_METHOD_DESC(mi_, sym_, unbound_, out_) do { \
+    Scope *_m = &c->scopes[(mi_)]; \
+    const char *_ow = "Object"; char _sep = '#'; \
+    if (_m->class_id >= 0) { \
+      const char *_rn = class_ruby_name(c, _m->class_id); \
+      _ow = _rn ? _rn : c->classes[_m->class_id].name; \
+      if (_m->is_cmethod) _sep = '.'; \
+    } \
+    size_t _off = 0, _cap = sizeof (out_); \
+    _off += (size_t)snprintf((out_), _cap, "#<%s: %s%c%s(", \
+                             (unbound_) ? "UnboundMethod" : "Method", _ow, _sep, \
+                             (sym_) ? (sym_) : (_m->name ? _m->name : "?")); \
+    for (int _i = 0; _i < _m->nparams && _off < _cap; _i++) { \
+      if (!_m->pnames[_i]) continue; \
+      if (_i) _off += (size_t)snprintf((out_) + _off, _cap - _off, ", "); \
+      if (_i == _m->rest_idx) \
+        _off += (size_t)snprintf((out_) + _off, _cap - _off, "*%s", _m->pnames[_i]); \
+      else if (_i == _m->kwrest_idx) \
+        _off += (size_t)snprintf((out_) + _off, _cap - _off, "**%s", _m->pnames[_i]); \
+      else if (_m->pdefault[_i] >= 0) \
+        _off += (size_t)snprintf((out_) + _off, _cap - _off, "%s=...", _m->pnames[_i]); \
+      else \
+        _off += (size_t)snprintf((out_) + _off, _cap - _off, "%s", _m->pnames[_i]); \
+    } \
+    if (_off < _cap) _off += (size_t)snprintf((out_) + _off, _cap - _off, ")"); \
+    { int _ln = scope_def_line(c, _m); \
+      if (_ln > 0 && _off < _cap) \
+        _off += (size_t)snprintf((out_) + _off, _cap - _off, " %s:%d", \
+                                 scope_def_file(c, _m), _ln); } \
+    if (_off < _cap) snprintf((out_) + _off, _cap - _off, ">"); \
+  } while (0)
   /* Klass.instance_method(:sym) -> the unbound object: the same
      sp_BoundMethod with a NULL self, so name/arity/owner ride the Method
      arms; #bind supplies the self (#2676). */
   if (sp_streq(name, "instance_method") && method_sym_arg(c, id) != NULL) {
     int umi = method_obj_target_mi(c, id);
     if (umi >= 0) {
-      buf_puts(b, "sp_bound_method_new(NULL, (mrb_int)(uintptr_t)&");
+      buf_puts(b, "sp_bound_method_new_d(NULL, (mrb_int)(uintptr_t)&");
       emit_method_cname(c, &c->scopes[umi], b);
       buf_puts(b, ", ");
       emit_str_literal(b, method_sym_arg(c, id));
       { int ar; if (method_scope_arity(c, umi, &ar)) buf_printf(b, ", (mrb_int)%d", ar); else buf_puts(b, ", SP_INT_NIL"); }
+      { char _db[512]; BUILD_METHOD_DESC(umi, method_sym_arg(c, id), 1, _db);
+        buf_puts(b, ", "); emit_str_literal(b, _db); }
       buf_puts(b, ")");
       return;
     }
+  }
+  /* Method/UnboundMethod#inspect / #to_s: the stamped rendering (#3249). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      (sp_streq(name, "inspect") || sp_streq(name, "to_s"))) {
+    buf_puts(b, "sp_method_desc_cstr(");
+    emit_expr(c, recv, b);
+    buf_puts(b, ")");
+    return;
+  }
+  /* Method#unbind: the same target with no self, re-rendered as an
+     UnboundMethod (#3249). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      sp_streq(name, "unbind")) {
+    int mnu = method_recv_node(c, recv);
+    int tmu = mnu >= 0 ? method_obj_target_mi(c, mnu) : -1;
+    int tvu = ++g_tmp;
+    buf_printf(b, "({ sp_BoundMethod *_t%d = ", tvu);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; sp_bound_method_new_d(NULL, _t%d->fn, _t%d->name, _t%d->arity, ", tvu, tvu, tvu);
+    if (tmu >= 0) {
+      char _db[512]; BUILD_METHOD_DESC(tmu, method_sym_arg(c, mnu), 1, _db);
+      emit_str_literal(b, _db);
+    }
+    else buf_puts(b, "NULL");
+    buf_puts(b, "); })");
+    return;
   }
   /* An UNBOUND method is not callable: CRuby's NoMethodError (#2724). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
@@ -8465,13 +8528,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
     int mn2 = method_recv_node(c, recv);
     int t2 = mn2 >= 0 ? method_obj_target_mi(c, mn2) : -1;
     if (t2 >= 0 && ty_is_object(comp_ntype(c, argv[0]))) {
-      buf_puts(b, "sp_bound_method_new((void *)(");
+      buf_puts(b, "sp_bound_method_new_d((void *)(");
       emit_expr(c, argv[0], b);
       buf_puts(b, "), (mrb_int)(uintptr_t)&");
       emit_method_cname(c, &c->scopes[t2], b);
       buf_puts(b, ", ");
       emit_str_literal(b, method_sym_arg(c, mn2));
       { int ar; if (method_scope_arity(c, t2, &ar)) buf_printf(b, ", (mrb_int)%d", ar); else buf_puts(b, ", SP_INT_NIL"); }
+      { char _db[512]; BUILD_METHOD_DESC(t2, method_sym_arg(c, mn2), 0, _db);
+        buf_puts(b, ", "); emit_str_literal(b, _db); }
       buf_puts(b, ")");
       return;
     }
@@ -8483,7 +8548,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     /* bare method(:sym) on an instance method binds the current self */
     int self_bound = (recv < 0 && mi >= 0 && c->scopes[mi].class_id >= 0 &&
                       !c->scopes[mi].is_cmethod);
-    buf_puts(b, "sp_bound_method_new(");
+    buf_puts(b, mi >= 0 ? "sp_bound_method_new_d(" : "sp_bound_method_new(");
     /* A Method bound to a class/module (Klass.method(:cmeth)) has no instance
        self -- the class value is not a heap pointer, so pass NULL. */
     if (recv >= 0 && comp_ntype(c, recv) == TY_CLASS) buf_puts(b, "NULL");
@@ -8599,6 +8664,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
     emit_str_literal(b, disp);
     { int ar; if (mi >= 0 && method_scope_arity(c, mi, &ar)) buf_printf(b, ", (mrb_int)%d", ar); else buf_puts(b, ", SP_INT_NIL"); }
+    if (mi >= 0) {
+      char _db[512]; BUILD_METHOD_DESC(mi, disp, 0, _db);
+      buf_puts(b, ", "); emit_str_literal(b, _db);
+    }
     buf_puts(b, ")");
     return;
   }
