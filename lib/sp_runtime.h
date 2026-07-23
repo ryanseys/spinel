@@ -4922,6 +4922,10 @@ static sp_RbVal sp_poly_to_a_m(sp_RbVal v) {
 static sp_RbVal sp_poly_to_h_m(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return sp_box_obj(sp_SymPolyHash_new(), SP_BUILTIN_SYM_POLY_HASH);
   if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) return v;
+  /* an OpenStruct (an OpenStruct|nil union reaches here boxed): its member
+     table is already a symbol-keyed hash (#3282) */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_OPENSTRUCT)
+    return sp_box_obj(sp_OpenStruct_to_h((sp_OpenStruct *)v.v.p), SP_BUILTIN_SYM_POLY_HASH);
   /* a Struct/Data read out of a container: dispatch its symbol-keyed to_h by
      cls_id through the generated hook (#2906). */
   if (v.tag == SP_TAG_OBJ && sp_obj_to_h_fn) {

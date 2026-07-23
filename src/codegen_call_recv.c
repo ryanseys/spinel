@@ -8444,13 +8444,17 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       else {
         /* to_h: the helper passes a real hash through unchanged, so guard
            the variant before unboxing (a non-sym-keyed hash rejects loudly
-           rather than reading through the wrong layout) */
+           rather than reading through the wrong layout). When the call's own
+           inferred type stayed poly (an OpenStruct|nil receiver whose to_h
+           result feeds a poly dispatch), yield the boxed value instead of
+           the concrete pointer -- the consumer switches on cls_id (#3282). */
         int th2 = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = sp_poly_to_h_m(", th2);
         emit_expr(c, recv, b);
         buf_printf(b, "); if (_t%d.cls_id != SP_BUILTIN_SYM_POLY_HASH)"
-                      " sp_raise_cls(\"TypeError\", \"to_h on a non-symbol-keyed boxed hash\");"
-                      " (sp_SymPolyHash *)_t%d.v.p; })", th2, th2);
+                      " sp_raise_cls(\"TypeError\", \"to_h on a non-symbol-keyed boxed hash\");", th2);
+        if (comp_ntype(c, id) == TY_POLY) buf_printf(b, " _t%d; })", th2);
+        else buf_printf(b, " (sp_SymPolyHash *)_t%d.v.p; })", th2);
       }
       return 1;
     }
