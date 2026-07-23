@@ -63,7 +63,12 @@ class Set
   alias === include?
 
   def each
-    @data.each { |x| yield x }
+    _i = 0
+    while _i < @data.size
+      x = @data[_i]
+      yield x
+      _i += 1
+    end
     self
   end
 
@@ -87,7 +92,12 @@ class Set
 
   def map
     r = []
-    @data.each { |x| r.push(yield(x)) }
+    _i = 0
+    while _i < @data.size
+      x = @data[_i]
+      r.push(yield(x))
+      _i += 1
+    end
     r
   end
   alias collect map
@@ -97,7 +107,12 @@ class Set
   # anything changed and nil otherwise (CRuby's Set contract).
   def map!
     r = []
-    @data.each { |x| v = yield(x); r.push(v) unless r.any? { |e| e.eql?(v) } }
+    _i = 0
+    while _i < @data.size
+      x = @data[_i]
+      v = yield(x); r.push(v) unless r.any? { |e| e.eql?(v) }
+      _i += 1
+    end
     @data = r
     self
   end
@@ -105,14 +120,24 @@ class Set
 
   def keep_if
     r = []
-    @data.each { |x| r.push(x) if yield(x) }
+    _i = 0
+    while _i < @data.size
+      x = @data[_i]
+      r.push(x) if yield(x)
+      _i += 1
+    end
     @data = r
     self
   end
 
   def delete_if
     r = []
-    @data.each { |x| r.push(x) unless yield(x) }
+    _i = 0
+    while _i < @data.size
+      x = @data[_i]
+      r.push(x) unless yield(x)
+      _i += 1
+    end
     @data = r
     self
   end
@@ -120,7 +145,12 @@ class Set
   def select!
     n = @data.size
     r = []
-    @data.each { |x| r.push(x) if yield(x) }
+    _i = 0
+    while _i < @data.size
+      x = @data[_i]
+      r.push(x) if yield(x)
+      _i += 1
+    end
     @data = r
     @data.size == n ? nil : self
   end
@@ -129,7 +159,12 @@ class Set
   def reject!
     n = @data.size
     r = []
-    @data.each { |x| r.push(x) unless yield(x) }
+    _i = 0
+    while _i < @data.size
+      x = @data[_i]
+      r.push(x) unless yield(x)
+      _i += 1
+    end
     @data = r
     @data.size == n ? nil : self
   end

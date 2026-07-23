@@ -1094,6 +1094,39 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent + 1); buf_puts(b, "break;\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
   }
+  /* map!/collect!: the poly value can also be a BUILTIN array at run time
+     (a nested-array element) -- without this default arm the switch missed
+     it silently and the mutation vanished (#3234). Rewrite in place over the
+     normalized working array, then write back into the typed original. */
+  if (sp_streq(name, "map!") || sp_streq(name, "collect!")) {
+    const char *dp0 = block_param_name(c, block, 0);
+    const char *dp0r = dp0 ? rename_local(dp0) : NULL;
+    int dbody = nt_ref(nt, block, "body");
+    int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
+    if (dbn >= 1 && dp0r) {
+      int tw = ++g_tmp, ti2 = ++g_tmp;
+      emit_indent(b, indent); buf_puts(b, "default: {\n");
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"map!\"); SP_GC_ROOT(_t%d);\n",
+                 tw, trecv, tw);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti2, ti2, tw, ti2);
+      emit_indent(b, indent + 2);
+      buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", dp0r, tw, ti2);
+      for (int j2 = 0; j2 + 1 < dbn; j2++) emit_stmt(c, dbb[j2], b, indent + 2);
+      { int svi = g_indent; g_indent = indent + 2;
+        Buf vb2; memset(&vb2, 0, sizeof vb2); emit_boxed(c, dbb[dbn - 1], &vb2);
+        g_indent = svi;
+        emit_indent(b, indent + 2);
+        buf_printf(b, "_t%d->data[_t%d] = %s;\n", tw, ti2, vb2.p ? vb2.p : "sp_box_nil()");
+        free(vb2.p); }
+      emit_indent(b, indent + 1); buf_puts(b, "}\n");
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_poly_arr_writeback(_t%d, _t%d);\n", trecv, tw);
+      emit_indent(b, indent + 1); buf_puts(b, "break;\n");
+      emit_indent(b, indent); buf_puts(b, "}\n");
+    }
+  }
   emit_indent(b, indent); buf_puts(b, "}\n");
   return 1;
 }
