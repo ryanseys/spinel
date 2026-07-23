@@ -551,19 +551,15 @@ const char *sp_brat_inspect(sp_BigRational *r);
 mrb_float sp_brat_to_f(sp_BigRational *r);
 
 /* ---- Marshal.dump/load helpers (lib/sp_marshal.c calls these): 0
-   optcarrot uses. sp_PolyPolyHash_new/set stay resident in
-   sp_runtime.h (still called there ~dozens of times, e.g. via
-   sp_PolyArray_tally) but no longer `static` -- a linkage-only change,
-   the local call sites still inline exactly as before; the body did
-   NOT move, so this is not the archive-de-inlining regression from
-   the 2026-06-24 poly-batch revert. ---- */
-typedef struct sp_PolyPolyHash sp_PolyPolyHash;
-sp_PolyPolyHash *sp_PolyPolyHash_new(void);
-void sp_PolyPolyHash_set(sp_PolyPolyHash *h, sp_RbVal k, sp_RbVal v);
+   optcarrot uses. sp_marv_hash_new/set stay in sp_runtime.h instead of
+   moving here -- they need sp_PolyPolyHash_new/set, which are hot
+   (called there dozens of times, e.g. via sp_PolyArray_tally) and
+   whose home is the struct's own definition deep in sp_runtime.h, not
+   this early header; de-static'ing them in place to reach two
+   one-line marv wrappers would grow sp_runtime.h's non-static-body
+   count for no real gain, so those two stay put instead. */
 sp_RbVal sp_marv_arr_new(void);
 void sp_marv_arr_push(sp_RbVal a, sp_RbVal v);
-sp_RbVal sp_marv_hash_new(void);
-void sp_marv_hash_set(sp_RbVal h, sp_RbVal k, sp_RbVal v);
 sp_RbVal sp_marv_box_complex(mrb_float re, mrb_float im);
 sp_RbVal sp_marv_box_rational(mrb_int n, mrb_int d);
 void sp_marv_raise(const char *cls, const char *msg);
