@@ -170,6 +170,10 @@ typedef struct{mrb_int cls_id;const char *name;}sp_Class;
 #define SP_CLASS_NIL_ID ((mrb_int)-900)
 #define sp_class_nil_p(c) ((c).name == NULL && (c).cls_id == SP_CLASS_NIL_ID)
 #define SP_CLASS_NIL ((sp_Class){SP_CLASS_NIL_ID, NULL})
+/* A class known only by name (see sp_box_class_name in sp_alloc.h): marks a
+   boxed SP_TAG_CLASS value whose v.s carries the name instead of a resolved
+   cls_id. */
+#define SP_CLASS_BY_NAME 0x7F000000
 /* fl marks a component as Float-classed (renders "2.0"); clear bits keep the
    Integer-style rendering for whole values. Zero-init (every positional
    compound literal) is the Integer-classed default. */

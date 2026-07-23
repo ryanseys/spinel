@@ -434,9 +434,6 @@ static inline int64_t sp_process_clock_res_ns(mrb_int clock_id) {
 static inline sp_Encoding sp_encoding_utf8(void){return(sp_Encoding){&("\xff" "UTF-8")[1]};}
 static inline sp_Encoding sp_encoding_us_ascii(void){return(sp_Encoding){&("\xff" "US-ASCII")[1]};}
 static inline sp_Encoding sp_encoding_binary(void){return(sp_Encoding){&("\xff" "ASCII-8BIT")[1]};}
-static inline const char*sp_encoding_name(sp_Encoding e){return e.name?e.name:sp_str_empty;}
-static inline const char*sp_encoding_inspect(sp_Encoding e){return sp_sprintf("#<Encoding:%s>",sp_encoding_name(e));}
-static inline mrb_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an=sp_encoding_name(a);const char*bn=sp_encoding_name(b);return strcmp(an,bn)==0;}
 
 /* sp_str_alloc / _raw / byte_len / set_len / from_bytes / dup_external moved to
    sp_alloc.h (shared inline over extern heap state). */
@@ -1498,7 +1495,6 @@ sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, siz
    and never a legitimate integer, so a sentinel must surface as Ruby nil rather
    than a boxed INT_MIN. Used when an int? value (hash miss, rindex, nonzero?,
    ...) flows into a poly slot. */
-static sp_RbVal sp_box_int_or_nil(mrb_int v) { return v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v); }
 /* Ruby integer shifts: a negative count shifts the other way, and a count at or
    beyond the word width saturates (arithmetic for a right shift of a negative).
    A bare C shift by a negative or >= width count is undefined behaviour, so any
@@ -1531,11 +1527,10 @@ static inline mrb_int sp_int_shr(mrb_int a, mrb_int n) {
    only a few exception classes, but the name is complete for all of them,
    including the open-ended Errno:: family). Marked with a sentinel cls_id so
    the SP_TAG_CLASS arms read the name from v.s instead of resolving v.i. The
-   name points into rodata (see sp_exc_gc_scan), so no GC marking is needed. */
-#define SP_CLASS_BY_NAME 0x7F000000
-static sp_RbVal sp_box_class_name(const char *name) { sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = SP_CLASS_BY_NAME; r.v.s = name; return r; }
+   name points into rodata (see sp_exc_gc_scan), so no GC marking is needed.
+   SP_CLASS_BY_NAME itself now lives in sp_types.h (needed by sp_box_class_name
+   in sp_alloc.h). */
 /* box a sp_Class into a poly slot (a name-backed class boxes by name). */
-static sp_RbVal sp_box_class(sp_Class c) { if (sp_class_nil_p(c)) return sp_box_nil(); if (c.name) return sp_box_class_name(c.name); sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = (int)c.cls_id; r.v.i = c.cls_id; return r; }
 static sp_Class sp_unbox_class(sp_RbVal v) {
   if (v.tag != SP_TAG_CLASS) return SP_CLASS_NIL;
   if (v.cls_id == SP_CLASS_BY_NAME) { sp_Class c = {-1, v.v.s}; return c; }
@@ -1543,7 +1538,6 @@ static sp_Class sp_unbox_class(sp_RbVal v) {
 }
 /* box a sp_Bigint* into a poly slot (heterogeneous container element, or a
    promote-mode overflow result). */
-static sp_RbVal sp_box_bigint(sp_Bigint *b) { sp_RbVal r; r.tag = SP_TAG_BIGINT; r.cls_id = 0; r.v.p = b; return r; }
 /* A poly value as a sp_Bigint*, so the bigint comparison/arith helpers can take
    a mixed operand uniformly. Total (never NULL, since sp_bigint_cmp derefs):
    a float truncates (harmless -- a bignum is always outside float-fraction
@@ -1555,7 +1549,6 @@ static sp_Bigint *sp_poly_as_bigint(sp_RbVal v) {
   if (v.tag == SP_TAG_FLT) return sp_bigint_new_int((int64_t)v.v.f);
   return sp_bigint_new_int(0);
 }
-static sp_RbVal sp_box_encoding(sp_Encoding e) { sp_RbVal r; r.tag = SP_TAG_ENCODING; r.cls_id = 0; r.v.s = sp_encoding_name(e); return r; }
 
 /* every non-value-type sp_<C> starts
    with `mrb_int cls_id`. Read it back from a void* when
@@ -1564,7 +1557,6 @@ static sp_RbVal sp_box_encoding(sp_Encoding e) { sp_RbVal r; r.tag = SP_TAG_ENCO
    on p; expects p to actually point at a user-class struct
    when non-NULL. */
 static inline mrb_int sp_obj_cls_id_of(void *p) { return p ? *(mrb_int *)p : 0; }
-static sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : sp_box_nil(); }
 /* String#index / #rindex return a boxed nil for not-found, boxed
    int for found. Issue #532: typed-int slot can't represent CRuby's
    nil-vs-real-index distinction in-band; widening the result type
@@ -1603,12 +1595,9 @@ static sp_RbVal sp_str_rindex_poly(const char *s, const char *sub) { mrb_int n =
    The metachars covered: \\ . ? * + ^ $ | ( ) [ ] { } # -
    The whitespace covered: ' ' \t \n \r \f \v
    Everything else copies byte-for-byte. */
-static sp_RbVal sp_box_nullable_obj(void *p, int cls_id) { return p ? sp_box_obj(p, cls_id) : sp_box_nil(); }
 /* An opaque foreign/FFI pointer: boxed with SP_BUILTIN_FOREIGN_PTR so the
    collector skips it (it is not a sp_gc_alloc allocation). NULL -> nil. */
-static sp_RbVal sp_box_foreign_ptr(void *p) { return p ? sp_box_obj(p, SP_BUILTIN_FOREIGN_PTR) : sp_box_nil(); }
 /* a compiled Regexp value (mrb_regexp_pattern *): untraced, program-lifetime */
-static sp_RbVal sp_box_regexp(void *p) { return p ? sp_box_obj(p, SP_BUILTIN_REGEX) : sp_box_nil(); }
 /* renderers live in sp_re.c; declared through void* to avoid the engine header */
 const char *sp_re_inspect_str(void *pat);
 const char *sp_re_to_s_str(void *pat);
@@ -1619,13 +1608,7 @@ uint32_t sp_re_raw_flags(void *pat);
 uint32_t sp_re_opts_to_flags(mrb_int o);
 /* Built-in pointer boxes — share SP_TAG_OBJ with a reserved negative
    cls_id so the dispatch path is uniform. */
-static sp_RbVal sp_box_int_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_INT_ARRAY); }
-static sp_RbVal sp_box_float_array(void *p) { return sp_box_obj(p, SP_BUILTIN_FLT_ARRAY); }
-static sp_RbVal sp_box_str_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_STR_ARRAY); }
-static sp_RbVal sp_box_sym_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_SYM_ARRAY); }
-static sp_RbVal sp_box_ptr_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_PTR_ARRAY); }
 sp_RbVal sp_box_proc(void *p)        { return sp_box_obj(p, SP_BUILTIN_PROC); }
-static sp_RbVal sp_box_method(void *p)      { return sp_box_obj(p, SP_BUILTIN_METHOD); }
 
 /* CRuby-compatible Array#index / #rindex / #find_index: returns
    sp_RbVal (nil tag for not-found, int tag with the position when
@@ -1656,11 +1639,6 @@ static sp_RbVal sp_box_method(void *p)      { return sp_box_obj(p, SP_BUILTIN_ME
    hash / array / param / ivar), copy it onto the GC heap and box the
    pointer via SP_BUILTIN_RANGE. The Range has no internal pointer fields
    so no scanner is needed. */
-static sp_RbVal sp_box_range(sp_Range v) {
-  sp_Range *p = (sp_Range *)sp_gc_alloc(sizeof(sp_Range), NULL, NULL);
-  *p = v;
-  return sp_box_obj(p, SP_BUILTIN_RANGE);
-}
 /* Float range (1.0..3.0). Endpoints stay mrb_float, so cover?/include?/begin/end
    are exact. -HUGE_VAL / +HUGE_VAL are the beginless / endless sentinels. */
 /* String range ("a".."e"). The endpoints are the value; every traversal
@@ -1676,16 +1654,6 @@ sp_FloatArray *sp_frange_step(sp_FloatRange r, mrb_float st) __attribute__((unus
 sp_FloatArray *sp_frange_step(sp_FloatRange r, mrb_float st);
 /* Complex / Rational are wider value types (two components); like sp_Range they
    heap-copy when crossing into a poly slot. No internal pointers, so no scan. */
-static sp_RbVal sp_box_complex(sp_Complex v) {
-  sp_Complex *p = (sp_Complex *)sp_gc_alloc(sizeof(sp_Complex), NULL, NULL);
-  *p = v;
-  return sp_box_obj(p, SP_BUILTIN_COMPLEX);
-}
-static sp_RbVal sp_box_rational(sp_Rational v) {
-  sp_Rational *p = (sp_Rational *)sp_gc_alloc(sizeof(sp_Rational), NULL, NULL);
-  *p = v;
-  return sp_box_obj(p, SP_BUILTIN_RATIONAL);
-}
 
 /* Big Rational: a Rational whose numerator/denominator do not fit mrb_int, so
    it holds two sp_Bigint* instead of the by-value int Rational (#2469). The two
@@ -1758,11 +1726,6 @@ static sp_Complex sp_real_pow_complex(mrb_float base, sp_Complex e) {
 /* Same heap-box rationale as sp_Range: sp_Time is 12+ bytes (tv_sec +
    tv_nsec), wider than sp_RbVal's 8-byte union. No internal pointers
    so no scanner is needed. */
-static sp_RbVal sp_box_time(sp_Time v) {
-  sp_Time *p = (sp_Time *)sp_gc_alloc(sizeof(sp_Time), NULL, NULL);
-  *p = v;
-  return sp_box_obj(p, SP_BUILTIN_TIME);
-}
 /* sp_Time_inspect moved to lib/sp_format.c (cold). */
 static const char *sp_class_to_s(sp_Class c); /* fwd decl: sp_poly_puts' SP_TAG_CLASS arm */
 /* Name of a boxed SP_TAG_CLASS value: a name-backed box carries it in v.s,
@@ -2092,7 +2055,6 @@ static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) {
 }
 /* Process.times -> Process::Tms: four cumulative CPU times in seconds.
    An unboxed value like sp_Range/sp_Class -- there is nothing to mutate. */
-typedef struct { mrb_float utime, stime, cutime, cstime; } sp_Tms;
 static sp_Tms sp_process_times(void) {
   sp_Tms t;
   struct tms b;
@@ -2107,12 +2069,6 @@ static sp_Tms sp_process_times(void) {
 }
 /* Boxing for the unboxed sp_Tms value (a rescue expression merges it into a
    nullable slot, #3132): heap-copy like sp_box_frange. */
-static sp_RbVal sp_box_tms(sp_Tms v) __attribute__((unused));
-static sp_RbVal sp_box_tms(sp_Tms v) {
-  sp_Tms *p = (sp_Tms *)sp_gc_alloc(sizeof(sp_Tms), NULL, NULL);
-  *p = v;
-  return sp_box_obj(p, SP_BUILTIN_TMS);
-}
 /* Class/Module#freeze / #frozen?: a class value is an unboxed {cls_id, name},
    so the frozen flag lives in a global per-class map -- user ids from 0 up,
    builtins (-100..-163) mapped to the top of the range (#3101). */
@@ -4393,7 +4349,6 @@ static sp_OpenStruct *sp_OpenStruct_new(void){
   sp_OpenStruct *o=(sp_OpenStruct*)sp_gc_alloc(sizeof(sp_OpenStruct),NULL,sp_OpenStruct_scan);
   o->tbl=sp_SymPolyHash_new(); return o;
 }
-static sp_RbVal sp_box_openstruct(sp_OpenStruct *o){ return sp_box_obj(o, SP_BUILTIN_OPENSTRUCT); }
 static sp_RbVal sp_OpenStruct_get(sp_OpenStruct *o, sp_sym k){
   if(!o||!o->tbl||!sp_SymPolyHash_has_key(o->tbl,k)) return sp_box_nil();
   return sp_SymPolyHash_get(o->tbl,k);

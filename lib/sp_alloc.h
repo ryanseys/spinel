@@ -14,10 +14,13 @@
    already uses for the extern sp_gc_heap / sp_gc_bytes object heap. */
 #include "sp_types.h"   /* sp_str_hdr, mrb_int, mrb_float */
 #include "sp_gc.h"      /* sp_gc_collect, sp_oom_die, sp_gc_str_sweep_hook */
+#include "sp_time.h"    /* sp_Time for sp_box_time */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>      /* snprintf for the int/float formatters below */
 #include <math.h>       /* HUGE_VAL / signbit for sp_float_to_s */
+
+const char *sp_sprintf(const char *fmt, ...);  /* defined in the generated TU */
 
 /* Global heap lock (Phase 1, design 6.1). Under SP_THREADS one mutex serializes
    the object- and string-heap mutations -- the trigger+collect, the calloc/
@@ -474,5 +477,48 @@ const char *sp_float_opt_to_s(mrb_float v);
 mrb_int sp_float_denominator(mrb_float f);
 sp_RbVal sp_float_numerator(mrb_float f);
 mrb_int sp_float_to_i_checked(mrb_float f);
+
+/* ---- forward declarations for pointer-only box params (full types stay
+   opaque to lib/sp_alloc.h -- these box functions only store the pointer). ---- */
+typedef struct sp_Bigint sp_Bigint;               /* full def: sp_runtime.h bigint block */
+typedef struct sp_OpenStruct_s sp_OpenStruct;      /* full def: sp_runtime.h (SymPolyHash-backed) */
+typedef struct { mrb_float utime, stime, cutime, cstime; } sp_Tms;
+
+/* ---- Box/Encoding helpers relocated from sp_runtime.h: hot-ish ones
+   (sp_box_class 7x / sp_box_nullable_obj 64x / sp_box_int_array 24x /
+   sp_box_float_array 12x / sp_box_str_array 5x / sp_box_range 4x in
+   optcarrot) stay static inline (pure textual move, no codegen change);
+   sp_encoding_name/_inspect/_eq (0 uses) ride along since sp_box_encoding
+   needs sp_encoding_name. ---- */
+static inline sp_RbVal sp_box_class_name(const char *name) { sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = SP_CLASS_BY_NAME; r.v.s = name; return r; }
+static inline sp_RbVal sp_box_class(sp_Class c) { if (sp_class_nil_p(c)) return sp_box_nil(); if (c.name) return sp_box_class_name(c.name); sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = (int)c.cls_id; r.v.i = c.cls_id; return r; }
+static inline sp_RbVal sp_box_nullable_obj(void *p, int cls_id) { return p ? sp_box_obj(p, cls_id) : sp_box_nil(); }
+static inline sp_RbVal sp_box_int_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_INT_ARRAY); }
+static inline sp_RbVal sp_box_float_array(void *p) { return sp_box_obj(p, SP_BUILTIN_FLT_ARRAY); }
+static inline sp_RbVal sp_box_str_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_STR_ARRAY); }
+static inline sp_RbVal sp_box_range(sp_Range v) {
+  sp_Range *p = (sp_Range *)sp_gc_alloc(sizeof(sp_Range), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_RANGE);
+}
+static inline const char*sp_encoding_name(sp_Encoding e){return e.name?e.name:sp_str_empty;}
+static inline const char*sp_encoding_inspect(sp_Encoding e){return sp_sprintf("#<Encoding:%s>",sp_encoding_name(e));}
+static inline mrb_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an=sp_encoding_name(a);const char*bn=sp_encoding_name(b);return strcmp(an,bn)==0;}
+
+/* ---- Box helper prototypes (0 optcarrot uses; bodies in lib/sp_cold.c). ---- */
+sp_RbVal sp_box_int_or_nil(mrb_int v);
+sp_RbVal sp_box_bigint(sp_Bigint *b);
+sp_RbVal sp_box_encoding(sp_Encoding e);
+sp_RbVal sp_box_nullable_str(const char *v);
+sp_RbVal sp_box_foreign_ptr(void *p);
+sp_RbVal sp_box_regexp(void *p);
+sp_RbVal sp_box_sym_array(void *p);
+sp_RbVal sp_box_ptr_array(void *p);
+sp_RbVal sp_box_method(void *p);
+sp_RbVal sp_box_complex(sp_Complex v);
+sp_RbVal sp_box_rational(sp_Rational v);
+sp_RbVal sp_box_time(sp_Time v);
+sp_RbVal sp_box_tms(sp_Tms v);
+sp_RbVal sp_box_openstruct(sp_OpenStruct *o);
 
 #endif /* SP_ALLOC_H */

@@ -2254,3 +2254,36 @@ mrb_int sp_float_to_i_checked(mrb_float f) {
     sp_raise_cls("RangeError", "float out of Integer range (Bignum promotion pending)");
   return (mrb_int)f;
 }
+
+/* ---- Box helpers (0 optcarrot uses) -- relocated from sp_runtime.h. ---- */
+
+sp_RbVal sp_box_int_or_nil(mrb_int v) { return v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v); }
+sp_RbVal sp_box_bigint(sp_Bigint *b) { sp_RbVal r; r.tag = SP_TAG_BIGINT; r.cls_id = 0; r.v.p = b; return r; }
+sp_RbVal sp_box_encoding(sp_Encoding e) { sp_RbVal r; r.tag = SP_TAG_ENCODING; r.cls_id = 0; r.v.s = sp_encoding_name(e); return r; }
+sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : sp_box_nil(); }
+sp_RbVal sp_box_foreign_ptr(void *p) { return p ? sp_box_obj(p, SP_BUILTIN_FOREIGN_PTR) : sp_box_nil(); }
+sp_RbVal sp_box_regexp(void *p) { return p ? sp_box_obj(p, SP_BUILTIN_REGEX) : sp_box_nil(); }
+sp_RbVal sp_box_sym_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_SYM_ARRAY); }
+sp_RbVal sp_box_ptr_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_PTR_ARRAY); }
+sp_RbVal sp_box_method(void *p)      { return sp_box_obj(p, SP_BUILTIN_METHOD); }
+sp_RbVal sp_box_complex(sp_Complex v) {
+  sp_Complex *p = (sp_Complex *)sp_gc_alloc(sizeof(sp_Complex), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_COMPLEX);
+}
+sp_RbVal sp_box_rational(sp_Rational v) {
+  sp_Rational *p = (sp_Rational *)sp_gc_alloc(sizeof(sp_Rational), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_RATIONAL);
+}
+sp_RbVal sp_box_time(sp_Time v) {
+  sp_Time *p = (sp_Time *)sp_gc_alloc(sizeof(sp_Time), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_TIME);
+}
+sp_RbVal sp_box_tms(sp_Tms v) {
+  sp_Tms *p = (sp_Tms *)sp_gc_alloc(sizeof(sp_Tms), NULL, NULL);
+  *p = v;
+  return sp_box_obj(p, SP_BUILTIN_TMS);
+}
+sp_RbVal sp_box_openstruct(sp_OpenStruct *o){ return sp_box_obj(o, SP_BUILTIN_OPENSTRUCT); }
