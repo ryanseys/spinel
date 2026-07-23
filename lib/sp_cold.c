@@ -2050,3 +2050,123 @@ const char *sp_range_str(sp_Range r) {
   if (r.last == INTPTR_MAX)  return sp_sprintf("%lld%s", (long long)r.first, dots);
   return sp_sprintf("%lld%s%lld", (long long)r.first, dots, (long long)r.last);
 }
+
+/* ---- Integer leaf ops (chr/digits/bit_length/bit_range/to_s_base/opt
+   variants/pow) -- relocated from sp_runtime.h. All reach only lib-visible
+   helpers (sp_str_alloc_raw/sp_str_set_len/sp_int_to_s in sp_alloc.h,
+   sp_utf8_encode in sp_str.h, the overflow_p trio now also in sp_alloc.h).
+   ---- */
+
+const char*sp_int_chr(mrb_int n){
+  if(n<0||n>255)sp_raise_cls("RangeError",sp_sprintf("%lld out of char range",(long long)n));
+  char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;sp_str_set_len(s,1);return s;
+}
+const char*sp_int_chr_utf8(mrb_int n){
+  if(n<0||n>0x10FFFF)sp_raise_cls("RangeError",sp_sprintf("%lld out of char range",(long long)n));
+  if(n>=0xD800&&n<=0xDFFF)sp_raise_cls("RangeError",sp_sprintf("invalid codepoint 0x%llX in UTF-8",(long long)n));
+  char*s=sp_str_alloc_raw(5);char*p=s;
+  if(n<0x80){*p++=(char)n;}
+  else if(n<0x800){*p++=(char)(0xC0|(n>>6));*p++=(char)(0x80|(n&0x3F));}
+  else if(n<0x10000){*p++=(char)(0xE0|(n>>12));*p++=(char)(0x80|((n>>6)&0x3F));*p++=(char)(0x80|(n&0x3F));}
+  else{*p++=(char)(0xF0|(n>>18));*p++=(char)(0x80|((n>>12)&0x3F));*p++=(char)(0x80|((n>>6)&0x3F));*p++=(char)(0x80|(n&0x3F));}
+  *p=0;sp_str_set_len(s,(size_t)(p-s));return s;
+}
+const char *sp_int_codepoint_to_str(mrb_int n) {
+  /* String#<< / #concat with an out-of-range codepoint raises RangeError,
+     matching CRuby ("N out of char range"). */
+  if (n < 0 || n > 0x10FFFF) sp_raise_cls("RangeError", sp_sprintf("%lld out of char range", (long long)n));
+  char *s = sp_str_alloc_raw(5);
+  int len = sp_utf8_encode((uint32_t)n, s);
+  s[len] = 0;
+  sp_str_set_len(s, (size_t)len);  /* byte_len must be the encoded length, not the alloc */
+  return s;
+}
+sp_IntArray*sp_int_digits(mrb_int n,mrb_int base){if(base<0)sp_raise_cls("ArgumentError","negative radix");if(base<2)sp_raise_cls("ArgumentError",sp_sprintf("invalid radix %lld",(long long)base));if(n<0)sp_raise_cls("Math::DomainError","out of domain");sp_IntArray*a=sp_IntArray_new();if(n==0){sp_IntArray_push(a,0);return a;}while(n>0){sp_IntArray_push(a,n%base);n/=base;}return a;}
+mrb_int sp_int_bit_length(mrb_int n){unsigned long long x=(n<0)?(unsigned long long)(~n):(unsigned long long)n;mrb_int b=0;if(x>=1ULL<<32){b+=32;x>>=32;}if(x>=1ULL<<16){b+=16;x>>=16;}if(x>=1ULL<<8){b+=8;x>>=8;}if(x>=1ULL<<4){b+=4;x>>=4;}if(x>=1ULL<<2){b+=2;x>>=2;}if(x>=1ULL<<1){b+=1;x>>=1;}return b+(mrb_int)x;}
+mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len) {
+  mrb_int shifted;
+  if (start >= 0) shifted = (start >= 64) ? (n < 0 ? -1 : 0) : (n >> start);
+  else { mrb_int s = -start; shifted = (s >= 64) ? 0 : (mrb_int)((uint64_t)n << s); }
+  uint64_t mask = (len <= 0) ? (len == 0 ? (uint64_t)0 : ~(uint64_t)0)
+                             : (len >= 64 ? ~(uint64_t)0 : (((uint64_t)1 << len) - 1));
+  return (mrb_int)((uint64_t)shifted & mask);
+}
+const char*sp_int_interp(mrb_int n){return n==SP_INT_NIL?sp_str_empty:sp_int_to_s(n);}
+const char*sp_int_to_s_base(mrb_int n,mrb_int base){if(base<2||base>36)sp_raise_cls("ArgumentError",sp_sprintf("invalid radix %lld",(long long)base));char*b=sp_str_alloc_raw(72);char tmp[72];int i=0;int neg=0;uint64_t u;if(n<0){neg=1;u=(uint64_t)(-(n+1))+1;}else{u=(uint64_t)n;}if(u==0){tmp[i++]='0';}else{while(u>0){mrb_int d=u%base;tmp[i++]=d<10?'0'+d:'a'+d-10;u/=base;}}int j=0;if(neg)b[j++]='-';while(i>0)b[j++]=tmp[--i];b[j]=0;sp_str_set_len(b,(size_t)j);return b;}
+const char *sp_int_opt_inspect(mrb_int v) { return sp_int_is_nil(v) ? "nil" : sp_int_to_s(v); }
+const char *sp_int_opt_to_s(mrb_int v)    { return sp_int_is_nil(v) ? "" : sp_int_to_s(v); }
+mrb_int sp_int_pow(mrb_int base, mrb_int exp) {
+  if (exp < 0) sp_raise_cls("RangeError", "negative exponent");
+  /* Exact square-and-multiply (the old pow(double) round-trip lost precision
+     above 2^53 and saturated on overflow). Overflow follows the +/-/* mode:
+     raise by default, wrap under SP_INT_OVERFLOW_MODE_WRAP. */
+  mrb_int r = 1, b = base;
+  while (exp > 0) {
+#ifdef SP_INT_OVERFLOW_MODE_WRAP
+    if (exp & 1) r = (mrb_int)((uintptr_t)r * (uintptr_t)b);
+    exp >>= 1;
+    if (exp) b = (mrb_int)((uintptr_t)b * (uintptr_t)b);
+#else
+    if (exp & 1) { if (sp_int_mul_overflow_p(r, b, &r)) sp_raise_cls("RangeError", "integer overflow in **"); }
+    exp >>= 1;
+    if (exp) { if (sp_int_mul_overflow_p(b, b, &b)) sp_raise_cls("RangeError", "integer overflow in **"); }
+#endif
+  }
+  return r;
+}
+
+/* ---- ARGV cache + ARGF cold ops -- relocated from sp_runtime.h. sp_argv /
+   sp_argf_obj are extern (sp_argf.h), defined by the generated main(). ---- */
+#include "sp_argf.h"
+
+sp_StrArray *sp_argv_array_cache = NULL;
+sp_StrArray *sp_get_ARGV(void) {
+  if (!sp_argv_array_cache) {
+    sp_argv_array_cache = sp_StrArray_new();
+    for (mrb_int i = 0; i < sp_argv.len; i++) sp_StrArray_push(sp_argv_array_cache, sp_argv.data[i]);
+  }
+  return sp_argv_array_cache;
+}
+int sp_argf_ensure(void) {
+  if (sp_argf_obj.cur) return 1;
+  if (sp_argv.len == 0) {
+    if (sp_argf_obj.started) return 0;
+    sp_argf_obj.started = 1; sp_argf_obj.cur = stdin; sp_argf_obj.fname = "-"; return 1;
+  }
+  while (sp_argf_obj.idx < sp_argv.len) {
+    const char *fn = sp_argv.data[sp_argf_obj.idx++];
+    sp_argf_obj.started = 1;
+    if (fn && fn[0] == '-' && fn[1] == 0) { sp_argf_obj.cur = stdin; sp_argf_obj.fname = "-"; return 1; }
+    FILE *f = fn ? fopen(fn, "r") : NULL;
+    if (f) { sp_argf_obj.cur = f; sp_argf_obj.fname = fn; return 1; }
+  }
+  return 0;
+}
+const char *sp_argf_gets(void) {
+  for (;;) {
+    if (!sp_argf_ensure()) return NULL;
+    char buf[8192];
+    if (fgets(buf, sizeof buf, sp_argf_obj.cur)) {
+      size_t l = strlen(buf); char *r = sp_str_alloc_raw(l + 1); memcpy(r, buf, l + 1); return r;
+    }
+    if (sp_argf_obj.cur && sp_argf_obj.cur != stdin) fclose(sp_argf_obj.cur);
+    sp_argf_obj.cur = NULL;  /* EOF on this stream; advance on next ensure */
+  }
+}
+const char *sp_argf_read(void) {
+  sp_String *s = sp_String_new(""); SP_GC_ROOT(s);
+  const char *line;
+  while ((line = sp_argf_gets())) sp_String_append(s, line);
+  return s->data;
+}
+sp_StrArray *sp_argf_readlines(void) {
+  sp_StrArray *a = sp_StrArray_new(); SP_GC_ROOT(a);
+  const char *line;
+  while ((line = sp_argf_gets())) sp_StrArray_push(a, line);
+  return a;
+}
+const char *sp_argf_filename(void) {
+  if (sp_argf_obj.fname) return sp_argf_obj.fname;
+  return sp_argv.len > 0 ? sp_argv.data[0] : "-";
+}
+mrb_bool sp_argf_eof(void) { return !sp_argf_ensure(); }

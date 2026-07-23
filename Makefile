@@ -991,6 +991,7 @@ install: all bin/spin
 	install -m 644 lib/sp_str.h          $(SPNLDIR)/lib/
 	install -m 644 lib/sp_hash.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_range.h        $(SPNLDIR)/lib/
+	install -m 644 lib/sp_argf.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_re.h           $(SPNLDIR)/lib/
 	install -m 644 lib/sp_fiber.h        $(SPNLDIR)/lib/
 	install -m 644 lib/sp_fiber_ctx.h    $(SPNLDIR)/lib/

@@ -16,6 +16,7 @@
 #include "sp_str.h"     /* cold string transforms (lib/sp_str.c); hot/utf8 core stays here */
 #include "sp_hash.h"    /* StrInt/StrStr/IntStr/IntInt hash cold ops (lib/sp_hash.c) */
 #include "sp_range.h"   /* Range helpers: hot inline core + sp_range_include/str cold (lib/sp_cold.c) */
+#include "sp_argf.h"    /* ARGV/ARGF state (extern; defined by main()) + cold ops (lib/sp_cold.c) */
 sp_RbVal sp_env_shift(void);
 mrb_int sp_env_size(void);
 sp_StrStrHash *sp_env_to_h(void);
@@ -195,58 +196,6 @@ static inline mrb_int sp_iremainder(mrb_int a, mrb_int b) {
    macro form bypasses by keeping every operand in its surrounding
    expression context. The macros also let the compiler fold
    constant-operand cases at every call site. */
-#ifndef __has_builtin
-#  define __has_builtin(x) 0
-#endif
-#if (defined(__GNUC__) && __GNUC__ >= 5) || \
-    (__has_builtin(__builtin_add_overflow) && \
-     __has_builtin(__builtin_sub_overflow) && \
-     __has_builtin(__builtin_mul_overflow))
-#  define SP_HAVE_OVERFLOW_BUILTINS 1
-#endif
-
-#ifdef SP_HAVE_OVERFLOW_BUILTINS
-static inline mrb_bool sp_int_add_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
-  return __builtin_add_overflow(a, b, r);
-}
-static inline mrb_bool sp_int_sub_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
-  return __builtin_sub_overflow(a, b, r);
-}
-static inline mrb_bool sp_int_mul_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
-  return __builtin_mul_overflow(a, b, r);
-}
-#else
-/* Portable fallback for compilers lacking __builtin_*_overflow.
-   mrb_int is pointer-width (intptr_t), so compute in uintptr_t --
-   unsigned overflow is well-defined wrap-around in C -- and detect
-   signed overflow via the sign-bit XOR trick at the *correct* width
-   (the sign bit is mrb_int's top bit: 63 on 64-bit, 31 on 32-bit).
-   Bounds use INTPTR_MAX/MIN, not the int64 MRB_INT_* macros, so this
-   path is self-contained and width-correct. Mul checks bounds before
-   multiplying because a 2x-width intermediate isn't portable. */
-#define SP_INT_OVF_SIGN ((uintptr_t)1 << (sizeof(mrb_int) * 8 - 1))
-static inline mrb_bool sp_int_add_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
-  uintptr_t x = (uintptr_t)a, y = (uintptr_t)b, z = x + y;
-  *r = (mrb_int)z;
-  return !!(((x ^ z) & (y ^ z)) & SP_INT_OVF_SIGN);
-}
-static inline mrb_bool sp_int_sub_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
-  uintptr_t x = (uintptr_t)a, y = (uintptr_t)b, z = x - y;
-  *r = (mrb_int)z;
-  return !!(((x ^ z) & (~y ^ z)) & SP_INT_OVF_SIGN);
-}
-static inline mrb_bool sp_int_mul_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
-  if (a > 0 && b > 0 && a > INTPTR_MAX / b) { *r = a * b; return TRUE; }
-  if (a < 0 && b > 0 && a < INTPTR_MIN / b) { *r = a * b; return TRUE; }
-  if (a > 0 && b < 0 && b < INTPTR_MIN / a) { *r = a * b; return TRUE; }
-  if (a < 0 && b < 0 && (a <= INTPTR_MIN || b <= INTPTR_MIN || -a > INTPTR_MAX / -b)) {
-    *r = a * b; return TRUE;
-  }
-  *r = a * b;
-  return FALSE;
-}
-#undef SP_INT_OVF_SIGN
-#endif
 
 /* Three modes selected by `--int-overflow=raise|wrap|promote` on the
    spinel wrapper, which passes -DSP_INT_OVERFLOW_MODE_{RAISE,WRAP,
@@ -280,23 +229,9 @@ static inline mrb_bool sp_int_mul_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
 static inline char *sp_str_alloc_raw(size_t total_with_null);  /* fwd decl */
 const char *sp_sprintf(const char *fmt, ...);                  /* fwd decl */
 /* Integer#chr: a single byte; CRuby raises RangeError outside 0..255. */
-static const char*sp_int_chr(mrb_int n){
-  if(n<0||n>255)sp_raise_cls("RangeError",sp_sprintf("%lld out of char range",(long long)n));
-  char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;sp_str_set_len(s,1);return s;
-}
 /* Integer#chr(Encoding::UTF_8): encode the codepoint as UTF-8 (1-4 bytes).
    CRuby raises RangeError for a negative/too-large codepoint and for the
    surrogate range, which UTF-8 cannot carry. */
-static const char*sp_int_chr_utf8(mrb_int n){
-  if(n<0||n>0x10FFFF)sp_raise_cls("RangeError",sp_sprintf("%lld out of char range",(long long)n));
-  if(n>=0xD800&&n<=0xDFFF)sp_raise_cls("RangeError",sp_sprintf("invalid codepoint 0x%llX in UTF-8",(long long)n));
-  char*s=sp_str_alloc_raw(5);char*p=s;
-  if(n<0x80){*p++=(char)n;}
-  else if(n<0x800){*p++=(char)(0xC0|(n>>6));*p++=(char)(0x80|(n&0x3F));}
-  else if(n<0x10000){*p++=(char)(0xE0|(n>>12));*p++=(char)(0x80|((n>>6)&0x3F));*p++=(char)(0x80|(n&0x3F));}
-  else{*p++=(char)(0xF0|(n>>18));*p++=(char)(0x80|((n>>12)&0x3F));*p++=(char)(0x80|((n>>6)&0x3F));*p++=(char)(0x80|(n&0x3F));}
-  *p=0;sp_str_set_len(s,(size_t)(p-s));return s;
-}
 /* sp_ipow10 / sp_int_round / sp_int_ceil / sp_int_floor /
    sp_int_truncate / sp_str_oct now live in libspinel_rt.a
    (lib/sp_core.c); declared via sp_core.h. */
@@ -513,16 +448,6 @@ static inline mrb_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an
 /* Issue #882: `"hello" << 33` should append the character with
    that codepoint, not the decimal digits. UTF-8 encode (1..4 bytes)
    and return a NUL-terminated string. */
-static const char *sp_int_codepoint_to_str(mrb_int n) {
-  /* String#<< / #concat with an out-of-range codepoint raises RangeError,
-     matching CRuby ("N out of char range"). */
-  if (n < 0 || n > 0x10FFFF) sp_raise_cls("RangeError", sp_sprintf("%lld out of char range", (long long)n));
-  char *s = sp_str_alloc_raw(5);
-  int len = sp_utf8_encode((uint32_t)n, s);
-  s[len] = 0;
-  sp_str_set_len(s, (size_t)len);  /* byte_len must be the encoded length, not the alloc */
-  return s;
-}
 /* Direct-mapped pointer-keyed cache for (byte_len, char_len). Populated lazily
    by sp_str_length / sp_utf8_byte_offset; the same entries unlock both calls
    so iterating a single string with `s.length` + `s[i]` walks UTF-8 once
@@ -735,10 +660,8 @@ static sp_Object *sp_Object_new(void){return(sp_Object*)sp_gc_alloc(sizeof(sp_Ob
 /* sp_IntArray lives in sp_array.h (hot core inline) + lib/sp_array.c
    (cold ops). The Integer methods that happen to build an IntArray stay
    here; they call the inline sp_IntArray_new / _push from sp_array.h. */
-static sp_IntArray*sp_int_digits(mrb_int n,mrb_int base){if(base<0)sp_raise_cls("ArgumentError","negative radix");if(base<2)sp_raise_cls("ArgumentError",sp_sprintf("invalid radix %lld",(long long)base));if(n<0)sp_raise_cls("Math::DomainError","out of domain");sp_IntArray*a=sp_IntArray_new();if(n==0){sp_IntArray_push(a,0);return a;}while(n>0){sp_IntArray_push(a,n%base);n/=base;}return a;}
 /* Integer#bit_length: bits in the two's-complement representation excluding
    the sign bit (a negative n counts the bits of ~n). */
-static mrb_int sp_int_bit_length(mrb_int n){unsigned long long x=(n<0)?(unsigned long long)(~n):(unsigned long long)n;mrb_int b=0;if(x>=1ULL<<32){b+=32;x>>=32;}if(x>=1ULL<<16){b+=16;x>>=16;}if(x>=1ULL<<8){b+=8;x>>=8;}if(x>=1ULL<<4){b+=4;x>>=4;}if(x>=1ULL<<2){b+=2;x>>=2;}if(x>=1ULL<<1){b+=1;x>>=1;}return b+(mrb_int)x;}
 /* Integer#[start, len]: the len-bit field starting at bit `start`, i.e.
    (n >> start) & ((1 << len) - 1) with Ruby's shift semantics (a negative
    count shifts the other way), clamped to the 64-bit word so an out-of-range
@@ -751,14 +674,6 @@ static inline mrb_int sp_int_bit(mrb_int n, mrb_int i) {
   if (i < 0) return 0;
   if (i >= 64) return n < 0 ? 1 : 0;
   return (n >> i) & 1;
-}
-static mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len) {
-  mrb_int shifted;
-  if (start >= 0) shifted = (start >= 64) ? (n < 0 ? -1 : 0) : (n >> start);
-  else { mrb_int s = -start; shifted = (s >= 64) ? 0 : (mrb_int)((uint64_t)n << s); }
-  uint64_t mask = (len <= 0) ? (len == 0 ? (uint64_t)0 : ~(uint64_t)0)
-                             : (len >= 64 ? ~(uint64_t)0 : (((uint64_t)1 << len) - 1));
-  return (mrb_int)((uint64_t)shifted & mask);
 }
 /* sp_FloatArray lives in sp_array.h (hot core inline) + lib/sp_array.c
    (cold ops). */
@@ -823,9 +738,7 @@ static void sp_IntStrHash_clear(sp_IntStrHash*h){if(!h)return;for(mrb_int i=0;i<
    format numbers). String-interpolation of an int slot: a nil sentinel renders
    as the empty string (CRuby interpolates nil as ""), every other value as its
    decimal. */
-static const char*sp_int_interp(mrb_int n){return n==SP_INT_NIL?sp_str_empty:sp_int_to_s(n);}
 
-static const char*sp_int_to_s_base(mrb_int n,mrb_int base){if(base<2||base>36)sp_raise_cls("ArgumentError",sp_sprintf("invalid radix %lld",(long long)base));char*b=sp_str_alloc_raw(72);char tmp[72];int i=0;int neg=0;uint64_t u;if(n<0){neg=1;u=(uint64_t)(-(n+1))+1;}else{u=(uint64_t)n;}if(u==0){tmp[i++]='0';}else{while(u>0){mrb_int d=u%base;tmp[i++]=d<10?'0'+d:'a'+d-10;u/=base;}}int j=0;if(neg)b[j++]='-';while(i>0)b[j++]=tmp[--i];b[j]=0;sp_str_set_len(b,(size_t)j);return b;}
 /* sp_float_to_s now lives in sp_alloc.h (shared). Float#inspect is aliased. */
 #define sp_float_inspect sp_float_to_s
 
@@ -1304,67 +1217,14 @@ static const char*sp_SymArrayPtrArray_inspect(sp_PtrArray*a){SP_GC_ROOT(a);sp_St
    triggering the segfault depends on malloc's reuse pattern (so the
    bug surfaces non-deterministically by string length), but the
    underlying issue is unconditional. */
-typedef struct{const char**data;mrb_int len;}sp_Argv;
-static sp_Argv sp_argv;
+sp_Argv sp_argv;   /* type in sp_argf.h; storage here, populated by main() */
 static const char *sp_program_name = "";
-static sp_StrArray *sp_argv_array_cache = NULL;
-static sp_StrArray *sp_get_ARGV(void) {
-  if (!sp_argv_array_cache) {
-    sp_argv_array_cache = sp_StrArray_new();
-    for (mrb_int i = 0; i < sp_argv.len; i++) sp_StrArray_push(sp_argv_array_cache, sp_argv.data[i]);
-  }
-  return sp_argv_array_cache;
-}
 
 /* ARGF: a pseudo-IO that reads the files named in ARGV in sequence, or stdin
    when ARGV is empty (a `-` filename also means stdin). The state is a single
    global; the ARGF constant is a marker pointer to it. */
-typedef struct { mrb_int idx; FILE *cur; int started; const char *fname; } sp_Argf;
-static sp_Argf sp_argf_obj = {0, NULL, 0, NULL};
+sp_Argf sp_argf_obj = {0, NULL, 0, NULL};   /* type in sp_argf.h */
 /* Ensure a current readable stream, or return 0 at total end of input. */
-static int sp_argf_ensure(void) {
-  if (sp_argf_obj.cur) return 1;
-  if (sp_argv.len == 0) {
-    if (sp_argf_obj.started) return 0;
-    sp_argf_obj.started = 1; sp_argf_obj.cur = stdin; sp_argf_obj.fname = "-"; return 1;
-  }
-  while (sp_argf_obj.idx < sp_argv.len) {
-    const char *fn = sp_argv.data[sp_argf_obj.idx++];
-    sp_argf_obj.started = 1;
-    if (fn && fn[0] == '-' && fn[1] == 0) { sp_argf_obj.cur = stdin; sp_argf_obj.fname = "-"; return 1; }
-    FILE *f = fn ? fopen(fn, "r") : NULL;
-    if (f) { sp_argf_obj.cur = f; sp_argf_obj.fname = fn; return 1; }
-  }
-  return 0;
-}
-static const char *sp_argf_gets(void) {
-  for (;;) {
-    if (!sp_argf_ensure()) return NULL;
-    char buf[8192];
-    if (fgets(buf, sizeof buf, sp_argf_obj.cur)) {
-      size_t l = strlen(buf); char *r = sp_str_alloc_raw(l + 1); memcpy(r, buf, l + 1); return r;
-    }
-    if (sp_argf_obj.cur && sp_argf_obj.cur != stdin) fclose(sp_argf_obj.cur);
-    sp_argf_obj.cur = NULL;  /* EOF on this stream; advance on next ensure */
-  }
-}
-static const char *sp_argf_read(void) {
-  sp_String *s = sp_String_new(""); SP_GC_ROOT(s);
-  const char *line;
-  while ((line = sp_argf_gets())) sp_String_append(s, line);
-  return s->data;
-}
-static sp_StrArray *sp_argf_readlines(void) {
-  sp_StrArray *a = sp_StrArray_new(); SP_GC_ROOT(a);
-  const char *line;
-  while ((line = sp_argf_gets())) sp_StrArray_push(a, line);
-  return a;
-}
-static const char *sp_argf_filename(void) {
-  if (sp_argf_obj.fname) return sp_argf_obj.fname;
-  return sp_argv.len > 0 ? sp_argv.data[0] : "-";
-}
-static mrb_bool sp_argf_eof(void) { return !sp_argf_ensure(); }
 
 /* Mark active in-flight exception messages. Most raises pass string
    literals (rodata, marker byte ≠ 0xfe → no-op for sp_mark_string),
@@ -1788,8 +1648,6 @@ static sp_RbVal sp_box_method(void *p)      { return sp_box_obj(p, SP_BUILTIN_ME
    nil: `nil.to_s` is "" while `nil.inspect` is "nil". For a real
    integer they agree (Integer#to_s and #inspect are both the decimal
    form). Two wrappers keep call-site emit local. */
-static const char *sp_int_opt_inspect(mrb_int v) { return sp_int_is_nil(v) ? "nil" : sp_int_to_s(v); }
-static const char *sp_int_opt_to_s(mrb_int v)    { return sp_int_is_nil(v) ? "" : sp_int_to_s(v); }
 /* float? (nullable float) counterparts: a non-nil value formats exactly
    like a plain Float (delegates to sp_float_to_s), nil renders "nil"
    (inspect) / "" (to_s). */
@@ -2975,26 +2833,6 @@ static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) {
 mrb_int sp_int_round_half(mrb_int v, mrb_int nd, int mode) __attribute__((unused));
 /* sp_int_round_half: moved to lib/sp_cold.c */
 mrb_int sp_int_round_half(mrb_int v, mrb_int nd, int mode);
-static mrb_int sp_int_pow(mrb_int base, mrb_int exp) __attribute__((unused));
-static mrb_int sp_int_pow(mrb_int base, mrb_int exp) {
-  if (exp < 0) sp_raise_cls("RangeError", "negative exponent");
-  /* Exact square-and-multiply (the old pow(double) round-trip lost precision
-     above 2^53 and saturated on overflow). Overflow follows the +/-/* mode:
-     raise by default, wrap under SP_INT_OVERFLOW_MODE_WRAP. */
-  mrb_int r = 1, b = base;
-  while (exp > 0) {
-#ifdef SP_INT_OVERFLOW_MODE_WRAP
-    if (exp & 1) r = (mrb_int)((uintptr_t)r * (uintptr_t)b);
-    exp >>= 1;
-    if (exp) b = (mrb_int)((uintptr_t)b * (uintptr_t)b);
-#else
-    if (exp & 1) { if (sp_int_mul_overflow_p(r, b, &r)) sp_raise_cls("RangeError", "integer overflow in **"); }
-    exp >>= 1;
-    if (exp) { if (sp_int_mul_overflow_p(b, b, &b)) sp_raise_cls("RangeError", "integer overflow in **"); }
-#endif
-  }
-  return r;
-}
 static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
   if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) {
     /* CRuby: a negative integer exponent yields a Rational. The non-negative

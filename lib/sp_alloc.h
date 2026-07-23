@@ -398,4 +398,74 @@ static inline void sp_str_check_mutable(const char *s) {
   if (sp_str_is_frozen_val(s)) sp_raise_frozen_str(s);
 }
 
+/* ---- relocated from sp_runtime.h: integer add/sub/mul overflow-check
+   helpers (still static inline, pure textual move) used by lib/sp_cold.c's
+   sp_int_pow. ---- */
+#ifndef __has_builtin
+#  define __has_builtin(x) 0
+#endif
+#if (defined(__GNUC__) && __GNUC__ >= 5) || \
+    (__has_builtin(__builtin_add_overflow) && \
+     __has_builtin(__builtin_sub_overflow) && \
+     __has_builtin(__builtin_mul_overflow))
+#  define SP_HAVE_OVERFLOW_BUILTINS 1
+#endif
+
+#ifdef SP_HAVE_OVERFLOW_BUILTINS
+static inline mrb_bool sp_int_add_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
+  return __builtin_add_overflow(a, b, r);
+}
+static inline mrb_bool sp_int_sub_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
+  return __builtin_sub_overflow(a, b, r);
+}
+static inline mrb_bool sp_int_mul_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
+  return __builtin_mul_overflow(a, b, r);
+}
+#else
+/* Portable fallback for compilers lacking __builtin_*_overflow.
+   mrb_int is pointer-width (intptr_t), so compute in uintptr_t --
+   unsigned overflow is well-defined wrap-around in C -- and detect
+   signed overflow via the sign-bit XOR trick at the *correct* width
+   (the sign bit is mrb_int's top bit: 63 on 64-bit, 31 on 32-bit).
+   Bounds use INTPTR_MAX/MIN, not the int64 MRB_INT_* macros, so this
+   path is self-contained and width-correct. Mul checks bounds before
+   multiplying because a 2x-width intermediate isn't portable. */
+#define SP_INT_OVF_SIGN ((uintptr_t)1 << (sizeof(mrb_int) * 8 - 1))
+static inline mrb_bool sp_int_add_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
+  uintptr_t x = (uintptr_t)a, y = (uintptr_t)b, z = x + y;
+  *r = (mrb_int)z;
+  return !!(((x ^ z) & (y ^ z)) & SP_INT_OVF_SIGN);
+}
+static inline mrb_bool sp_int_sub_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
+  uintptr_t x = (uintptr_t)a, y = (uintptr_t)b, z = x - y;
+  *r = (mrb_int)z;
+  return !!(((x ^ z) & (~y ^ z)) & SP_INT_OVF_SIGN);
+}
+static inline mrb_bool sp_int_mul_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
+  if (a > 0 && b > 0 && a > INTPTR_MAX / b) { *r = a * b; return TRUE; }
+  if (a < 0 && b > 0 && a < INTPTR_MIN / b) { *r = a * b; return TRUE; }
+  if (a > 0 && b < 0 && b < INTPTR_MIN / a) { *r = a * b; return TRUE; }
+  if (a < 0 && b < 0 && (a <= INTPTR_MIN || b <= INTPTR_MIN || -a > INTPTR_MAX / -b)) {
+    *r = a * b; return TRUE;
+  }
+  *r = a * b;
+  return FALSE;
+}
+#undef SP_INT_OVF_SIGN
+#endif
+
+/* ---- Integer leaf-op prototypes (bodies relocated to lib/sp_cold.c):
+   chr/digits/bit_length/bit_range/to_s_base/opt variants/pow. ---- */
+const char *sp_int_chr(mrb_int n);
+const char *sp_int_chr_utf8(mrb_int n);
+const char *sp_int_codepoint_to_str(mrb_int n);
+sp_IntArray *sp_int_digits(mrb_int n, mrb_int base);
+mrb_int sp_int_bit_length(mrb_int n);
+mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len);
+const char *sp_int_interp(mrb_int n);
+const char *sp_int_to_s_base(mrb_int n, mrb_int base);
+const char *sp_int_opt_inspect(mrb_int v);
+const char *sp_int_opt_to_s(mrb_int v);
+mrb_int sp_int_pow(mrb_int base, mrb_int exp);
+
 #endif /* SP_ALLOC_H */
