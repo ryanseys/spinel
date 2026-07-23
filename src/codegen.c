@@ -438,7 +438,19 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
                         sp_streq(nt_type(c->nt, node), "LocalVariableReadNode")
                           ? nt_str(c->nt, node, "name") : NULL;
       if (bn0) { buf_printf(b, "sp_box_obj(lv_%s, SP_BUILTIN_STRBUF)", rename_local(bn0)); return; }
-      buf_puts(b, "sp_box_str("); emit_expr(c, node, b); buf_puts(b, ")"); return;
+      /* a demanded literal / expression store: wrap a FRESH handle so the
+         container element is mutable in place (#3227 P3) */
+      buf_puts(b, "sp_box_obj(sp_String_new(");
+      { TyKind sv_probe = comp_ntype(c, node);
+        (void)sv_probe;
+        Buf eb0; memset(&eb0, 0, sizeof eb0);
+        unsigned char sv_mark = c->strbuf_box[node];
+        c->strbuf_box[node] = 0;   /* emit the plain string value */
+        emit_str_expr(c, node, &eb0);
+        c->strbuf_box[node] = sv_mark;
+        buf_puts(b, eb0.p ? eb0.p : "(&(\"\\xff\")[1])");
+        free(eb0.p); }
+      buf_puts(b, "), SP_BUILTIN_STRBUF)"); return;
     }
     case TY_OPENSTRUCT:
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);

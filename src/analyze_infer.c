@@ -1018,6 +1018,18 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "clear"))
     return TY_POLY;
+  /* in-place string mutators on a poly value: self (boxed) or nil */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && name[0] && strlen(name) > 1 &&
+      name[strlen(name) - 1] == '!') {
+    static const char *const PBN[] = {
+      "upcase!","downcase!","capitalize!","swapcase!","strip!","lstrip!",
+      "rstrip!","chomp!","chop!","squeeze!","reverse!","succ!","next!",
+      "delete_prefix!","delete_suffix!","delete!","gsub!","sub!","tr!","tr_s!",
+      NULL };
+    for (int q = 0; PBN[q]; q++)
+      if (sp_streq(name, PBN[q])) return TY_POLY;
+  }
   /* Array#pop / #shift on a poly value: the removed element, boxed. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) &&
@@ -5564,6 +5576,10 @@ TyKind infer_uncached(Compiler *c, int id) {
   const char *ty = nt_type(nt, id);
   if (!ty) return TY_UNKNOWN;
   NodeKind nk = nt_kind(nt, id);
+  /* A read marked strbuf_box yields the shared sp_String* HANDLE, whatever
+     the node kind: a container-stored local read, a demanded string literal
+     element, or a demanded call-result store (#3227). */
+  if (c->strbuf_box[id]) return TY_STRBUF;
 
   if (nk == NK_IntegerNode)             return nt_str(nt, id, "bigval") ? TY_BIGINT : TY_INT;
   if (nk == NK_FloatNode)               return TY_FLOAT;
@@ -5680,9 +5696,6 @@ TyKind infer_uncached(Compiler *c, int id) {
   }
 
   if (nk == NK_LocalVariableReadNode) {
-    /* a container-store / equal?-arg read of a shared-mutable string yields
-       the sp_String* HANDLE (#3227 phase 3) */
-    if (c->strbuf_box[id]) return TY_STRBUF;
     /* a `return .. if p.nil?`-guarded param read: the non-nil type (#1661) */
     if (c->nilnarrow[id] != TY_UNKNOWN) return c->nilnarrow[id];
     const char *nm = nt_str(nt, id, "name");

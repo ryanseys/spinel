@@ -6379,6 +6379,101 @@ static int promote_shared_stored_strings(Compiler *c) {
       changed = 1;
     }
   }
+  /* Container-read mutation (`arr[0].upcase!`, `h[:k] << x`): the mutator
+     reaches the element THROUGH the container, so every string stored into
+     that container must be the shared handle -- stored locals promote
+     (regardless of their own direct mutation), and stored string literals /
+     expression results are marked to wrap in a fresh sp_String at the store
+     site. The container itself then unifies to the poly variant. */
+  for (int mu = 0; mu < nt->count; mu++) {
+    if (nt_kind(nt, mu) != NK_CallNode) continue;
+    const char *mun = nt_str(nt, mu, "name");
+    if (!mun) continue;
+    {
+      /* mutator name check (same handle-capable set) */
+      static const char *const MUT3[] = {
+        "<<", "concat", "prepend", "replace",
+        "insert", "clear", "slice!", "setbyte",
+        "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
+        "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
+        "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
+        "reverse!", "succ!", "next!", NULL };
+      int is_mut = 0;
+      for (int q = 0; MUT3[q]; q++) if (sp_streq(mun, MUT3[q])) { is_mut = 1; break; }
+      if (!is_mut) continue;
+    }
+    int mrecv = nt_ref(nt, mu, "receiver");
+    if (mrecv < 0 || nt_kind(nt, mrecv) != NK_CallNode) continue;
+    const char *idxn = nt_str(nt, mrecv, "name");
+    if (!idxn || !sp_streq(idxn, "[]")) continue;
+    int cont = nt_ref(nt, mrecv, "receiver");
+    if (cont < 0 || nt_kind(nt, cont) != NK_LocalVariableReadNode) continue;
+    const char *contn = nt_str(nt, cont, "name");
+    Scope *conts = contn ? comp_scope_of(c, cont) : NULL;
+    LocalVar *contv = (contn && conts) ? scope_local(conts, contn) : NULL;
+    if (!contv || (!ty_is_array(contv->type) && !ty_is_hash(contv->type) &&
+                   contv->type != TY_UNKNOWN)) continue;
+    /* every store into this container local (same scope): array/hash
+       literal writes, push/<<, []= */
+    for (int w2 = 0; w2 < nt->count; w2++) {
+      int nst = 0; int stores[64];
+      NodeKind wk = nt_kind(nt, w2);
+      if (wk == NK_LocalVariableWriteNode) {
+        const char *wn2 = nt_str(nt, w2, "name");
+        if (!wn2 || !sp_streq(wn2, contn) || comp_scope_of(c, w2) != conts) continue;
+        int val2 = nt_ref(nt, w2, "value");
+        if (val2 < 0) continue;
+        NodeKind vk = nt_kind(nt, val2);
+        if (vk == NK_ArrayNode) {
+          int en2 = 0; const int *el2 = nt_arr(nt, val2, "elements", &en2);
+          for (int e2 = 0; e2 < en2 && nst < 64; e2++) stores[nst++] = el2[e2];
+        }
+        else if (vk == NK_HashNode || vk == NK_KeywordHashNode) {
+          int en2 = 0; const int *el2 = nt_arr(nt, val2, "elements", &en2);
+          for (int e2 = 0; e2 < en2 && nst < 64; e2++)
+            if (nt_kind(nt, el2[e2]) == NK_AssocNode)
+              stores[nst++] = nt_ref(nt, el2[e2], "value");
+        }
+      }
+      else if (wk == NK_CallNode) {
+        int wr2 = nt_ref(nt, w2, "receiver");
+        if (wr2 < 0 || nt_kind(nt, wr2) != NK_LocalVariableReadNode) continue;
+        const char *wrn2 = nt_str(nt, wr2, "name");
+        if (!wrn2 || !sp_streq(wrn2, contn) || comp_scope_of(c, wr2) != conts) continue;
+        const char *wcn2 = nt_str(nt, w2, "name");
+        if (!wcn2) continue;
+        int a2 = nt_ref(nt, w2, "arguments");
+        int an2 = 0; const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &an2) : NULL;
+        if (sp_streq(wcn2, "<<") || sp_streq(wcn2, "push") ||
+            sp_streq(wcn2, "append") || sp_streq(wcn2, "unshift")) {
+          for (int e2 = 0; e2 < an2 && nst < 64; e2++) stores[nst++] = av2[e2];
+        }
+        else if (sp_streq(wcn2, "[]=") && an2 >= 2) stores[nst++] = av2[an2 - 1];
+        else continue;
+      }
+      else continue;
+      for (int e3 = 0; e3 < nst; e3++) {
+        int sn = stores[e3];
+        if (sn < 0 || c->strbuf_box[sn]) continue;
+        NodeKind sk = nt_kind(nt, sn);
+        if (sk == NK_LocalVariableReadNode) {
+          const char *snm = nt_str(nt, sn, "name");
+          Scope *sns = comp_scope_of(c, sn);
+          LocalVar *snv = (snm && sns) ? scope_local(sns, snm) : NULL;
+          if (!snv || !strbuf_slot_eligible(c, snm, sns, snv)) continue;
+          if (strbuf_mut_kind(c, snm, sns) < 0) continue;
+          snv->type = TY_STRBUF; snv->str_shared = 1;
+          c->strbuf_box[sn] = 1; changed = 1;
+        }
+        else if (sk == NK_StringNode) {
+          TyKind st2 = infer_type(c, sn);
+          if (st2 != TY_STRING && st2 != TY_STRBUF) continue;
+          c->strbuf_box[sn] = 1; changed = 1;
+        }
+      }
+    }
+  }
+
   /* Pure-alias pairs (`s2 = s1`): when either endpoint of the alias is
      in-place mutated, both share the one handle -- CRuby's mutable String
      objects -- regardless of which mutator (a bang-only alias set shares

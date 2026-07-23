@@ -3223,6 +3223,48 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_poly_clear("); emit_expr(c, recv, b); buf_puts(b, ")");
     return 1;
   }
+  /* In-place string mutators on a poly value: a shared-handle box mutates
+     its buffer in place, so the container the value came from observes it
+     (#3227 P3); any other tag raises NoMethodError. String args only (a
+     regex gsub! on a poly receiver stays unsupported). */
+  {
+    static const struct { const char *bang, *base; int an; int nil_nc; } PB[] = {
+      {"upcase!","upcase",0,1},{"downcase!","downcase",0,1},
+      {"capitalize!","capitalize",0,1},{"swapcase!","swapcase",0,1},
+      {"strip!","strip",0,1},{"lstrip!","lstrip",0,1},{"rstrip!","rstrip",0,1},
+      {"chomp!","chomp",0,1},{"chop!","chop",0,1},{"squeeze!","squeeze",0,1},
+      {"reverse!","reverse",0,0},{"succ!","succ",0,0},{"next!","succ",0,0},
+      {"delete_prefix!","delete_prefix",1,1},{"delete_suffix!","delete_suffix",1,1},
+      {"delete!","delete",1,1},
+      {"gsub!","gsub",2,1},{"sub!","sub",2,1},{"tr!","tr",2,1},{"tr_s!","tr_s",2,1},
+      {NULL,NULL,0,0}
+    };
+    int pbi = -1;
+    for (int j = 0; PB[j].bang; j++)
+      if (sp_streq(name, PB[j].bang) && argc == PB[j].an) { pbi = j; break; }
+    if (pbi >= 0) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; sp_RbVal _r%d; if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) {"
+                    " sp_String *_m%d = (sp_String *)_t%d.v.p;"
+                    " const char *_o%d = sp_str_concat(sp_String_cstr(_m%d), (&(\"\\xff\")[1]));"
+                    " const char *_n%d = sp_str_%s(_o%d",
+                 tv, tv, tv, tv, tv, tv, tv, tv, PB[pbi].base, tv);
+      for (int j = 0; j < argc; j++) {
+        buf_puts(b, ", ");
+        emit_str_expr(c, argv[j], b);
+      }
+      buf_printf(b, "); sp_String_set_bin(_m%d, _n%d); ", tv, tv);
+      if (PB[pbi].nil_nc)
+        buf_printf(b, "_r%d = sp_str_eq(_o%d, _n%d) ? sp_box_nil() : _t%d;", tv, tv, tv, tv);
+      else
+        buf_printf(b, "_r%d = _t%d;", tv, tv);
+      buf_printf(b, " }\nelse { sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); _r%d = sp_box_nil(); } _r%d; })",
+                 name, tv, tv, tv);
+      return 1;
+    }
+  }
   /* Array#pop / #shift on a poly value (an array-kind box reaching a poly
      parameter): in-place removal through the runtime kind dispatch. */
   if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) {
