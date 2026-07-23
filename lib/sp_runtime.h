@@ -1661,24 +1661,9 @@ static mrb_float sp_brat_to_f(sp_BigRational *r) {
 /* An Integer-classed (fl bit clear) whole component boxes as an Integer;
    anything else keeps the Float class. The INTPTR guard mirrors
    sp_complex_mag: casting an out-of-range double to mrb_int is UB. */
-static sp_RbVal sp_complex_comp_v(mrb_float v, int is_f) {
-  if (!is_f && v >= -(mrb_float)INTPTR_MAX && v <= (mrb_float)INTPTR_MAX && v == (mrb_float)(mrb_int)v)
-    return sp_box_int((mrb_int)v);
-  return sp_box_float(v);
-}
 /* CRuby Complex#abs: Integer only via the zero-component shortcut (|other|)
    on an all-Integer complex; hypot is always a Float. #abs2 is Integer iff
    both components are Integer-classed. */
-static sp_RbVal sp_complex_abs_v(sp_Complex a) {
-  if (a.fl == 0 && a.im == 0) return sp_complex_comp_v(a.re < 0 ? -a.re : a.re, 0);
-  if (a.fl == 0 && a.re == 0) return sp_complex_comp_v(a.im < 0 ? -a.im : a.im, 0);
-  return sp_box_float(sp_complex_abs(a));
-}
-static sp_RbVal sp_complex_abs2_v(sp_Complex a) {
-  mrb_float v = sp_complex_abs2(a);
-  if (a.fl == 0) return sp_complex_comp_v(v, 0);
-  return sp_box_float(v);
-}
 /* real ** complex = exp(e * clog(base)): base>0 uses a real log, base<0 the
    principal branch (ln|base| + i*pi), base==0 is 0. Both result components are
    Float-classed (fl = 3). */
@@ -2038,15 +2023,6 @@ static sp_Tms sp_process_times(void) {
 /* Class/Module#freeze / #frozen?: a class value is an unboxed {cls_id, name},
    so the frozen flag lives in a global per-class map -- user ids from 0 up,
    builtins (-100..-163) mapped to the top of the range (#3101). */
-static unsigned char sp_class_frozen_map[4096];
-static void sp_class_freeze_id(mrb_int cls_id) {
-  mrb_int ix = cls_id >= 0 ? cls_id : (3900 - cls_id);
-  if (ix >= 0 && ix < 4096) sp_class_frozen_map[ix] = 1;
-}
-static mrb_bool sp_class_frozen_id(mrb_int cls_id) {
-  mrb_int ix = cls_id >= 0 ? cls_id : (3900 - cls_id);
-  return (ix >= 0 && ix < 4096) ? (mrb_bool)sp_class_frozen_map[ix] : 0;
-}
 /* .class as a first-class value: name-backed for every receiver kind, so it
    compares via sp_class_eq (name identity) and prints via sp_class_to_s. */
 static sp_Class sp_poly_class_val(sp_RbVal v) {

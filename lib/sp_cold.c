@@ -2350,3 +2350,30 @@ sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {
   return a->len != n ? sp_box_str_array(a) : sp_box_nil();
 }
 mrb_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(!sp_str_eq(a->data[i],b->data[i]))return FALSE;return TRUE;}
+
+/* ---- Complex ops / class-frozen bitmap -- relocated from sp_runtime.h. ---- */
+
+sp_RbVal sp_complex_comp_v(mrb_float v, int is_f) {
+  if (!is_f && v >= -(mrb_float)INTPTR_MAX && v <= (mrb_float)INTPTR_MAX && v == (mrb_float)(mrb_int)v)
+    return sp_box_int((mrb_int)v);
+  return sp_box_float(v);
+}
+sp_RbVal sp_complex_abs_v(sp_Complex a) {
+  if (a.fl == 0 && a.im == 0) return sp_complex_comp_v(a.re < 0 ? -a.re : a.re, 0);
+  if (a.fl == 0 && a.re == 0) return sp_complex_comp_v(a.im < 0 ? -a.im : a.im, 0);
+  return sp_box_float(sp_complex_abs(a));
+}
+sp_RbVal sp_complex_abs2_v(sp_Complex a) {
+  mrb_float v = sp_complex_abs2(a);
+  if (a.fl == 0) return sp_complex_comp_v(v, 0);
+  return sp_box_float(v);
+}
+unsigned char sp_class_frozen_map[4096];
+void sp_class_freeze_id(mrb_int cls_id) {
+  mrb_int ix = cls_id >= 0 ? cls_id : (3900 - cls_id);
+  if (ix >= 0 && ix < 4096) sp_class_frozen_map[ix] = 1;
+}
+mrb_bool sp_class_frozen_id(mrb_int cls_id) {
+  mrb_int ix = cls_id >= 0 ? cls_id : (3900 - cls_id);
+  return (ix >= 0 && ix < 4096) ? (mrb_bool)sp_class_frozen_map[ix] : 0;
+}

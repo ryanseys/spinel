@@ -10,6 +10,7 @@
    re-parsed and re-codegen'd in every generated translation unit. */
 #include "sp_types.h"   /* sp_Complex, sp_Rational, sp_Range */
 #include "sp_time.h"    /* sp_Time */
+#include "sp_gc.h"      /* sp_RbVal, for the boxed Complex#abs/abs2 wrappers below */
 
 const char *sp_complex_inspect(sp_Complex c);
 const char *sp_complex_to_s(sp_Complex c);
@@ -65,4 +66,10 @@ mrb_float sp_rational_to_f(sp_Rational a);
 sp_Rational sp_float_to_rational(mrb_float f);          /* Float#to_r (exact) */
 sp_Rational sp_float_rationalize(mrb_float f, mrb_float eps);  /* Float#rationalize(eps) */
 sp_Rational sp_float_rationalize0(mrb_float f);         /* Float#rationalize (no arg) */
+/* ---- more Complex ops relocated from sp_runtime.h (sp_box_int/float in
+   sp_alloc.h, sp_complex_abs/abs2 already declared above). ---- */
+sp_RbVal sp_complex_comp_v(mrb_float v, int is_f);
+sp_RbVal sp_complex_abs_v(sp_Complex a);
+sp_RbVal sp_complex_abs2_v(sp_Complex a);
+
 #endif /* SP_FORMAT_H */

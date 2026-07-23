@@ -521,4 +521,10 @@ sp_RbVal sp_box_time(sp_Time v);
 sp_RbVal sp_box_tms(sp_Tms v);
 sp_RbVal sp_box_openstruct(sp_OpenStruct *o);
 
+/* ---- class-frozen bitmap (Class#freeze / #frozen?): state stays
+   per-process like sp_argv, extern instead of sp_runtime.h-static. ---- */
+extern unsigned char sp_class_frozen_map[4096];   /* one definition: lib/sp_cold.c */
+void sp_class_freeze_id(mrb_int cls_id);
+mrb_bool sp_class_frozen_id(mrb_int cls_id);
+
 #endif /* SP_ALLOC_H */
