@@ -1651,8 +1651,6 @@ static sp_RbVal sp_box_method(void *p)      { return sp_box_obj(p, SP_BUILTIN_ME
 /* float? (nullable float) counterparts: a non-nil value formats exactly
    like a plain Float (delegates to sp_float_to_s), nil renders "nil"
    (inspect) / "" (to_s). */
-static const char *sp_float_opt_inspect(mrb_float v) { return sp_float_is_nil(v) ? "nil" : sp_float_to_s(v); }
-static const char *sp_float_opt_to_s(mrb_float v)    { return sp_float_is_nil(v) ? "" : sp_float_to_s(v); }
 /* sp_Range is a 16-byte value type that doesn't fit in sp_RbVal's union
    (max 8 bytes). When a Range crosses into a poly slot (heterogeneous
    hash / array / param / ivar), copy it onto the GC heap and box the
@@ -2068,16 +2066,6 @@ static mrb_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
 }
 /* Float#numerator / #denominator. A non-finite Float has no rational form, so
    CRuby answers the value itself and 1 rather than converting (#3011). */
-static mrb_int sp_float_denominator(mrb_float f) __attribute__((unused));
-static mrb_int sp_float_denominator(mrb_float f) {
-  if (isnan(f) || isinf(f)) return 1;
-  return sp_float_to_rational(f).den;
-}
-static sp_RbVal sp_float_numerator(mrb_float f) __attribute__((unused));
-static sp_RbVal sp_float_numerator(mrb_float f) {
-  if (isnan(f) || isinf(f)) return sp_box_float(f);
-  return sp_box_int(sp_float_to_rational(f).num);
-}
 /* ---- socket support (#2922): thin layer over lib/sp_net.c + sp_io_fdopen_sock.
    A TCPServer/TCPSocket IS an sp_File whose ->mode labels the kind; every IO
    method (gets/read/write/puts/each_line/...) works unchanged, with writes
@@ -2264,12 +2252,6 @@ static mrb_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return v.v.
 /* Float#to_i whose integer value escapes int64: CRuby promotes to Bignum;
    until the promotion plan covers statically-int results (#2024), raise
    loudly instead of saturating silently. NaN/Inf raise FloatDomainError. */
-static mrb_int sp_float_to_i_checked(mrb_float f) {
-  if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", sp_sprintf("%g", f));
-  if (f >= 9223372036854775808.0 || f < -9223372036854775808.0)
-    sp_raise_cls("RangeError", "float out of Integer range (Bignum promotion pending)");
-  return (mrb_int)f;
-}
 static mrb_float sp_poly_to_f_opt(sp_RbVal v) { return v.tag == SP_TAG_NIL ? sp_float_nil() : sp_poly_to_f(v); }
 /* Case conversions / succ preserve the receiver's class: a Symbol converts
    through its name and re-interns, a String stays a String (CRuby). */

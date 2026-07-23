@@ -468,4 +468,11 @@ const char *sp_int_opt_inspect(mrb_int v);
 const char *sp_int_opt_to_s(mrb_int v);
 mrb_int sp_int_pow(mrb_int base, mrb_int exp);
 
+/* ---- Float leaf-op prototypes (bodies relocated to lib/sp_cold.c). ---- */
+const char *sp_float_opt_inspect(mrb_float v);
+const char *sp_float_opt_to_s(mrb_float v);
+mrb_int sp_float_denominator(mrb_float f);
+sp_RbVal sp_float_numerator(mrb_float f);
+mrb_int sp_float_to_i_checked(mrb_float f);
+
 #endif /* SP_ALLOC_H */

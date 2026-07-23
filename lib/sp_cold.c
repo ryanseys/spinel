@@ -31,6 +31,7 @@
 #include "sp_str.h"
 #include "sp_string.h"
 #include "sp_system.h" /* sp_last_status for backtick */
+#include "sp_format.h" /* sp_float_to_rational for sp_float_denominator/numerator */
 
 /* execinfo.h (backtrace_symbols) is a glibc/Apple extension; not all libc
    implementations ship it. Detect availability by the toolchain macros so we
@@ -2230,4 +2231,26 @@ sp_RbVal sp_box_srange(sp_StrRange v) {
   sp_StrRange *p = (sp_StrRange *)sp_gc_alloc(sizeof(sp_StrRange), NULL, NULL);
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_STR_RANGE);
+}
+
+/* ---- Float leaf ops (opt_inspect/opt_to_s/denominator/numerator/
+   to_i_checked) -- relocated from sp_runtime.h. 0 optcarrot uses; reach
+   only lib-visible sp_float_is_nil (sp_types.h)/sp_float_to_s (sp_alloc.h)/
+   sp_float_to_rational (sp_format.h)/sp_raise_cls/sp_sprintf. ---- */
+
+const char *sp_float_opt_inspect(mrb_float v) { return sp_float_is_nil(v) ? "nil" : sp_float_to_s(v); }
+const char *sp_float_opt_to_s(mrb_float v)    { return sp_float_is_nil(v) ? "" : sp_float_to_s(v); }
+mrb_int sp_float_denominator(mrb_float f) {
+  if (isnan(f) || isinf(f)) return 1;
+  return sp_float_to_rational(f).den;
+}
+sp_RbVal sp_float_numerator(mrb_float f) {
+  if (isnan(f) || isinf(f)) return sp_box_float(f);
+  return sp_box_int(sp_float_to_rational(f).num);
+}
+mrb_int sp_float_to_i_checked(mrb_float f) {
+  if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", sp_sprintf("%g", f));
+  if (f >= 9223372036854775808.0 || f < -9223372036854775808.0)
+    sp_raise_cls("RangeError", "float out of Integer range (Bignum promotion pending)");
+  return (mrb_int)f;
 }
