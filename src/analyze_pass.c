@@ -6134,6 +6134,18 @@ static void ple_build(Compiler *c) {
         nt_type(nt, bb[bn - 1]) && sp_streq(nt_type(nt, bb[bn - 1]), "LambdaNode"))
       ple_escaped[bb[bn - 1]] = 1;
   }
+  /* A proc literal that is a BLOCK's tail value escapes too: a collecting
+     iterator (`(0..2).map { ->(s){ s } }`) boxes it into the result array,
+     from which it is invoked through the type-erased ABI (#3242). */
+  NT_FOREACH_KIND(nt, NK_BlockNode, id) {
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || !nt_type(nt, body) || !sp_streq(nt_type(nt, body), "StatementsNode")) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    if (bn > 0 && bb[bn - 1] >= 0 && bb[bn - 1] < n &&
+        nt_type(nt, bb[bn - 1]) &&
+        (sp_streq(nt_type(nt, bb[bn - 1]), "LambdaNode") || is_proc_create(c, bb[bn - 1])))
+      ple_escaped[bb[bn - 1]] = 1;
+  }
 }
 static int proc_literal_escapes_as_arg(Compiler *c, int lit) {
   const NodeTable *nt = c->nt;

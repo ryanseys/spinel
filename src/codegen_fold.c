@@ -6273,6 +6273,12 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
       TyKind at = comp_ntype(c, argv[k]);
       if (at != TY_POLY && !needs_root(at)) continue;
       const char *aty = nt_type(nt, argv[k]);
+      /* a splat at/after the rest slot (splat_idx only marks splats needing
+         ELEMENT expansion) is consumed by the rest collection below, which
+         evaluates and roots the operand itself -- hoisting here both
+         double-evaluates it and emits an ill-typed sp_RbVal temp (the splat
+         lowers to sp_PolyArray*) (#3242) */
+      if (aty && sp_streq(aty, "SplatNode")) continue;
       /* a bare read is already rooted where it lives */
       if (aty && (sp_streq(aty, "LocalVariableReadNode") ||
                   sp_streq(aty, "InstanceVariableReadNode") ||
