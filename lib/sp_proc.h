@@ -1,0 +1,49 @@
+#ifndef SP_PROC_H
+#define SP_PROC_H
+/* sp_proc.h -- sp_Proc / sp_Curry struct layouts + cold ops.
+ *
+ * sp_proc_call itself (the hot per-call dispatch) stays a plain
+ * (non-static) function defined directly in sp_runtime.h -- like
+ * sp_sprintf/sp_argv, its body is resolved at the final link against the
+ * generated TU, so it doesn't need to move for lib/sp_proc.c to reach it.
+ * _sp_proc_poly_args/_sp_proc_poly_ret (the boxed calling-convention side
+ * channel) are likewise already non-static SP_TLS globals in
+ * sp_runtime.h; only extern declarations are needed here.
+ *
+ * Proc#>>/<</compose and the Proc-return (non-local return via longjmp)
+ * machinery stay in sp_runtime.h: sp_proc_compose_fn calls sp_poly_to_i
+ * (a value-dispatch function that's hot in optcarrot and excluded from
+ * eviction), and proc-return threads through the TU-local exception-stack
+ * globals (sp_exc_top / sp_unwind_kind / sp_proc_ret_head).
+ *
+ * 0 optcarrot uses for every function below.
+ */
+#include "sp_types.h"   /* mrb_int, sp_sym, mrb_bool */
+#include "sp_gc.h"      /* sp_RbVal, sp_gc_alloc, sp_gc_mark */
+#include "sp_alloc.h"   /* sp_PolyArray, sp_box_sym, sp_box_poly_array, sp_raise_cls */
+
+typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); mrb_int arity; mrb_bool lambda_p; mrb_int param_count; const sp_sym *param_kinds; const sp_sym *param_names; mrb_bool frozen; /* Object#freeze observed (sp_gc_alloc zero-fills) */ void *origin; /* dup/clone lineage root for Proc#== (NULL: self is the root) */ } sp_Proc;
+typedef struct { sp_Proc *target; mrb_int nargs; sp_RbVal args[16]; } sp_Curry;
+
+mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args);   /* defined in the generated TU */
+extern SP_TLS sp_RbVal _sp_proc_poly_args[16];                   /* defined in the generated TU */
+extern SP_TLS sp_RbVal _sp_proc_poly_ret;                        /* defined in the generated TU */
+
+static inline sp_Proc *sp_proc_root(sp_Proc *p) { return (p && p->origin) ? (sp_Proc *)p->origin : p; }
+
+void sp_Proc_scan(void *p);
+sp_Proc *sp_proc_new_meta(void *fn, void *cap, void (*cap_scan)(void *), mrb_int arity, mrb_bool lambda_p, mrb_int param_count, const sp_sym *param_kinds, const sp_sym *param_names);
+sp_Proc *sp_proc_dup(sp_Proc *p, int keep_frozen);
+sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *));
+mrb_int sp_proc_arity(sp_Proc *p);
+mrb_bool sp_proc_lambda_p(sp_Proc *p);
+const char *sp_proc_inspect(sp_Proc *p);
+void sp_proc_lambda_arity_check(mrb_int argc, mrb_int req, mrb_int opt, mrb_bool has_rest, mrb_bool has_kw);
+sp_PolyArray *sp_proc_parameters_ids(sp_Proc *p, int mode, sp_sym req_id, sp_sym opt_id);
+sp_PolyArray *sp_proc_parameters(sp_Proc *p);
+void sp_curry_scan(void *p);
+sp_Curry *sp_curry_new(sp_Proc *p);
+sp_Curry *sp_curry_apply(sp_Curry *c, sp_RbVal arg);
+void sp_curry_publish_args(sp_Curry *c);
+
+#endif

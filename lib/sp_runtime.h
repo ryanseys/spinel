@@ -17,6 +17,7 @@
 #include "sp_hash.h"    /* StrInt/StrStr/IntStr/IntInt hash cold ops (lib/sp_hash.c) */
 #include "sp_range.h"   /* Range helpers: hot inline core + sp_range_include/str cold (lib/sp_cold.c) */
 #include "sp_argf.h"    /* ARGV/ARGF state (extern; defined by main()) + cold ops (lib/sp_cold.c) */
+#include "sp_proc.h"    /* sp_Proc/sp_Curry + cold ops (lib/sp_proc.c) */
 sp_RbVal sp_env_shift(void);
 mrb_int sp_env_size(void);
 sp_StrStrHash *sp_env_to_h(void);
@@ -6911,25 +6912,11 @@ struct sp_Proc;
 static struct sp_Proc *sp_at_exit_hooks[SP_AT_EXIT_MAX];
 static mrb_int sp_at_exit_count = 0;
 
-typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); mrb_int arity; mrb_bool lambda_p; mrb_int param_count; const sp_sym *param_kinds; const sp_sym *param_names; mrb_bool frozen; /* Object#freeze observed (sp_gc_alloc zero-fills) */ void *origin; /* dup/clone lineage root for Proc#== (NULL: self is the root) */ } sp_Proc;
 /* The lineage root of a proc: dups/clones of one proc share it, so Proc#== /
    #eql? compare roots (a dup == its original) while distinct literals differ. */
-static inline sp_Proc *sp_proc_root(sp_Proc *p) { return (p && p->origin) ? (sp_Proc *)p->origin : p; }
-static void sp_Proc_scan(void *p) { sp_Proc *pr = (sp_Proc *)p; if (pr->cap && pr->cap_scan) pr->cap_scan(pr->cap); }
-static sp_Proc *sp_proc_new_meta(void *fn, void *cap, void (*cap_scan)(void *), mrb_int arity, mrb_bool lambda_p, mrb_int param_count, const sp_sym *param_kinds, const sp_sym *param_names) { sp_Proc *p = (sp_Proc *)sp_gc_alloc(sizeof(sp_Proc), NULL, sp_Proc_scan); p->fn = fn; p->cap = cap; p->cap_scan = cap_scan; p->arity = arity; p->lambda_p = lambda_p; p->param_count = param_count; p->param_kinds = param_kinds; p->param_names = param_names; return p; }
 /* Proc#dup / #clone: a fresh shallow copy (distinct identity; the capture
    environment is shared, like CRuby). dup drops the frozen flag, clone keeps
    it (#3048). */
-static sp_Proc *sp_proc_dup(sp_Proc *p, int keep_frozen) {
-  if (!p) return p;
-  SP_GC_ROOT(p);
-  sp_Proc *r = (sp_Proc *)sp_gc_alloc(sizeof(sp_Proc), NULL, sp_Proc_scan);
-  *r = *p;
-  if (!keep_frozen) r->frozen = 0;
-  r->origin = sp_proc_root(p);   /* share the lineage root so dup == original */
-  return r;
-}
-static sp_Proc *sp_proc_new(void *fn, void *cap, void (*cap_scan)(void *)) { return sp_proc_new_meta(fn, cap, cap_scan, 0, FALSE, 0, NULL, NULL); }
 /* Method#to_proc: wrap the bound method in a Proc whose trampoline forwards
    through the (void *self, mrb_int...) ABI (the arity dispatches the cast). */
 static void sp_bm_cap_scan(void *p) { sp_gc_mark(p); }
@@ -7402,8 +7389,6 @@ SP_TLS sp_RbVal _sp_proc_poly_args[16];
    here just before sp_proc_call, and the callee's &block-param prologue
    consumes (and clears) it. Same discipline as _sp_proc_poly_args (#2648). */
 static SP_TLS sp_Proc *_sp_proc_blk;
-static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
-static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
 mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }
 /* <proc>.call(*arr): spread a runtime array into the mrb_int[16] / boxed
    side-channel ABI. Each element rides the side-channel (a poly parameter reads
@@ -7589,43 +7574,15 @@ static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) {
 sp_RbVal sp_Enumerator_size(sp_Enumerator *e);
 /* Lambda strict-arity check: raise ArgumentError if argc is outside
    [req, req+opt] (no upper bound with a rest param). Procs are lenient. */
-static void sp_proc_lambda_arity_check(mrb_int argc, mrb_int req, mrb_int opt, mrb_bool has_rest, mrb_bool has_kw) {
-  /* a lambda with keyword parameters accepts one extra trailing argument (the
-     keyword hash) beyond its positional maximum. */
-  mrb_int max = req + opt + (has_kw ? 1 : 0);
-  if (argc < req || (!has_rest && argc > max)) sp_raise_cls("ArgumentError", "wrong number of arguments");
-}
 /* Proc#inspect: CRuby prints "#<Proc:0xADDR file:line (lambda)>"; the
    source location is not tracked, so the address form (+ lambda marker) is
    the best-effort rendering. */
-static const char *sp_proc_inspect(sp_Proc *p) {
-  if (!p) return "nil";
-  return sp_sprintf(p->lambda_p ? "#<Proc:0x%016llx (lambda)>" : "#<Proc:0x%016llx>",
-                    (unsigned long long)(uintptr_t)p);
-}
 /* Proc#parameters with an explicit mode. Kinds are stored canonically
    (lambda-style: a plain positional is "req"); printing for proc mode remaps
    req -> opt, which leaves defaulted positionals (stored "opt") and every
    non-positional kind untouched -- exactly CRuby's parameters(lambda:) rule.
    mode: 1 = lambda view, 0 = proc view, -1 = the receiver's own nature.
    req_id/opt_id are the generated TU's interned ids for those kinds. #2693 */
-static sp_PolyArray *sp_proc_parameters_ids(sp_Proc *p, int mode, sp_sym req_id, sp_sym opt_id) __attribute__((unused));
-static sp_PolyArray *sp_proc_parameters_ids(sp_Proc *p, int mode, sp_sym req_id, sp_sym opt_id) {
-  sp_PolyArray *r = sp_PolyArray_new();
-  if (!p || p->param_count <= 0 || !p->param_kinds) return r;
-  SP_GC_ROOT(r);
-  int want_lambda = mode >= 0 ? mode : (p->lambda_p ? 1 : 0);
-  for (mrb_int i = 0; i < p->param_count; i++) {
-    sp_sym k = p->param_kinds[i];
-    if (!want_lambda && k == req_id) k = opt_id;
-    sp_PolyArray *pair = sp_PolyArray_new();
-    sp_PolyArray_push(pair, sp_box_sym(k));
-    if (p->param_names && p->param_names[i] >= 0) sp_PolyArray_push(pair, sp_box_sym(p->param_names[i]));
-    sp_PolyArray_push(r, sp_box_poly_array(pair));
-  }
-  return r;
-}
-static sp_PolyArray *sp_proc_parameters(sp_Proc *p) { sp_PolyArray *r = sp_PolyArray_new(); if (!p || p->param_count <= 0 || !p->param_kinds) return r; SP_GC_ROOT(r); for (mrb_int i = 0; i < p->param_count; i++) { sp_PolyArray *pair = sp_PolyArray_new(); sp_PolyArray_push(pair, sp_box_sym(p->param_kinds[i])); if (p->param_names && p->param_names[i] >= 0) sp_PolyArray_push(pair, sp_box_sym(p->param_names[i])); sp_PolyArray_push(r, sp_box_poly_array(pair)); } return r; }
 
 /* Proc#<< / Proc#>> composition. The composed proc captures the two
    operands and, on call, threads its single argument through inner
@@ -7674,31 +7631,10 @@ static void *sp_proc_compose_v(void *outer, void *inner) {
    by calling the target with the collected (mrb_int) arguments. Spinel
    defers the call to the point of use (sp_curry_to_int), so a partial
    curry behaves as a deferred call rather than auto-invoking at arity. */
-typedef struct { sp_Proc *target; mrb_int nargs; sp_RbVal args[16]; } sp_Curry;
-static void sp_curry_scan(void *p) { sp_Curry *c = (sp_Curry *)p; if (c->target) sp_gc_mark(c->target); for (mrb_int i = 0; i < c->nargs && i < 16; i++) sp_mark_rbval(c->args[i]); }
-static sp_Curry *sp_curry_new(sp_Proc *p) {
-  SP_GC_ROOT(p);  /* the target proc has no other root across this alloc */
-  sp_Curry *c = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry), NULL, sp_curry_scan);
-  c->target = p; c->nargs = 0;
-  return c;
-}
 /* Each accumulated argument is stored boxed so a non-int arg (a String, an
    object, ...) keeps its type through the deferred call (#3183). */
-static sp_Curry *sp_curry_apply(sp_Curry *c, sp_RbVal arg) {
-  /* root the source accumulator: in a chained apply it is only referenced
-     from a C argument slot, and this allocation can collect */
-  SP_GC_ROOT(c);
-  sp_Curry *n = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry), NULL, sp_curry_scan);
-  *n = *c;
-  if (n->nargs < 16) n->args[n->nargs++] = arg;
-  return n;
-}
 /* Publish the accumulated (boxed) args on the side-channel: a poly-param
    target reads its arguments back from there, keeping each arg's real type. */
-static void sp_curry_publish_args(sp_Curry *c) {
-  for (mrb_int i = 0; i < c->nargs && i < 16; i++)
-    _sp_proc_poly_args[i] = c->args[i];
-}
 /* The int slots feed a target with scalar-int params, which reads them
    directly rather than from the boxed side-channel. */
 static void sp_curry_int_slots(sp_Curry *c, mrb_int *slots) {
