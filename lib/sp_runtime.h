@@ -1431,7 +1431,8 @@ static inline const char *sp_poly_to_s(sp_RbVal v);   /* defined below; used by 
 static inline void sp_poly_puts(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT: printf("%lld\n", (long long)v.v.i); break;
-    case SP_TAG_STR: if (v.v.s) { fputs(v.v.s, stdout); if (!*v.v.s || v.v.s[strlen(v.v.s)-1] != '\n') putchar('\n'); } else putchar('\n'); break;
+    case SP_TAG_STR: if (v.v.s) { fputs(v.v.s, stdout); if (!*v.v.s || v.v.s[strlen(v.v.s)-1] != '\n') putchar('\n'); }
+    else putchar('\n'); break;
     case SP_TAG_FLT: { fputs(sp_float_to_s(v.v.f), stdout); putchar('\n'); break; }
     case SP_TAG_BOOL: puts(v.v.b ? "true" : "false"); break;
     case SP_TAG_NIL: putchar('\n'); break;
@@ -1461,7 +1462,8 @@ static inline void sp_poly_puts(sp_RbVal v) {
           sp_StrArray *_a = (sp_StrArray *)v.v.p;
           for (mrb_int _i = 0; _i < _a->len; _i++) {
             const char *_s = _a->data[_i];
-            if (_s) { fputs(_s, stdout); if (!*_s || _s[strlen(_s)-1] != '\n') putchar('\n'); } else putchar('\n');
+            if (_s) { fputs(_s, stdout); if (!*_s || _s[strlen(_s)-1] != '\n') putchar('\n'); }
+            else putchar('\n');
           }
           break;
         }
@@ -2583,7 +2585,8 @@ static sp_PolyArray *sp_poly_product(sp_RbVal *arrs, mrb_int n) {
   if (n > (mrb_int)(sizeof idx_stack / sizeof idx_stack[0])) {
     idx = (mrb_int *)calloc((size_t)n, sizeof(mrb_int));
     if (!idx) { fprintf(stderr, "out of memory\n"); exit(1); }
-  } else {
+  }
+  else {
     memset(idx, 0, (size_t)n * sizeof(mrb_int));
   }
   sp_PolyArray *tuple = NULL; SP_GC_ROOT(tuple);
@@ -6270,7 +6273,8 @@ static sp_OpenStruct *sp_openstruct_from_poly(sp_RbVal h) {
     sp_SymPolyHash *s = (sp_SymPolyHash *)h.v.p;
     for (mrb_int i = 0; i < s->len; i++)
       sp_SymPolyHash_set(tbl, s->order[i], sp_SymPolyHash_get(s, s->order[i]));
-  } else if (h.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(h.cls_id)) {
+  }
+  else if (h.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(h.cls_id)) {
     sp_PolyArray *pairs = sp_poly_to_a_arr(h);
     SP_GC_ROOT(pairs);
     for (mrb_int i = 0; pairs && i < pairs->len; i++) {

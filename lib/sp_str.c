@@ -725,7 +725,8 @@ static char *sp_str_rep_expand(const char *rep, const char *match, size_t mlen) 
       else if (d == '&' || d == '0') { if (ol + mlen >= cap) { cap = (ol + mlen) * 2 + 1; out = (char *)realloc(out, cap); } memcpy(out + ol, match, mlen); ol += mlen; }
       else if (d >= '1' && d <= '9') { /* no capture groups: empty */ }
       else { if (ol + 2 >= cap) { cap = cap * 2 + 1; out = (char *)realloc(out, cap); } out[ol++] = '\\'; out[ol++] = d; }
-    } else {
+    }
+    else {
       if (ol + 1 >= cap) { cap = cap * 2 + 1; out = (char *)realloc(out, cap); }
       out[ol++] = rep[i];
     }

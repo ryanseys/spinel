@@ -79,7 +79,8 @@ int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
     for (int bit = 62; bit >= 0; bit--) if (!((uv >> bit) & 1ULL)) { p = bit; break; }
     int ndig = p + 2; if (ndig < 1) ndig = 1;
     for (int bit = ndig - 1; bit >= 0; bit--) digits[dn++] = (char)('0' + (int)((uv >> bit) & 1ULL));
-  } else {
+  }
+  else {
     /* signed magnitude: |val| in binary. 0 has no significant digits, so it
        contributes a single '0' only when precision is not 0. */
     unsigned long long mag = neg ? (unsigned long long)(-(val + 1)) + 1 : (unsigned long long)val;
@@ -122,7 +123,8 @@ int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
     for (int k = 0; k < head && o < (int)osz; k++) out[o++] = body[k];
     for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = fillc;
     for (int k = head; k < bn && o < (int)osz; k++) out[o++] = body[k];
-  } else {
+  }
+  else {
     if (pad > 0 && !f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
     for (int k = 0; k < bn && o < (int)osz; k++) out[o++] = body[k];
     if (pad > 0 && f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';

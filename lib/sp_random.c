@@ -93,7 +93,8 @@ sp_Random *sp_Random_new_float(mrb_float f) {
   uint64_t s;
   if (f >= -9.2233720368547758e18 && f < 9.2233720368547758e18) {
     s = (uint64_t)(int64_t)f;
-  } else {
+  }
+  else {
     uint64_t bits; memcpy(&bits, &f, sizeof bits);
     s = bits;
   }

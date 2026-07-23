@@ -270,7 +270,8 @@ static void pk_b64_run(char **buf, size_t *len, size_t *cap,
     uint32_t v = (uint32_t)s[i] << 16;
     o[0] = B64[(v >> 18) & 63]; o[1] = B64[(v >> 12) & 63]; o[2] = '='; o[3] = '=';
     pk_append(buf, len, cap, o, 4);
-  } else if (rem == 2) {
+  }
+  else if (rem == 2) {
     uint32_t v = ((uint32_t)s[i] << 16) | ((uint32_t)s[i + 1] << 8);
     o[0] = B64[(v >> 18) & 63]; o[1] = B64[(v >> 12) & 63];
     o[2] = B64[(v >> 6) & 63];  o[3] = '=';
@@ -307,10 +308,12 @@ static void pk_emit_qp(char **buf, size_t *len, size_t *cap,
     if (ch > 126 || (ch < 32 && ch != '\n' && ch != '\t') || ch == '=') {
       char o[3] = { '=', HEX[ch >> 4], HEX[ch & 0x0f] };
       pk_append(buf, len, cap, o, 3); n += 3; prev = -1;
-    } else if (ch == '\n') {
+    }
+    else if (ch == '\n') {
       if (prev == ' ' || prev == '\t') { char e[2] = { '=', '\n' }; pk_append(buf, len, cap, e, 2); }
       pk_append(buf, len, cap, "\n", 1); n = 0; prev = ch;
-    } else {
+    }
+    else {
       pk_append(buf, len, cap, (const char *)&ch, 1); n++; prev = ch;
     }
     if (n > line) { char e[2] = { '=', '\n' }; pk_append(buf, len, cap, e, 2); n = 0; prev = '\n'; }
@@ -341,7 +344,8 @@ static void pk_str_bytes_directive(char spec, int64_t count, const char *s, size
       char byte = (char)((spec == 'H') ? ((hi << 4) | lo) : ((lo << 4) | hi));
       pk_append(buf, len, cap, &byte, 1);
     }
-  } else if (spec == 'B' || spec == 'b') {
+  }
+  else if (spec == 'B' || spec == 'b') {
     size_t n = (count < 0) ? sl : (size_t)count;
     for (size_t bi = 0; bi < (n + 7) / 8; bi++) {
       unsigned char byte = 0;
@@ -352,7 +356,8 @@ static void pk_str_bytes_directive(char spec, int64_t count, const char *s, size
       }
       pk_append(buf, len, cap, (char *)&byte, 1);
     }
-  } else if (spec == 'u') {
+  }
+  else if (spec == 'u') {
     size_t pos = 0;
     while (pos < sl) {
       size_t ll = sl - pos; if (ll > 45) ll = 45;
@@ -724,9 +729,11 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
         char pad = (spec == 'A') ? ' ' : 0;
         for (size_t pi = 0; pi < want - take; pi++) pk_append(&buf, &len, &cap, &pad, 1);
       }
-    } else if (spec == 'm' || spec == 'M') {
+    }
+    else if (spec == 'm' || spec == 'M') {
       pk_str_directive(spec, count, s, sl, &buf, &len, &cap);
-    } else if (spec == 'H' || spec == 'h' || spec == 'B' || spec == 'b' || spec == 'u') {
+    }
+    else if (spec == 'H' || spec == 'h' || spec == 'B' || spec == 'b' || spec == 'u') {
       pk_str_bytes_directive(spec, count, s, sl, &buf, &len, &cap);
     }
   }

@@ -91,7 +91,8 @@ static const char *b64_dec_strict(const char *src, size_t n, const char *alpha) 
            2 with a following `=`, or position 3). */
         if (i + 4 != n || k < 2) sp_raise_cls("ArgumentError", "invalid base64");
         npad++; q[k] = 0;
-      } else {
+      }
+      else {
         if (npad) sp_raise_cls("ArgumentError", "invalid base64");  /* data after pad */
         int v = b64_val(c, alpha);
         if (v < 0) sp_raise_cls("ArgumentError", "invalid base64");

@@ -501,7 +501,8 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
       runq_requeue(t);
       SCHED_WAKE();
     }
-  } else {
+  }
+  else {
     /* Thread.pass / preempt: requeue. A started thread is pinned to its home
        worker (TLS affinity), so it lands on our own local queue TAIL -- other
        queued work still runs first, and the 61-tick global check keeps the
@@ -667,7 +668,8 @@ static void sp_thread_await(sp_thread *t) {
     int dead = (t->state == SP_TH_DEAD);
     SCHED_UNLOCK();
     if (!dead) sp_raise_cls("ThreadError", "deadlock detected: no runnable thread");
-  } else {
+  }
+  else {
     sp_sched_block(&t->joiners);   /* parks on t's joiners; resumes once t is dead */
     SCHED_UNLOCK();
   }
@@ -697,7 +699,8 @@ void sp_Thread_pass(void) {
   if (self == &g_main_thread) {
     sp_sched_pass();   /* one round-robin sweep, then main resumes (not a drain) */
     SCHED_UNLOCK();
-  } else {
+  }
+  else {
     /* Yield but stay runnable. Do NOT enqueue ourselves here: a second worker
        could pop and run our fiber while we are still mid-context-switch. We keep
        our state RUNNING and transfer to our worker's root; run_thread_once
@@ -831,7 +834,8 @@ static void *sp_sysmon_main(void *arg) {
         if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }  /* must reach main, not a helper */
         else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
         else t->wake_pending = 1;   /* mid-switch; its worker enqueues it (run_thread_once) */
-      } else {
+      }
+      else {
         if (nearest == 0.0 || t->wake_deadline < nearest) nearest = t->wake_deadline;
         pp = &t->wait_next;
       }
@@ -876,7 +880,8 @@ static void *sp_sysmon_main(void *arg) {
       g_sysmon_idle = 1;
       pthread_cond_wait(&g_sysmon_cv, &g_sched_lock);
       g_sysmon_idle = 0;
-    } else {
+    }
+    else {
       /* Poll the parked fds, timing out at the quantum (while preempting), near
          the nearest sleeper deadline, or 50ms otherwise (poll returns earlier on
          fd activity or a wake-pipe byte). */
@@ -945,7 +950,8 @@ void sp_sched_sleep(double seconds) {
   if (self == &g_main_thread) {
     sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
     SCHED_UNLOCK();
-  } else {
+  }
+  else {
     /* Same exception-context snapshot as sp_sched_block: the symmetric transfer
        clobbers our handler stack on resume. */
     void *exc_snap = sp_exc_ctx_new();
@@ -1035,7 +1041,8 @@ static int sp_resolve_preempt_signal(void) {
   long n = strtol(e, &end, 10);
   if (*end == '\0') {
     if (n > 0 && n < NSIG) return (int)n;
-  } else {
+  }
+  else {
     const char *name = e;
     if (strncasecmp(name, "SIG", 3) == 0) name += 3;
     static const struct { const char *n; int s; } tab[] = {
@@ -1082,7 +1089,8 @@ static void sp_sched_start_workers(void) {
      without blocking. Created before the monitor so it sees valid fds. */
   if (pipe(g_sysmon_pipe) == 0) {
     for (int e = 0; e < 2; e++) { int fl = fcntl(g_sysmon_pipe[e], F_GETFL, 0); if (fl >= 0) fcntl(g_sysmon_pipe[e], F_SETFL, fl | O_NONBLOCK); }
-  } else { g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1; }
+  }
+  else { g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1; }
   if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
 }
 
@@ -1167,7 +1175,8 @@ static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock hel
       SCHED_UNLOCK();
       sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
     }
-  } else {
+  }
+  else {
     /* The symmetric fiber transfer's exc bookkeeping clobbers this thread's
        handler stack when root resumes from the block, so snapshot it here and
        restore it on wake -- otherwise a #raise/#kill delivered while blocked

@@ -81,11 +81,13 @@ double sp_str_to_f_cruby(const char *s) {
     if ((*p >= '0' && *p <= '9') || *p == '.' || *p == 'e' || *p == 'E' ||
         *p == '+' || *p == '-') {
       buf[n++] = *p;
-    } else if (*p == '_' && n > 0 &&
+    }
+    else if (*p == '_' && n > 0 &&
                ((buf[n-1] >= '0' && buf[n-1] <= '9')) &&
                (p[1] >= '0' && p[1] <= '9')) {
       /* separator between digits: skip it */
-    } else {
+    }
+    else {
       break;
     }
   }
@@ -339,7 +341,8 @@ mrb_float sp_str_to_f_strict(const char *s) {
       if (hex) {
         v = strtod(buf, &endptr);
         if (endptr == buf || *endptr != '\0') goto bad;
-      } else {
+      }
+      else {
         /* The buffer is already a complete, validated float literal (a digit
            appeared, no trailing junk), so sp_read_float's success is enough;
            its endp is left at the start for all-zero input, so don't gate on

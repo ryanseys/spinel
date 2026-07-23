@@ -256,7 +256,8 @@ static sp_RbVal jp_number(jrd *j) {
   if (j->p < j->end && *j->p == '0') {
     j->p++;
     if (j->p < j->end && *j->p >= '0' && *j->p <= '9') jp_err("leading zero in number");
-  } else {
+  }
+  else {
     const char *ds = j->p;
     while (j->p < j->end && *j->p >= '0' && *j->p <= '9') j->p++;
     if (j->p == ds) jp_err("expected a digit in number");
