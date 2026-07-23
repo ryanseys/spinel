@@ -1583,6 +1583,12 @@ TyKind infer_call(Compiler *c, int id) {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash")) {
     if (sp_streq(name, "try_convert")) return TY_POLY;
   }
+  /* container-read builtin pre-arms (#3234) */
+  if (recv >= 0 && infer_type(c, recv) == TY_POLY && argc == 1) {
+    if (sp_streq(name, "cover?")) return TY_BOOL;
+    if (sp_streq(name, "gcdlcm")) return TY_INT_ARRAY;
+    if (sp_streq(name, "sum") && nt_ref(nt, id, "block") < 0) return TY_POLY;
+  }
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
 

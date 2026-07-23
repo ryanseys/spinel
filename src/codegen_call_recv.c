@@ -728,11 +728,14 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     int mbody = nt_ref(nt, mblock, "body");
     int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
     if (mbn >= 1) {
-      int trecv = ++g_tmp, ti = ++g_tmp;
+      int trecv = ++g_tmp, ti = ++g_tmp, torig = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"map!\"); SP_GC_ROOT(_t%d);\n",
-                 trecv, rb.p ? rb.p : "sp_box_nil()", trecv);
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
+                 torig, rb.p ? rb.p : "sp_box_nil()", torig);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"map!\"); SP_GC_ROOT(_t%d);\n",
+                 trecv, torig, trecv);
       free(rb.p);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
@@ -746,6 +749,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "_t%d->data[_t%d] = %s;\n", trecv, ti, vb.p ? vb.p : "sp_box_nil()");
       free(vb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_poly_arr_writeback(_t%d, _t%d);\n", torig, trecv);
       buf_printf(b, "_t%d", trecv);
       return 1;
     }

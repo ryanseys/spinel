@@ -3620,7 +3620,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        no user class defines strftime, so the default-raise arm is unambiguous. */
     int is_strftime = ncand == 0 && sp_streq(name, "strftime") && argc == 1 &&
                       infer_type(c, argv[0]) == TY_STRING;
-    if (ncand > 0 || is_index || is_include || is_fetch || is_push || is_pred || is_strftime) {
+    /* cover? on a container-read Range; gcdlcm on a container-read int
+       receiver (#3234): builtin pre-arms, no user candidates required */
+    int is_cover = sp_streq(name, "cover?") && argc == 1 && !diag_user_defines(c, name);
+    int is_gcdlcm = sp_streq(name, "gcdlcm") && argc == 1 && !diag_user_defines(c, name);
+    if (ncand > 0 || is_index || is_include || is_fetch || is_push || is_pred || is_strftime || is_cover || is_gcdlcm) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
       int *atmp = malloc(sizeof(int) * argc);
@@ -3680,6 +3684,32 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       }
       else buf_puts(b, is_scalar_ret(ret) ? default_value(ret) : "0");
       buf_puts(b, "; ");
+      /* Range#cover? on a runtime Range receiver (#3234) */
+      if (is_cover) {
+        char ix[64];
+        if (atmp_ty[0] == TY_POLY) snprintf(ix, sizeof ix, "sp_poly_to_i(_t%d)", atmp[0]);
+        else snprintf(ix, sizeof ix, "_t%d", atmp[0]);
+        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
+                      " { _t%d = %ssp_range_include((sp_Range *)_t%d.v.p, %s)%s; } else ",
+                   tv, tv, tr,
+                   ret == TY_POLY ? "sp_box_bool(" : "", tv, ix,
+                   ret == TY_POLY ? ")" : "");
+      }
+      /* Integer#gcdlcm on a runtime int receiver (#3234): [gcd, lcm] */
+      if (is_gcdlcm) {
+        char ax[64];
+        if (atmp_ty[0] == TY_POLY) snprintf(ax, sizeof ax, "sp_poly_to_i(_t%d)", atmp[0]);
+        else snprintf(ax, sizeof ax, "_t%d", atmp[0]);
+        int tg2 = ++g_tmp;
+        buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_IntArray_push(_t%d, sp_gcd(_t%d.v.i, %s));"
+                      " sp_IntArray_push(_t%d, sp_lcm(_t%d.v.i, %s)); _t%d = ",
+                   tv, tg2, tg2, tg2, tv, ax, tg2, tv, ax, tr);
+        if (ret == TY_POLY) buf_printf(b, "sp_box_int_array(_t%d)", tg2);
+        else if (ret == TY_INT_ARRAY) buf_printf(b, "_t%d", tg2);
+        else buf_printf(b, "(mrb_int)(uintptr_t)_t%d", tg2);
+        buf_puts(b, "; } else ");
+      }
       /* include? on a TAG_STR receiver: check tag before entering cls_id switch */
       if (is_include && infer_type(c, argv[0]) == TY_STRING)
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_include(_t%d.v.s, _t%d); }\nelse ", tv, tr, tv, atmp[0]);
@@ -17139,6 +17169,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      `runs.map { |r| r.sum }` over chunk_while runs). The runtime helper switches
      on the element's cls_id. Skipped when a user class defines the same method
      (it falls through to the general poly dispatch below). */
+  /* sum(seed) on a container-read row: numeric-tower accumulation from the
+     boxed seed (#3234) */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      sp_streq(name, "sum")) {
+    int ncand9 = 0;
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_method_in_chain(c, k, name, NULL) >= 0) ncand9++;
+    if (ncand9 == 0) {
+      buf_puts(b, "sp_poly_sum_seed("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+  }
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0) {
     const char *pm = NULL;
     if (sp_streq(name, "sum")) pm = "sp_poly_sum";
