@@ -886,6 +886,12 @@ TyKind proc_call_ret(Compiler *c, int recv) {
 /* The symbol-name argument of a `method(:sym)` call, or NULL. */
 const char *method_sym_arg(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
+  /* <method>.super_method names the same method (in the parent class) */
+  if (node >= 0 && nt_kind(nt, node) == NK_CallNode && nt_str(nt, node, "name") &&
+      sp_streq(nt_str(nt, node, "name"), "super_method")) {
+    int imn = method_recv_node(c, nt_ref(nt, node, "receiver"));
+    return imn >= 0 ? method_sym_arg(c, imn) : NULL;
+  }
   int args = nt_ref(nt, node, "arguments");
   int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an < 1) return NULL;
@@ -913,6 +919,19 @@ int is_method_obj_call(Compiler *c, int node) {
    (e.g. a top-level Kernel method like `puts`, or a builtin-array receiver). */
 int method_obj_target_mi(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
+  /* <method>.super_method: the same-named method one step up the defining
+     class's ancestor chain, or -1 (nil) when there is none (#3247). */
+  if (node >= 0 && nt_kind(nt, node) == NK_CallNode && nt_str(nt, node, "name") &&
+      sp_streq(nt_str(nt, node, "name"), "super_method")) {
+    int imn = method_recv_node(c, nt_ref(nt, node, "receiver"));
+    int imi = imn >= 0 ? method_obj_target_mi(c, imn) : -1;
+    if (imi < 0 || c->scopes[imi].class_id < 0) return -1;
+    int par = c->classes[c->scopes[imi].class_id].parent;
+    if (par < 0) return -1;
+    return c->scopes[imi].is_cmethod
+             ? comp_cmethod_in_chain(c, par, c->scopes[imi].name, NULL)
+             : comp_method_in_chain(c, par, c->scopes[imi].name, NULL);
+  }
   const char *sym = method_sym_arg(c, node);
   if (!sym) return -1;
   int recv = nt_ref(nt, node, "receiver");
@@ -959,6 +978,8 @@ int method_expr_is_unbound(Compiler *c, int recv) {
     if (nm && sp_streq(nm, "bind")) return 0;
     if (nm && sp_streq(nm, "instance_method") && method_sym_arg(c, recv) != NULL) return 1;
     if (nm && sp_streq(nm, "unbind")) return 1;
+    if (nm && sp_streq(nm, "super_method"))
+      return method_expr_is_unbound(c, nt_ref(nt, recv, "receiver"));
     return 0;
   }
   if (nt_kind(nt, recv) == NK_LocalVariableReadNode) {
@@ -990,6 +1011,12 @@ int method_recv_node(Compiler *c, int recv) {
        sp_streq(nt_str(nt, recv, "name"), "dup") ||
        sp_streq(nt_str(nt, recv, "name"), "clone")))
     return method_recv_node(c, nt_ref(nt, recv, "receiver"));
+  /* a super_method call IS a method node: method_obj_target_mi resolves it
+     through the parent chain, so hand it back as-is (#3247) */
+  if (nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "name") &&
+      sp_streq(nt_str(nt, recv, "name"), "super_method") &&
+      method_recv_node(c, nt_ref(nt, recv, "receiver")) >= 0)
+    return recv;
   const char *rty = nt_type(nt, recv);
   if (rty && sp_streq(rty, "LocalVariableReadNode")) {
     const char *vn = nt_str(nt, recv, "name");
@@ -1002,6 +1029,10 @@ int method_recv_node(Compiler *c, int recv) {
       if (!wn || !vn || !sp_streq(wn, vn)) continue;
       int val = nt_ref(nt, w, "value");
       if (is_method_obj_call(c, val)) return val;
+      if (val >= 0 && nt_kind(nt, val) == NK_CallNode && nt_str(nt, val, "name") &&
+          sp_streq(nt_str(nt, val, "name"), "super_method") &&
+          method_recv_node(c, nt_ref(nt, val, "receiver")) >= 0)
+        return val;
       if (val >= 0 && nt_kind(nt, val) == NK_CallNode && nt_str(nt, val, "name") &&
           sp_streq(nt_str(nt, val, "name"), "bind")) {
         int inner = method_recv_node(c, nt_ref(nt, val, "receiver"));

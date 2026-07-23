@@ -506,6 +506,11 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "{ sp_Proc *_pp = ("); emit_expr(c, arg, b);
     buf_puts(b, "); fputs(sp_proc_inspect(_pp), stdout); putchar('\\n'); }\n");
   }
+  else if (t == TY_METHOD) {
+    /* the stamped #<Method: ...> rendering; a NULL (nil super_method) prints nil */
+    buf_puts(b, "{ sp_BoundMethod *_pm = ("); emit_expr(c, arg, b);
+    buf_puts(b, "); fputs(_pm ? sp_method_desc_cstr(_pm) : \"nil\", stdout); putchar('\\n'); }\n");
+  }
   else if (t == TY_ENUMERATOR) {
     buf_puts(b, "{ sp_Enumerator *_pe = ("); emit_expr(c, arg, b);
     buf_puts(b, "); fputs(sp_enum_inspect(_pe), stdout); putchar('\\n'); }\n");

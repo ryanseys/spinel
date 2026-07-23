@@ -8484,6 +8484,41 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "); })");
     return;
   }
+  /* Method#super_method: the same-named method one step up the ancestor
+     chain, bound to the same receiver; nil when there is none (#3247). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      sp_streq(name, "super_method")) {
+    int mnp = method_recv_node(c, recv);
+    int imip = mnp >= 0 ? method_obj_target_mi(c, mnp) : -1;
+    int pmip = -1;
+    if (imip >= 0 && c->scopes[imip].class_id >= 0 &&
+        c->classes[c->scopes[imip].class_id].parent >= 0) {
+      int parp = c->classes[c->scopes[imip].class_id].parent;
+      pmip = c->scopes[imip].is_cmethod
+               ? comp_cmethod_in_chain(c, parp, c->scopes[imip].name, NULL)
+               : comp_method_in_chain(c, parp, c->scopes[imip].name, NULL);
+    }
+    if (pmip >= 0) {
+      int tvp = ++g_tmp;
+      buf_printf(b, "({ sp_BoundMethod *_t%d = ", tvp);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; sp_bound_method_new_d(_t%d->self, (mrb_int)(uintptr_t)&", tvp);
+      emit_method_cname(c, &c->scopes[pmip], b);
+      buf_puts(b, ", ");
+      emit_str_literal(b, c->scopes[pmip].name ? c->scopes[pmip].name : "?");
+      { int ar; if (method_scope_arity(c, pmip, &ar)) buf_printf(b, ", (mrb_int)%d", ar); else buf_puts(b, ", SP_INT_NIL"); }
+      { char _db[512];
+        BUILD_METHOD_DESC(pmip, c->scopes[pmip].name, method_expr_is_unbound(c, recv), _db);
+        buf_puts(b, ", "); emit_str_literal(b, _db); }
+      buf_puts(b, "); })");
+    }
+    else {
+      buf_puts(b, "((void)(");
+      emit_expr(c, recv, b);
+      buf_puts(b, "), (sp_BoundMethod *)NULL)");
+    }
+    return;
+  }
   /* An UNBOUND method is not callable: CRuby's NoMethodError (#2724). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
       (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) &&
@@ -9136,7 +9171,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
      method ref calls its function directly; an object-bound Method casts
      fn through the (void *self, mrb_int...) ABI, evaluating recv once. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]"))) {
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
+       sp_streq(name, "==="))) {
     int mn = method_recv_node(c, recv);
     int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
     int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
