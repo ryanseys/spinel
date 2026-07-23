@@ -2716,6 +2716,30 @@ int infer_param_types(Compiler *c) {
       continue;
     }
 
+    /* <unbound>.bind_call(obj, args...): the args after the receiver bind to
+       the target's params, same as <method>.call -- without this the target's
+       params (and so its return) stay untyped and the method emits void,
+       breaking the value use (#3246). */
+    if (recv >= 0 && name && sp_streq(name, "bind_call") &&
+        infer_type(c, recv) == TY_METHOD) {
+      int mn = method_recv_node(c, recv);
+      int tmi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+      if (tmi >= 0) {
+        int bargs = nt_ref(nt, id, "arguments");
+        int ban = 0; const int *bav = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &ban) : NULL;
+        Scope *bm = &c->scopes[tmi];
+        for (int k = 1; k < ban && k - 1 < bm->nparams; k++) {
+          LocalVar *bp = scope_local(bm, bm->pnames[k - 1]);
+          if (!bp || bp->rbs_seeded) continue;
+          TyKind bat = infer_type(c, bav[k]);
+          if (bat == TY_VOID || bat == TY_NIL) bat = TY_POLY;
+          TyKind bmg = ty_unify(bp->type, bat);
+          if (bmg != bp->type) { bp->type = bmg; changed = 1; }
+        }
+        continue;
+      }
+    }
+
     /* <method>.to_proc stored as a Proc: its .call sites are likewise the
        only way the target method is reached, so bind their arg types to the
        target's params (the emitted trampoline calls the real C signature). */
