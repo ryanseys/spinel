@@ -3535,11 +3535,29 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     int is_strdel = sp_streq(name, "delete") && argc == 1 &&
                     infer_type(c, argv[0]) == TY_STRING;
     int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, argc);
+    /* A trailing KeywordHashNode carries the call's keyword arguments: split
+       it off so the user-method arms match keyword params by NAME, not by
+       position (the whole hash used to flow into the *rest / first keyword
+       slot, garbling both -- #3268). Only a plain sym-keyed literal is
+       recognized; a double-splat inside keeps the old positional path. */
+    int kwh = -1, pos_argc = argc;
+    { const char *l_ty = nt_type(nt, argv[argc - 1]);
+      if (l_ty && sp_streq(l_ty, "KeywordHashNode")) {
+        int en = 0; const int *els = nt_arr(nt, argv[argc - 1], "elements", &en);
+        int plain = en > 0;
+        for (int e = 0; e < en; e++) {
+          int key = nt_ref(nt, els[e], "key");
+          const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
+          if (!kty || !sp_streq(kty, "SymbolNode")) { plain = 0; break; }
+        }
+        if (plain) { kwh = argv[argc - 1]; pos_argc = argc - 1; }
+      }
+    }
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       int mi = comp_method_in_chain(c, k, name, NULL);
       /* Include if call supplies all required params (pad defaults / truncate extras) */
-      if (mi >= 0 && argc >= c->scopes[mi].nrequired) ncand++;
+      if (mi >= 0 && pos_argc >= c->scopes[mi].nrequired) ncand++;
     }
     /* strftime on a poly value that is really a Time: a nilable Time
        (`created_at : Time?`) is held as a poly sp_RbVal, so `t.strftime(fmt)`
@@ -3556,7 +3574,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       int *atmp = malloc(sizeof(int) * argc);
       TyKind *atmp_ty = malloc(sizeof(TyKind) * argc);
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
-      for (int a = 0; a < argc; a++) {
+      for (int a = 0; a < pos_argc; a++) {
         atmp[a] = ++g_tmp;
         TyKind at = infer_type(c, argv[a]);
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
@@ -3570,6 +3588,31 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           atmp_ty[a] = at;
           emit_ctype(c, at, b);
           buf_printf(b, " _t%d = ", atmp[a]); emit_expr(c, argv[a], b); buf_puts(b, "; ");
+        }
+      }
+      /* keyword values, evaluated once like the positionals; matched to each
+         arm's keyword params by name below (#3268) */
+      int kwn = 0; const int *kwels = NULL;
+      int *kwtmp = NULL; TyKind *kwty = NULL;
+      if (kwh >= 0) {
+        kwels = nt_arr(nt, kwh, "elements", &kwn);
+        kwtmp = malloc(sizeof(int) * (size_t)(kwn > 0 ? kwn : 1));
+        kwty  = malloc(sizeof(TyKind) * (size_t)(kwn > 0 ? kwn : 1));
+        for (int e = 0; e < kwn; e++) {
+          int val = nt_ref(nt, kwels[e], "value");
+          kwtmp[e] = ++g_tmp;
+          TyKind at = val >= 0 ? infer_type(c, val) : TY_NIL;
+          if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) {
+            kwty[e] = TY_POLY;
+            buf_printf(b, "sp_RbVal _t%d = ", kwtmp[e]);
+            if (val >= 0) emit_boxed(c, val, b); else buf_puts(b, "sp_box_nil()");
+            buf_puts(b, "; ");
+          }
+          else {
+            kwty[e] = at;
+            emit_ctype(c, at, b);
+            buf_printf(b, " _t%d = ", kwtmp[e]); emit_expr(c, val, b); buf_puts(b, "; ");
+          }
         }
       }
       emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);
@@ -3629,7 +3672,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
-        if (mi < 0 || argc < c->scopes[mi].nrequired) continue;
+        if (mi < 0 || pos_argc < c->scopes[mi].nrequired) continue;
         /* A class no value can ever be (never `.new`/`.allocate`/`raise`d, no
            Struct, no Marshal escape) cannot be this poly value's receiver, so
            its arm is dead. Dropping it makes sp_<Class>_<name> an unreferenced
@@ -3649,7 +3692,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            a C pointer/integer type error (const char * into an sp_sym slot), so
            skip the arm. Mirrors the key-type-mismatch handling for typed hashes. */
         int arm_key_incompat = 0;
-        for (int a = 0; a < c->scopes[mi].nparams && a < argc; a++) {
+        for (int a = 0; a < c->scopes[mi].nparams && a < pos_argc; a++) {
+          /* a declared keyword param is bound by name from the split-off kwh,
+             never by this positional slot -- exclude it from the check */
+          if (kwh >= 0 && c->scopes[mi].pnames && c->scopes[mi].pnames[a] &&
+              callee_param_is_declared_kwarg(c, &c->scopes[mi], c->scopes[mi].pnames[a]))
+            continue;
           /* A `*rest` parameter packs any argument type into a PolyArray, so a
              param-vs-arg type mismatch there is not a real incompatibility --
              comparing the rest's TY_POLY_ARRAY against a String arg wrongly
@@ -3686,9 +3734,59 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_%s *)_t%d.v.p", c->classes[defcls].c_name, tv);
         int r_idx = c->scopes[mi].rest_idx;
         int npost = c->scopes[mi].npost_rest;
-        int rest_end = argc - npost;   /* where the *rest collection stops */
+        int rest_end = pos_argc - npost;   /* where the *rest collection stops */
         for (int a = 0; a < mnp; a++) {
           buf_puts(&cb, ", ");
+          const char *pnm = c->scopes[mi].pnames ? c->scopes[mi].pnames[a] : NULL;
+          /* a **kwrest param collects the keywords no declared keyword param
+             consumed (#3268) */
+          if (kwh >= 0 && a == c->scopes[mi].kwrest_idx) {
+            LocalVar *krp = pnm ? scope_local(&c->scopes[mi], pnm) : NULL;
+            int kh2 = ++g_tmp;
+            if (krp && krp->type == TY_POLY) buf_puts(&cb, "sp_box_obj(");
+            buf_printf(&cb, "({ sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);", kh2, kh2);
+            for (int e = 0; e < kwn; e++) {
+              int key = nt_ref(nt, kwels[e], "key");
+              const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
+              if (!kn || callee_param_is_declared_kwarg(c, &c->scopes[mi], kn)) continue;
+              char tn[32]; snprintf(tn, sizeof tn, "_t%d", kwtmp[e]);
+              Buf eb; memset(&eb, 0, sizeof eb);
+              if (kwty[e] == TY_POLY) buf_puts(&eb, tn);
+              else emit_boxed_text(c, kwty[e], tn, &eb);
+              buf_printf(&cb, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, %s);", kh2,
+                         comp_sym_intern(c, kn), eb.p ? eb.p : "sp_box_nil()");
+              free(eb.p);
+            }
+            buf_printf(&cb, " _t%d; })", kh2);
+            if (krp && krp->type == TY_POLY) buf_puts(&cb, ", SP_BUILTIN_SYM_POLY_HASH)");
+            continue;
+          }
+          /* a declared keyword param binds by NAME from the split-off keyword
+             hash; unmatched keywords fall back to the param default (#3268) */
+          if (kwh >= 0 && pnm && callee_param_is_declared_kwarg(c, &c->scopes[mi], pnm)) {
+            int e_found = -1;
+            for (int e = 0; e < kwn; e++) {
+              int key = nt_ref(nt, kwels[e], "key");
+              const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
+              if (kn && sp_streq(kn, pnm)) { e_found = e; break; }
+            }
+            if (e_found >= 0) {
+              TyKind kpt = TY_UNKNOWN;
+              LocalVar *kpv = scope_local(&c->scopes[mi], pnm);
+              if (kpv) kpt = kpv->type;
+              TyKind at = kwty[e_found];
+              char tn[32]; snprintf(tn, sizeof tn, "_t%d", kwtmp[e_found]);
+              if (kpt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, tn, &cb);
+              else if (at == TY_POLY && kpt != TY_POLY && kpt != TY_UNKNOWN) emit_unbox_text(c, kpt, tn, &cb);
+              else buf_puts(&cb, tn);
+            }
+            else {
+              g_self = selfpbuf2;
+              emit_arg_or_default(c, &c->scopes[mi], a, -1, &cb);
+              g_self = saved_self;
+            }
+            continue;
+          }
           /* a *rest parameter collects the trailing call-site temps (evaluated
              once above) into a PolyArray; without this the raw scalar temp was
              passed straight into the sp_PolyArray* slot, a C type error at the
@@ -3696,7 +3794,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (r_idx >= 0 && a == r_idx) {
             int rt2 = ++g_tmp;
             buf_printf(&cb, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rt2, rt2);
-            for (int a2 = a; a2 < rest_end && a2 < argc; a2++) {
+            for (int a2 = a; a2 < rest_end && a2 < pos_argc; a2++) {
               char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a2]);
               Buf eb; memset(&eb, 0, sizeof eb);
               if (atmp_ty[a2] == TY_POLY) buf_puts(&eb, tn);
@@ -3714,7 +3812,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (pv) pt = pv->type;
           /* post-*rest required params take from the tail of the call args */
           int src = (r_idx >= 0 && npost > 0 && a > r_idx) ? rest_end + (a - r_idx - 1) : a;
-          if (src < argc) {
+          if (src < pos_argc) {
             TyKind at = atmp_ty[src];   /* the temp's actual type (poly for a nil/void arg) */
             char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[src]);
             if (pt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, tn, &cb);
@@ -3958,6 +4056,8 @@ else {
       buf_printf(b, " } _t%d; })", tr);
       free(atmp);
       free(atmp_ty);
+      free(kwtmp);
+      free(kwty);
       return 1;
     }
   }
