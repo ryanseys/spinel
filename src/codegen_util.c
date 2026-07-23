@@ -566,7 +566,35 @@ void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
       if (!is_param) {
         Scope *sc = comp_scope_of(c, blk);
         LocalVar *lv = sc ? scope_local(sc, tmpn) : NULL;
-        if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) {
+        /* A captured (cell-backed) block-local gets a FRESH cell each
+           invocation: the capture struct copies the current cell pointer at
+           proc creation, so per-iteration closures each keep their own
+           binding -- one shared cell made every closure observe the final
+           iteration's value (#3230). The prologue's SP_GC_ROOT registered
+           the cell VARIABLE's address, so the reassignment stays rooted;
+           earlier cells stay live through their captures' scans. */
+        if (lv && lv->is_cell) {
+          const char *rn2 = rename_local(tmpn);
+          emit_indent(b, indent);
+          if (lv->type == TY_FLOAT) {
+            buf_printf(b, "_cell_%s = (mrb_float *)sp_gc_alloc(sizeof(mrb_float), NULL, NULL); *_cell_%s = 0.0;\n", rn2, rn2);
+          }
+          else if (lv->type == TY_POLY) {
+            buf_printf(b, "_cell_%s = (sp_RbVal *)sp_gc_alloc(sizeof(sp_RbVal), NULL, sp_cell_scan_rbval); *_cell_%s = sp_box_nil();\n", rn2, rn2);
+          }
+          else if (lv->type != TY_PROC && lv->type != TY_INT && lv->type != TY_BOOL &&
+                   lv->type != TY_SYMBOL && lv->type != TY_UNKNOWN && cell_is_typed_ptr(c, lv)) {
+            const char *cell_scan = (lv->type == TY_STRING) ? "sp_cell_scan_str" : "sp_cell_scan_ptr";
+            buf_printf(b, "_cell_%s = (", rn2); emit_ctype(c, lv->type, b);
+            buf_puts(b, " *)sp_gc_alloc(sizeof(");
+            emit_ctype(c, lv->type, b);
+            buf_printf(b, "), NULL, %s); *_cell_%s = NULL;\n", cell_scan, rn2);
+          }
+          else {
+            buf_printf(b, "_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL); *_cell_%s = 0;\n", rn2, rn2);
+          }
+        }
+        else if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) {
           emit_indent(b, indent);
           /* A value-type object is stored inline (sp_X, not sp_X*), so its
              empty/nil reset is a zeroed struct -- default_value()'s blanket
