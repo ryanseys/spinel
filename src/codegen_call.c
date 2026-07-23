@@ -5974,6 +5974,22 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       }
       return 1;
     }
+    /* Method/UnboundMethod#== / #eql?: same bound receiver and same target
+       function; any non-method operand is simply unequal (#3247). */
+    if (recv >= 0 && rt == TY_METHOD) {
+      if (a0 == TY_METHOD) {
+        int ta2 = ++g_tmp, tb2 = ++g_tmp;
+        buf_printf(b, "({ sp_BoundMethod *_t%d = ", ta2); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_BoundMethod *_t%d = ", tb2); emit_expr(c, argv[0], b);
+        buf_printf(b, "; (mrb_bool)%s(_t%d->self == _t%d->self && _t%d->fn == _t%d->fn); })",
+                   eq ? "" : "!", ta2, tb2, ta2, tb2);
+      }
+      else {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+        emit_boxed(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
+      }
+      return 1;
+    }
     unsupported(c, id, "equality");
   }
   return 0;
@@ -8635,6 +8651,154 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && sp_streq(name, "name")) {
     buf_puts(b, "sp_sym_intern((const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name)");
     return;
+  }
+  /* Method#eql? / #equal?: identity semantics, same as == (#3247). eql? does
+     not route through the ==/!= dispatcher, so it gets its own arm. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 1 &&
+      (sp_streq(name, "eql?") || sp_streq(name, "equal?"))) {
+    if (comp_ntype(c, argv[0]) == TY_METHOD) {
+      int ta5 = ++g_tmp, tb5 = ++g_tmp;
+      buf_printf(b, "({ sp_BoundMethod *_t%d = ", ta5); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_BoundMethod *_t%d = ", tb5); emit_expr(c, argv[0], b);
+      buf_printf(b, "; (mrb_bool)(_t%d->self == _t%d->self && _t%d->fn == _t%d->fn); })",
+                 ta5, tb5, ta5, tb5);
+    }
+    else {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_boxed(c, argv[0], b); buf_puts(b, "), (mrb_bool)0)");
+    }
+    return;
+  }
+  /* Method#original_name: the target scope's own name -- an alias-created
+     method resolves through comp_method_in_chain, so the scope carries the
+     original (#3247). Falls back to #name for an unresolved target. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      sp_streq(name, "original_name")) {
+    int mn4 = method_recv_node(c, recv);
+    int tg4 = mn4 >= 0 ? method_obj_target_mi(c, mn4) : -1;
+    if (tg4 >= 0 && c->scopes[tg4].name) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), sp_sym_intern(");
+      emit_str_literal(b, c->scopes[tg4].name);
+      buf_puts(b, "))");
+    }
+    else {
+      buf_puts(b, "sp_sym_intern((const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name)");
+    }
+    return;
+  }
+  /* Method#dup / #clone: a bound method is immutable; the copy is the same
+     value (identity semantics for #arity etc.) (#3247). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
+    emit_expr(c, recv, b);
+    return;
+  }
+  /* Method#source_location: [file, line] of the target's def, from the same
+     node position the #line machinery uses (#3247). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      sp_streq(name, "source_location")) {
+    int mn4 = method_recv_node(c, recv);
+    int tg4 = mn4 >= 0 ? method_obj_target_mi(c, mn4) : -1;
+    int dn4 = tg4 >= 0 ? c->scopes[tg4].def_node : -1;
+    int ln4 = dn4 >= 0 ? (int)nt_int(nt, dn4, "node_line", 0) : 0;
+    /* under --no-line-map node_line is unstamped (0): still emit the pair so
+       the program compiles; the line is 0 there */
+    if (dn4 >= 0) {
+      const char *file4 = nt_file_path(nt, (int)nt_int(nt, dn4, "node_file", 0));
+      if (!file4 || !*file4) file4 = nt->source_file;
+      int tr4 = ++g_tmp;
+      buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
+      buf_printf(b, "); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_box_str(", tr4, tr4, tr4);
+      emit_str_literal(b, file4 ? file4 : "");
+      buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_int(%dLL)); _t%d; })", tr4, ln4, tr4);
+      return;
+    }
+  }
+  /* Method/UnboundMethod#parameters: [[:req, :a], [:opt, :b], ...] built
+     statically from the target's parameter list (#3247). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      sp_streq(name, "parameters")) {
+    int mn4 = method_recv_node(c, recv);
+    int tg4 = mn4 >= 0 ? method_obj_target_mi(c, mn4) : -1;
+    int dn4 = tg4 >= 0 ? c->scopes[tg4].def_node : -1;
+    int pn4 = dn4 >= 0 ? nt_ref(nt, dn4, "parameters") : -1;
+    if (tg4 >= 0) {
+      int tr4 = ++g_tmp;
+      buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
+      buf_printf(b, "); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr4, tr4);
+      if (pn4 >= 0) {
+        /* CRuby order: req, opt, rest, post-req, key(req), keyrest, block */
+        static const struct { const char *arr; const char *kind; const char *optkind; } PKINDS[] = {
+          { "requireds", "req", NULL }, { "optionals", "opt", NULL },
+          { "rest", NULL, NULL },   /* placeholder: rest emitted in this slot */
+          { "posts", "req", NULL }, { "keywords", "keyreq", "key" },
+        };
+        for (size_t pk = 0; pk < sizeof PKINDS / sizeof PKINDS[0]; pk++) {
+          if (!PKINDS[pk].kind) {   /* the rest param, in CRuby's slot */
+            int rest4 = nt_ref(nt, pn4, "rest");
+            if (rest4 >= 0 && nt_str(nt, rest4, "name")) {
+              int tp4 = ++g_tmp;
+              buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                            " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
+              emit_str_literal(b, "rest");
+              buf_printf(b, ")));"
+                            " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
+              emit_str_literal(b, nt_str(nt, rest4, "name"));
+              buf_printf(b, ")));"
+                            " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
+            }
+            continue;
+          }
+          int an4 = 0; const int *av4 = nt_arr(nt, pn4, PKINDS[pk].arr, &an4);
+          for (int e4 = 0; e4 < an4; e4++) {
+            const char *pnm4 = nt_str(nt, av4[e4], "name");
+            if (!pnm4) continue;
+            const char *kind4 = PKINDS[pk].kind;
+            if (PKINDS[pk].optkind) {
+              const char *ety4 = nt_type(nt, av4[e4]);
+              if (ety4 && sp_streq(ety4, "OptionalKeywordParameterNode")) kind4 = PKINDS[pk].optkind;
+            }
+            int tp4 = ++g_tmp;
+            buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                          " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
+            emit_str_literal(b, kind4);
+            buf_printf(b, ")));"
+                          " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
+            emit_str_literal(b, pnm4);
+            buf_printf(b, ")));"
+                          " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
+          }
+        }
+        int kwr4 = nt_ref(nt, pn4, "keyword_rest");
+        if (kwr4 >= 0 && nt_str(nt, kwr4, "name")) {
+          int tp4 = ++g_tmp;
+          buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
+          emit_str_literal(b, "keyrest");
+          buf_printf(b, ")));"
+                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
+          emit_str_literal(b, nt_str(nt, kwr4, "name"));
+          buf_printf(b, ")));"
+                        " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
+        }
+        int blk4 = nt_ref(nt, pn4, "block");
+        if (blk4 >= 0 && nt_str(nt, blk4, "name")) {
+          int tp4 = ++g_tmp;
+          buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
+          emit_str_literal(b, "block");
+          buf_printf(b, ")));"
+                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
+          emit_str_literal(b, nt_str(nt, blk4, "name"));
+          buf_printf(b, ")));"
+                        " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
+        }
+      }
+      buf_printf(b, " _t%d; })", tr4);
+      return;
+    }
   }
   /* Method#owner / #receiver (#2701). The creation site knows both: a user
      target's owner is its defining class; a builtin target's owner is the

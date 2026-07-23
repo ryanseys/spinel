@@ -1600,6 +1600,15 @@ TyKind infer_call(Compiler *c, int id) {
     return g_promote_mode ? TY_POLY : TY_INT;
   }
   if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "to_proc")) return TY_PROC;
+  /* Method/UnboundMethod reflection (#3247) */
+  if (recv >= 0 && rt == TY_METHOD && argc == 0) {
+    if (sp_streq(name, "original_name")) return TY_SYMBOL;
+    if (sp_streq(name, "parameters") || sp_streq(name, "source_location")) return TY_POLY_ARRAY;
+    if (sp_streq(name, "dup") || sp_streq(name, "clone")) return TY_METHOD;
+  }
+  if (recv >= 0 && rt == TY_METHOD && argc == 1 &&
+      (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "equal?")))
+    return TY_BOOL;
   /* Klass.instance_method(:m) -> an (unbound) method object; #bind re-binds (#2676) */
   if (recv >= 0 && sp_streq(name, "instance_method") && method_sym_arg(c, id) != NULL &&
       method_obj_target_mi(c, id) >= 0) return TY_METHOD;

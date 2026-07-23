@@ -976,9 +976,12 @@ int method_recv_node(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   if (recv < 0) return -1;
   if (is_method_obj_call(c, recv)) return recv;
-  /* UnboundMethod#bind(obj) re-binds the same target: see through it (#2676) */
+  /* UnboundMethod#bind(obj) re-binds the same target: see through it (#2676).
+     dup/clone of a method are identity copies: see through them too (#3247). */
   if (nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "name") &&
-      sp_streq(nt_str(nt, recv, "name"), "bind"))
+      (sp_streq(nt_str(nt, recv, "name"), "bind") ||
+       sp_streq(nt_str(nt, recv, "name"), "dup") ||
+       sp_streq(nt_str(nt, recv, "name"), "clone")))
     return method_recv_node(c, nt_ref(nt, recv, "receiver"));
   const char *rty = nt_type(nt, recv);
   if (rty && sp_streq(rty, "LocalVariableReadNode")) {
