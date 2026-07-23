@@ -8184,6 +8184,48 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
 
+  /* Shared-mutable shim (#3227): a strbuf-local receiver of a rebinding
+     string mutator re-runs the existing value-semantics arm against a plain
+     SHADOW copy (a rename entry plus a temporary slot-type flip point every
+     read and the final reassignment at it), then swaps the handle's buffer
+     contents in place so every alias observes the mutation. */
+  if (rt == TY_STRING &&
+      (sp_streq(name, "[]=") || sp_streq(name, "insert") ||
+       sp_streq(name, "clear") || sp_streq(name, "slice!"))) {
+    const char *sbn = strbuf_local_name(c, recv);
+    if (sbn && g_nren < MAX_RENAME) {
+      Scope *shs = comp_scope_of(c, recv);
+      LocalVar *shlv = scope_local(shs, sbn);
+      int tH = ++g_tmp;
+      Buf armb; memset(&armb, 0, sizeof armb);
+      snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
+      snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
+      g_nren++;
+      TyKind sv_ty = shlv->type; shlv->type = TY_STRING;
+      int handled = emit_array_mutate_stmt(c, id, &armb, indent + 1);
+      shlv->type = sv_ty;
+      g_nren--;
+      if (!handled) { free(armb.p); }
+      else {
+        emit_indent(b, indent);
+        buf_printf(b, "{ sp_String *_t%d = lv_%s;\n", tH, rename_local(sbn));
+        emit_indent(b, indent + 1);
+        buf_printf(b, "if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);\n", tH, tH);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));\n", tH, tH);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "SP_GC_ROOT(lv__sb%d);\n", tH);
+        buf_puts(b, armb.p ? armb.p : "");
+        free(armb.p);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "sp_String_set_bin(_t%d, lv__sb%d);\n", tH, tH);
+        emit_indent(b, indent);
+        buf_puts(b, "}\n");
+        return 1;
+      }
+    }
+  }
+
   /* mutable-string append: a STRBUF-typed local appends in place (amortized
      O(1)) via sp_String_append. Chains (`s << a << b`) all target the same
      buffer. recv is emitted raw (the sp_String*), not via emit_expr (which

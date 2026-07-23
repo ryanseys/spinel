@@ -623,6 +623,17 @@ void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
   }
 }
 
+/* The receiver's local name when it is a shared-mutable (TY_STRBUF) string
+   local read, else NULL (#3227 shim gate). */
+const char *strbuf_local_name(Compiler *c, int recv) {
+  if (recv < 0) return NULL;
+  const char *rty = nt_type(c->nt, recv);
+  if (!rty || !sp_streq(rty, "LocalVariableReadNode")) return NULL;
+  const char *rn = nt_str(c->nt, recv, "name");
+  Scope *rs = rn ? comp_scope_of(c, recv) : NULL;
+  LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
+  return (rl && rl->type == TY_STRBUF) ? rn : NULL;
+}
 const char *rename_local(const char *nm) {
   for (int i = 0; i < g_nren; i++)
     if (sp_streq(g_ren_from[i], nm)) return g_ren_to[i];

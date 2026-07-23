@@ -6250,6 +6250,65 @@ static int ctor_writes_ivar(Compiler *c, int ci, const char *ivname) {
    it TY_STRBUF (the container then unifies to a poly variant and emit_boxed
    wraps the sp_String* as SP_BUILTIN_STRBUF). Unmarked reads of the same
    local keep demoting to TY_STRING, so ordinary consumers are unchanged. */
+/* In-place mutation status of string local `vn` in scope `vs`:
+   1 = mutated via a handle-capable mutator, -1 = disqualified (a mutator
+   codegen cannot yet run in place on the handle), 0 = not mutated. */
+static int strbuf_mut_kind(Compiler *c, const char *vn, Scope *vs) {
+  static const char *const INPLACE_MUT2[] = {
+    "<<", "concat", "prepend", "replace",
+    "insert", "clear", "slice!", "[]=", "setbyte",
+    "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
+    "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
+    "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
+    "reverse!", "succ!", "next!", NULL };
+  const NodeTable *nt = c->nt;
+  int mutated = 0;
+  for (int u = 0; u < nt->count; u++) {
+    const char *uty = nt_type(nt, u);
+    if (!uty || !sp_streq(uty, "CallNode")) continue;
+    int ur = nt_ref(nt, u, "receiver");
+    if (ur < 0 || !nt_type(nt, ur) ||
+        !sp_streq(nt_type(nt, ur), "LocalVariableReadNode")) continue;
+    const char *urn = nt_str(nt, ur, "name");
+    if (!urn || !sp_streq(urn, vn) || comp_scope_of(c, ur) != vs) continue;
+    const char *un = nt_str(nt, u, "name");
+    if (!un) continue;
+    size_t ul = strlen(un);
+    int inplace = 0;
+    for (int q = 0; INPLACE_MUT2[q]; q++)
+      if (sp_streq(un, INPLACE_MUT2[q])) { inplace = 1; break; }
+    if (inplace) mutated = 1;
+    else if (sp_streq(un, "bytesplice") || (ul > 0 && un[ul - 1] == '!'))
+      return -1;
+  }
+  return mutated;
+}
+/* Slot-shape eligibility for the shared handle: parameters, cells, byref
+   out-params and rbs-pinned slots wait for the cross-method phase. */
+static int strbuf_slot_eligible(Compiler *c, const char *vn, Scope *vs, LocalVar *lv) {
+  const NodeTable *nt = c->nt;
+  if (!lv || lv->is_param || lv->rbs_seeded || lv->is_cell) return 0;
+  if (lv->type != TY_STRING && lv->type != TY_STRBUF) return 0;
+  for (int u = 0; u < nt->count; u++) {
+    const char *uty = nt_type(nt, u);
+    if (!uty || !sp_streq(uty, "CallNode")) continue;
+    if (comp_scope_of(c, u) != vs) continue;
+    int mi = an_unique_scope_by_name(c, nt_str(nt, u, "name"));
+    if (mi < 0) continue;
+    int argsN = nt_ref(nt, u, "arguments");
+    int uargc = 0;
+    const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
+    for (int j = 0; j < uargc && j < c->scopes[mi].nparams; j++) {
+      if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
+      const char *aty = nt_type(nt, uargv[j]);
+      const char *an2 = aty && sp_streq(aty, "LocalVariableReadNode")
+                          ? nt_str(nt, uargv[j], "name") : NULL;
+      if (an2 && sp_streq(an2, vn)) return 0;
+    }
+  }
+  return 1;
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   const NodeTable *nt = c->nt;
@@ -6306,79 +6365,8 @@ static int promote_shared_stored_strings(Compiler *c) {
       const char *vn3 = nt_str(nt, vnode, "name");
       Scope *vs3 = comp_scope_of(c, vnode);
       LocalVar *vlv = (vn3 && vs3) ? scope_local(vs3, vn3) : NULL;
-      if (!vlv || vlv->is_param || vlv->rbs_seeded || vlv->is_cell) continue;
-      if (vlv->type != TY_STRING && vlv->type != TY_STRBUF) continue;
-      /* mutated via an in-place-capable mutator? codegen emits these against
-         the sp_String handle (append / set_bin replacement), so they qualify.
-         Any OTHER receiver-rebinding mutator (insert, clear, slice!, []=,
-         an unlisted bang method) still DISQUALIFIES the local: codegen emits
-         those as `recv = ...` against a plain lvalue, which a promoted
-         handle slot cannot provide. */
-      static const char *const INPLACE_MUT[] = {
-        "<<", "concat", "prepend", "replace",
-        "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
-        "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
-        "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
-        "reverse!", "succ!", "next!", NULL };
-      int mutated = 0, reassign_mut = 0;
-      for (int u = 0; u < nt->count && !reassign_mut; u++) {
-        const char *uty = nt_type(nt, u);
-        if (!uty || !sp_streq(uty, "CallNode")) continue;
-        int ur = nt_ref(nt, u, "receiver");
-        if (ur < 0 || !nt_type(nt, ur) ||
-            !sp_streq(nt_type(nt, ur), "LocalVariableReadNode")) continue;
-        const char *urn = nt_str(nt, ur, "name");
-        if (!urn || !sp_streq(urn, vn3) || comp_scope_of(c, ur) != vs3) continue;
-        const char *un = nt_str(nt, u, "name");
-        if (!un) continue;
-        size_t ul = strlen(un);
-        int inplace = 0;
-        for (int q = 0; INPLACE_MUT[q]; q++)
-          if (sp_streq(un, INPLACE_MUT[q])) { inplace = 1; break; }
-        if (inplace) mutated = 1;
-        else if (sp_streq(un, "insert") || sp_streq(un, "clear") ||
-                 sp_streq(un, "setbyte") || sp_streq(un, "[]=") ||
-                 (ul > 0 && un[ul - 1] == '!'))
-          reassign_mut = 1;
-      }
-      if (!mutated || reassign_mut) continue;
-      /* every write a fresh (non-frozen) string literal, as in the
-         storage-only scan: other writes may carry runtime frozen state the
-         sp_String wrapper would discard */
-      { int ok_writes = 1, saw_w = 0;
-        for (int u = 0; u < nt->count && ok_writes; u++) {
-          const char *uty = nt_type(nt, u);
-          if (!uty || !sp_streq(uty, "LocalVariableWriteNode")) continue;
-          const char *un = nt_str(nt, u, "name");
-          if (!un || !sp_streq(un, vn3) || comp_scope_of(c, u) != vs3) continue;
-          saw_w = 1;
-          int uv = nt_ref(nt, u, "value");
-          const char *uvty = uv >= 0 ? nt_type(nt, uv) : NULL;
-          if (!uvty || !sp_streq(uvty, "StringNode") || nt_int(nt, uv, "fzl", 0))
-            ok_writes = 0;
-        }
-        if (!saw_w || !ok_writes) continue; }
-      /* not passed into a byref out-param slot (needs const char** of a
-         plain local) */
-      { int byref = 0;
-        for (int u = 0; u < nt->count && !byref; u++) {
-          const char *uty = nt_type(nt, u);
-          if (!uty || !sp_streq(uty, "CallNode")) continue;
-          if (comp_scope_of(c, u) != vs3) continue;
-          int mi = an_unique_scope_by_name(c, nt_str(nt, u, "name"));
-          if (mi < 0) continue;
-          int argsN = nt_ref(nt, u, "arguments");
-          int uargc = 0;
-          const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
-          for (int j = 0; j < uargc && j < c->scopes[mi].nparams; j++) {
-            if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
-            const char *aty = nt_type(nt, uargv[j]);
-            const char *an2 = aty && sp_streq(aty, "LocalVariableReadNode")
-                                ? nt_str(nt, uargv[j], "name") : NULL;
-            if (an2 && sp_streq(an2, vn3)) { byref = 1; break; }
-          }
-        }
-        if (byref) continue; }
+      if (!strbuf_slot_eligible(c, vn3, vs3, vlv)) continue;
+      if (strbuf_mut_kind(c, vn3, vs3) != 1) continue;
       /* equal?/eql? args only join a set that is ALREADY shared (a store
          made it a handle); they must not themselves force the promotion */
       { const char *wn2 = nt_str(nt, w, "name");
@@ -6390,6 +6378,34 @@ static int promote_shared_stored_strings(Compiler *c) {
       c->strbuf_box[vnode] = 1;
       changed = 1;
     }
+  }
+  /* Pure-alias pairs (`s2 = s1`): when either endpoint of the alias is
+     in-place mutated, both share the one handle -- CRuby's mutable String
+     objects -- regardless of which mutator (a bang-only alias set shares
+     too). Non-literal writes are fine: the write emitter wraps them in
+     sp_String_new, which inherits the source's frozen state. */
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    int wv = nt_ref(nt, w, "value");
+    if (wv < 0 || nt_kind(nt, wv) != NK_LocalVariableReadNode) continue;
+    const char *srcn = nt_str(nt, wv, "name");
+    const char *tgtn = nt_str(nt, w, "name");
+    Scope *ws = comp_scope_of(c, w);
+    if (!srcn || !tgtn || !ws || sp_streq(srcn, tgtn)) continue;
+    LocalVar *srcv = scope_local(ws, srcn);
+    LocalVar *tgtv = scope_local(ws, tgtn);
+    if (!srcv || !tgtv) continue;
+    if (srcv->str_shared && tgtv->str_shared) continue;   /* settled */
+    if (!strbuf_slot_eligible(c, srcn, ws, srcv) ||
+        !strbuf_slot_eligible(c, tgtn, ws, tgtv)) continue;
+    int ms = strbuf_mut_kind(c, srcn, ws);
+    int mt = strbuf_mut_kind(c, tgtn, ws);
+    if (ms < 0 || mt < 0) continue;         /* a disqualifying mutator */
+    if (ms != 1 && mt != 1) continue;       /* alias set never mutated */
+    if (srcv->type != TY_STRBUF || !srcv->str_shared)
+      { srcv->type = TY_STRBUF; srcv->str_shared = 1; changed = 1; }
+    if (tgtv->type != TY_STRBUF || !tgtv->str_shared)
+      { tgtv->type = TY_STRBUF; tgtv->str_shared = 1; changed = 1; }
   }
   return changed;
 }

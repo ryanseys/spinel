@@ -58,6 +58,47 @@ static void emit_filter_bang_result(const char *name, int trecv, int torig,
 }
 
 int emit_array_call(Compiler *c, int id, Buf *b) {
+  /* Shared-mutable shim, value position (#3227): same shadow-copy re-entry
+     as emit_array_mutate_stmt's -- the existing arm computes the value and
+     reassigns the shadow, then the handle's buffer swaps in place. */
+  {
+    const NodeTable *ntS = c->nt;
+    const char *nmS = nt_str(ntS, id, "name");
+    int recvS = nt_ref(ntS, id, "receiver");
+    if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
+        (sp_streq(nmS, "slice!") || sp_streq(nmS, "setbyte") ||
+         sp_streq(nmS, "insert") || sp_streq(nmS, "clear") ||
+         sp_streq(nmS, "[]="))) {
+      const char *sbn = strbuf_local_name(c, recvS);
+      if (sbn && g_nren < MAX_RENAME) {
+        Scope *shs = comp_scope_of(c, recvS);
+        LocalVar *shlv = scope_local(shs, sbn);
+        int tH = ++g_tmp;
+        Buf armb; memset(&armb, 0, sizeof armb);
+        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
+        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
+        g_nren++;
+        TyKind sv_ty = shlv->type; shlv->type = TY_STRING;
+        int handled = emit_array_call(c, id, &armb);
+        shlv->type = sv_ty;
+        g_nren--;
+        if (!handled) { free(armb.p); }
+        else {
+          TyKind resty = comp_ntype(c, id);
+          buf_printf(b, "({ sp_String *_t%d = lv_%s;"
+                        " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
+                        " const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));"
+                        " SP_GC_ROOT(lv__sb%d); ",
+                     tH, rename_local(sbn), tH, tH, tH, tH, tH);
+          emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
+          buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
+          free(armb.p);
+          buf_printf(b, " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })", tH, tH, tH);
+          return 1;
+        }
+      }
+    }
+  }
   /* Array#slice(i) / #slice(range) are exactly #[](...) -- reuse that arm
      through a rename re-entry (the two-argument slice already works). */
   {
@@ -5074,6 +5115,43 @@ static int same_sefree_lvalue(Compiler *c, int a, int b) {
 }
 
 int emit_scalar_call(Compiler *c, int id, Buf *b) {
+  /* Shared-mutable shim (#3227): setbyte on a strbuf local -- shadow-copy
+     re-entry, same as emit_array_call's. */
+  {
+    const NodeTable *ntS = c->nt;
+    const char *nmS = nt_str(ntS, id, "name");
+    int recvS = nt_ref(ntS, id, "receiver");
+    if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
+        sp_streq(nmS, "setbyte")) {
+      const char *sbn = strbuf_local_name(c, recvS);
+      if (sbn && g_nren < MAX_RENAME) {
+        Scope *shs = comp_scope_of(c, recvS);
+        LocalVar *shlv = scope_local(shs, sbn);
+        int tH = ++g_tmp;
+        Buf armb; memset(&armb, 0, sizeof armb);
+        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
+        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
+        g_nren++;
+        TyKind sv_ty = shlv->type; shlv->type = TY_STRING;
+        int handled = emit_scalar_call(c, id, &armb);
+        shlv->type = sv_ty;
+        g_nren--;
+        if (!handled) { free(armb.p); }
+        else {
+          buf_printf(b, "({ sp_String *_t%d = lv_%s;"
+                        " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
+                        " const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));"
+                        " SP_GC_ROOT(lv__sb%d);"
+                        " mrb_int _res%d = %s;"
+                        " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })",
+                     tH, rename_local(sbn), tH, tH, tH, tH, tH,
+                     tH, armb.p ? armb.p : "0", tH, tH, tH);
+          free(armb.p);
+          return 1;
+        }
+      }
+    }
+  }
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");

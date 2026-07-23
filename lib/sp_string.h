@@ -60,6 +60,9 @@ static inline sp_String*sp_String_new(const char*s){
   memcpy(data,s,len);data[len]=0;
   sp_String*r=(sp_String*)sp_gc_alloc(sizeof(sp_String),sp_String_fin,NULL);
   r->len=len;r->cap=cap;r->data=data;
+  /* a frozen source (an explicit .freeze, a frozen_string_literal) stays
+     frozen through the handle wrap, so in-place mutators keep raising (#3227) */
+  if(((const unsigned char*)s)[-1]==0xf1){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
   {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+SP_FD_OVH;sp_gc_bytes_add(r->cap+SP_FD_OVH);}
   sp_fd_publish(r);
   return r;

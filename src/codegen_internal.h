@@ -101,6 +101,7 @@ extern int  g_tmp;
 #define MAX_RENAME 128
 extern char g_ren_from[MAX_RENAME][96];
 extern char g_ren_to[MAX_RENAME][112];
+const char *strbuf_local_name(Compiler *c, int recv);
 extern int g_block_nren;
 extern int g_yield_block_fallback_nren;
 extern int  g_nren;
