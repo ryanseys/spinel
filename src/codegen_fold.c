@@ -1412,20 +1412,42 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative size\");\n", tcnt);
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = _t%d < _t%d ? _t%d : _t%d;\n", ttake, tcnt, tn, tcnt, tn);
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
-    if (is_min) {
-      emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tg, tg, ttake, tg);
-    } else {
-      emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = _t%d - 1; _t%d >= _t%d - _t%d; _t%d--)\n", tg, tn, tg, tn, ttake, tg);
-    }
-    emit_indent(g_pre, g_indent + 1);
+    Buf pushb; memset(&pushb, 0, sizeof pushb);
     {
       Buf eb; memset(&eb, 0, sizeof eb);
       char getexpr[96];
       snprintf(getexpr, sizeof getexpr, "sp_%sArray_get(_t%d, sp_IntArray_get(_t%d, _t%d))", k, trv, tidx, tg);
-      if (rt == TY_POLY_ARRAY) buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", tres, getexpr);
-      else { emit_boxed_text(c, et, getexpr, &eb); buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", tres, eb.p ? eb.p : "sp_box_nil()"); }
+      if (rt == TY_POLY_ARRAY) buf_printf(&pushb, "sp_PolyArray_push(_t%d, %s);\n", tres, getexpr);
+      else { emit_boxed_text(c, et, getexpr, &eb); buf_printf(&pushb, "sp_PolyArray_push(_t%d, %s);\n", tres, eb.p ? eb.p : "sp_box_nil()"); }
       free(eb.p);
     }
+    if (is_min) {
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tg, tg, ttake, tg);
+      emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, pushb.p ? pushb.p : "");
+    } else {
+      /* Descending by key with tied elements in encounter order (#3255): the
+         index sort is a stable ascending merge, so walk it from the top but
+         emit each equal-key run FORWARD, stopping after `take` pushes (a plain
+         backward walk reversed the ties, and cutting the tail BEFORE ordering
+         picked the later-encountered elements at a boundary tie). */
+      int tii = ++g_tmp, trs = ++g_tmp, tem = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "{ mrb_int _t%d = _t%d - 1; mrb_int _t%d = 0;\n", tii, tn, tem);
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "while (_t%d >= 0 && _t%d < _t%d) {\n", tii, tem, ttake);
+      emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "mrb_int _t%d = _t%d;\n", trs, tii);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre,
+                 "while (_t%d > 0 && sp_poly_eq(sp_PolyArray_get(_t%d, sp_IntArray_get(_t%d, _t%d - 1)),"
+                 " sp_PolyArray_get(_t%d, sp_IntArray_get(_t%d, _t%d)))) _t%d--;\n",
+                 trs, tkeys, tidx, trs, tkeys, tidx, tii, trs);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "for (mrb_int _t%d = _t%d; _t%d <= _t%d && _t%d < _t%d; _t%d++, _t%d++)\n",
+                 tg, trs, tg, tii, tem, ttake, tg, tem);
+      emit_indent(g_pre, g_indent + 2); buf_puts(g_pre, pushb.p ? pushb.p : "");
+      emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "_t%d = _t%d - 1;\n", tii, trs);
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "} }\n");
+    }
+    free(pushb.p);
     buf_printf(b, "_t%d", tres);
     return 1;
   }
