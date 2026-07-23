@@ -157,4 +157,39 @@ mrb_int sp_str_index_opt(const char *s, const char *sub);
 mrb_int sp_str_index_from_opt(const char *s, const char *sub, mrb_int start);
 mrb_int sp_str_rindex_opt(const char *s, const char *sub);
 
+/* ---- relocated from sp_runtime.h: hash key primitives (sp_str_hash /
+   sp_str_eq / _sp_istr_idx) used by lib/sp_hash.c's StrInt/StrStr/IntStr/
+   IntIntHash accessors. Still static (inline / noinline) -- each including
+   TU (the single generated TU via sp_runtime.h, and sp_hash.c) gets its own
+   private copy, so this is a pure textual relocation with no codegen change. ---- */
+static inline int sp_str_eq(const char*a,const char*b){
+  if(a==b)return 1;
+  if(!a||!b)return 0;
+  if(strcmp(a,b)!=0)return 0;
+  /* strcmp equality is only prefix equality when a length header records
+     an embedded NUL ("a\0b" vs "a"): confirm byte-exact equality. The
+     miss path above stays a single strcmp. */
+  size_t la=sp_str_byte_len(a);
+  return la==sp_str_byte_len(b)&&memcmp(a,b,la)==0;
+}
+static inline uint64_t sp_str_hash_compute(const char*s){uint64_t h=14695981039346656037ULL;while(*s){h^=(unsigned char)*s++;h*=1099511628211ULL;}return h;}
+static SP_NOINLINE uint64_t sp_str_hash_miss(const char*s,unsigned char m){
+  if(m==0xfe||m==0xfc||m==0xf1){
+    sp_str_hdr*hd=((sp_str_hdr*)(s-1))-1;
+    uint64_t h=sp_str_hash_compute(s);
+    hd->hash=h?h:1;
+    return hd->hash;
+  }
+  return sp_str_hash_compute(s);
+}
+static inline uint64_t sp_str_hash(const char*s){
+  unsigned char m=((const unsigned char*)s)[-1];
+  if(m==0xfe||m==0xfc||m==0xf1){
+    uint64_t cached=(((sp_str_hdr*)(s-1))-1)->hash;
+    if(cached)return cached;
+  }
+  return sp_str_hash_miss(s,m);
+}
+static inline mrb_int _sp_istr_idx(mrb_int mask,mrb_int k){return(mrb_int)(((uint64_t)(unsigned long long)k*11400714819323198485ULL)&(uint64_t)mask);}
+
 #endif /* SP_STR_H */
