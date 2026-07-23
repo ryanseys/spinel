@@ -3264,10 +3264,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           (c->classes[k].is_native_class && comp_native_method_find(c, k, name, 0, 0) >= 0)) ncand++;
     if (ncand > 0 || is_lengthlike || is_pred || is_class_named || is_ostruct || is_io_rewind) {
       TyKind ret = comp_ntype(c, id);
-      /* an OpenStruct member is a boxed value; but when a user class also
-         defines the method, keep the user-inferred result type (the context
-         was compiled against it) and coerce the member read to fit (#3264) */
-      if (is_ostruct && !diag_user_defines(c, name)) ret = TY_POLY;
+      /* an OpenStruct member is a boxed value; but when analyze typed the
+         call concretely (a user method OR reader/alias resolves the name --
+         e.g. alias required? -> attr_reader :required, which
+         diag_user_defines does not see), the surrounding context was
+         compiled against that type: keep it and coerce the member read to
+         fit (#3264, #3276). Only an untyped result becomes poly. */
+      if (is_ostruct && (ret == TY_UNKNOWN || ret == TY_VOID || ret == TY_NIL)) ret = TY_POLY;
       int tv = ++g_tmp, tr = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
       emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);

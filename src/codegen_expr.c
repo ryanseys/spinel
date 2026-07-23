@@ -2360,6 +2360,10 @@ else {
        it to the unified scalar result so the temp's declared type matches. */
     else if (lt == TY_UNKNOWN && res == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, left, b); buf_puts(b, ")"); }
     else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    /* a bool-unified chain with an unresolved left (a poly dispatch whose
+       node type stayed unknown, e.g. alias-to-reader through a poly element):
+       take its truthiness, mirroring the int/float coercions (#3276) */
+    else if (lt == TY_UNKNOWN && res == TY_BOOL) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, left, b); buf_puts(b, ")"); }
     /* The left may be an unresolved call emitting an sp_RbVal raise token
        (`x.details || "~"`, where details is typed String from the `||` but
        lowers to sp_raise_nomethod); coerce it to the temp's DECLARED type (res
@@ -2379,6 +2383,7 @@ else {
              lt == TY_PROC || lt == TY_MATCHDATA || lt == TY_EXCEPTION)
       buf_printf(&tcond, "(_t%d != 0)", t);  /* nullable pointer: NULL reads falsy */
     else if (lt == TY_SYMBOL) buf_printf(&tcond, "(_t%d != (sp_sym)-1)", t);  /* nilable symbol sentinel */
+    else if (lt == TY_UNKNOWN && res == TY_BOOL) buf_printf(&tcond, "_t%d", t);  /* temp holds sp_poly_truthy(left) (#3276) */
     else                    buf_puts(&tcond, "1");  /* concrete value: always truthy */
     /* Capture each arm (widened to res). The RIGHT arm's prelude is captured
        separately: an object subexpression there (`a && b.c`) hoists a GC-rooted
