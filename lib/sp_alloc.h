@@ -527,4 +527,8 @@ extern unsigned char sp_class_frozen_map[4096];   /* one definition: lib/sp_cold
 void sp_class_freeze_id(mrb_int cls_id);
 mrb_bool sp_class_frozen_id(mrb_int cls_id);
 
+/* ---- rounding helpers relocated from sp_runtime.h (0 optcarrot uses). ---- */
+double sp_round_half_even(double x);
+double sp_round_half_down(double x);
+
 #endif /* SP_ALLOC_H */

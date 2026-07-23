@@ -243,4 +243,7 @@ const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init);
 sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a);
 mrb_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b);
 
+/* ---- sp_typed_arr_frozen relocated from sp_runtime.h (0 optcarrot uses). ---- */
+int sp_typed_arr_frozen(sp_RbVal v);
+
 #endif /* SP_ARRAY_H */

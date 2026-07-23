@@ -2377,3 +2377,34 @@ mrb_bool sp_class_frozen_id(mrb_int cls_id) {
   mrb_int ix = cls_id >= 0 ? cls_id : (3900 - cls_id);
   return (ix >= 0 && ix < 4096) ? (mrb_bool)sp_class_frozen_map[ix] : 0;
 }
+
+/* ---- Round helpers / typed-array frozen-check / IO.pipe / sysopen --
+   relocated from sp_runtime.h. ---- */
+
+double sp_round_half_even(double x) { return rint(x); }
+double sp_round_half_down(double x) { return x >= 0 ? ceil(x - 0.5) : floor(x + 0.5); }
+int sp_typed_arr_frozen(sp_RbVal v) {
+  switch (v.cls_id) {
+    case SP_BUILTIN_INT_ARRAY: return ((sp_IntArray *)v.v.p)->frozen;
+    case SP_BUILTIN_FLT_ARRAY: return ((sp_FloatArray *)v.v.p)->frozen;
+    case SP_BUILTIN_STR_ARRAY: return ((sp_StrArray *)v.v.p)->frozen;
+    case SP_BUILTIN_POLY_ARRAY: return ((sp_PolyArray *)v.v.p)->frozen;
+    default: return 0;
+  }
+}
+sp_PolyArray *sp_io_pipe(void) {
+  int fds[2];
+  if (sp_io_make_pipe(fds) != 0) sp_raise_cls("IOError", "pipe failed");
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  sp_PolyArray_push(a, sp_box_obj(sp_io_fdopen(fds[0], "r"), SP_BUILTIN_IO));
+  sp_PolyArray_push(a, sp_box_obj(sp_io_fdopen(fds[1], "w"), SP_BUILTIN_IO));
+  return a;
+}
+mrb_int sp_io_sysopen(const char *path) {
+  int fd = open(path ? path : "", O_RDONLY);
+  if (fd < 0)
+    sp_raise_cls("Errno::ENOENT",
+                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
+  return (mrb_int)fd;
+}

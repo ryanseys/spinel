@@ -94,4 +94,8 @@ void sp_file_rename(const char *from, const char *to);
 /* Dir handle (Dir.open / Dir.each_child ...): ops live in lib/sp_cold.c. */
 typedef struct { DIR *dp; const char *path; } sp_Dir;
 
+/* ---- sp_io_pipe/sysopen relocated from sp_runtime.h (0 optcarrot uses). ---- */
+sp_PolyArray *sp_io_pipe(void);
+mrb_int sp_io_sysopen(const char *path);
+
 #endif

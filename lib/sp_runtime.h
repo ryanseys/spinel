@@ -2310,8 +2310,6 @@ SP_COLD static const char *sp_stage_recv_msg(const char *msg, sp_RbVal recv) {
 /* Float#round(half:) tie-breaking: :even is banker's rounding (rint under
    the default FE_TONEAREST), :down rounds ties toward zero. (:up is the
    plain round().) */
-static double sp_round_half_even(double x) { return rint(x); }
-static double sp_round_half_down(double x) { return x >= 0 ? ceil(x - 0.5) : floor(x + 0.5); }
 
 /* floor/ceil/round/truncate on a non-finite Float: casting NaN/Inf to an
    integer is C UB; CRuby raises FloatDomainError naming the value. */
@@ -3073,15 +3071,6 @@ static int sp_rbval_is_array(sp_RbVal v) {
 /* Frozen flag of a builtin array, matching what sp_*Array_splice check (the
    struct field, which the promote path would otherwise bypass by building a new
    array, and which lets us check frozen up front before any GC root is live). */
-static int sp_typed_arr_frozen(sp_RbVal v) {
-  switch (v.cls_id) {
-    case SP_BUILTIN_INT_ARRAY: return ((sp_IntArray *)v.v.p)->frozen;
-    case SP_BUILTIN_FLT_ARRAY: return ((sp_FloatArray *)v.v.p)->frozen;
-    case SP_BUILTIN_STR_ARRAY: return ((sp_StrArray *)v.v.p)->frozen;
-    case SP_BUILTIN_POLY_ARRAY: return ((sp_PolyArray *)v.v.p)->frozen;
-    default: return 0;
-  }
-}
 /* 3-arg []= on a poly receiver whose runtime object is a builtin array. Matches
    CRuby: a POLY_ARRAY splices directly (sp_PolyArray_splice already inserts a
    nil/scalar src as one element, splats an array src, and nil-fills a gap past
@@ -6774,22 +6763,6 @@ static sp_File *sp_poly_as_io(sp_RbVal v, const char *m) {
   return NULL;
 }
 /* IO.pipe -> [reader, writer] handles (#2815) */
-static sp_PolyArray *sp_io_pipe(void) {
-  int fds[2];
-  if (sp_io_make_pipe(fds) != 0) sp_raise_cls("IOError", "pipe failed");
-  sp_PolyArray *a = sp_PolyArray_new();
-  SP_GC_ROOT(a);
-  sp_PolyArray_push(a, sp_box_obj(sp_io_fdopen(fds[0], "r"), SP_BUILTIN_IO));
-  sp_PolyArray_push(a, sp_box_obj(sp_io_fdopen(fds[1], "w"), SP_BUILTIN_IO));
-  return a;
-}
-static mrb_int sp_io_sysopen(const char *path) {
-  int fd = open(path ? path : "", O_RDONLY);
-  if (fd < 0)
-    sp_raise_cls("Errno::ENOENT",
-                 sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
-  return (mrb_int)fd;
-}
 /* File.fnmatch: shell-glob match with CRuby's pathname/dot-file defaults */
 mrb_bool sp_file_fnmatch(const char *pat, const char *path);
 const char *sp_file_dirname(const char *path);
