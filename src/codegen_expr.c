@@ -2302,7 +2302,19 @@ else {
           emit_expr(c, sub, &sub_e);
           g_indent = saved_gi3;
           emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "_t%d = %s;\n", tr, sub_e.p ? sub_e.p : default_value(res));
+          buf_printf(g_pre, "_t%d = ", tr);
+          /* The nested elsif chain types on its own arms: a concrete chain
+             (string/string) under a poly outer if (the empty then-arm's nil)
+             must box into the poly temp, same as the then/else arms above. */
+          TyKind subt = comp_ntype(c, sub);
+          if (res == TY_POLY && subt != TY_POLY && subt != TY_NIL &&
+              subt != TY_UNKNOWN && subt != TY_VOID) {
+            Buf bx3; memset(&bx3, 0, sizeof bx3);
+            emit_boxed_text(c, subt, sub_e.p ? sub_e.p : default_value(subt), &bx3);
+            buf_puts(g_pre, bx3.p ? bx3.p : "sp_box_nil()"); free(bx3.p);
+          }
+          else buf_puts(g_pre, sub_e.p ? sub_e.p : default_value(res));
+          buf_puts(g_pre, ";\n");
           free(sub_e.p);
           emit_indent(g_pre, g_indent);
           buf_puts(g_pre, "}\n");
