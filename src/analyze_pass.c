@@ -6072,6 +6072,12 @@ static int register_proc_numbered(Compiler *c, int create) {
 static const NodeTable *ple_nt = NULL;
 static int ple_ntc = -1;
 static char *ple_escaped = NULL;
+/* Writes whose value is a proc/lambda literal, collected once per build so
+   marking a bare local read doesn't rescan the whole node table per argument
+   (each such write is (scope, name) -> literal id). Proc-literal writes are
+   rare, so a flat list walked per mark is plenty. */
+static int *ple_pw = NULL;      /* triples: scope index, write node, literal */
+static int ple_npw = 0;
 /* Mark node `x` as escaping. If `x` is a bare local read of a proc, mark the
    proc LITERAL assigned to that local too: `f = ->(a){...}; g([f])` escapes the
    literal even though the container/arg holds a reference, not the literal
@@ -6086,15 +6092,12 @@ static void ple_mark_escaped(Compiler *c, int x) {
   const char *vn = nt_str(nt, x, "name");
   Scope *sc = vn ? comp_scope_of(c, x) : NULL;
   if (!vn || !sc) return;
-  for (int w = 0; w < n; w++) {
-    const char *wty = nt_type(nt, w);
-    if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
-    const char *wn = nt_str(nt, w, "name");
-    if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
-    int val = nt_ref(nt, w, "value");
-    if (val >= 0 && val < n && nt_type(nt, val) &&
-        (sp_streq(nt_type(nt, val), "LambdaNode") || is_proc_create(c, val)))
-      ple_escaped[val] = 1;
+  int si = (int)(sc - c->scopes);
+  for (int i = 0; i < ple_npw; i++) {
+    if (ple_pw[i * 3] != si) continue;
+    const char *wn = nt_str(nt, ple_pw[i * 3 + 1], "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    ple_escaped[ple_pw[i * 3 + 2]] = 1;
   }
 }
 static void ple_build(Compiler *c) {
@@ -6104,6 +6107,30 @@ static void ple_build(Compiler *c) {
   ple_escaped = calloc((size_t)(n > 0 ? n : 1), 1);
   ple_nt = nt; ple_ntc = n;
   if (!ple_escaped) return;
+  /* Collect proc-literal local writes first: ple_mark_escaped consults this
+     instead of rescanning the table per marked argument. */
+  free(ple_pw); ple_pw = NULL; ple_npw = 0;
+  {
+    int cap = 0;
+    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+      int val = nt_ref(nt, w, "value");
+      if (val < 0 || val >= n || !nt_type(nt, val) ||
+          !(sp_streq(nt_type(nt, val), "LambdaNode") || is_proc_create(c, val)))
+        continue;
+      Scope *sc = comp_scope_of(c, w);
+      if (!sc) continue;
+      if (ple_npw >= cap) {
+        cap = cap ? cap * 2 : 64;
+        int *np = realloc(ple_pw, sizeof(int) * 3 * (size_t)cap);
+        if (!np) break;
+        ple_pw = np;
+      }
+      ple_pw[ple_npw * 3] = (int)(sc - c->scopes);
+      ple_pw[ple_npw * 3 + 1] = w;
+      ple_pw[ple_npw * 3 + 2] = val;
+      ple_npw++;
+    }
+  }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     int ca = nt_ref(nt, id, "arguments");
     if (ca < 0) continue;
