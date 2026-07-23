@@ -4244,7 +4244,7 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
 /* Emit the static regex-literal globals and, when g_re_init_needed, the
    sp_re_init() that installs the symbol/regex/class/global-mark hooks and
    compiles the literals at startup. */
-void emit_regex_section(Buf *b) {
+void emit_regex_section(Compiler *c, Buf *b) {
   for (int i = 0; i < g_re_count; i++) {
     buf_printf(b, "static mrb_regexp_pattern *sp_re_pat_%d;\n", i);
   }
@@ -4280,6 +4280,35 @@ void emit_regex_section(Buf *b) {
   if (g_gen_obj_valeq)
     buf_puts(b, "static mrb_bool sp_obj_eq_dispatch(sp_RbVal a, sp_RbVal b);\n");
   buf_puts(b, "static void sp_re_init(void) {\n");
+  /* SPINEL_ALLOC_REPORT type names: attach human names to the scan-fn keys
+     the allocation counters use. Runtime-gated on the same flag, so a normal
+     run does no work here (#1336). */
+  buf_puts(b, "  if (sp_alloc_report_on) {\n"
+              "    sp_alloc_report_tag((void *)sp_PolyArray_scan, \"Array\");\n"
+              "    sp_alloc_report_tag((void *)sp_StrArray_scan, \"Array(String)\");\n"
+              "    sp_alloc_report_tag((void *)sp_SymPolyHash_scan, \"Hash(Symbol)\");\n"
+              "    sp_alloc_report_tag((void *)sp_StrPolyHash_scan, \"Hash(String)\");\n"
+              "    sp_alloc_report_tag((void *)sp_PolyPolyHash_scan, \"Hash\");\n"
+              "    sp_alloc_report_tag((void *)sp_Enumerator_scan, \"Enumerator\");\n"
+              "    sp_alloc_report_tag((void *)sp_OpenStruct_scan, \"OpenStruct\");\n"
+              "    sp_alloc_report_tag((void *)sp_Dir_scan, \"Dir\");\n"
+              "    sp_alloc_report_tag((void *)sp_Proc_scan, \"Proc\");\n"
+              "    sp_alloc_report_tag((void *)sp_exc_gc_scan, \"Exception\");\n"
+              "    sp_alloc_report_tag((void *)sp_PtrArray_gc_scan, \"Array(Object)\");\n"
+              "    sp_alloc_report_tag((void *)sp_StrIntHash_scan, \"Hash(String,Integer)\");\n"
+              "    sp_alloc_report_tag((void *)sp_StrStrHash_scan, \"Hash(String,String)\");\n"
+              "    sp_alloc_report_tag((void *)sp_IntStrHash_scan, \"Hash(Integer,String)\");\n"
+              "    sp_alloc_report_tag((void *)sp_curry_scan, \"Proc(curried)\");\n"
+              "    sp_alloc_report_tag((void *)sp_BoundMethod_scan, \"Method\");\n");
+  for (int aci = 0; aci < c->nclasses; aci++) {
+    ClassInfo *ci = &c->classes[aci];
+    if (ci->is_native_class || !ci->instantiated) continue;
+    int is_exc_iv = ci->nivars > 0 && class_is_exc_subclass(c, aci);
+    if (!class_needs_scan(ci) && !is_exc_iv) continue;   /* no scan emitted */
+    const char *rn = class_ruby_name(c, aci) ? class_ruby_name(c, aci) : ci->name;
+    buf_printf(b, "    sp_alloc_report_tag((void *)sp_%s_scan, \"%s\");\n", ci->c_name, rn);
+  }
+  buf_puts(b, "  }\n");
   if (g_uses_symbols)
     buf_puts(b, "  sp_sym_name_fn = sp_sym_to_s;\n");
   if (g_has_user_cmp)
@@ -5030,6 +5059,14 @@ char *codegen_program(const NodeTable *nt) {
   /* Analyze-only emit modes (legacy --emit-*): write the requested artifact
      from the analysis result and skip codegen. Returns an empty translation
      unit so the driver writes no binary. */
+  /* --profile: write the symbol map next to the binary, then continue to
+     the real build (offline symbolization input for perf tooling, #1336). */
+  const char *psym_out = getenv("SPINEL_PROFILE_SYMBOL_MAP");
+  if (psym_out && *psym_out) {
+    char *json = build_symbol_map_json(c);
+    emit_write_file(psym_out, json);
+    free(json);
+  }
   const char *sym_out = getenv("SPINEL_EMIT_SYMBOL_MAP");
   if (sym_out && *sym_out) {
     char *json = build_symbol_map_json(c);
@@ -6041,7 +6078,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(body, "  { mrb_int _ax_args[16] = {0}; for (mrb_int _ax = sp_at_exit_count - 1; _ax >= 0; _ax--) sp_proc_call(sp_at_exit_hooks[_ax], 0, _ax_args); }\n");
   buf_puts(body, "  return 0;\n}\n");
 
-  emit_regex_section(&b);
+  emit_regex_section(c, &b);
   if (g_proc_protos.len) { buf_puts(&b, g_proc_protos.p); buf_puts(&b, "\n"); }
   if (g_procs.len) { buf_puts(&b, g_procs.p); buf_puts(&b, "\n"); }
   buf_puts(&b, body->p ? body->p : "");

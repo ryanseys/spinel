@@ -140,6 +140,7 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
+  if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);
   SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
   return (char *)h + sizeof(sp_gc_hdr);
 #else
@@ -155,6 +156,7 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
+  if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);
   SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
@@ -165,6 +167,7 @@ void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
+  if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);
   SP_HEAP_LOCK();
   SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
   SP_HEAP_UNLOCK();
@@ -305,4 +308,76 @@ const char *sp_float_to_s(mrb_float f) {
     if(e<10){out[o++]='0';out[o++]=(char)('0'+e);}else o+=snprintf(out+o,16,"%d",e);
   }
   out[o]=0;sp_str_set_len(out,(size_t)o);return out;
+}
+
+/* ---- SPINEL_ALLOC_REPORT: deterministic allocation counters (#1336) ----
+   Env-var gated (set to 1 or an output path); zero work when off beyond one
+   predictable branch at each allocation entry point. Counters key on the
+   object's scan callback (the de-facto type identity); sp_alloc_report_tag
+   attaches human names (builtins + user classes, registered by the generated
+   prologue when the gate is on). Strings count separately (no scan fn).
+   Dump: folded `alloc;<Type> <count>` lines plus `# bytes` comments, to the
+   env value as a path, or stderr when it is "1". No signals, no allocation
+   in the hot path, portable (plain counters + atexit). */
+int sp_alloc_report_on = 0;
+typedef struct { void *key; const char *name; unsigned long long count, bytes; } sp_AllocStat;
+#define SP_ALLOC_STATS 512
+static sp_AllocStat sp_alloc_stats[SP_ALLOC_STATS];
+static unsigned long long sp_alloc_str_count, sp_alloc_str_bytes;
+
+static sp_AllocStat *sp_alloc_stat_slot(void *key) {
+  size_t h = ((size_t)(uintptr_t)key >> 4) % SP_ALLOC_STATS;
+  for (size_t i = 0; i < SP_ALLOC_STATS; i++) {
+    sp_AllocStat *s = &sp_alloc_stats[(h + i) % SP_ALLOC_STATS];
+    if (s->key == key || s->key == NULL) { s->key = key; return s; }
+  }
+  return &sp_alloc_stats[h];   /* table full: merge into the home slot */
+}
+static unsigned long long sp_alloc_noscan_count, sp_alloc_noscan_bytes;
+void sp_alloc_report_count(void *scan, size_t bytes) {
+  if (!scan) {   /* NULL is the table's empty marker: dedicated bucket */
+    sp_alloc_noscan_count++; sp_alloc_noscan_bytes += (unsigned long long)bytes;
+    return;
+  }
+  sp_AllocStat *s = sp_alloc_stat_slot(scan);
+  s->count++; s->bytes += (unsigned long long)bytes;
+}
+void sp_alloc_report_str(size_t bytes) {
+  sp_alloc_str_count++; sp_alloc_str_bytes += (unsigned long long)bytes;
+}
+void sp_alloc_report_tag(void *scan, const char *name) {
+  sp_alloc_stat_slot(scan)->name = name;
+}
+static void sp_alloc_report_dump(void) {
+  const char *out = getenv("SPINEL_ALLOC_REPORT");
+  FILE *f = stderr;
+  int close_f = 0;
+  if (out && out[0] && strcmp(out, "1") != 0) {
+    FILE *g = fopen(out, "w");
+    if (g) { f = g; close_f = 1; }
+  }
+  if (sp_alloc_str_count) fprintf(f, "alloc;String %llu\n", sp_alloc_str_count);
+  if (sp_alloc_noscan_count) fprintf(f, "alloc;(no-scan) %llu\n", sp_alloc_noscan_count);
+  for (size_t i = 0; i < SP_ALLOC_STATS; i++) {
+    sp_AllocStat *s = &sp_alloc_stats[i];
+    if (!s->key || !s->count) continue;
+    if (s->name) fprintf(f, "alloc;%s %llu\n", s->name, s->count);
+    else fprintf(f, "alloc;scan_%p %llu\n", s->key, s->count);
+  }
+  if (sp_alloc_str_count) fprintf(f, "# bytes String %llu\n", sp_alloc_str_bytes);
+  if (sp_alloc_noscan_count) fprintf(f, "# bytes (no-scan) %llu\n", sp_alloc_noscan_bytes);
+  for (size_t i = 0; i < SP_ALLOC_STATS; i++) {
+    sp_AllocStat *s = &sp_alloc_stats[i];
+    if (!s->key || !s->count) continue;
+    if (s->name) fprintf(f, "# bytes %s %llu\n", s->name, s->bytes);
+    else fprintf(f, "# bytes scan_%p %llu\n", s->key, s->bytes);
+  }
+  if (close_f) fclose(f);
+}
+__attribute__((constructor)) static void sp_alloc_report_boot(void) {
+  const char *e = getenv("SPINEL_ALLOC_REPORT");
+  if (e && *e && strcmp(e, "0") != 0) {
+    sp_alloc_report_on = 1;
+    atexit(sp_alloc_report_dump);
+  }
 }

@@ -103,6 +103,14 @@ void sp_gc_collect_retune_all(void);
 int  sp_gc_collection_wanted(void);
 void sp_stw_collect(void);   /* lib/sp_sched.c: stop-the-world collect (threaded) */
 
+/* SPINEL_ALLOC_REPORT counters (#1336): defined in sp_alloc.c. The `on` flag
+   is set once by a constructor from the env var; the hot entry points guard
+   their count call on it (one predictable branch when off). */
+extern int sp_alloc_report_on;
+void sp_alloc_report_count(void *scan, size_t bytes);
+void sp_alloc_report_str(size_t bytes);
+void sp_alloc_report_tag(void *scan, const char *name);
+
 static inline char *sp_str_alloc(size_t len) {
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
   sp_str_hdr *h;
@@ -157,6 +165,7 @@ static inline char *sp_str_alloc(size_t len) {
   char *body = (char *)(h + 1);
   body[0] = (char)0xfe;
   body[1 + len] = 0;
+  if (sp_alloc_report_on) sp_alloc_report_str(len);
   return body + 1;
 }
 

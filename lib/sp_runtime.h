@@ -611,6 +611,7 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
     sp_gc_pool_relink(_h); \
     _h->recycle = sp_##CLS##_pool_recycle; \
     _p = (sp_##CLS *)((char *)_h + sizeof(sp_gc_hdr)); \
+    if (sp_alloc_report_on) sp_alloc_report_count((void *)(SCAN), sizeof(sp_##CLS)); \
   } \
   else { \
     _p = (sp_##CLS *)sp_gc_alloc_pool(sizeof(sp_##CLS), SCAN, sp_##CLS##_pool_recycle); \

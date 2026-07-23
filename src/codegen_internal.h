@@ -731,5 +731,5 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b);
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b);
 int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
 void emit_super(Compiler *c, int id, Buf *b);
-void emit_regex_section(Buf *b);
+void emit_regex_section(Compiler *c, Buf *b);
 #endif

@@ -184,6 +184,8 @@ static void usage(void) {
     "  -E          Run the compiled binary; leftover args become its ARGV\n"
     "  -O LEVEL    Optimization level (default: 2)\n"
     "  -g          Add debug info (-g) + #line, leaving -O as-is\n"
+    "  --profile   Profiling build: -O2 -g -fno-omit-frame-pointer, unstripped,\n"
+    "              and writes <out>.symbols.json (perf record -g ready)\n"
     "  --debug     Debug build: step through the .rb in gdb/lldb (#line, -g -O0)\n"
     "  --no-line-map  Suppress #line directives\n"
     "  --cc=CMD    C compiler (default: cc)\n"
@@ -203,7 +205,7 @@ int main(int argc, char **argv) {
   const char *rbs_dir = NULL;
   int c_only = 0, stdout_mode = 0, run_mode = 0, dump_ast = 0;
   int emit_rbs = 0, emit_types = 0, emit_symbol_map = 0;
-  int debug = 0, line_map = 1, want_g = 0;
+  int debug = 0, line_map = 1, want_g = 0, profile = 0;
   /* Accumulated -e source and the program ARGV after the -E boundary. */
   Str eval_src = {0};
   int eval_used = 0;
@@ -224,6 +226,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "-O"))            { if (++i < argc) opt_level = argv[i]; i++; }
     else if (sp_streq(a, "--debug"))       { debug = 1; opt_level = "0"; want_g = 1; i++; }
     else if (sp_streq(a, "-g"))            { debug = 1; want_g = 1; i++; }
+    else if (sp_streq(a, "--profile"))     { profile = 1; want_g = 1; i++; }
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
     else if (sp_streq(a, "-c"))            { c_only = 1; i++; }
@@ -373,6 +376,14 @@ int main(int argc, char **argv) {
     set_env("SPINEL_DEBUG", "1");
     set_env("SPINEL_EMIT_SYMBOL_MAP", emit_out);
   }
+  if (profile) {
+    /* --profile also writes the symbol map next to the binary (offline
+       symbolization input for perf tooling); codegen falls through to the
+       real build after writing it (#1336). */
+    char psym[4096];
+    snprintf(psym, sizeof psym, "%s.symbols.json", output ? output : basename);
+    set_env("SPINEL_PROFILE_SYMBOL_MAP", psym);
+  }
 
   /* ---------- pipeline: parse -> AST -> codegen ---------- */
   char *text = sp_parse_file_to_text(source, argv[0]);
@@ -508,6 +519,7 @@ int main(int argc, char **argv) {
   if (uses_threads) s_add(&cmd, "-lpthread ");
   s_add(&cmd, ov_define); s_add(&cmd, " ");
   if (want_g) s_add(&cmd, "-g ");
+  if (profile) s_add(&cmd, "-fno-omit-frame-pointer ");
 #if !defined(__APPLE__)
   if (debug) s_add(&cmd, "-rdynamic ");  /* ELF: name user frames in backtraces */
 #endif
