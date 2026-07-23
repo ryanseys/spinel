@@ -481,7 +481,13 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
   else emit_expr(c, node, b);
 }
 
-void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr) {
+void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr,
+                       TyKind want_ty) {
+  /* want_ty: the consumer's slot type for the block's value (the YieldNode's
+     unified type). A poly slot must receive sp_RbVal even when THIS block's
+     tail is concrete (a yield-result union of an rbs-seeded Hash and a class
+     instance reached the boxed slot without a box, #3278). */
+  int want_poly = as_expr && want_ty == TY_POLY;
   const NodeTable *nt = c->nt;
   int blk = g_block_id;
   int bbody = nt_ref(nt, blk, "body");
@@ -891,8 +897,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       nx_tmp = ++g_tmp;
       snprintf(nxbuf, sizeof nxbuf, "_t%d", nx_tmp);
       g_ie_next_var = nxbuf;
-      g_ie_res_poly = (nx_bt == TY_POLY);
-      if (nx_bt == TY_POLY) buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", nx_tmp);
+      g_ie_res_poly = (nx_bt == TY_POLY || (want_poly && ty_is_object(nx_bt)));
+      if (g_ie_res_poly) buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", nx_tmp);
       else if (nx_bt == TY_INT || nx_bt == TY_BOOL || nx_bt == TY_SYMBOL)
         buf_printf(b, "mrb_int _t%d = SP_INT_NIL; ", nx_tmp);
       else if (proc_slot_is_ptr(nx_bt)) {
@@ -933,7 +939,20 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
         c->blk_body_map[bbody] >= 0)
       emit_block_locals_reset(c, c->blk_body_map[bbody], b, 0);
     for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
-    emit_expr(c, bd3[bn3 - 1], b);
+    if (want_poly && ty_is_object(comp_ntype(c, bd3[bn3 - 1]))) emit_boxed(c, bd3[bn3 - 1], b);
+    else emit_expr(c, bd3[bn3 - 1], b);
+    buf_puts(b, "; ");
+  }
+  else if (as_expr && !nx_own && want_poly && bn3 > 0 &&
+           ty_is_object(comp_ntype(c, bd3[bn3 - 1])) &&
+           nt_type(nt, bd3[bn3 - 1]) &&
+           !sp_streq(nt_type(nt, bd3[bn3 - 1]), "ReturnNode")) {
+    /* concrete-typed bare tail into a poly slot: box it (#3278) */
+    if (c->blk_body_map && bbody >= 0 && bbody < c->nt->count &&
+        c->blk_body_map[bbody] >= 0)
+      emit_block_locals_reset(c, c->blk_body_map[bbody], b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
+    emit_boxed(c, bd3[bn3 - 1], b);
     buf_puts(b, "; ");
   }
   else

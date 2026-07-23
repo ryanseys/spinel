@@ -3265,11 +3265,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        both are builtins/native classes with no user arm, so without this
        pre-arm the call was silently dropped. */
     int is_io_rewind = sp_streq(name, "rewind") && !diag_user_defines(c, name);
+    /* to_a on a poly value that is really a builtin hash/array (a yield-result
+       union of an rbs-seeded Hash and a class instance, #3278): the user-class
+       switch has no builtin arm, so the hash fell through to the nil seed. */
+    int is_poly_to_a = sp_streq(name, "to_a") &&
+                       (comp_ntype(c, id) == TY_POLY_ARRAY || comp_ntype(c, id) == TY_POLY);
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
           (c->classes[k].is_native_class && comp_native_method_find(c, k, name, 0, 0) >= 0)) ncand++;
-    if (ncand > 0 || is_lengthlike || is_pred || is_class_named || is_ostruct || is_io_rewind) {
+    if (ncand > 0 || is_lengthlike || is_pred || is_class_named || is_ostruct || is_io_rewind || is_poly_to_a) {
       TyKind ret = comp_ntype(c, id);
       /* an OpenStruct member is a boxed value; but when analyze typed the
          call concretely (a user method OR reader/alias resolves the name --
@@ -3322,6 +3327,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (ret == TY_POLY) buf_puts(b, osget);
         else emit_unbox_text(c, ret, osget, b);   /* result slot is user-typed (#3264) */
         buf_puts(b, "; else ");
+      }
+      /* to_a on a runtime builtin hash/array: pair-array via the boxed
+         converter (#3278) */
+      if (is_poly_to_a) {
+        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_hash_kind(_t%d.cls_id)"
+                      " || sp_poly_is_array_kind(_t%d.cls_id))) { _t%d = ",
+                   tv, tv, tv, tr);
+        if (ret == TY_POLY) buf_printf(b, "sp_box_poly_array(sp_poly_to_a_arr(_t%d))", tv);
+        else buf_printf(b, "sp_poly_to_a_arr(_t%d)", tv);
+        buf_puts(b, "; } else ");
       }
       /* rewind on a runtime IO / StringIO stream (#3257); value is the seed
          (rewind's return is rarely consumed through a poly union) */

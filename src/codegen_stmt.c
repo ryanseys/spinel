@@ -4143,6 +4143,21 @@ static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
 
 /* A genuine poly body (TY_POLY) is unboxed into any narrower (non-poly) return
    slot (#1417). */
+/* A concrete typed array feeding a TY_POLY_ARRAY return slot (an
+   Array[untyped] rbs seed over a concrete body): convert per element, boxing
+   each -- returning the raw pointer reinterprets the layout and silently
+   iterates zero elements (#3279). Returns 1 when it emitted the conversion. */
+static int emit_ret_poly_array_conv(Compiler *c, TyKind slot, TyKind vty, int node, Buf *b) {
+  if (slot != TY_POLY_ARRAY) return 0;
+  const char *k = vty == TY_INT_ARRAY ? "int" : vty == TY_FLOAT_ARRAY ? "float"
+                : vty == TY_STR_ARRAY ? "str" : NULL;
+  if (!k) return 0;
+  buf_printf(b, "sp_PolyArray_from_%s_array(", k);
+  emit_expr(c, node, b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 static int tail_needs_unbox(TyKind r0, TyKind ret) {
   return r0 == TY_POLY && ret != TY_POLY;
 }
@@ -4345,6 +4360,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "%s = ", g_method_pr_var);
         TyKind r0 = ret_arg_ntype(c, a[0]);
         if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+        else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
         else emit_tail_value(c, a[0], b);
         buf_puts(b, "; ");
@@ -4458,6 +4474,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "{ "); emit_ctype(c, g_ret_type == TY_UNKNOWN ? TY_INT : g_ret_type, b);
     buf_printf(b, " _t%d = ", tr);
     if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+        else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
     else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
     else emit_tail_value(c, a[0], b);
     buf_puts(b, "; ");
@@ -4502,6 +4519,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "return ");
     TyKind r0 = ret_arg_ntype(c, a[0]);
     if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+        else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
     /* a poly return value feeding a narrower (non-poly) return slot -- e.g. a
        method(:sym) target pinned to mrb_int that returns a poly @ivar, or an
        RBS-typed String/object method whose body yields poly -- needs coercing. */
@@ -5256,7 +5274,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, "sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\");\n");
       return;
     }
-    emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0);
+    emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0, TY_VOID);
     return;
   }
 
@@ -5330,7 +5348,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       free(pre.p);
       return;
     }
-    if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0); return; }
+    if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0, TY_VOID); return; }
     if (is_blockless_block_param_call(c, id)) {
       /* forwarded real proc: <blk>.call(args) for effect; else a dead path. */
       if (g_yield_proc_ref) emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), TY_VOID, b, indent, 0);
@@ -8032,6 +8050,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   TyKind vty = is_subst ? comp_ntype(c, g_dm_subst_node) : comp_ntype(c, id);
   int want_poly = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
   if (want_poly && vty != TY_POLY) emit_boxed(c, is_subst ? g_dm_subst_node : id, b);
+  else if (!g_result_var && emit_ret_poly_array_conv(c, g_ret_type, vty, is_subst ? g_dm_subst_node : id, b)) { }
   /* a poly tail value feeding a narrower (non-poly) return slot -- a scalar
      method(:sym) target, or an RBS-typed String/object method whose body yields
      poly -- needs coercing. (Only for a real return slot, not a begin/rescue

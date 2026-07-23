@@ -1289,11 +1289,11 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       buf_puts(b, comp_ntype(c, id) == TY_POLY ? "sp_box_nil())" : "SP_INT_NIL)");
       return;
     }
-    emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1);
+    emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1, comp_ntype(c, id));
     return;
   }
   if (is_block_call(c, id)) {           /* block.call used for its value */
-    emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1);
+    emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1, comp_ntype(c, id));
     return;
   }
   if (is_blockless_block_param_call(c, id)) {
