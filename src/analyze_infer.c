@@ -3469,6 +3469,10 @@ else {
     const char *inner = nt_str(nt, recv, "name");
     int arr_recv = nt_ref(nt, recv, "receiver");
     TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
+    /* an Integer Range source behaves as an int array (materialized by the
+       emitter); each.with_index still yields the Range itself (#3228) */
+    TyKind arr_t0 = arr_t;
+    if (arr_t == TY_RANGE) arr_t = TY_INT_ARRAY;
     if (inner && ty_is_array(arr_t)) {
       if (sp_streq(inner, "map") || sp_streq(inner, "collect")) {
         int blk = nt_ref(nt, id, "block");
@@ -3482,7 +3486,8 @@ else {
                sp_streq(inner, "filter") || sp_streq(inner, "reject") ||
                sp_streq(inner, "take_while") || sp_streq(inner, "drop_while") ||
                sp_streq(inner, "map!") || sp_streq(inner, "collect!"))
-        return arr_t;   /* take_while/drop_while keep the element type (subset) */
+        return (arr_t0 == TY_RANGE && sp_streq(inner, "each")) ? TY_RANGE
+             : arr_t;   /* take_while/drop_while keep the element type (subset) */
     }
   }
 

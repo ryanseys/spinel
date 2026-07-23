@@ -4696,9 +4696,14 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   int arr_recv = nt_ref(nt, recv, "receiver");
   if (arr_recv < 0) return 0;
   TyKind rt = comp_ntype(c, arr_recv);
+  /* an Integer Range source materializes to an int array once, then the
+     array machinery below applies unchanged (#3228) */
+  int range_src = (rt == TY_RANGE);
+  if (range_src) rt = TY_INT_ARRAY;
   if (!ty_is_array(rt)) return 0;
   const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
+  if (range_src && is_mapbang) return 0;   /* no in-place write-back on a range */
 
   int is_map = shp == TY_ITER_MAP;
   int is_sel = shp == TY_ITER_SELECT;
@@ -4722,8 +4727,20 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   int trecv = ++g_tmp, ti = ++g_tmp, tidx = ++g_tmp;
   int tres = collecting ? ++g_tmp : 0;
 
-  /* evaluate the source array once (its preludes land in g_pre first) */
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, arr_recv, &rb);
+  /* evaluate the source array once (its preludes land in g_pre first);
+     a Range source is hoisted whole (each.with_index yields IT back) and
+     materializes through sp_range_to_ia (#3228) */
+  int trng = 0;
+  if (range_src) {
+    trng = ++g_tmp;
+    Buf rgb; memset(&rgb, 0, sizeof rgb); emit_expr(c, arr_recv, &rgb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Range _t%d = %s;\n", trng, rgb.p ? rgb.p : "(sp_Range){0}");
+    free(rgb.p);
+  }
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (range_src) buf_printf(&rb, "sp_range_to_ia(_t%d)", trng);
+  else emit_expr(c, arr_recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
@@ -4790,6 +4807,7 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "_t%d", trecv);   /* map! returns the mutated receiver */
   }
   else if (collecting) buf_printf(b, "_t%d", tres);
+  else if (range_src) buf_printf(b, "_t%d", trng);  /* each yields the Range itself */
   else buf_printf(b, "_t%d", trecv);  /* each.with_index yields the receiver */
   return 1;
 }

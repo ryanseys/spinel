@@ -7208,6 +7208,9 @@ int infer_block_params(Compiler *c) {
                     sp_streq(inner, "map!") || sp_streq(inner, "collect!"))) {
         int arr_recv = nt_ref(nt, recv, "receiver");
         TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
+        /* an Integer Range source behaves as an int array (the emitter
+           materializes it) (#3228) */
+        if (arr_t == TY_RANGE) arr_t = TY_INT_ARRAY;
         if (ty_is_array(arr_t)) {
           Scope *wis = comp_scope_of(c, block);
           if (p0) {
