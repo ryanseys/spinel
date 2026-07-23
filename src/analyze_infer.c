@@ -1588,8 +1588,17 @@ TyKind infer_call(Compiler *c, int id) {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash")) {
     if (sp_streq(name, "try_convert")) return TY_POLY;
   }
-  /* container-read builtin pre-arms (#3234) */
-  if (recv >= 0 && infer_type(c, recv) == TY_POLY && argc == 1) {
+  /* container-read builtin pre-arms (#3234). The name/argc gates run
+     FIRST: the infer_type(recv) probe recurses through the receiver's
+     own call chain, and paying it for EVERY one-arg call re-infers each
+     chain suffix once more per level -- exponential on deep chains (a
+     Rails-scale tree went 23s -> >10min under it). Gated this way only
+     the arm names below ever pay the probe. */
+  if (recv >= 0 && argc == 1 &&
+      (sp_streq(name, "cover?") || sp_streq(name, "gcdlcm") ||
+       sp_streq(name, "sum") || sp_streq(name, "inject") ||
+       sp_streq(name, "reduce")) &&
+      infer_type(c, recv) == TY_POLY) {
     if (sp_streq(name, "cover?")) return TY_BOOL;
     if (sp_streq(name, "gcdlcm")) return TY_INT_ARRAY;
     if (sp_streq(name, "sum") && nt_ref(nt, id, "block") < 0) return TY_POLY;
