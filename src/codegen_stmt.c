@@ -7094,6 +7094,10 @@ else {
        Save each temp index separately: emit_expr may consume extra g_tmp
        slots via preludes (e.g. array literals), so base+i is unreliable. */
     int *tmps = en > 0 ? alloca(sizeof(int) * (size_t)en) : NULL;
+    /* The RESOLVED C type each temp was declared with (empty-literal adoption
+       below can override the element node's inferred type); the assign loop
+       must box/unbox from this, not re-derive comp_ntype (#3280). */
+    TyKind *tmpts = en > 0 ? alloca(sizeof(TyKind) * (size_t)en) : NULL;
     for (int i = 0; i < en; i++) {
       tmps[i] = ++g_tmp;
       emit_indent(b, indent);
@@ -7118,8 +7122,24 @@ else {
         if (tlv && ((el_empty_arr && ty_is_array(tlv->type)) ||
                     (el_empty_hash && ty_is_hash(tlv->type)))) elt = tlv->type;
       }
+      /* an IVAR target adopts its declared ivar type the same way; a poly
+         ivar takes a fresh boxed container (the temp would otherwise be
+         declared `void`, a C error) (#3280) */
+      if ((el_empty_arr || el_empty_hash) && (elt == TY_UNKNOWN || elt == TY_VOID) && i < ln &&
+          nt_type(nt, lefts[i]) && sp_streq(nt_type(nt, lefts[i]), "InstanceVariableTargetNode")) {
+        Scope *isc0 = comp_scope_of(c, id);
+        const char *ivn0 = nt_str(nt, lefts[i], "name");
+        if (isc0 && isc0->class_id >= 0 && ivn0) {
+          int ix0 = comp_ivar_index(&c->classes[isc0->class_id], ivn0);
+          TyKind it0 = ix0 >= 0 ? c->classes[isc0->class_id].ivar_types[ix0] : TY_UNKNOWN;
+          if ((el_empty_arr && ty_is_array(it0)) ||
+              (el_empty_hash && ty_is_hash(it0)) || it0 == TY_POLY) elt = it0;
+        }
+      }
       int adopt_empty_arr = el_empty_arr && ty_is_array(elt);
       int adopt_empty_hash = el_empty_hash && ty_is_hash(elt);
+      int poly_empty_arr = el_empty_arr && elt == TY_POLY;
+      int poly_empty_hash = el_empty_hash && elt == TY_POLY;
       int nilish = (elt == TY_NIL || elt == TY_VOID);
       emit_ctype(c, nilish ? TY_POLY : elt, b);
       buf_printf(b, " _t%d = ", tmps[i]);
@@ -7143,11 +7163,16 @@ else {
         if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
         else { Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb); buf_puts(b, vb.p ? vb.p : ""); free(vb.p); }
       }
+      else if (poly_empty_arr)
+        buf_puts(b, "sp_box_nullable_obj((void *)sp_PolyArray_new(), SP_BUILTIN_POLY_ARRAY)");
+      else if (poly_empty_hash)
+        buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
       else {
         Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
         buf_puts(b, vb.p ? vb.p : ""); free(vb.p);
       }
       buf_puts(b, ";\n");
+      if (tmpts) tmpts[i] = nilish ? TY_POLY : elt;
     }
     /* assign lefts */
     for (int i = 0; i < ln; i++) {
@@ -7190,7 +7215,7 @@ else {
         if (!proc_cell) { emit_local_ref(c, id, lvn, b); buf_puts(b, " = "); }
         LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
         TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
-        TyKind valt = comp_ntype(c, els[i]);
+        TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
         if (proc_cell) {
           /* The cell stores (mrb_int)(uintptr_t)sp_Proc*, so the value has to
              be a bare pointer. But a nil/void element was pre-evaluated into a
@@ -7233,7 +7258,7 @@ else {
           buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid].name, ivnm + 1);
         else
           buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm + 1));
-        TyKind valt = comp_ntype(c, els[i]);
+        TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
         if (ivt == TY_POLY && valt != TY_POLY) {
           char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
           Buf bx; memset(&bx, 0, sizeof bx);
@@ -7319,7 +7344,7 @@ else {
           emit_expr(c, recv_id, b); buf_puts(b, ", ");
           emit_expr(c, idx_argv[0], b); buf_puts(b, ", ");
           if (recv_t == TY_POLY_ARRAY) {
-            TyKind valt = comp_ntype(c, els[i]);
+            TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
             char tmp_expr[32]; snprintf(tmp_expr, sizeof tmp_expr, "_t%d", tmps[i]);
             Buf bxi; memset(&bxi, 0, sizeof bxi);
             emit_boxed_text(c, valt, tmp_expr, &bxi);
@@ -7337,7 +7362,7 @@ else {
           else emit_expr(c, idx_argv[0], b);
           buf_puts(b, ", ");
           if (recv_t == TY_SYM_POLY_HASH || recv_t == TY_STR_POLY_HASH || recv_t == TY_POLY_POLY_HASH) {
-            TyKind valt = comp_ntype(c, els[i]);
+            TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
             char tmp_expr2[32]; snprintf(tmp_expr2, sizeof tmp_expr2, "_t%d", tmps[i]);
             Buf bxi2; memset(&bxi2, 0, sizeof bxi2);
             emit_boxed_text(c, valt, tmp_expr2, &bxi2);
@@ -7359,7 +7384,7 @@ else {
         emit_indent(b, indent);
         buf_printf(b, "cvar_%s_%s = ", c->classes[cv_cid].name, cnm + 2);
         TyKind cvt = c->classes[cv_cid].cvar_types[cv_idx];
-        TyKind valt = comp_ntype(c, els[i]);
+        TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
         if (cvt == TY_POLY && valt != TY_POLY) {
           char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
           Buf bx; memset(&bx, 0, sizeof bx);
