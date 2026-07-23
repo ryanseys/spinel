@@ -902,10 +902,14 @@ void emit_box_open(Compiler *c, TyKind t, Buf *b) {
   else if (t == TY_BOOL)    buf_puts(b, "sp_box_bool(");
   else if (t == TY_NIL)     buf_puts(b, "sp_box_nil(); (void)(");
   else if (t == TY_SYMBOL)  buf_puts(b, "sp_box_sym(");
-  else if (t == TY_INT_ARRAY)   buf_puts(b, "sp_box_int_array(");
-  else if (t == TY_FLOAT_ARRAY) buf_puts(b, "sp_box_float_array(");
-  else if (t == TY_STR_ARRAY)   buf_puts(b, "sp_box_str_array(");
-  else if (t == TY_POLY_ARRAY)  buf_puts(b, "sp_box_poly_array(");
+  /* Array slots are nilable C pointers (a nil-defaulting param, `[x] if cond`
+     in value position): box NULL as a proper nil, not a truthy OBJ wrapping
+     NULL that passes truthy checks and then segfaults on the first access
+     (#3275). Matches emit_boxed_text's array cases. */
+  else if (t == TY_INT_ARRAY)   buf_puts(b, "sp_box_nullable_obj((void *)(");
+  else if (t == TY_FLOAT_ARRAY) buf_puts(b, "sp_box_nullable_obj((void *)(");
+  else if (t == TY_STR_ARRAY)   buf_puts(b, "sp_box_nullable_obj((void *)(");
+  else if (t == TY_POLY_ARRAY)  buf_puts(b, "sp_box_nullable_obj((void *)(");
   else if (t == TY_CLASS) buf_puts(b, "sp_box_class(");
   else if (t == TY_COMPLEX)  buf_puts(b, "sp_box_complex(");
   else if (t == TY_RATIONAL) buf_puts(b, "sp_box_rational(");
@@ -925,6 +929,11 @@ void emit_box_close(Compiler *c, TyKind t, Buf *b) {
   { const char *nbid = ty_nullable_builtin_id(t);
     if (nbid) { buf_printf(b, "), %s)", nbid); return; } }
   if (ty_is_object(t))        { buf_printf(b, "), %d)", ty_object_class(t)); return; }
+  /* array open used sp_box_nullable_obj((void *)( ... -- close with the kind. */
+  if (t == TY_INT_ARRAY)   { buf_puts(b, "), SP_BUILTIN_INT_ARRAY)"); return; }
+  if (t == TY_FLOAT_ARRAY) { buf_puts(b, "), SP_BUILTIN_FLT_ARRAY)"); return; }
+  if (t == TY_STR_ARRAY)   { buf_puts(b, "), SP_BUILTIN_STR_ARRAY)"); return; }
+  if (t == TY_POLY_ARRAY)  { buf_puts(b, "), SP_BUILTIN_POLY_ARRAY)"); return; }
   buf_puts(b, ")");
 }
 const char *array_kind(TyKind t) {
