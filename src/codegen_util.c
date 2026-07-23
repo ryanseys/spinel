@@ -93,6 +93,12 @@ char g_ren_to[MAX_RENAME][112];
 int  g_nren = 0;
 int  g_block_id = -1;
 int  g_yield_block_fallback = -1;
+/* rename-table depth at g_block_id's DEFINITION site: the spliced block body
+   and its param names resolve against the entries below this mark only; the
+   enclosing inline's renames above it must not capture same-named block
+   locals (#3281). Paired with g_block_id / g_yield_block_fallback. */
+int  g_block_nren = 0;
+int  g_yield_block_fallback_nren = 0;
 /* The (g_self, g_self_deref) that were active when the current g_block_id
    was captured -- i.e. the caller context of the innermost yield-method
    inline. A block spliced at a `yield` is caller code: emit_block_invoke

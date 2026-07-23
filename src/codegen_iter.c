@@ -153,6 +153,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     unsupported_feature(c, id, "a method that uses its block (yield or block.call) and calls itself recursively (inlining cannot terminate; no standalone function to fall back to)");
   g_inline_depth++;
   int saved_nren = g_nren, saved_block = g_block_id;
+  int saved_bnren = g_block_nren, saved_yfbn = g_yield_block_fallback_nren;
   int saved_emcls = g_emitting_class_id;
   const char *saved_self = g_self;
   const char *saved_bpn = g_block_param_name;
@@ -170,6 +171,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   /* Nested `yield` inside the block body should chain to the block that was
      active before this inline, not to the inner block. */
   g_yield_block_fallback = saved_block;
+  g_yield_block_fallback_nren = saved_bnren;
   g_yield_blk_brk_fallback = saved_bbv;
   g_yield_blk_brk_efallback = saved_bbe;
   /* the block being captured is caller code: record the caller's self so
@@ -198,6 +200,9 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      caller's class for the spliced (caller-code) block body */
   g_yield_emitting_class_fallback = g_emitting_class_id;
   g_block_id = block;
+  /* a forwarded outer block keeps ITS definition depth; a literal block is
+     call-site code at the depth BEFORE this inline's renames */
+  g_block_nren = (block == saved_block) ? saved_bnren : saved_nren;
   const char *saved_ypr = g_yield_proc_ref;
   TyKind saved_yslot = g_yield_slot_ty;
   g_yield_proc_ref = fwd_yield_proc;   /* NULL clears it for a normal inline */
@@ -391,6 +396,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_emitting_class_id = saved_emcls;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
+  g_block_nren = saved_bnren;
+  g_yield_block_fallback_nren = saved_yfbn;
   g_yield_self_fallback = saved_self_fb;
   g_yield_self_deref_fallback = saved_deref_fb;
   g_yield_emitting_class_fallback = saved_emcls_fb;
@@ -494,6 +501,40 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   int yc = 0;
   const int *yargs = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &yc) : NULL;
   Scope *bsc = comp_scope_of(c, blk);
+  /* The spliced body and the block's own parameter NAMES resolve at the
+     block's DEFINITION-site rename depth (g_block_nren): the entries the
+     enclosing method-inline pushed above that mark must not capture
+     same-named block locals (a numbered `_1` used by both the callee's own
+     block and the caller's, #3281). Block-side text emits with the callee's
+     entries PARKED (copied out, count truncated) so a nested inline inside
+     the body cannot clobber them; method-side (yield-arg) text restores
+     them. */
+  int cs_nren = g_nren;
+  int bi_nren = g_block_nren < cs_nren ? g_block_nren : cs_nren;
+  int bi_cnt = cs_nren - bi_nren;
+  int bi_parked = 0;
+  char (*bi_pf)[96] = NULL;
+  char (*bi_pt)[112] = NULL;
+  if (bi_cnt > 0) {
+    bi_pf = malloc(sizeof(char[96]) * (size_t)bi_cnt);
+    bi_pt = malloc(sizeof(char[112]) * (size_t)bi_cnt);
+  }
+  #define BI_BLOCK_SIDE() do { \
+    if (bi_pf && !bi_parked) { \
+      memcpy(bi_pf, g_ren_from + bi_nren, sizeof(char[96]) * (size_t)bi_cnt); \
+      memcpy(bi_pt, g_ren_to + bi_nren, sizeof(char[112]) * (size_t)bi_cnt); \
+      bi_parked = 1; \
+    } \
+    g_nren = bi_nren; \
+  } while (0)
+  #define BI_METHOD_SIDE() do { \
+    if (bi_pf && bi_parked) { \
+      memcpy(g_ren_from + bi_nren, bi_pf, sizeof(char[96]) * (size_t)bi_cnt); \
+      memcpy(g_ren_to + bi_nren, bi_pt, sizeof(char[112]) * (size_t)bi_cnt); \
+      bi_parked = 0; \
+    } \
+    g_nren = cs_nren; \
+  } while (0)
   /* CRuby's argument distribution needs the parameter shape up front:
      P pre-required, O optionals, Q post-required, R any rest marker
      (`*name`, bare `*`, or the implicit rest of a trailing comma `|a, |`).
@@ -534,9 +575,13 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   for (int k = 0; ; k++) {
     const char *bp = block_param_name(c, blk, k);
     if (!bp) break;
-    /* When inside an inlined method, block params may be renamed (e.g. x →
-       _y3_x); apply the rename table so we write the right C variable. */
-    const char *bpr = rename_local(bp);
+    /* The block's own param name resolves at the block's definition depth:
+       renames pushed by the enclosing method-inline must not capture it. */
+    char bprbuf[160];
+    BI_BLOCK_SIDE();
+    snprintf(bprbuf, sizeof bprbuf, "%s", rename_local(bp));
+    BI_METHOD_SIDE();
+    const char *bpr = bprbuf;
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", bpr);
     if (splat_tmp >= 0) {
@@ -602,7 +647,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   for (int oi = 0; ; oi++) {
     const char *op = block_opt_name(c, blk, oi);
     if (!op) break;
-    const char *opr = rename_local(op);
+    char oprbuf[160];
+    BI_BLOCK_SIDE();
+    snprintf(oprbuf, sizeof oprbuf, "%s", rename_local(op));
+    BI_METHOD_SIDE();
+    const char *opr = oprbuf;
     LocalVar *ol = bsc ? scope_local(bsc, op) : NULL;
     TyKind ot = ol ? ol->type : TY_UNKNOWN;
     int dv = block_opt_default(c, blk, oi);
@@ -619,7 +668,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       else if (et == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) emit_unbox_text(c, ot, eb.p ? eb.p : "", b);
       else buf_puts(b, eb.p ? eb.p : "");
       buf_puts(b, " : ");
-      if (dv >= 0) emit_block_arg_coerced(c, dv, ot, b); else buf_puts(b, odflt);
+      if (dv >= 0) { BI_BLOCK_SIDE(); emit_block_arg_coerced(c, dv, ot, b); BI_METHOD_SIDE(); }
+      else buf_puts(b, odflt);
       buf_puts(b, ")");
       free(eb.p);
     }
@@ -627,7 +677,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       emit_block_arg_coerced(c, yargs[yi], ot, b);
     }
     else if (dv >= 0) {
-      emit_block_arg_coerced(c, dv, ot, b);
+      BI_BLOCK_SIDE(); emit_block_arg_coerced(c, dv, ot, b); BI_METHOD_SIDE();
     }
     else {
       buf_puts(b, odflt);
@@ -641,7 +691,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   for (int ki = 0; ; ki++) {
     const char *kp = block_keyword_name(c, blk, ki);
     if (!kp) break;
-    const char *kpr = rename_local(kp);
+    char kprbuf[160];
+    BI_BLOCK_SIDE();
+    snprintf(kprbuf, sizeof kprbuf, "%s", rename_local(kp));
+    BI_METHOD_SIDE();
+    const char *kpr = kprbuf;
     LocalVar *kl = bsc ? scope_local(bsc, kp) : NULL;
     TyKind kt = kl ? kl->type : TY_UNKNOWN;
     int vn = ykw >= 0 ? ie_kwhash_value(c, ykw, kp) : -1;
@@ -649,7 +703,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", kpr);
     if (vn >= 0) emit_block_arg_coerced(c, vn, kt, b);
-    else if (dv >= 0) emit_block_arg_coerced(c, dv, kt, b);
+    else if (dv >= 0) { BI_BLOCK_SIDE(); emit_block_arg_coerced(c, dv, kt, b); BI_METHOD_SIDE(); }
     else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value(kt));
     buf_puts(b, as_expr ? "; " : ";\n");
   }
@@ -660,7 +714,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   {
     const char *kwr = block_kwrest_name(c, blk);
     if (kwr) {
-      const char *kwrr = rename_local(kwr);
+      char kwrrbuf[160];
+      BI_BLOCK_SIDE();
+      snprintf(kwrrbuf, sizeof kwrrbuf, "%s", rename_local(kwr));
+      BI_METHOD_SIDE();
+      const char *kwrr = kwrrbuf;
       int tkw = ++g_tmp;
       if (!as_expr) emit_indent(b, indent);
       buf_printf(b, "sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new();%s", tkw, as_expr ? " " : "\n");
@@ -701,7 +759,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      requireds into a fresh array. */
   const char *brest = block_rest_name(c, blk);
   if (brest) {
-    const char *brestr = rename_local(brest);
+    char brestrbuf[160];
+    BI_BLOCK_SIDE();
+    snprintf(brestrbuf, sizeof brestrbuf, "%s", rename_local(brest));
+    BI_METHOD_SIDE();
+    const char *brestr = brestrbuf;
     /* Build into a fresh temp, assign the rest param LAST: a yielded arg can
        reference the same (renamed) C slot the rest param occupies -- e.g. a
        sole-rest block whose name collides with the inlined method's own
@@ -766,7 +828,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     for (int qi = 0; qi < Q; qi++) {
       const char *qp = block_post_name(c, blk, qi);
       if (!qp) continue;   /* anonymous post: consumes a slot, binds nothing */
-      const char *qpr = rename_local(qp);
+      char qprbuf[160];
+      BI_BLOCK_SIDE();
+      snprintf(qprbuf, sizeof qprbuf, "%s", rename_local(qp));
+      BI_METHOD_SIDE();
+      const char *qpr = qprbuf;
       LocalVar *ql = bsc ? scope_local(bsc, qp) : NULL;
       TyKind qt = ql ? ql->type : TY_UNKNOWN;
       const char *qdflt = qt == TY_RANGE ? "(sp_Range){0}" : default_value(qt);
@@ -832,6 +898,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      inline started) so that a nested `yield` inside the block chains to
      the outermost caller's block rather than going dead. */
   int svb = g_block_id; g_block_id = g_yield_block_fallback;
+  /* the body is block-definition-site code: emit it below the callee's
+     rename entries, and pair the fallback block with ITS depth so a nested
+     yield inside the body splices at the right level */
+  BI_BLOCK_SIDE();
+  int sv_bnren = g_block_nren; g_block_nren = g_yield_block_fallback_nren;
   const char *svbpn = g_block_param_name; g_block_param_name = NULL;
   /* the block body executes in its DEFINITION site's break scope: a
      top-level break targets the call that received the block, not whatever
@@ -973,6 +1044,8 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   g_method_pr_exc_depth = sv_bexc;
   g_brk_ser_var = svser; g_brk_ensure_base = svebase; g_brk_exc_base = svbexc;
   g_block_brk_var = svbbv; g_block_brk_ebase = svbbe;
+  g_block_nren = sv_bnren;
+  BI_METHOD_SIDE();
   g_block_id = svb; g_block_param_name = svbpn;
   if (as_expr) {
     /* `{ return e }`: the block exits the enclosing function, so the
@@ -988,6 +1061,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     }
     buf_puts(b, "})");
   }
+  free(bi_pf); free(bi_pt);
+  #undef BI_BLOCK_SIDE
+  #undef BI_METHOD_SIDE
 }
 
 /* Inline a yielding method call in expression position: ({ ...; value; }).

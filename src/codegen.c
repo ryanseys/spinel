@@ -1567,10 +1567,11 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
 
   /* Save global emission state */
   Buf *sv_pre = g_pre; int sv_indent = g_indent, sv_nren = g_nren, sv_block = g_block_id;
+  int sv_bnren = g_block_nren;
   const char *sv_bpn = g_block_param_name, *sv_self = g_self, *sv_rv = g_result_var;
   const char *sv_yld = g_yielder_name;
   TyKind sv_rt = g_ret_type; int sv_rp = g_result_poly;
-  g_pre = NULL; g_indent = 1; g_nren = 0; g_block_id = blk;
+  g_pre = NULL; g_indent = 1; g_nren = 0; g_block_id = blk; g_block_nren = 0;
   g_block_param_name = bp0; g_self = sv_self;
   g_yielder_name = as_gen ? bp0 : NULL;   /* `y << v` -> Fiber.yield in the body */
   g_ret_type = TY_POLY; g_result_poly = 0; g_result_var = NULL;
@@ -1716,7 +1717,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   free(body_buf.p);
 
   /* Restore emission state */
-  g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
+  g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block; g_block_nren = sv_bnren;
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
   g_self_deref = sv_fbderef;
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
@@ -2294,6 +2295,7 @@ else if (orecv >= 0 && onm) {
 
   /* Save every emission global: the proc body is a fresh function context. */
   Buf *sv_pre = g_pre; int sv_indent = g_indent, sv_nren = g_nren, sv_block = g_block_id;
+  int sv_bnren = g_block_nren;
   const char *sv_bpn = g_block_param_name, *sv_self = g_self, *sv_rv = g_result_var;
   TyKind sv_rt = g_ret_type; int sv_rp = g_result_poly;
   const char *sv_cap_struct = g_cap_struct; NameSet *sv_cap_names = g_cap_names;
@@ -2311,7 +2313,7 @@ else if (orecv >= 0 && onm) {
   char home_acc[48] = "";
   if (ret_proc) { snprintf(home_acc, sizeof home_acc, "((_proc_cap_%d *)_cap)->_home", pid); g_proc_return_home = home_acc; }
   else g_proc_return_home = NULL;
-  g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_param_name = NULL;
+  g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_nren = 0; g_block_param_name = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
   /* The proc body reads its captured self by value for a value-type class
      (sp_X self) but by pointer otherwise (sp_X *self); ivar access inside the
@@ -2661,7 +2663,7 @@ else if (orecv >= 0 && onm) {
   free(proc_body_buf.p);
   g_c_loop_depth = sv_loopd; g_in_proc_body = sv_inproc;
 
-  g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
+  g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block; g_block_nren = sv_bnren;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
   g_self_deref = sv_deref;
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
@@ -3650,6 +3652,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   int tag = ++g_tmp;
   int saved_nren = g_nren, saved_block = g_block_id;
+  int saved_bnren = g_block_nren, saved_yfbn = g_yield_block_fallback_nren;
   const char *saved_bpn = g_block_param_name;
   int saved_yfb = g_yield_block_fallback;
   const char *saved_bbv = g_block_brk_var, *saved_yfbv = g_yield_blk_brk_fallback;
@@ -3659,9 +3662,11 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int saved_ebase = g_brk_ensure_base;
 
   g_yield_block_fallback = saved_block;
+  g_yield_block_fallback_nren = saved_bnren;
   g_yield_blk_brk_fallback = saved_bbv;
   g_yield_blk_brk_efallback = saved_bbe;
   g_block_id = block;
+  g_block_nren = (block == saved_block) ? saved_bnren : saved_nren;
   /* same break-context rules as emit_inline_call_x */
   g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
   g_block_brk_ebase = (block == saved_block) ? saved_bbe : saved_ebase;
@@ -3726,6 +3731,8 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   g_nren = saved_nren;
   g_block_id = saved_block;
+  g_block_nren = saved_bnren;
+  g_yield_block_fallback_nren = saved_yfbn;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
   g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;

@@ -110,6 +110,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
 
   int tag = ++g_tmp;
   int saved_nren = g_nren, saved_block = g_block_id;
+  int saved_bnren = g_block_nren, saved_yfbn = g_yield_block_fallback_nren;
   const char *saved_self = g_self;
   const char *saved_self_deref = g_self_deref;
   int saved_emcls = g_emitting_class_id;
@@ -121,6 +122,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
      clobbered by the nested inline. */
   char selfbuf[64];
   g_yield_block_fallback = saved_block;
+  g_yield_block_fallback_nren = saved_bnren;
   /* the block being captured is caller code: record the caller's self so
      emit_block_invoke can restore it around the spliced block body. Aliasing
      g_self by pointer is safe now that selfbuf is stack-local: it names an
@@ -133,6 +135,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   g_yield_self_deref_fallback = g_self_deref;
   g_yield_emitting_class_fallback = g_emitting_class_id;
   g_block_id = fwd_block ? saved_block : block;
+  g_block_nren = fwd_block ? saved_bnren : saved_nren;
   g_block_param_name = m->blk_param;
 
   int st = ++g_tmp;
@@ -217,6 +220,8 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
 
   g_nren = saved_nren;
   g_block_id = saved_block;
+  g_block_nren = saved_bnren;
+  g_yield_block_fallback_nren = saved_yfbn;
   g_self = saved_self;
   g_self_deref = saved_self_deref;
   g_emitting_class_id = saved_emcls;
