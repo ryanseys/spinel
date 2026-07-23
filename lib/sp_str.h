@@ -162,6 +162,12 @@ mrb_int sp_str_rindex_opt(const char *s, const char *sub);
    IntIntHash accessors. Still static (inline / noinline) -- each including
    TU (the single generated TU via sp_runtime.h, and sp_hash.c) gets its own
    private copy, so this is a pure textual relocation with no codegen change. ---- */
+/* NULL-safe string equality. ENV[] returns NULL for unset vars
+   (the dispatch is `sp_str_dup_external(getenv(...))`, which propagates
+   NULL), so emitted strcmp(...) on the result of `ENV["X"] == "1"` would
+   dereference NULL on either side. nil-vs-string equality is false in
+   Ruby; nil == nil is true, so falling back to pointer equality on the
+   NULL path covers both. */
 static inline int sp_str_eq(const char*a,const char*b){
   if(a==b)return 1;
   if(!a||!b)return 0;
@@ -172,7 +178,13 @@ static inline int sp_str_eq(const char*a,const char*b){
   size_t la=sp_str_byte_len(a);
   return la==sp_str_byte_len(b)&&memcmp(a,b,la)==0;
 }
+/* String#valid_encoding? — walks the buffer and accepts pure ASCII
+   or well-formed UTF-8 (RFC 3629 byte sequences with no overlong
+   forms, no surrogate halves, code points <= U+10FFFF). */
 static inline uint64_t sp_str_hash_compute(const char*s){uint64_t h=14695981039346656037ULL;while(*s){h^=(unsigned char)*s++;h*=1099511628211ULL;}return h;}
+/* Cold path: compute (and, for a heap/heap-frozen string, cache) the FNV
+   hash. Kept out-of-line so sp_str_hash's inline fast path -- a cached-hash
+   read -- stays tiny and doesn't bloat every call site's code layout. */
 static SP_NOINLINE uint64_t sp_str_hash_miss(const char*s,unsigned char m){
   if(m==0xfe||m==0xfc||m==0xf1){
     sp_str_hdr*hd=((sp_str_hdr*)(s-1))-1;

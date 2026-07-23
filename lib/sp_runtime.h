@@ -230,10 +230,6 @@ static inline mrb_int sp_iremainder(mrb_int a, mrb_int b) {
    now live in libspinel_rt.a (lib/sp_core.c); declared via sp_core.h. */
 static inline char *sp_str_alloc_raw(size_t total_with_null);  /* fwd decl */
 const char *sp_sprintf(const char *fmt, ...);                  /* fwd decl */
-/* Integer#chr: a single byte; CRuby raises RangeError outside 0..255. */
-/* Integer#chr(Encoding::UTF_8): encode the codepoint as UTF-8 (1-4 bytes).
-   CRuby raises RangeError for a negative/too-large codepoint and for the
-   surrogate range, which UTF-8 cannot carry. */
 /* sp_ipow10 / sp_int_round / sp_int_ceil / sp_int_floor /
    sp_int_truncate / sp_str_oct now live in libspinel_rt.a
    (lib/sp_core.c); declared via sp_core.h. */
@@ -288,25 +284,6 @@ static inline mrb_float sp_math_atanh(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls
    tgamma already yields); negative non-integers are in-domain. */
 static inline mrb_float sp_math_gamma(mrb_float x){if(x<0.0&&x==floor(x))sp_raise_cls("Math::DomainError","Numerical argument is out of domain - gamma");return tgamma(x);}
 
-/* The effective stride: a literal `a..b` range stores 0, which iterates by +1. */
-/* Number of elements the range enumerates (0 for an empty one), honoring step. */
-/* Materialize the range into an int array (ascending or descending per step).
-   The +1 stride (every literal `a..b` range) keeps the tight from_range loop; a
-   real step only appears for downto / explicit step, so it pays the general
-   path only then. */
-/* Last enumerated element (== first for an empty range), and the min/max of the
-   enumerated set -- direction-aware, so a descending range reports them right. */
-/* min/max of an EMPTY (backwards, or exclusive single-point) range is nil
-   (SP_INT_NIL, the nullable-int sentinel) -- CRuby returns nil there. A
-   descending step range (5.downto(1)) still enumerates, so only a
-   positive-step empty span is nil (#2412). */
-/* `Range#include?`/`#cover?` on the boxed (SP_TAG_OBJ cls_id
-   SP_BUILTIN_RANGE) Range value. The direct sp_Range typed path
-   inlines this same check via compile_range_method_expr; poly-recv
-   dispatch needs the wrapper so the cls_id arm in
-   emit_poly_builtin_dispatch can land on a single C expression. An
-   exclusive range stops one short of `last`, so the upper bound is
-   `last - excl` (excl is 0 or 1). */
 
 /* ---- Class object ----
    Value-type Class reference: a single class id that indexes into
@@ -444,9 +421,6 @@ static inline sp_Encoding sp_encoding_binary(void){return(sp_Encoding){&("\xff" 
 /* Bytes to advance past the codepoint at p (caller guarantees *p != 0).
    Caps at NUL and validates the continuation-byte pattern, so malformed or
    truncated UTF-8 never advances past the terminator. */
-/* Issue #882: `"hello" << 33` should append the character with
-   that codepoint, not the decimal digits. UTF-8 encode (1..4 bytes)
-   and return a NUL-terminated string. */
 /* Direct-mapped pointer-keyed cache for (byte_len, char_len). Populated lazily
    by sp_str_length / sp_utf8_byte_offset; the same entries unlock both calls
    so iterating a single string with `s.length` + `s[i]` walks UTF-8 once
@@ -470,12 +444,6 @@ static inline sp_Encoding sp_encoding_binary(void){return(sp_Encoding){&("\xff" 
    call's cached length (#611). 0xfd (sp_String wrapper) is excluded
    too because its buffer can move on append. */
 
-/* NULL-safe string equality. ENV[] returns NULL for unset vars
-   (the dispatch is `sp_str_dup_external(getenv(...))`, which propagates
-   NULL), so emitted strcmp(...) on the result of `ENV["X"] == "1"` would
-   dereference NULL on either side. nil-vs-string equality is false in
-   Ruby; nil == nil is true, so falling back to pointer equality on the
-   NULL path covers both. */
 /* Issue #762: check malloc/realloc returns. On OOM, return an empty
    array rather than dereferencing NULL. */
 
@@ -656,11 +624,6 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
 typedef struct sp_Object_s { uint8_t _pad; } sp_Object;
 static sp_Object *sp_Object_new(void){return(sp_Object*)sp_gc_alloc(sizeof(sp_Object),NULL,NULL);}
 
-/* sp_IntArray lives in sp_array.h (hot core inline) + lib/sp_array.c
-   (cold ops). The Integer methods that happen to build an IntArray stay
-   here; they call the inline sp_IntArray_new / _push from sp_array.h. */
-/* Integer#bit_length: bits in the two's-complement representation excluding
-   the sign bit (a negative n counts the bits of ~n). */
 /* Integer#[start, len]: the len-bit field starting at bit `start`, i.e.
    (n >> start) & ((1 << len) - 1) with Ruby's shift semantics (a negative
    count shifts the other way), clamped to the 64-bit word so an out-of-range
@@ -692,50 +655,15 @@ static inline mrb_int sp_int_bit(mrb_int n, mrb_int i) {
 /* Case-insensitive string compare. Portable across glibc / MinGW
    (avoids strcasecmp which lives in strings.h on POSIX and is named
    stricmp on Windows). Returns -1 / 0 / 1 like CRuby's String#casecmp. */
-/* String#valid_encoding? — walks the buffer and accepts pure ASCII
-   or well-formed UTF-8 (RFC 3629 byte sequences with no overlong
-   forms, no surrogate halves, code points <= U+10FFFF). */
 
-/* Cold path: compute (and, for a heap/heap-frozen string, cache) the FNV
-   hash. Kept out-of-line so sp_str_hash's inline fast path -- a cached-hash
-   read -- stays tiny and doesn't bloat every call site's code layout. */
-/* default_v is SP_INT_NIL for a hash with no explicit default ({} / {k=>v}),
-   so a missing-key `[]` read surfaces Ruby nil (#801). Hash.new(N) sets it to
-   N via _new_with_default. Proven-present internal reads use _get on present
-   keys, so this only governs the miss path. */
-/* Issue #801: maybe-missing public `[]` read. Returns default_v on a miss,
-   which is SP_INT_NIL (Ruby nil at the value level) for a no-default hash and
-   the explicit default for Hash.new(N). Proven-present reads keep using _get. */
-/* Hash#value? -- scan values in insertion order. Issue #738. */
 
 /* GC.stat snapshot: String=>Integer hash over the collector globals.
    full_runs derives from sp_gc_cycle / SP_GC_FULL_INTERVAL (the major
    collection cadence). */
-/* Keys are spinel rodata literals (SPL: 0xff marker prefix) so the str-hash
-   header cache's s[-1] read is in-bounds -- a bare C literal here would
-   overread (and could alias a heap marker on some rodata layouts). */
 
 
 
-/* Int → Int typed hash. Mirrors sp_IntStrHash's open-addressing
-   layout (used[] bitmap so 0/-1 keys are distinguishable from
-   empty), with int-valued slots. Used by Array#tally on int
-   arrays — see #865. */
-/* default_v is SP_INT_NIL for a hash with no explicit default, so a
-   missing-key `[]` read surfaces Ruby nil (#801). Hash.new(N) sets it via
-   _new_with_default. */
-/* Integer-keyed hash delete: backward-shift the probe cluster so open-addressing
-   lookups stay correct, then drop the key from the insertion-order array. */
-/* Issue #801: maybe-missing public `[]` read. Returns default_v on a miss
-   (SP_INT_NIL for a no-default hash = Ruby nil; the explicit default for
-   Hash.new(N)). Proven-present reads keep using _get. */
-/* Array#tally on int_array. CRuby returns an Integer-keyed Hash
-   mapping each distinct element to its occurrence count. */
 
-/* sp_int_to_s / sp_float_to_s moved to sp_alloc.h (shared so lib/sp_json.c can
-   format numbers). String-interpolation of an int slot: a nil sentinel renders
-   as the empty string (CRuby interpolates nil as ""), every other value as its
-   decimal. */
 
 /* sp_float_to_s now lives in sp_alloc.h (shared). Float#inspect is aliased. */
 #define sp_float_inspect sp_float_to_s
@@ -871,11 +799,6 @@ static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
   return v;
 }
 
-/* 0xf1 = heap string frozen by an explicit .freeze call.
-   Unlike 0xff (rodata literal) this marker lives in a malloc'd buffer
-   so sp_str_freeze_val can set it.  The frozen? predicate and mutation
-   guards check for 0xf1; plain rodata 0xff literals are NOT reported
-   as frozen (they behave as immutable value-semantics objects). */
 /* String#-@: an already-frozen receiver (or an immutable rodata literal)
    returns ITSELF -- CRuby's uminus is an interning hint, and `(-a).equal?(a)`
    is true for a frozen `a`. Only a mutable string takes the freeze-copy. */
@@ -1140,22 +1063,11 @@ sp_StrArray *sp_file_readlines_chomp(const char *path);
    emits a 0 placeholder that flows into `.inspect`, and dereferencing
    a->len would segfault. Rendering "[]" stops the crash and degrades to
    the same shape as the empty-array case. */
-/* Array#join for float arrays -- each element via the Ruby-faithful
-   sp_float_to_s ("1.0", not "1"). Mirrors sp_IntArray_join exactly: build in a
-   malloc buffer, return an sp_str_alloc'd copy. (Not sp_String#data, whose owner
-   isn't GC-rooted across the return.) sp_float_to_s's result is copied
-   immediately, before the next call can reuse its buffer. */
 /* Symbol arrays share the IntArray representation (sp_sym = mrb_int),
    but each element is rendered as ":name" via sp_sym_to_s. */
 static inline const char*sp_SymArray_inspect(sp_IntArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_SYM_ARRAY)):"[]";}
 /* PtrArray elements are object pointers without a per-element class
    tag, so we render them as `#<Object>` rather than recursing. */
-/* Issue #851: Hash#inspect for typed-hash variants beyond
-   sym_int_hash. Renders Ruby's `{"k" => v, ...}` (string keys),
-   `{42 => "v", ...}` (int keys), or `{:k => v, ...}` (sym keys but
-   non-int value, since the bare `k: v` shorthand only applies
-   when values are inspectable as one-liners — match CRuby). */
-/* Hash#to_proc lookup fn — cap is the hash, args[0] the string key. */
 /* Nested-array inspect: when codegen knows the ptr_array's element
    type is one of the four built-in T_array shapes, recurse into the
    matching primitive inspect . */
@@ -1221,7 +1133,6 @@ static const char *sp_program_name = "";
    when ARGV is empty (a `-` filename also means stdin). The state is a single
    global; the ARGF constant is a marker pointer to it. */
 sp_Argf sp_argf_obj = {0, NULL, 0, NULL};   /* type in sp_argf.h */
-/* Ensure a current readable stream, or return 0 at total end of input. */
 
 /* Mark active in-flight exception messages. Most raises pass string
    literals (rodata, marker byte ≠ 0xfe → no-op for sp_mark_string),
@@ -1305,9 +1216,6 @@ __attribute__((constructor)) static void sp_gc_install_tu_hooks(void) {
 /* Issue #869: Regexp#match?(str, pos) starts matching at byte
    offset `pos`. Negative pos counts from the end (CRuby compat).
    Out-of-range pos returns false. */
-/* String#match?(/re/, pos) — pos is a codepoint index (CRuby semantics),
-   unlike Regexp#match?(str, pos) which uses byte offset. Convert the
-   codepoint index to a byte offset before dispatching to re_exec. */
 
 /* Issue #855: expand `\1`..`\9` / `\&` / `\0` backreferences in
    the replacement string against the current caps[] array. `\\`
@@ -1315,17 +1223,8 @@ __attribute__((constructor)) static void sp_gc_install_tu_hooks(void) {
    *out_io / *cap_io as needed. */
 
 
-/* String#gsub(regex, hash) — per-match hash lookup form. CRuby's
- * semantics: each matched substring is looked up as a key in the
- * hash; the value (if present) is the replacement, otherwise the
- * matched substring is dropped (CRuby returns "", not the match).
- * Used by html_escape / json_escape idioms (gsub(/[&<>]/, ESCAPES)). */
 
-/* Issue #910: sub(regex, hash) — same lookup semantics as
-   sp_re_gsub_str_str_hash but only the first match. */
 
-/* Issue #910: sub(string, hash) — literal-substring pattern
-   with a hash replacement. Replaces only the first match. */
 
 
 
@@ -1389,10 +1288,6 @@ int sp_bigint_sign(sp_Bigint *b);
 size_t sp_bigint_byte_len(sp_Bigint *b);
 size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap);
 sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, size_t n);
-/* Boxing a nullable-int value (int?): SP_INT_NIL is the reserved nil sentinel
-   and never a legitimate integer, so a sentinel must surface as Ruby nil rather
-   than a boxed INT_MIN. Used when an int? value (hash miss, rindex, nonzero?,
-   ...) flows into a poly slot. */
 /* Ruby integer shifts: a negative count shifts the other way, and a count at or
    beyond the word width saturates (arithmetic for a right shift of a negative).
    A bare C shift by a negative or >= width count is undefined behaviour, so any
@@ -1428,9 +1323,6 @@ static inline mrb_int sp_int_shr(mrb_int a, mrb_int n) {
    name points into rodata (see sp_exc_gc_scan), so no GC marking is needed.
    SP_CLASS_BY_NAME itself now lives in sp_types.h (needed by sp_box_class_name
    in sp_alloc.h). */
-/* box a sp_Class into a poly slot (a name-backed class boxes by name). */
-/* box a sp_Bigint* into a poly slot (heterogeneous container element, or a
-   promote-mode overflow result). */
 /* A poly value as a sp_Bigint*, so the bigint comparison/arith helpers can take
    a mixed operand uniformly. Total (never NULL, since sp_bigint_cmp derefs):
    a float truncates (harmless -- a bignum is always outside float-fraction
@@ -1450,14 +1342,6 @@ static sp_Bigint *sp_poly_as_bigint(sp_RbVal v) {
    on p; expects p to actually point at a user-class struct
    when non-NULL. */
 static inline mrb_int sp_obj_cls_id_of(void *p) { return p ? *(mrb_int *)p : 0; }
-/* String#index / #rindex return a boxed nil for not-found, boxed
-   int for found. Issue #532: typed-int slot can't represent CRuby's
-   nil-vs-real-index distinction in-band; widening the result type
-   to sp_RbVal at the call site lets `pos.nil?` and `puts pos.inspect`
-   work via the standard poly-tag dispatch. The -1 sentinel comes
-   from the underlying sp_str_*_index helpers; we widen here at the
-   boxing layer so existing call sites that want the raw int still
-   work via `sp_str_index` directly. */
 /* int? siblings of the String#index family. Same not-found
    semantics as the _poly variants, but the result is the int?
    sentinel (SP_INT_NIL) rather than a boxed sp_RbVal — keeps the
@@ -1475,19 +1359,6 @@ static inline mrb_int sp_obj_cls_id_of(void *p) { return p ? *(mrb_int *)p : 0; 
    (returning -1) stays available for internal callers needing the
    sentinel form. */
 
-/* Regexp.escape(s) / Regexp.quote(s) -- prefix every regex metachar
-   and whitespace byte with a single backslash, returning a heap
-   string that callers can feed into `Regexp.new(...)` to match the
-   original bytes literally. Matches CRuby's rb_reg_quote for the
-   ASCII range (the only range Spinel's regex engine indexes today,
-   so multibyte passes through unchanged).
-
-   The metachars covered: \\ . ? * + ^ $ | ( ) [ ] { } # -
-   The whitespace covered: ' ' \t \n \r \f \v
-   Everything else copies byte-for-byte. */
-/* An opaque foreign/FFI pointer: boxed with SP_BUILTIN_FOREIGN_PTR so the
-   collector skips it (it is not a sp_gc_alloc allocation). NULL -> nil. */
-/* a compiled Regexp value (mrb_regexp_pattern *): untraced, program-lifetime */
 /* renderers live in sp_re.c; declared through void* to avoid the engine header */
 const char *sp_re_inspect_str(void *pat);
 const char *sp_re_to_s_str(void *pat);
@@ -1496,8 +1367,6 @@ mrb_int sp_re_options(void *pat);
 mrb_bool sp_re_casefold_p(void *pat);
 uint32_t sp_re_raw_flags(void *pat);
 uint32_t sp_re_opts_to_flags(mrb_int o);
-/* Built-in pointer boxes — share SP_TAG_OBJ with a reserved negative
-   cls_id so the dispatch path is uniform. */
 sp_RbVal sp_box_proc(void *p)        { return sp_box_obj(p, SP_BUILTIN_PROC); }
 
 /* CRuby-compatible Array#index / #rindex / #find_index: returns
@@ -1517,48 +1386,17 @@ sp_RbVal sp_box_proc(void *p)        { return sp_box_obj(p, SP_BUILTIN_PROC); }
    tracking carries the result as int? rather than poly — eliminates
    the box/unbox round-trip for the common `i = arr.index(x);
    i.nil? ? ... : <use i as int>` idiom. */
-/* Inspect / to_s for an int? value. CRuby distinguishes the two on
-   nil: `nil.to_s` is "" while `nil.inspect` is "nil". For a real
-   integer they agree (Integer#to_s and #inspect are both the decimal
-   form). Two wrappers keep call-site emit local. */
-/* float? (nullable float) counterparts: a non-nil value formats exactly
-   like a plain Float (delegates to sp_float_to_s), nil renders "nil"
-   (inspect) / "" (to_s). */
-/* sp_Range is a 16-byte value type that doesn't fit in sp_RbVal's union
-   (max 8 bytes). When a Range crosses into a poly slot (heterogeneous
-   hash / array / param / ivar), copy it onto the GC heap and box the
-   pointer via SP_BUILTIN_RANGE. The Range has no internal pointer fields
-   so no scanner is needed. */
-/* Float range (1.0..3.0). Endpoints stay mrb_float, so cover?/include?/begin/end
-   are exact. -HUGE_VAL / +HUGE_VAL are the beginless / endless sentinels. */
-/* String range ("a".."e"). The endpoints are the value; every traversal
-   materializes the element array, which is how a string range behaved before
-   it became a value of its own (#3064). */
-/* #cover? / #=== compare lexicographically, no materialization. */
-/* Float#max: the exclusive form has no greatest element (Ruby raises). */
 /* #step(n) over a Float range -> a Float array toward last. A negative step walks
    descending; a wrong-direction step yields an empty array; the count is derived
    so accumulated float rounding does not drift. */
 sp_FloatArray *sp_frange_step(sp_FloatRange r, mrb_float st) __attribute__((unused));
 /* sp_frange_step: moved to lib/sp_cold.c */
 sp_FloatArray *sp_frange_step(sp_FloatRange r, mrb_float st);
-/* Complex / Rational are wider value types (two components); like sp_Range they
-   heap-copy when crossing into a poly slot. No internal pointers, so no scan. */
 
 /* Big Rational: a Rational whose numerator/denominator do not fit mrb_int, so
    it holds two sp_Bigint* instead of the by-value int Rational (#2469). The two
    representations coexist -- an int Rational stays the fast value type, a big
    Rational is a boxed object that flows through the poly paths. */
-/* Construct a reduced big Rational: normalize the sign onto the numerator and
-   divide out the gcd. den must be non-zero (callers pass a literal or a checked
-   value). */
-/* Lift a bignum (or an int) to a big Rational num/1. */
-/* An Integer-classed (fl bit clear) whole component boxes as an Integer;
-   anything else keeps the Float class. The INTPTR guard mirrors
-   sp_complex_mag: casting an out-of-range double to mrb_int is UB. */
-/* CRuby Complex#abs: Integer only via the zero-component shortcut (|other|)
-   on an all-Integer complex; hypot is always a Float. #abs2 is Integer iff
-   both components are Integer-classed. */
 /* real ** complex = exp(e * clog(base)): base>0 uses a real log, base<0 the
    principal branch (ln|base| + i*pi), base==0 is 0. Both result components are
    Float-classed (fl = 3). */
@@ -1573,9 +1411,6 @@ static sp_Complex sp_real_pow_complex(mrb_float base, sp_Complex e) {
   return (sp_Complex){ m * cos(wi), m * sin(wi), 3 };
 }
 /* sp_Range_inspect moved to lib/sp_format.c (cold). */
-/* Same heap-box rationale as sp_Range: sp_Time is 12+ bytes (tv_sec +
-   tv_nsec), wider than sp_RbVal's 8-byte union. No internal pointers
-   so no scanner is needed. */
 /* sp_Time_inspect moved to lib/sp_format.c (cold). */
 static const char *sp_class_to_s(sp_Class c); /* fwd decl: sp_poly_puts' SP_TAG_CLASS arm */
 /* Name of a boxed SP_TAG_CLASS value: a name-backed box carries it in v.s,
@@ -1788,13 +1623,6 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     default: return SPL("Object");
   }
 }
-/* respond_to? on a poly value that turns out to hold a BUILTIN. The compile
-   time fold emits a cls_id check against the user classes defining the name,
-   which necessarily answers false for a builtin member of the union -- yet
-   Array really does respond to :each. Answer the core builtin surface here,
-   keyed off the runtime class name so every Array variant shares one list.
-   Deliberately conservative: an unlisted name answers false rather than
-   guessing, which is also what an undispatchable method would do. */
 static mrb_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   static const char *const uni[] = {
     "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze", "frozen?",
@@ -1873,8 +1701,6 @@ static mrb_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     return sp_str_in_list(m, excm);
   return 0;
 }
-/* Float#numerator / #denominator. A non-finite Float has no rational form, so
-   CRuby answers the value itself and 1 rather than converting (#3011). */
 /* ---- socket support (#2922): thin layer over lib/sp_net.c + sp_io_fdopen_sock.
    A TCPServer/TCPSocket IS an sp_File whose ->mode labels the kind; every IO
    method (gets/read/write/puts/each_line/...) works unchanged, with writes
@@ -1913,8 +1739,6 @@ static sp_Tms sp_process_times(void) {
   t.cstime = (mrb_float)b.tms_cstime / hz;
   return t;
 }
-/* Boxing for the unboxed sp_Tms value (a rescue expression merges it into a
-   nullable slot, #3132): heap-copy like sp_box_frange. */
 /* Class/Module#freeze / #frozen?: a class value is an unboxed {cls_id, name},
    so the frozen flag lives in a global per-class map -- user ids from 0 up,
    builtins (-100..-163) mapped to the top of the range (#3101). */
@@ -1940,14 +1764,6 @@ static const char *sp_env_aset(const char *k, sp_RbVal v) {
   if (v.v.s) setenv(k, v.v.s, 1); else unsetenv(k);
   return v.v.s;
 }
-/* ENV mutators (#2832). Each returns the fresh snapshot so the expression
-   value renders like ENV does. */
-/* ENV.shift: remove and return the first [key, value] pair, or nil */
-/* ENV.update/merge!/replace with a string-pair hash */
-/* A snapshot of the environment as a StrStr hash: ENV's enumeration surface
-   (keys/each/select/count{...}/inspect/...) is desugared onto it, so the
-   whole Hash machinery serves it (#2742). Keys/values are copied onto the
-   GC string heap -- environ storage may move under setenv. */
 static mrb_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b);
 static mrb_float sp_poly_to_f(sp_RbVal v);  /* defined below; used by the bigint+float arms */
 static mrb_int sp_poly_to_i(sp_RbVal v);    /* defined below; used by the rational helper */
@@ -2042,16 +1858,11 @@ static mrb_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return v.v.
    unpack1 literal-float-directive fast path: sp_str_unpack pads short input
    with nil, which must stay nil through the unboxed TY_FLOAT result (CRuby
    returns nil there) instead of coercing to 0.0 like sp_poly_to_f. */
-/* Float#to_i whose integer value escapes int64: CRuby promotes to Bignum;
-   until the promotion plan covers statically-int results (#2024), raise
-   loudly instead of saturating silently. NaN/Inf raise FloatDomainError. */
 static mrb_float sp_poly_to_f_opt(sp_RbVal v) { return v.tag == SP_TAG_NIL ? sp_float_nil() : sp_poly_to_f(v); }
 /* Case conversions / succ preserve the receiver's class: a Symbol converts
    through its name and re-interns, a String stays a String (CRuby). */
 /* String#to_c: CRuby's lenient complex parse -- a leading real part, an
    optional [+-]imag i tail, or a bare "Ni"; unparseable input is (0+0i). */
-/* String#setbyte over value-semantics strings: copy-on-write (a literal's
-   bytes are static storage). The caller re-binds an lvalue receiver. */
 /* sp_str_to_c: moved to lib/sp_cold.c */
 sp_Complex sp_str_to_c(const char *s);
 /* Hash subset/superset comparisons (boxed, any variant pairing): every pair
@@ -2202,9 +2013,6 @@ SP_COLD static const char *sp_stage_recv_msg(const char *msg, sp_RbVal recv) {
   sp_exc_stage_recv(recv);
   return msg;
 }
-/* Float#round(half:) tie-breaking: :even is banker's rounding (rint under
-   the default FE_TONEAREST), :down rounds ties toward zero. (:up is the
-   plain round().) */
 
 /* floor/ceil/round/truncate on a non-finite Float: casting NaN/Inf to an
    integer is C UB; CRuby raises FloatDomainError naming the value. */
@@ -2643,17 +2451,6 @@ static sp_RbVal sp_PolyArray_delete(sp_PolyArray *a, sp_RbVal v) {
   return found ? v : sp_box_nil();
 }
 
-/* FFI array hand-off. Concrete arrays expose their element storage zero-copy
-   (mrb_int/mrb_float are int64/double on 64-bit targets). A poly_array can't
-   be punned -- its ->data is sp_RbVal[] (boxed) -- so unbox element-wise into
-   a fresh GC-tracked buffer (sp_gc_alloc_nogc: no collection mid-build, so a
-   sibling array arg's buffer can't be swept; freed at a later GC). */
-/* FFI array hand-off from a POLY slot: dispatch on the RUNTIME storage kind.
-   A poly value may hold any array variant -- an int array that poly-collapsed
-   still boxes an sp_IntArray (cls_id INT_ARRAY), and reinterpreting its .v.p
-   as sp_PolyArray* read garbage lengths and marshalled NULL (the toy LoRA
-   flatline). nil passes as NULL (the C idiom for an absent array); any other
-   runtime kind raises loudly rather than silently handing the callee NULL. */
 /* MatchData — holds the source string and the per-group byte offsets
    the engine produced. `[]`/captures extract substrings on demand;
    offset/begin/end report CHARACTER offsets (CRuby semantics), so
@@ -2932,9 +2729,6 @@ static int sp_rbval_is_array(sp_RbVal v) {
     (v.cls_id == SP_BUILTIN_INT_ARRAY || v.cls_id == SP_BUILTIN_FLT_ARRAY ||
      v.cls_id == SP_BUILTIN_STR_ARRAY || v.cls_id == SP_BUILTIN_POLY_ARRAY);
 }
-/* Frozen flag of a builtin array, matching what sp_*Array_splice check (the
-   struct field, which the promote path would otherwise bypass by building a new
-   array, and which lets us check frozen up front before any GC root is live). */
 /* 3-arg []= on a poly receiver whose runtime object is a builtin array. Matches
    CRuby: a POLY_ARRAY splices directly (sp_PolyArray_splice already inserts a
    nil/scalar src as one element, splats an array src, and nil-fills a gap past
@@ -3009,7 +2803,6 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, mrb_int start, mrb_int len, sp_RbV
   sp_PolyArray_splice(p, start, len, src);
   return sp_box_poly_array(p);
 }
-/* Render a Range for a RangeError message ("-10..1", "1...3", "-10..", "..2"). */
 /* `arr[range] = src` on a poly receiver: resolve beginless (INTPTR_MIN -> 0) and
    endless (INTPTR_MAX -> length) endpoints and negative endpoints against the
    runtime length, then splice. A begin index below -length raises RangeError
@@ -3123,7 +2916,6 @@ static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) {
 /* Array#compact for poly_array: keep elements whose tag is not SP_TAG_NIL. */
 static sp_PolyArray *sp_PolyArray_compact(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b); if (!a) return b; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) sp_PolyArray_push(b, a->data[i]); } return b; }
 static sp_PolyArray *sp_PolyArray_compact_bang(sp_PolyArray *a) { if (!a) return a; mrb_int w = 0; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) a->data[w++] = a->data[i]; } a->len = w; return a; }
-/* Issue #738: Hash#to_a as poly_array of [key, value] poly_array pairs. */
 /* Array#flatten -- walk into nested array values recursively. Each
    array-tagged element (IntArray / StrArray / SymArray / FloatArray /
    PolyArray) is expanded inline; scalars are appended as-is. Issue
@@ -3433,10 +3225,6 @@ else {
   char *r = sp_str_alloc(out); memcpy(r, buf, out); free(buf); return r;
 }
 
-/* Element count of an array-kind value, or -1 if `el` is not an array (a
-   non-object, a user object, a hash, etc.). Lets assoc/rassoc skip non-array
-   and too-short pairs without indexing them, so a `nil` search key cannot
-   spuriously match an out-of-bounds (nil) read. */
 
 /* Box any array-kind element into a PolyArray so assoc/rassoc can return it
    through their PolyArray* type regardless of the matched pair's own kind
@@ -3532,8 +3320,6 @@ static sp_PolyArray *sp_bigint_range_array(sp_Bigint *lo, sp_Bigint *hi, int up)
   }
   return a;
 }
-/* Array#sum with a String initial value: concatenation fold ("abc" from
-   ["a","b","c"].sum("")), CRuby's + on each element. */
 /* Array#sum with an Array initial value over an array of arrays: one-level
    concatenation into a fresh poly array ([[1],[2]].sum([]) == [1, 2]). */
 static sp_PolyArray *sp_PolyArray_sum_concat(sp_PolyArray *a, sp_RbVal init) {
@@ -5119,10 +4905,6 @@ static mrb_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_STR)return v.v.s?(mrb
 case SP_BUILTIN_IO:{mrb_int sp_file_size(const char*);sp_File*_f=(sp_File*)v.v.p;if(_f&&sp_File_path(_f)[0]&&sp_File_path(_f)[0]!='<')return sp_file_size(sp_File_path(_f));return 0;}
 default:return 0;}}
 
-/* Marshal implementation moved to lib/sp_marshal.c. These small wrappers give
-   the standalone serializer construction primitives that need sp_runtime.h
-   types; sp_re_init (codegen) installs them into sp_marshal_v along with the
-   generated sym_intern / obj_dump / obj_load. */
 /* NilClass-aware conversions for a boxed receiver (a nil-holding local widens
    to poly): nil converts per NilClass, a value already of the target kind is
    itself, anything else raises NoMethodError like CRuby. */
@@ -5664,11 +5446,6 @@ static void sp_mark_in_flight_exceptions(void) {
    (sp_str_alloc'd). */
 /* Registered by the generated program to provide user exception hierarchy. */
 const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
-/* Exception#==: same class and message (CRuby value equality); #equal?
-   stays pointer identity at the emit site. */
-/* Exception#dup / #clone: a fresh allocation of the receiver's full
-   (subclass-sized) payload -- the GC header carries the size, so subclass
-   ivar fields copy along (as references, matching Object#dup). */
 /* Build the carried NameError/NoMethodError with #name recovered from the
    message's first quoted token (see sp_raise_cls, #2758). */
 static void *sp_exc_recover_named(const char *cls, const char *msg) {
@@ -5695,9 +5472,6 @@ static void *sp_exc_recover_named(const char *cls, const char *msg) {
   e->xname = sp_box_sym(sp_sym_intern(nb));
   return e;
 }
-/* Write the staged introspection values (receiver/key/value) into the carried
-   exception, creating one when the raise had none (see sp_raise_cls). */
-/* SystemExit#status carried in the result slot; 0 when unset. */
 /* Kernel#exit: raises a rescuable SystemExit carrying the status; with no
    handler in scope it terminates directly (#2761). exit! stays direct. */
 static void sp_raise_exc(volatile sp_Exception *ve);   /* defined below */
@@ -5722,17 +5496,6 @@ SP_NORETURN SP_COLD static void sp_abort_raise(const char *msg) {
   }
   exit(1);
 }
-/* Exception#exception(msg): a copy of the receiver carrying the new message. */
-/* Allocate a zeroed exception-subclass struct of `sz` bytes with the base
-   {cls_name, parent_cls_name, msg} prefix set, for the degenerate catch path
-   where a user subclass with ivars was raised without a carried object
-   (#1415). Its ivar fields stay zero (nil/0). msg is the only heap field, so
-   the base scan suffices. */
-/* Accept `volatile` pointers: LV slots holding sp_Exception * are
-   declared volatile when they live across setjmp, so callers may
-   pass volatile-qualified pointers in. The pointee itself isn't
-   volatile (cls_name/msg are stable post-construction), so we
-   strip volatile internally for one access. */
 static void sp_raise_exc(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
   if (!e) sp_raise("(nil exception)");
@@ -5762,13 +5525,6 @@ SP_NORETURN void sp_raise_stop_iteration(sp_RbVal result) {
   sp_pending_exc_obj = (void *)e;
   sp_raise_cls("StopIteration", msg);
 }
-/* Create an exception for a `rescue => e` binding: like sp_exc_new but
-   also looks up the parent class via the user hierarchy callback. */
-/* Exception#cause: the exception active when this one was raised, or NULL. */
-/* StopIteration#result: the value the finished iteration returned (nil for a
-   non-StopIteration exception or a past-the-end materialized enumerator). */
-/* The builtin exception hierarchy, as {class, direct superclass} pairs. Shared
-   by Exception#is_a? and the by-name #superclass lookup (#3031). */
 /* Exception#is_a?(ClassName): checks class name and known hierarchy. */
 static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
   sp_Exception *e = (sp_Exception *)ve;
@@ -5800,22 +5556,11 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
   return 0;
 }
 
-/* Check if exception class name `raised` is the same as or a subclass of
-   `target`, using both the built-in hierarchy and the user hierarchy callback. */
-/* NameError#name (NoMethodError inherits it): the carried missing name.
-   Any other exception class raises CRuby's NoMethodError -- the receiver
-   type is class-erased at compile time, so the check is a runtime one. */
-/* Class-gated introspection accessors (#2753-#2756, #2770): each answers only
-   on its CRuby-defining class (walking the name-carried hierarchy) and raises
-   NoMethodError elsewhere, matching per-class method definitions. */
 /* a reason/tag staged as a plain string interns back to the Symbol it names */
 static sp_RbVal sp_exc_sym_slot(sp_RbVal v) {
   if (v.tag == SP_TAG_STR && v.v.s) return sp_box_sym(sp_sym_intern(v.v.s));
   return v;
 }
-/* Exception accessors on a POLY receiver (an exception rescued into a
-   union-typed local): unbox and delegate; a non-exception value is CRuby's
-   NoMethodError (#3120, #3122). */
 static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p))
     sp_raise_cls("NoMethodError",
@@ -5837,13 +5582,6 @@ static sp_RbVal sp_exc_tag_acc(sp_Exception *e) {
   return sp_exc_sym_slot(e->xkey);
 }
 
-/* Does `raised` descend from StandardError? Used by a bare `rescue` (no class),
-   which catches StandardError and its subclasses only. CRuby's non-StandardError
-   branch is a small fixed set of system exceptions; EVERY other exception -- all
-   library and user classes -- descends from StandardError. So an unknown class
-   (a C-raised package error like JSON::ParserError, or a user class with no
-   registered parent) defaults to StandardError; only the listed roots and their
-   subclasses answer false. */
 
 /* Cross-TU bridge for sp_bigint.c (compiled as a separate translation
    unit; can't see static helpers in this header). Defined non-static
@@ -6213,11 +5951,6 @@ void sp_fiber_reraise(const char *cls, const char *msg, void *obj) {
   sp_raise_cls(cls, msg);
 }
 
-/* Kernel#sleep with sub-second precision. Argument is seconds as a
-   double so `sleep(0.5)` actually waits 500ms; the legacy `sleep((unsigned)0.5)`
-   cast truncated to 0 and returned immediately. POSIX uses
-   nanosleep(); Windows uses Sleep() (milliseconds). Negative or NaN
-   inputs no-op. */
 
 /* File metadata predicates (sp_file_directory/file/exist/delete) moved to
    lib/sp_io.c (libspinel_rt.a); prototypes come from sp_io.h. */
@@ -6290,7 +6023,6 @@ static sp_File *sp_poly_as_io(sp_RbVal v, const char *m) {
   sp_raise_poly_nomethod(m, v);
   return NULL;
 }
-/* IO.pipe -> [reader, writer] handles (#2815) */
 /* File.fnmatch: shell-glob match with CRuby's pathname/dot-file defaults */
 mrb_bool sp_file_fnmatch(const char *pat, const char *path);
 const char *sp_file_dirname(const char *path);
@@ -6439,18 +6171,7 @@ struct sp_Proc;
 static struct sp_Proc *sp_at_exit_hooks[SP_AT_EXIT_MAX];
 static mrb_int sp_at_exit_count = 0;
 
-/* The lineage root of a proc: dups/clones of one proc share it, so Proc#== /
-   #eql? compare roots (a dup == its original) while distinct literals differ. */
-/* Proc#dup / #clone: a fresh shallow copy (distinct identity; the capture
-   environment is shared, like CRuby). dup drops the frozen flag, clone keeps
-   it (#3048). */
-/* Method#to_proc: wrap the bound method in a Proc whose trampoline forwards
-   through the (void *self, mrb_int...) ABI (the arity dispatches the cast). */
 
-/* Bound Method object: `obj.method(:foo)` / `method(:foo)`. `self` is the
-   bound receiver (NULL for a top-level method), `fn` the function address
-   (cast to the right signature at the call site), `name` the method name
-   (a string literal). Only `self` is GC-managed. */
 
 /* External Enumerator: a cursor over a snapshot of a collection's elements
    (boxed into a PolyArray at creation). #next / #peek walk the cursor and raise
@@ -6972,8 +6693,6 @@ sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler);
 mrb_int sp_process_kill1(sp_RbVal sig, mrb_int pid);
 /* SignalException.new(sig) / Interrupt.new(msg?): the message is the SIG-name
    and #signo rides the xkey slot (#2762, #2763). */
-/* msg: an explicit second argument overrides the SIG<name> message (only the
-   Integer-signal form accepts one, matching CRuby); NULL keeps the default. */
 
 /* ENV.delete_if/keep_if/select!/reject!/filter!: the proc judges each
    snapshot pair; `keep` selects which verdict survives (#2832). */
@@ -7053,17 +6772,6 @@ static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr) {
    calling it (no args) when it is a Proc and publishing through the boxed-return
    channel, else returning the stored value (nil when none was supplied). */
 sp_RbVal sp_Enumerator_size(sp_Enumerator *e);
-/* Lambda strict-arity check: raise ArgumentError if argc is outside
-   [req, req+opt] (no upper bound with a rest param). Procs are lenient. */
-/* Proc#inspect: CRuby prints "#<Proc:0xADDR file:line (lambda)>"; the
-   source location is not tracked, so the address form (+ lambda marker) is
-   the best-effort rendering. */
-/* Proc#parameters with an explicit mode. Kinds are stored canonically
-   (lambda-style: a plain positional is "req"); printing for proc mode remaps
-   req -> opt, which leaves defaulted positionals (stored "opt") and every
-   non-positional kind untouched -- exactly CRuby's parameters(lambda:) rule.
-   mode: 1 = lambda view, 0 = proc view, -1 = the receiver's own nature.
-   req_id/opt_id are the generated TU's interned ids for those kinds. #2693 */
 
 /* Proc#<< / Proc#>> composition. The composed proc captures the two
    operands and, on call, threads its single argument through inner
@@ -7112,10 +6820,6 @@ static void *sp_proc_compose_v(void *outer, void *inner) {
    by calling the target with the collected (mrb_int) arguments. Spinel
    defers the call to the point of use (sp_curry_to_int), so a partial
    curry behaves as a deferred call rather than auto-invoking at arity. */
-/* Each accumulated argument is stored boxed so a non-int arg (a String, an
-   object, ...) keeps its type through the deferred call (#3183). */
-/* Publish the accumulated (boxed) args on the side-channel: a poly-param
-   target reads its arguments back from there, keeping each arg's real type. */
 /* The int slots feed a target with scalar-int params, which reads them
    directly rather than from the boxed side-channel. */
 static void sp_curry_int_slots(sp_Curry *c, mrb_int *slots) {

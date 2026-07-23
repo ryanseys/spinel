@@ -393,6 +393,11 @@ static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, mrb_int i) { if (!a) re
    used by lib/sp_cold.c's sp_gc_stat. Pure textual move (still static
    inline / object-like macro), no codegen change. ---- */
 #define SPL(s) (&("\xff" s)[1])
+/* 0xf1 = heap string frozen by an explicit .freeze call.
+   Unlike 0xff (rodata literal) this marker lives in a malloc'd buffer
+   so sp_str_freeze_val can set it.  The frozen? predicate and mutation
+   guards check for 0xf1; plain rodata 0xff literals are NOT reported
+   as frozen (they behave as immutable value-semantics objects). */
 static inline mrb_bool sp_str_is_frozen_val(const char *s) {
   if (!s) return TRUE;
   return ((const unsigned char *)s)[-1] == 0xf1;
@@ -491,11 +496,29 @@ typedef struct { mrb_float utime, stime, cutime, cstime; } sp_Tms;
    sp_encoding_name/_inspect/_eq (0 uses) ride along since sp_box_encoding
    needs sp_encoding_name. ---- */
 static inline sp_RbVal sp_box_class_name(const char *name) { sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = SP_CLASS_BY_NAME; r.v.s = name; return r; }
+/* box a sp_Class into a poly slot (a name-backed class boxes by name). */
 static inline sp_RbVal sp_box_class(sp_Class c) { if (sp_class_nil_p(c)) return sp_box_nil(); if (c.name) return sp_box_class_name(c.name); sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = (int)c.cls_id; r.v.i = c.cls_id; return r; }
+/* Regexp.escape(s) / Regexp.quote(s) -- prefix every regex metachar
+   and whitespace byte with a single backslash, returning a heap
+   string that callers can feed into `Regexp.new(...)` to match the
+   original bytes literally. Matches CRuby's rb_reg_quote for the
+   ASCII range (the only range Spinel's regex engine indexes today,
+   so multibyte passes through unchanged).
+
+   The metachars covered: \\ . ? * + ^ $ | ( ) [ ] { } # -
+   The whitespace covered: ' ' \t \n \r \f \v
+   Everything else copies byte-for-byte. */
 static inline sp_RbVal sp_box_nullable_obj(void *p, int cls_id) { return p ? sp_box_obj(p, cls_id) : sp_box_nil(); }
+/* Built-in pointer boxes — share SP_TAG_OBJ with a reserved negative
+   cls_id so the dispatch path is uniform. */
 static inline sp_RbVal sp_box_int_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_INT_ARRAY); }
 static inline sp_RbVal sp_box_float_array(void *p) { return sp_box_obj(p, SP_BUILTIN_FLT_ARRAY); }
 static inline sp_RbVal sp_box_str_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_STR_ARRAY); }
+/* sp_Range is a 16-byte value type that doesn't fit in sp_RbVal's union
+   (max 8 bytes). When a Range crosses into a poly slot (heterogeneous
+   hash / array / param / ivar), copy it onto the GC heap and box the
+   pointer via SP_BUILTIN_RANGE. The Range has no internal pointer fields
+   so no scanner is needed. */
 static inline sp_RbVal sp_box_range(sp_Range v) {
   sp_Range *p = (sp_Range *)sp_gc_alloc(sizeof(sp_Range), NULL, NULL);
   *p = v;

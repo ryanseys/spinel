@@ -1,6 +1,8 @@
 /* sp_exc.c -- cold sp_Exception ops (see sp_exc.h). 0 optcarrot uses. */
 #include "sp_exc.h"
 
+/* Check if exception class name `raised` is the same as or a subclass of
+   `target`, using both the built-in hierarchy and the user hierarchy callback. */
 int sp_exc_cls_matches(const char *raised, const char *target) {
   if (!raised || !target) return 0;
   static const char *const HIER2[][2] = {
@@ -57,12 +59,22 @@ int sp_exc_cls_matches(const char *raised, const char *target) {
   if (!strcmp(target, "Object") || !strcmp(target, "BasicObject") || !strcmp(target, "Kernel")) return 1;
   return 0;
 }
+/* Class-gated introspection accessors (#2753-#2756, #2770): each answers only
+   on its CRuby-defining class (walking the name-carried hierarchy) and raises
+   NoMethodError elsewhere, matching per-class method definitions. */
 SP_COLD void sp_exc_acc_gate(sp_Exception *e, const char *cls, const char *acc) {
   if (e && sp_exc_cls_matches(e->cls_name, cls)) return;
   sp_raise_cls("NoMethodError",
                sp_sprintf("undefined method '%s' for %s", acc,
                           e ? sp_sprintf("an instance of %s", e->cls_name) : "nil"));
 }
+/* Does `raised` descend from StandardError? Used by a bare `rescue` (no class),
+   which catches StandardError and its subclasses only. CRuby's non-StandardError
+   branch is a small fixed set of system exceptions; EVERY other exception -- all
+   library and user classes -- descends from StandardError. So an unknown class
+   (a C-raised package error like JSON::ParserError, or a user class with no
+   registered parent) defaults to StandardError; only the listed roots and their
+   subclasses answer false. */
 int sp_exc_is_standard_error(const char *raised) {
   if (!raised) return 0;
   static const char *const NONSTD[] = {
@@ -83,6 +95,8 @@ int sp_exc_is_standard_error(const char *raised) {
   }
   return 1;
 }
+/* Create an exception for a `rescue => e` binding: like sp_exc_new but
+   also looks up the parent class via the user hierarchy callback. */
 sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
   sp_Exception *e = sp_exc_new(cls, msg);
   if (sp_user_exc_parent_fn) {
@@ -91,6 +105,11 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
   }
   return e;
 }
+/* Allocate a zeroed exception-subclass struct of `sz` bytes with the base
+   {cls_name, parent_cls_name, msg} prefix set, for the degenerate catch path
+   where a user subclass with ivars was raised without a carried object
+   (#1415). Its ivar fields stay zero (nil/0). msg is the only heap field, so
+   the base scan suffices. */
 void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {
   sp_Exception *e = (sp_Exception *)sp_gc_alloc(sz, NULL, sp_exc_gc_scan);
   memset(e, 0, sz);
@@ -138,6 +157,8 @@ sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
   e->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : (cls_name ? cls_name : "RuntimeError"));
   return e;
 }
+/* Exception#==: same class and message (CRuby value equality); #equal?
+   stays pointer identity at the emit site. */
 mrb_bool sp_exc_eq(sp_Exception *a, sp_Exception *b) {
   if (a == b) return 1;
   if (!a || !b) return 0;
@@ -155,6 +176,9 @@ sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const
   e->parent_cls_name = parent_cls;
   return e;
 }
+/* Exception#dup / #clone: a fresh allocation of the receiver's full
+   (subclass-sized) payload -- the GC header carries the size, so subclass
+   ivar fields copy along (as references, matching Object#dup). */
 sp_Exception *sp_exc_dup(sp_Exception *e) {
   if (!e) return e;
   sp_gc_hdr *h = (sp_gc_hdr *)((char *)e - sizeof(sp_gc_hdr));
@@ -164,6 +188,8 @@ sp_Exception *sp_exc_dup(sp_Exception *e) {
   memcpy(n, e, payload);
   return n;
 }
+/* Write the staged introspection values (receiver/key/value) into the carried
+   exception, creating one when the raise had none (see sp_raise_cls). */
 void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {
   sp_Exception *e = (sp_Exception *)obj;
   if (!e) e = sp_exc_new(cls, msg);
@@ -172,16 +198,23 @@ void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {
   if (sp_pending_exc_flags & 4) e->result = sp_pending_exc_val;
   return e;
 }
+/* SystemExit#status carried in the result slot; 0 when unset. */
 int sp_exc_exit_status(void *obj) {
   sp_Exception *e = (sp_Exception *)obj;
   return (e && e->result.tag == SP_TAG_INT) ? (int)e->result.v.i : 0;
 }
+/* Exception#exception(msg): a copy of the receiver carrying the new message. */
 sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {
   sp_Exception *n = sp_exc_dup(e);
   SP_GC_ROOT(n);
   n->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : (n->cls_name ? n->cls_name : "RuntimeError"));
   return n;
 }
+/* Accept `volatile` pointers: LV slots holding sp_Exception * are
+   declared volatile when they live across setjmp, so callers may
+   pass volatile-qualified pointers in. The pointee itself isn't
+   volatile (cls_name/msg are stable post-construction), so we
+   strip volatile internally for one access. */
 const char *sp_exc_class_name(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
   return e ? e->cls_name : "RuntimeError";
@@ -190,14 +223,19 @@ const char *sp_exc_message(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
   return e ? e->msg : sp_str_empty;
 }
+/* Exception#cause: the exception active when this one was raised, or NULL. */
 sp_Exception *sp_exc_cause(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
   return e ? e->cause : NULL;
 }
+/* StopIteration#result: the value the finished iteration returned (nil for a
+   non-StopIteration exception or a past-the-end materialized enumerator). */
 sp_RbVal sp_exc_result(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
   return e ? e->result : sp_box_nil();
 }
+/* The builtin exception hierarchy, as {class, direct superclass} pairs. Shared
+   by Exception#is_a? and the by-name #superclass lookup (#3031). */
 const char *sp_exc_parent_of_name(const char *cls) {
   if (!cls) return NULL;
   static const char *const HIER[][2] = {
@@ -243,12 +281,18 @@ const char *sp_exc_parent_of_name(const char *cls) {
     if (!strcmp(cls, HIER[i][0])) return HIER[i][1];
   return NULL;
 }
+/* NameError#name (NoMethodError inherits it): the carried missing name.
+   Any other exception class raises CRuby's NoMethodError -- the receiver
+   type is class-erased at compile time, so the check is a runtime one. */
 sp_RbVal sp_exc_name_acc(sp_Exception *e) {
   if (!e) return sp_box_nil();
   if (sp_exc_cls_matches(e->cls_name, "NameError")) return e->xname;
   sp_raise_cls("NoMethodError",
                sp_sprintf("undefined method 'name' for an instance of %s", e->cls_name));
 }
+/* Exception accessors on a POLY receiver (an exception rescued into a
+   union-typed local): unbox and delegate; a non-exception value is CRuby's
+   NoMethodError (#3120, #3122). */
 sp_RbVal sp_exc_key_acc(sp_Exception *e) {
   sp_exc_acc_gate(e, "KeyError", "key");
   /* KeyError.new("m") records no key, and CRuby raises rather than

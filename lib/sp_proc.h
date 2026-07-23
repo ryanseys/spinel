@@ -29,6 +29,8 @@ mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args);   /* defined in t
 extern SP_TLS sp_RbVal _sp_proc_poly_args[16];                   /* defined in the generated TU */
 extern SP_TLS sp_RbVal _sp_proc_poly_ret;                        /* defined in the generated TU */
 
+/* The lineage root of a proc: dups/clones of one proc share it, so Proc#== /
+   #eql? compare roots (a dup == its original) while distinct literals differ. */
 static inline sp_Proc *sp_proc_root(sp_Proc *p) { return (p && p->origin) ? (sp_Proc *)p->origin : p; }
 
 void sp_Proc_scan(void *p);

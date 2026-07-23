@@ -7,13 +7,21 @@
 
 void sp_StrIntHash_fin(void*p){sp_StrIntHash*h=(sp_StrIntHash*)p;free(h->keys);free(h->vals);free(h->order);}
 void sp_StrIntHash_scan(void*p){sp_StrIntHash*h=(sp_StrIntHash*)p;for(mrb_int i=0;i<h->cap;i++){if(h->keys[i])sp_mark_string(h->keys[i]);}}
+/* default_v is SP_INT_NIL for a hash with no explicit default ({} / {k=>v}),
+   so a missing-key `[]` read surfaces Ruby nil (#801). Hash.new(N) sets it to
+   N via _new_with_default. Proven-present internal reads use _get on present
+   keys, so this only governs the miss path. */
 sp_StrIntHash*sp_StrIntHash_new(void){sp_StrIntHash*h=(sp_StrIntHash*)sp_gc_alloc(sizeof(sp_StrIntHash),sp_StrIntHash_fin,sp_StrIntHash_scan);h->cap=16;h->mask=15;h->keys=(const char**)calloc((size_t)h->cap,sizeof(const char*));h->vals=(mrb_int*)calloc((size_t)h->cap,sizeof(mrb_int));h->order=(const char**)malloc(sizeof(const char*)*h->cap);h->len=0;h->default_v=SP_INT_NIL;return h;}
 sp_StrIntHash*sp_StrIntHash_new_with_default(mrb_int d){sp_StrIntHash*h=sp_StrIntHash_new();h->default_v=d;return h;}
 void sp_StrIntHash_grow(sp_StrIntHash*h){mrb_int oc=h->cap;const char**ok=h->keys;mrb_int*ov=h->vals;h->cap*=2;h->mask=h->cap-1;h->keys=(const char**)calloc((size_t)h->cap,sizeof(const char*));h->vals=(mrb_int*)calloc((size_t)h->cap,sizeof(mrb_int));h->order=(const char**)realloc(h->order,sizeof(const char*)*h->cap);h->len=0;for(mrb_int i=0;i<oc;i++){if(ok[i]){mrb_int idx=(mrb_int)(sp_str_hash(ok[i])&h->mask);while(h->keys[idx])idx=(idx+1)&h->mask;h->keys[idx]=ok[i];h->vals[idx]=ov[i];h->len++;}}free(ok);free(ov);}
 mrb_int sp_StrIntHash_get(sp_StrIntHash*h,const char*k){if(!h)return 0;mrb_int idx=(mrb_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k))return h->vals[idx];idx=(idx+1)&h->mask;}return h->default_v;}
+/* Issue #801: maybe-missing public `[]` read. Returns default_v on a miss,
+   which is SP_INT_NIL (Ruby nil at the value level) for a no-default hash and
+   the explicit default for Hash.new(N). Proven-present reads keep using _get. */
 mrb_int sp_StrIntHash_get_opt(sp_StrIntHash*h,const char*k){if(!h)return SP_INT_NIL;mrb_int idx=(mrb_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k))return h->vals[idx];idx=(idx+1)&h->mask;}return h->default_v;}
 void sp_StrIntHash_set(sp_StrIntHash*h,const char*k,mrb_int v){if(h->len*2>=h->cap)sp_StrIntHash_grow(h);mrb_int idx=(mrb_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}
 mrb_bool sp_StrIntHash_has_key(sp_StrIntHash*h,const char*k){mrb_int idx=(mrb_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
+/* Hash#value? -- scan values in insertion order. Issue #738. */
 mrb_bool sp_StrIntHash_has_value(sp_StrIntHash*h,mrb_int v){if(!h)return FALSE;for(mrb_int i=0;i<h->len;i++)if(sp_StrIntHash_get(h,h->order[i])==v)return TRUE;return FALSE;}
 mrb_int sp_StrIntHash_length(sp_StrIntHash*h){return h->len;}
 void sp_StrIntHash_delete(sp_StrIntHash*h,const char*k){mrb_int idx=(mrb_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k)){h->keys[idx]=NULL;h->vals[idx]=0;h->len--;mrb_int j=(idx+1)&h->mask;while(h->keys[j]){mrb_int nj=(mrb_int)(sp_str_hash(h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=NULL;h->vals[j]=0;idx=j;}j=(j+1)&h->mask;}{mrb_int oi=0;while(oi<=h->len){if(strcmp(h->order[oi],k)==0){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}
@@ -62,15 +70,27 @@ sp_StrArray*sp_IntStrHash_values(sp_IntStrHash*h){SP_GC_ROOT(h);sp_StrArray*a=sp
 sp_IntStrHash*sp_IntStrHash_dup(sp_IntStrHash*h){sp_IntStrHash*r=sp_IntStrHash_new();r->default_v=h->default_v;for(mrb_int i=0;i<h->len;i++)sp_IntStrHash_set(r,h->order[i],sp_IntStrHash_get(h,h->order[i]));return r;}
 sp_IntStrHash*sp_IntStrHash_replace(sp_IntStrHash*h,sp_IntStrHash*o){if(!h)return h;for(mrb_int i=0;i<h->cap;i++)h->used[i]=0;h->len=0;if(o)for(mrb_int i=0;i<o->len;i++)sp_IntStrHash_set(h,o->order[i],sp_IntStrHash_get(o,o->order[i]));return h;}
 mrb_bool sp_IntStrHash_eq(sp_IntStrHash*a,sp_IntStrHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){mrb_int k=a->order[i];if(!sp_IntStrHash_has_key(b,k))return FALSE;if(!sp_str_eq(sp_IntStrHash_get(a,k),sp_IntStrHash_get(b,k)))return FALSE;}return TRUE;}
+/* Int → Int typed hash. Mirrors sp_IntStrHash's open-addressing
+   layout (used[] bitmap so 0/-1 keys are distinguishable from
+   empty), with int-valued slots. Used by Array#tally on int
+   arrays — see #865. */
 void sp_IntIntHash_fin(void*p){sp_IntIntHash*h=(sp_IntIntHash*)p;free(h->keys);free(h->vals);free(h->order);free(h->used);}
+/* default_v is SP_INT_NIL for a hash with no explicit default, so a
+   missing-key `[]` read surfaces Ruby nil (#801). Hash.new(N) sets it via
+   _new_with_default. */
 sp_IntIntHash*sp_IntIntHash_new(void){sp_IntIntHash*h=(sp_IntIntHash*)sp_gc_alloc(sizeof(sp_IntIntHash),sp_IntIntHash_fin,NULL);h->cap=16;h->mask=15;h->keys=(mrb_int*)calloc((size_t)h->cap,sizeof(mrb_int));h->vals=(mrb_int*)calloc((size_t)h->cap,sizeof(mrb_int));h->order=(mrb_int*)malloc(sizeof(mrb_int)*(size_t)h->cap);h->used=(mrb_bool*)calloc((size_t)h->cap,sizeof(mrb_bool));h->len=0;h->default_v=SP_INT_NIL;return h;}
 sp_IntIntHash*sp_IntIntHash_new_with_default(mrb_int d){sp_IntIntHash*h=sp_IntIntHash_new();h->default_v=d;return h;}
 void sp_IntIntHash_grow(sp_IntIntHash*h){mrb_int oc=h->cap,ol=h->len;mrb_int*ok=h->keys;mrb_int*ov=h->vals;mrb_bool*ou=h->used;mrb_int*oo=h->order;h->cap*=2;h->mask=h->cap-1;h->keys=(mrb_int*)calloc((size_t)h->cap,sizeof(mrb_int));h->vals=(mrb_int*)calloc((size_t)h->cap,sizeof(mrb_int));h->order=(mrb_int*)malloc(sizeof(mrb_int)*(size_t)h->cap);h->used=(mrb_bool*)calloc((size_t)h->cap,sizeof(mrb_bool));h->len=ol;for(mrb_int i=0;i<oc;i++){if(!ou[i])continue;mrb_int k=ok[i];mrb_int v=ov[i];mrb_int di=_sp_istr_idx(h->mask,k);while(h->used[di])di=(di+1)&h->mask;h->used[di]=TRUE;h->keys[di]=k;h->vals[di]=v;}for(mrb_int i=0;i<ol;i++)h->order[i]=oo[i];free(ok);free(ov);free(ou);free(oo);}
 void sp_IntIntHash_set(sp_IntIntHash*h,mrb_int k,mrb_int v){if(h->len*2>=h->cap)sp_IntIntHash_grow(h);mrb_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->used[idx]=TRUE;h->keys[idx]=k;h->vals[idx]=v;h->order[h->len++]=k;}
 mrb_int sp_IntIntHash_get(sp_IntIntHash*h,mrb_int k){if(!h)return 0;mrb_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return h->default_v;}
 sp_IntIntHash*sp_IntIntHash_merge(sp_IntIntHash*a,sp_IntIntHash*b){sp_IntIntHash*r=sp_IntIntHash_new();if(a){r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_IntIntHash_set(r,a->order[i],sp_IntIntHash_get(a,a->order[i]));}if(b){for(mrb_int i=0;i<b->len;i++)sp_IntIntHash_set(r,b->order[i],sp_IntIntHash_get(b,b->order[i]));}return r;}
+/* Integer-keyed hash delete: backward-shift the probe cluster so open-addressing
+   lookups stay correct, then drop the key from the insertion-order array. */
 void sp_IntIntHash_delete(sp_IntIntHash*h,mrb_int k){if(!h)return;mrb_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k){h->used[idx]=0;h->len--;mrb_int j=(idx+1)&h->mask;while(h->used[j]){mrb_int nj=_sp_istr_idx(h->mask,h->keys[j]);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->used[idx]=1;h->used[j]=0;idx=j;}j=(j+1)&h->mask;}{mrb_int oi=0;while(oi<=h->len){if(h->order[oi]==k){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}
 void sp_IntStrHash_delete(sp_IntStrHash*h,mrb_int k){if(!h)return;mrb_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k){h->used[idx]=0;h->len--;mrb_int j=(idx+1)&h->mask;while(h->used[j]){mrb_int nj=_sp_istr_idx(h->mask,h->keys[j]);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->used[idx]=1;h->used[j]=0;idx=j;}j=(j+1)&h->mask;}{mrb_int oi=0;while(oi<=h->len){if(h->order[oi]==k){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}
+/* Issue #801: maybe-missing public `[]` read. Returns default_v on a miss
+   (SP_INT_NIL for a no-default hash = Ruby nil; the explicit default for
+   Hash.new(N)). Proven-present reads keep using _get. */
 mrb_int sp_IntIntHash_get_opt(sp_IntIntHash*h,mrb_int k){if(!h)return SP_INT_NIL;mrb_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return h->default_v;}
 mrb_bool sp_IntIntHash_has_key(sp_IntIntHash*h,mrb_int k){mrb_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 mrb_int sp_IntIntHash_length(sp_IntIntHash*h){return h?h->len:0;}
@@ -81,13 +101,22 @@ mrb_bool sp_IntIntHash_eq(sp_IntIntHash*a,sp_IntIntHash*b){if(!a||!b)return a==b
 sp_IntIntHash*sp_IntIntHash_dup(sp_IntIntHash*h){sp_IntIntHash*r=sp_IntIntHash_new();r->default_v=h->default_v;for(mrb_int i=0;i<h->len;i++)sp_IntIntHash_set(r,h->order[i],sp_IntIntHash_get(h,h->order[i]));return r;}
 sp_IntIntHash*sp_IntIntHash_replace(sp_IntIntHash*h,sp_IntIntHash*o){if(!h)return h;for(mrb_int i=0;i<h->cap;i++)h->used[i]=0;h->len=0;if(o)for(mrb_int i=0;i<o->len;i++)sp_IntIntHash_set(h,o->order[i],sp_IntIntHash_get(o,o->order[i]));return h;}
 void sp_IntIntHash_clear(sp_IntIntHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->used[i]=0;h->len=0;}
+/* Array#tally on int_array. CRuby returns an Integer-keyed Hash
+   mapping each distinct element to its occurrence count. */
 sp_IntIntHash*sp_IntArray_tally_int(sp_IntArray*a){sp_IntIntHash*h=sp_IntIntHash_new();if(!a)return h;for(mrb_int i=0;i<a->len;i++){mrb_int k=a->data[a->start+i];mrb_int c=sp_IntIntHash_has_key(h,k)?sp_IntIntHash_get(h,k):0;sp_IntIntHash_set(h,k,c+1);}return h;}
+/* Issue #851: Hash#inspect for typed-hash variants beyond
+   sym_int_hash. Renders Ruby's `{"k" => v, ...}` (string keys),
+   `{42 => "v", ...}` (int keys), or `{:k => v, ...}` (sym keys but
+   non-int value, since the bare `k: v` shorthand only applies
+   when values are inspectable as one-liners — match CRuby). */
 const char*sp_StrIntHash_inspect(sp_StrIntHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_STR_INT_HASH)):"{}";}
+/* Hash#to_proc lookup fn — cap is the hash, args[0] the string key. */
 mrb_int sp_StrIntHash_proc_fn(void *cap, mrb_int argc, mrb_int *args) { if (argc < 1) return 0; return sp_StrIntHash_get((sp_StrIntHash *)cap, (const char *)(uintptr_t)args[0]); }
 const char*sp_StrStrHash_inspect(sp_StrStrHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_STR_STR_HASH)):"{}";}
 const char*sp_IntStrHash_inspect(sp_IntStrHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_INT_STR_HASH)):"{}";}
 const char*sp_IntIntHash_inspect(sp_IntIntHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_int_to_s(sp_IntIntHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
 
+/* Issue #738: Hash#to_a as poly_array of [key, value] poly_array pairs. */
 sp_PolyArray*sp_StrIntHash_to_a(sp_StrIntHash*h){sp_PolyArray*r=sp_PolyArray_new();if(!h)return r;for(mrb_int i=0;i<h->len;i++){sp_PolyArray*p=sp_PolyArray_new();sp_PolyArray_push(p,sp_box_str(h->order[i]));sp_PolyArray_push(p,sp_box_int(sp_StrIntHash_get(h,h->order[i])));sp_PolyArray_push(r,sp_box_poly_array(p));}return r;}
 sp_PolyArray*sp_StrStrHash_to_a(sp_StrStrHash*h){sp_PolyArray*r=sp_PolyArray_new();if(!h)return r;for(mrb_int i=0;i<h->len;i++){sp_PolyArray*p=sp_PolyArray_new();sp_PolyArray_push(p,sp_box_str(h->order[i]));sp_PolyArray_push(p,sp_box_str(sp_StrStrHash_get(h,h->order[i])));sp_PolyArray_push(r,sp_box_poly_array(p));}return r;}
 sp_PolyArray*sp_IntStrHash_to_a(sp_IntStrHash*h){sp_PolyArray*r=sp_PolyArray_new();if(!h)return r;for(mrb_int i=0;i<h->len;i++){sp_PolyArray*p=sp_PolyArray_new();sp_PolyArray_push(p,sp_box_int(h->order[i]));sp_PolyArray_push(p,sp_box_str(sp_IntStrHash_get(h,h->order[i])));sp_PolyArray_push(r,sp_box_poly_array(p));}return r;}

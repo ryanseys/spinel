@@ -1906,6 +1906,7 @@ sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {
    SP_HEAP_LOCK/UNLOCK, sp_gc_* counters in sp_gc.h). ---- */
 #include "sp_hash.h"
 
+/* ENV.shift: remove and return the first [key, value] pair, or nil */
 sp_RbVal sp_env_shift(void) {
   extern char **environ;
   if (!environ || !*environ) return sp_box_nil();
@@ -1930,6 +1931,12 @@ mrb_int sp_env_size(void) {
   for (char **e = environ; e && *e; e++) n++;
   return n;
 }
+/* A snapshot of the environment as a StrStr hash: ENV's enumeration surface
+   (keys/each/select/count{...}/inspect/...) is desugared onto it, so the
+   whole Hash machinery serves it (#2742). Keys/values are copied onto the
+   GC string heap -- environ storage may move under setenv. */
+/* ENV mutators (#2832). Each returns the fresh snapshot so the expression
+   value renders like ENV does. */
 sp_StrStrHash *sp_env_to_h(void) {
   extern char **environ;
   sp_StrStrHash *h = sp_StrStrHash_new();
@@ -1963,6 +1970,7 @@ sp_StrStrHash *sp_env_clear(void) {
   }
   return sp_env_to_h();
 }
+/* ENV.update/merge!/replace with a string-pair hash */
 sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace) {
   if (replace) sp_env_clear();
   if (h) {
@@ -1974,6 +1982,9 @@ sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace) {
   }
   return sp_env_to_h();
 }
+/* Keys are spinel rodata literals (SPL: 0xff marker prefix) so the str-hash
+   header cache's s[-1] read is in-bounds -- a bare C literal here would
+   overread (and could alias a heap marker on some rodata layouts). */
 sp_StrIntHash*sp_gc_stat(void){
   /* The string heap (sp_str_heap) is malloc'd separately and deliberately
      excluded from sp_gc_bytes (see sp_str_alloc). Surface its footprint so
@@ -1997,6 +2008,8 @@ sp_StrIntHash*sp_gc_stat(void){
   SP_HEAP_UNLOCK();
 #endif
   sp_StrIntHash*h=sp_StrIntHash_new();sp_StrIntHash_set(h,SPL("bytes"),(mrb_int)SP_GC_CTR_GET(sp_gc_bytes));sp_StrIntHash_set(h,SPL("old_bytes"),(mrb_int)sp_gc_old_bytes);sp_StrIntHash_set(h,SPL("threshold"),(mrb_int)sp_gc_threshold);sp_StrIntHash_set(h,SPL("cycle"),(mrb_int)sp_gc_cycle);sp_StrIntHash_set(h,SPL("full_runs"),(mrb_int)(sp_gc_cycle/SP_GC_FULL_INTERVAL));sp_StrIntHash_set(h,SPL("str_bytes"),(mrb_int)str_bytes);sp_StrIntHash_set(h,SPL("str_count"),str_count);return h;}
+/* String#setbyte over value-semantics strings: copy-on-write (a literal's
+   bytes are static storage). The caller re-binds an lvalue receiver. */
 const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
   if (!s) s = "";
   /* an explicitly frozen string (or a frozen-string-literal file's literal,
@@ -2034,6 +2047,13 @@ const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
    (resolved at final link against the generated TU). ---- */
 #include "sp_range.h"
 
+/* `Range#include?`/`#cover?` on the boxed (SP_TAG_OBJ cls_id
+   SP_BUILTIN_RANGE) Range value. The direct sp_Range typed path
+   inlines this same check via compile_range_method_expr; poly-recv
+   dispatch needs the wrapper so the cls_id arm in
+   emit_poly_builtin_dispatch can land on a single C expression. An
+   exclusive range stops one short of `last`, so the upper bound is
+   `last - excl` (excl is 0 or 1). */
 mrb_bool sp_range_include(sp_Range *r, mrb_int x){
   /* beginless/endless sentinels (INTPTR_MIN/MAX) clamp one side open */
   if (r->first == INTPTR_MIN || r->last == INTPTR_MAX) {
@@ -2044,6 +2064,7 @@ mrb_bool sp_range_include(sp_Range *r, mrb_int x){
   mrb_int lo=sp_range_min_v(*r),hi=sp_range_max_v(*r);
   return sp_range_count(*r)>0 && lo<=x && x<=hi;
 }
+/* Render a Range for a RangeError message ("-10..1", "1...3", "-10..", "..2"). */
 const char *sp_range_str(sp_Range r) {
   const char *dots = r.excl ? "..." : "..";
   if (r.first == INTPTR_MIN && r.last == INTPTR_MAX) return dots;
@@ -2058,10 +2079,14 @@ const char *sp_range_str(sp_Range r) {
    sp_utf8_encode in sp_str.h, the overflow_p trio now also in sp_alloc.h).
    ---- */
 
+/* Integer#chr: a single byte; CRuby raises RangeError outside 0..255. */
 const char*sp_int_chr(mrb_int n){
   if(n<0||n>255)sp_raise_cls("RangeError",sp_sprintf("%lld out of char range",(long long)n));
   char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;sp_str_set_len(s,1);return s;
 }
+/* Integer#chr(Encoding::UTF_8): encode the codepoint as UTF-8 (1-4 bytes).
+   CRuby raises RangeError for a negative/too-large codepoint and for the
+   surrogate range, which UTF-8 cannot carry. */
 const char*sp_int_chr_utf8(mrb_int n){
   if(n<0||n>0x10FFFF)sp_raise_cls("RangeError",sp_sprintf("%lld out of char range",(long long)n));
   if(n>=0xD800&&n<=0xDFFF)sp_raise_cls("RangeError",sp_sprintf("invalid codepoint 0x%llX in UTF-8",(long long)n));
@@ -2072,6 +2097,9 @@ const char*sp_int_chr_utf8(mrb_int n){
   else{*p++=(char)(0xF0|(n>>18));*p++=(char)(0x80|((n>>12)&0x3F));*p++=(char)(0x80|((n>>6)&0x3F));*p++=(char)(0x80|(n&0x3F));}
   *p=0;sp_str_set_len(s,(size_t)(p-s));return s;
 }
+/* Issue #882: `"hello" << 33` should append the character with
+   that codepoint, not the decimal digits. UTF-8 encode (1..4 bytes)
+   and return a NUL-terminated string. */
 const char *sp_int_codepoint_to_str(mrb_int n) {
   /* String#<< / #concat with an out-of-range codepoint raises RangeError,
      matching CRuby ("N out of char range"). */
@@ -2082,7 +2110,12 @@ const char *sp_int_codepoint_to_str(mrb_int n) {
   sp_str_set_len(s, (size_t)len);  /* byte_len must be the encoded length, not the alloc */
   return s;
 }
+/* sp_IntArray lives in sp_array.h (hot core inline) + lib/sp_array.c
+   (cold ops). The Integer methods that happen to build an IntArray stay
+   here; they call the inline sp_IntArray_new / _push from sp_array.h. */
 sp_IntArray*sp_int_digits(mrb_int n,mrb_int base){if(base<0)sp_raise_cls("ArgumentError","negative radix");if(base<2)sp_raise_cls("ArgumentError",sp_sprintf("invalid radix %lld",(long long)base));if(n<0)sp_raise_cls("Math::DomainError","out of domain");sp_IntArray*a=sp_IntArray_new();if(n==0){sp_IntArray_push(a,0);return a;}while(n>0){sp_IntArray_push(a,n%base);n/=base;}return a;}
+/* Integer#bit_length: bits in the two's-complement representation excluding
+   the sign bit (a negative n counts the bits of ~n). */
 mrb_int sp_int_bit_length(mrb_int n){unsigned long long x=(n<0)?(unsigned long long)(~n):(unsigned long long)n;mrb_int b=0;if(x>=1ULL<<32){b+=32;x>>=32;}if(x>=1ULL<<16){b+=16;x>>=16;}if(x>=1ULL<<8){b+=8;x>>=8;}if(x>=1ULL<<4){b+=4;x>>=4;}if(x>=1ULL<<2){b+=2;x>>=2;}if(x>=1ULL<<1){b+=1;x>>=1;}return b+(mrb_int)x;}
 mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len) {
   mrb_int shifted;
@@ -2092,8 +2125,16 @@ mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len) {
                              : (len >= 64 ? ~(uint64_t)0 : (((uint64_t)1 << len) - 1));
   return (mrb_int)((uint64_t)shifted & mask);
 }
+/* sp_int_to_s / sp_float_to_s moved to sp_alloc.h (shared so lib/sp_json.c can
+   format numbers). String-interpolation of an int slot: a nil sentinel renders
+   as the empty string (CRuby interpolates nil as ""), every other value as its
+   decimal. */
 const char*sp_int_interp(mrb_int n){return n==SP_INT_NIL?sp_str_empty:sp_int_to_s(n);}
 const char*sp_int_to_s_base(mrb_int n,mrb_int base){if(base<2||base>36)sp_raise_cls("ArgumentError",sp_sprintf("invalid radix %lld",(long long)base));char*b=sp_str_alloc_raw(72);char tmp[72];int i=0;int neg=0;uint64_t u;if(n<0){neg=1;u=(uint64_t)(-(n+1))+1;}else{u=(uint64_t)n;}if(u==0){tmp[i++]='0';}else{while(u>0){mrb_int d=u%base;tmp[i++]=d<10?'0'+d:'a'+d-10;u/=base;}}int j=0;if(neg)b[j++]='-';while(i>0)b[j++]=tmp[--i];b[j]=0;sp_str_set_len(b,(size_t)j);return b;}
+/* Inspect / to_s for an int? value. CRuby distinguishes the two on
+   nil: `nil.to_s` is "" while `nil.inspect` is "nil". For a real
+   integer they agree (Integer#to_s and #inspect are both the decimal
+   form). Two wrappers keep call-site emit local. */
 const char *sp_int_opt_inspect(mrb_int v) { return sp_int_is_nil(v) ? "nil" : sp_int_to_s(v); }
 const char *sp_int_opt_to_s(mrb_int v)    { return sp_int_is_nil(v) ? "" : sp_int_to_s(v); }
 mrb_int sp_int_pow(mrb_int base, mrb_int exp) {
@@ -2128,6 +2169,7 @@ sp_StrArray *sp_get_ARGV(void) {
   }
   return sp_argv_array_cache;
 }
+/* Ensure a current readable stream, or return 0 at total end of input. */
 int sp_argf_ensure(void) {
   if (sp_argf_obj.cur) return 1;
   if (sp_argv.len == 0) {
@@ -2176,6 +2218,8 @@ mrb_bool sp_argf_eof(void) { return !sp_argf_ensure(); }
    0 optcarrot uses; reach only sp_range.h + lib-visible sp_float_to_s/
    sp_str_inspect/sp_str_eq/sp_StrArray_from_string_range/sp_sprintf. ---- */
 
+/* Float range (1.0..3.0). Endpoints stay mrb_float, so cover?/include?/begin/end
+   are exact. -HUGE_VAL / +HUGE_VAL are the beginless / endless sentinels. */
 sp_FloatRange sp_frange_new(mrb_float f, mrb_float l, mrb_int e) {
   sp_FloatRange r; r.first = f; r.last = l; r.excl = e; return r;
 }
@@ -2197,10 +2241,14 @@ sp_RbVal sp_box_frange(sp_FloatRange v) {
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_FLOAT_RANGE);
 }
+/* Float#max: the exclusive form has no greatest element (Ruby raises). */
 mrb_float sp_frange_max(sp_FloatRange r) {
   if (r.excl) sp_raise_cls("TypeError", "cannot exclude end value with non Integer begin value");
   return r.last;
 }
+/* String range ("a".."e"). The endpoints are the value; every traversal
+   materializes the element array, which is how a string range behaved before
+   it became a value of its own (#3064). */
 sp_StrRange sp_srange_new(const char *f, const char *l, mrb_int e) {
   sp_StrRange r; r.first = f; r.last = l; r.excl = e; return r;
 }
@@ -2212,6 +2260,7 @@ mrb_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
   return a.excl == b.excl && sp_str_eq(a.first ? a.first : sp_str_empty, b.first ? b.first : sp_str_empty) &&
          sp_str_eq(a.last ? a.last : sp_str_empty, b.last ? b.last : sp_str_empty);
 }
+/* #cover? / #=== compare lexicographically, no materialization. */
 mrb_bool sp_srange_cover(sp_StrRange r, const char *x) {
   if (!x) return 0;
   if (r.first && strcmp(x, r.first) < 0) return 0;
@@ -2238,8 +2287,13 @@ sp_RbVal sp_box_srange(sp_StrRange v) {
    only lib-visible sp_float_is_nil (sp_types.h)/sp_float_to_s (sp_alloc.h)/
    sp_float_to_rational (sp_format.h)/sp_raise_cls/sp_sprintf. ---- */
 
+/* float? (nullable float) counterparts: a non-nil value formats exactly
+   like a plain Float (delegates to sp_float_to_s), nil renders "nil"
+   (inspect) / "" (to_s). */
 const char *sp_float_opt_inspect(mrb_float v) { return sp_float_is_nil(v) ? "nil" : sp_float_to_s(v); }
 const char *sp_float_opt_to_s(mrb_float v)    { return sp_float_is_nil(v) ? "" : sp_float_to_s(v); }
+/* Float#numerator / #denominator. A non-finite Float has no rational form, so
+   CRuby answers the value itself and 1 rather than converting (#3011). */
 mrb_int sp_float_denominator(mrb_float f) {
   if (isnan(f) || isinf(f)) return 1;
   return sp_float_to_rational(f).den;
@@ -2248,6 +2302,9 @@ sp_RbVal sp_float_numerator(mrb_float f) {
   if (isnan(f) || isinf(f)) return sp_box_float(f);
   return sp_box_int(sp_float_to_rational(f).num);
 }
+/* Float#to_i whose integer value escapes int64: CRuby promotes to Bignum;
+   until the promotion plan covers statically-int results (#2024), raise
+   loudly instead of saturating silently. NaN/Inf raise FloatDomainError. */
 mrb_int sp_float_to_i_checked(mrb_float f) {
   if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", sp_sprintf("%g", f));
   if (f >= 9223372036854775808.0 || f < -9223372036854775808.0)
@@ -2257,15 +2314,26 @@ mrb_int sp_float_to_i_checked(mrb_float f) {
 
 /* ---- Box helpers (0 optcarrot uses) -- relocated from sp_runtime.h. ---- */
 
+/* Boxing a nullable-int value (int?): SP_INT_NIL is the reserved nil sentinel
+   and never a legitimate integer, so a sentinel must surface as Ruby nil rather
+   than a boxed INT_MIN. Used when an int? value (hash miss, rindex, nonzero?,
+   ...) flows into a poly slot. */
 sp_RbVal sp_box_int_or_nil(mrb_int v) { return v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v); }
+/* box a sp_Bigint* into a poly slot (heterogeneous container element, or a
+   promote-mode overflow result). */
 sp_RbVal sp_box_bigint(sp_Bigint *b) { sp_RbVal r; r.tag = SP_TAG_BIGINT; r.cls_id = 0; r.v.p = b; return r; }
 sp_RbVal sp_box_encoding(sp_Encoding e) { sp_RbVal r; r.tag = SP_TAG_ENCODING; r.cls_id = 0; r.v.s = sp_encoding_name(e); return r; }
 sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : sp_box_nil(); }
+/* An opaque foreign/FFI pointer: boxed with SP_BUILTIN_FOREIGN_PTR so the
+   collector skips it (it is not a sp_gc_alloc allocation). NULL -> nil. */
 sp_RbVal sp_box_foreign_ptr(void *p) { return p ? sp_box_obj(p, SP_BUILTIN_FOREIGN_PTR) : sp_box_nil(); }
+/* a compiled Regexp value (mrb_regexp_pattern *): untraced, program-lifetime */
 sp_RbVal sp_box_regexp(void *p) { return p ? sp_box_obj(p, SP_BUILTIN_REGEX) : sp_box_nil(); }
 sp_RbVal sp_box_sym_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_SYM_ARRAY); }
 sp_RbVal sp_box_ptr_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_PTR_ARRAY); }
 sp_RbVal sp_box_method(void *p)      { return sp_box_obj(p, SP_BUILTIN_METHOD); }
+/* Complex / Rational are wider value types (two components); like sp_Range they
+   heap-copy when crossing into a poly slot. No internal pointers, so no scan. */
 sp_RbVal sp_box_complex(sp_Complex v) {
   sp_Complex *p = (sp_Complex *)sp_gc_alloc(sizeof(sp_Complex), NULL, NULL);
   *p = v;
@@ -2276,11 +2344,16 @@ sp_RbVal sp_box_rational(sp_Rational v) {
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_RATIONAL);
 }
+/* Same heap-box rationale as sp_Range: sp_Time is 12+ bytes (tv_sec +
+   tv_nsec), wider than sp_RbVal's 8-byte union. No internal pointers
+   so no scanner is needed. */
 sp_RbVal sp_box_time(sp_Time v) {
   sp_Time *p = (sp_Time *)sp_gc_alloc(sizeof(sp_Time), NULL, NULL);
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_TIME);
 }
+/* Boxing for the unboxed sp_Tms value (a rescue expression merges it into a
+   nullable slot, #3132): heap-copy like sp_box_frange. */
 sp_RbVal sp_box_tms(sp_Tms v) {
   sp_Tms *p = (sp_Tms *)sp_gc_alloc(sizeof(sp_Tms), NULL, NULL);
   *p = v;
@@ -2291,10 +2364,25 @@ sp_RbVal sp_box_openstruct(sp_OpenStruct *o){ return sp_box_obj(o, SP_BUILTIN_OP
 /* ---- More cold String/StrArray ops -- relocated from sp_runtime.h. ---- */
 #include "sp_re.h"   /* mrb_regexp_pattern/re_exec for sp_str_re_match_p_at */
 
+/* respond_to? on a poly value that turns out to hold a BUILTIN. The compile
+   time fold emits a cls_id check against the user classes defining the name,
+   which necessarily answers false for a builtin member of the union -- yet
+   Array really does respond to :each. Answer the core builtin surface here,
+   keyed off the runtime class name so every Array variant shares one list.
+   Deliberately conservative: an unlisted name answers false rather than
+   guessing, which is also what an undispatchable method would do. */
 mrb_bool sp_str_in_list(const char *m, const char *const *list) {
   for (int i = 0; list[i]; i++) if (strcmp(m, list[i]) == 0) return 1;
   return 0;
 }
+/* String#index / #rindex return a boxed nil for not-found, boxed
+   int for found. Issue #532: typed-int slot can't represent CRuby's
+   nil-vs-real-index distinction in-band; widening the result type
+   to sp_RbVal at the call site lets `pos.nil?` and `puts pos.inspect`
+   work via the standard poly-tag dispatch. The -1 sentinel comes
+   from the underlying sp_str_*_index helpers; we widen here at the
+   boxing layer so existing call sites that want the raw int still
+   work via `sp_str_index` directly. */
 sp_RbVal sp_str_index_poly(const char *s, const char *sub) { mrb_int n = sp_str_index(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 sp_RbVal sp_str_index_from_poly(const char *s, const char *sub, mrb_int start) { mrb_int n = sp_str_index_from(s, sub, start); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 sp_RbVal sp_str_rindex_poly(const char *s, const char *sub) { mrb_int n = sp_str_rindex(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
@@ -2309,6 +2397,9 @@ sp_PolyArray *sp_str_lines_poly(const char *s) {
   }
   return a;
 }
+/* String#match?(/re/, pos) — pos is a codepoint index (CRuby semantics),
+   unlike Regexp#match?(str, pos) which uses byte offset. Convert the
+   codepoint index to a byte offset before dispatching to re_exec. */
 mrb_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_int cpos) {
   mrb_int cl = sp_str_length(str);
   if (cpos < 0) cpos += cl;
@@ -2318,6 +2409,8 @@ mrb_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_int 
   int caps[2];
   return re_exec(pat, str, slen, (mrb_int)boff, caps, 2, 0) > 0;
 }
+/* Issue #910: sub(string, hash) — literal-substring pattern
+   with a hash replacement. Replaces only the first match. */
 const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h) {
   if (!str || !pat) return str;
   const char *found = strstr(str, pat);
@@ -2335,6 +2428,8 @@ const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrH
   out[total] = 0;
   return out;
 }
+/* Array#sum with a String initial value: concatenation fold ("abc" from
+   ["a","b","c"].sum("")), CRuby's + on each element. */
 const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init) {
   size_t n = init ? strlen(init) : 0;
   if (a) for (mrb_int i = 0; i < a->len; i++) if (a->data[i]) n += strlen(a->data[i]);
@@ -2349,15 +2444,26 @@ sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {
   sp_StrArray_uniq_bang(a);
   return a->len != n ? sp_box_str_array(a) : sp_box_nil();
 }
+/* Array#join for float arrays -- each element via the Ruby-faithful
+   sp_float_to_s ("1.0", not "1"). Mirrors sp_IntArray_join exactly: build in a
+   malloc buffer, return an sp_str_alloc'd copy. (Not sp_String#data, whose owner
+   isn't GC-rooted across the return.) sp_float_to_s's result is copied
+   immediately, before the next call can reuse its buffer. */
 mrb_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(!sp_str_eq(a->data[i],b->data[i]))return FALSE;return TRUE;}
 
 /* ---- Complex ops / class-frozen bitmap -- relocated from sp_runtime.h. ---- */
 
+/* An Integer-classed (fl bit clear) whole component boxes as an Integer;
+   anything else keeps the Float class. The INTPTR guard mirrors
+   sp_complex_mag: casting an out-of-range double to mrb_int is UB. */
 sp_RbVal sp_complex_comp_v(mrb_float v, int is_f) {
   if (!is_f && v >= -(mrb_float)INTPTR_MAX && v <= (mrb_float)INTPTR_MAX && v == (mrb_float)(mrb_int)v)
     return sp_box_int((mrb_int)v);
   return sp_box_float(v);
 }
+/* CRuby Complex#abs: Integer only via the zero-component shortcut (|other|)
+   on an all-Integer complex; hypot is always a Float. #abs2 is Integer iff
+   both components are Integer-classed. */
 sp_RbVal sp_complex_abs_v(sp_Complex a) {
   if (a.fl == 0 && a.im == 0) return sp_complex_comp_v(a.re < 0 ? -a.re : a.re, 0);
   if (a.fl == 0 && a.re == 0) return sp_complex_comp_v(a.im < 0 ? -a.im : a.im, 0);
@@ -2381,8 +2487,14 @@ mrb_bool sp_class_frozen_id(mrb_int cls_id) {
 /* ---- Round helpers / typed-array frozen-check / IO.pipe / sysopen --
    relocated from sp_runtime.h. ---- */
 
+/* Float#round(half:) tie-breaking: :even is banker's rounding (rint under
+   the default FE_TONEAREST), :down rounds ties toward zero. (:up is the
+   plain round().) */
 double sp_round_half_even(double x) { return rint(x); }
 double sp_round_half_down(double x) { return x >= 0 ? ceil(x - 0.5) : floor(x + 0.5); }
+/* Frozen flag of a builtin array, matching what sp_*Array_splice check (the
+   struct field, which the promote path would otherwise bypass by building a new
+   array, and which lets us check frozen up front before any GC root is live). */
 int sp_typed_arr_frozen(sp_RbVal v) {
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY: return ((sp_IntArray *)v.v.p)->frozen;
@@ -2392,6 +2504,7 @@ int sp_typed_arr_frozen(sp_RbVal v) {
     default: return 0;
   }
 }
+/* IO.pipe -> [reader, writer] handles (#2815) */
 sp_PolyArray *sp_io_pipe(void) {
   int fds[2];
   if (sp_io_make_pipe(fds) != 0) sp_raise_cls("IOError", "pipe failed");
@@ -2414,6 +2527,11 @@ mrb_int sp_io_sysopen(const char *path) {
    via sp_io.h/sp_time.h -> check explicitly below). ---- */
 #include "sp_sched.h"
 
+/* Kernel#sleep with sub-second precision. Argument is seconds as a
+   double so `sleep(0.5)` actually waits 500ms; the legacy `sleep((unsigned)0.5)`
+   cast truncated to 0 and returned immediately. POSIX uses
+   nanosleep(); Windows uses Sleep() (milliseconds). Negative or NaN
+   inputs no-op. */
 void sp_sleep(mrb_float s) {
   if (!(s > 0.0)) return;
 #ifdef SP_THREADS
@@ -2439,6 +2557,9 @@ void sp_brat_scan(void *p) {
   if (r->num) sp_gc_mark(r->num);
   if (r->den) sp_gc_mark(r->den);
 }
+/* Construct a reduced big Rational: normalize the sign onto the numerator and
+   divide out the gcd. den must be non-zero (callers pass a literal or a checked
+   value). */
 sp_RbVal sp_box_brat(sp_Bigint *num, sp_Bigint *den) {
   if (sp_bigint_sign(den) < 0) { num = sp_bigint_sub(sp_bigint_new_int(0), num); den = sp_bigint_sub(sp_bigint_new_int(0), den); }
   sp_Bigint *g = sp_bigint_gcd(num, den);
@@ -2447,6 +2568,7 @@ sp_RbVal sp_box_brat(sp_Bigint *num, sp_Bigint *den) {
   p->num = num; p->den = den;
   return sp_box_obj(p, SP_BUILTIN_BIG_RATIONAL);
 }
+/* Lift a bignum (or an int) to a big Rational num/1. */
 sp_RbVal sp_brat_from_bigint(sp_Bigint *n) { return sp_box_brat(n, sp_bigint_new_int(1)); }
 const char *sp_brat_to_s(sp_BigRational *r) {
   const char *ns = sp_bigint_to_s(r->num), *ds = sp_bigint_to_s(r->den);
@@ -2462,6 +2584,10 @@ mrb_float sp_brat_to_f(sp_BigRational *r) {
 /* ---- Marshal.dump/load helpers -- relocated from sp_runtime.h. 0 optcarrot
    uses. ---- */
 
+/* Marshal implementation moved to lib/sp_marshal.c. These small wrappers give
+   the standalone serializer construction primitives that need sp_runtime.h
+   types; sp_re_init (codegen) installs them into sp_marshal_v along with the
+   generated sym_intern / obj_dump / obj_load. */
 sp_RbVal sp_marv_arr_new(void) { return sp_box_poly_array(sp_PolyArray_new()); }
 void sp_marv_arr_push(sp_RbVal a, sp_RbVal v) { sp_PolyArray_push((sp_PolyArray *)a.v.p, v); }
 sp_RbVal sp_marv_box_complex(mrb_float re, mrb_float im) { sp_Complex c; c.re = re; c.im = im; return sp_box_complex(c); }
@@ -2472,6 +2598,11 @@ void sp_marv_raise(const char *cls, const char *msg) { sp_raise_cls(cls, msg); }
    relocated from sp_runtime.h. 0 optcarrot uses. ---- */
 #include "sp_exc.h"
 
+/* String#gsub(regex, hash) — per-match hash lookup form. CRuby's
+ * semantics: each matched substring is looked up as a key in the
+ * hash; the value (if present) is the replacement, otherwise the
+ * matched substring is dropped (CRuby returns "", not the match).
+ * Used by html_escape / json_escape idioms (gsub(/[&<>]/, ESCAPES)). */
 const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
   int64_t slen = (int64_t)strlen(str);
  /* malloc scratch (realloc-safe); exact-sized string emitted below. */
@@ -2520,6 +2651,8 @@ else {
   free(out);
   return res;
 }
+/* Issue #910: sub(regex, hash) — same lookup semantics as
+   sp_re_gsub_str_str_hash but only the first match. */
 const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
   int64_t slen = (int64_t)strlen(str);
   int caps[64];
@@ -2546,6 +2679,8 @@ const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_
   if (kbuf != keybuf) free(kbuf);
   return out;
 }
+/* msg: an explicit second argument overrides the SIG<name> message (only the
+   Integer-signal form accepts one, matching CRuby); NULL keeps the default. */
 sp_Exception *sp_signal_exc_new_m(sp_RbVal sig, const char *msg) {
   if (msg && sig.tag != SP_TAG_INT)
     sp_raise_cls("ArgumentError", "wrong number of arguments");
@@ -2570,6 +2705,12 @@ sp_Exception *sp_interrupt_new(const char *msg) {
 /* ---- FFI array data / array-kind length / sp_Class unbox -- relocated
    from sp_runtime.h. 0 optcarrot uses. ---- */
 
+/* FFI array hand-off from a POLY slot: dispatch on the RUNTIME storage kind.
+   A poly value may hold any array variant -- an int array that poly-collapsed
+   still boxes an sp_IntArray (cls_id INT_ARRAY), and reinterpreting its .v.p
+   as sp_PolyArray* read garbage lengths and marshalled NULL (the toy LoRA
+   flatline). nil passes as NULL (the C idiom for an absent array); any other
+   runtime kind raises loudly rather than silently handing the callee NULL. */
 const int64_t *sp_ffi_int_array_data(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY)
     return sp_IntArray_ffi_data((sp_IntArray *)v.v.p);
@@ -2588,6 +2729,11 @@ const double *sp_ffi_float_array_data(sp_RbVal v) {
   sp_raise_cls("TypeError", "no implicit conversion into an FFI :float_array");
   return (const double *)0;  /* unreached */
 }
+/* FFI array hand-off. Concrete arrays expose their element storage zero-copy
+   (mrb_int/mrb_float are int64/double on 64-bit targets). A poly_array can't
+   be punned -- its ->data is sp_RbVal[] (boxed) -- so unbox element-wise into
+   a fresh GC-tracked buffer (sp_gc_alloc_nogc: no collection mid-build, so a
+   sibling array arg's buffer can't be swept; freed at a later GC). */
 const int64_t *sp_PolyArray_ffi_int_data(sp_PolyArray *a) {
   if (!a || a->len <= 0) return (const int64_t *)0;
   int64_t *buf = (int64_t *)sp_gc_alloc_nogc((size_t)a->len * sizeof(int64_t), NULL, NULL);
@@ -2600,6 +2746,10 @@ const double *sp_PolyArray_ffi_float_data(sp_PolyArray *a) {
   for (mrb_int i = 0; i < a->len; i++) buf[i] = (double)a->data[i].v.f;
   return buf;
 }
+/* Element count of an array-kind value, or -1 if `el` is not an array (a
+   non-object, a user object, a hash, etc.). Lets assoc/rassoc skip non-array
+   and too-short pairs without indexing them, so a `nil` search key cannot
+   spuriously match an out-of-bounds (nil) read. */
 mrb_int sp_array_kind_len(sp_RbVal el) {
   if (el.tag != SP_TAG_OBJ || !el.v.p) return -1;
   switch (el.cls_id) {
