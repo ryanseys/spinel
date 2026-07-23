@@ -850,6 +850,12 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       return;
     }
     if (slv && slv->type == TY_STRBUF) {
+      /* A container-store / equal?-arg read of a shared-mutable string yields
+         the live HANDLE, not a copy (#3227 phase 3). */
+      if (c->strbuf_box[id]) {
+        buf_printf(b, "lv_%s", rename_local(lrn));
+        return;
+      }
       /* A mutable-string local read yields an independent GC string copy: its
          sp_String buffer is not itself a GC object, so a bare cstr pointer
          would dangle once the wrapper is unreachable (e.g. after `return`).

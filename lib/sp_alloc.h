@@ -304,6 +304,10 @@ const char *sp_float_to_s(mrb_float f);
    that block must also test for this id explicitly. */
 #define SP_BUILTIN_INT_INT_HASH  (-34)
 #define SP_BUILTIN_BASIC_OBJECT  (-37)  /* a bare BasicObject.new instance */
+#define SP_BUILTIN_STRBUF        (-40)  /* boxed sp_String* handle: a shared-
+                                           mutable string stored in a container
+                                           (#3227 phase 3); reads deref the live
+                                           buffer, identity is the handle */
 #define SP_BUILTIN_DIR           (-38)  /* an open directory handle (sp_Dir *) */
 #define SP_BUILTIN_TMS           (-39)  /* Process.times -> Process::Tms */
 

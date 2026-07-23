@@ -5671,6 +5671,9 @@ TyKind infer_uncached(Compiler *c, int id) {
   }
 
   if (nk == NK_LocalVariableReadNode) {
+    /* a container-store / equal?-arg read of a shared-mutable string yields
+       the sp_String* HANDLE (#3227 phase 3) */
+    if (c->strbuf_box[id]) return TY_STRBUF;
     /* a `return .. if p.nil?`-guarded param read: the non-nil type (#1661) */
     if (c->nilnarrow[id] != TY_UNKNOWN) return c->nilnarrow[id];
     const char *nm = nt_str(nt, id, "name");
@@ -5682,7 +5685,10 @@ TyKind infer_uncached(Compiler *c, int id) {
         && !s->yields)
       return TY_PROC;
     LocalVar *lv = nm ? scope_local(s, nm) : NULL;
-    if (lv) return lv->type;
+    /* an UNMARKED read of a (phase-3-promoted) mutable string demotes to the
+       plain string type: ordinary consumers see the copy-read value exactly
+       as before promotion (#3227) */
+    if (lv) return lv->type == TY_STRBUF ? TY_STRING : lv->type;
     return TY_UNKNOWN;
   }
   if (nk == NK_GlobalVariableReadNode) {

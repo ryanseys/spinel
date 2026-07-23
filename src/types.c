@@ -126,6 +126,9 @@ TyKind ty_unify(TyKind a, TyKind b) {
      sp_bigint_new_int at the boundary), so a bigint-promoted local that
      also sees int writes stays bigint instead of widening to poly. */
   if ((a == TY_BIGINT && b == TY_INT) || (a == TY_INT && b == TY_BIGINT)) return TY_BIGINT;
+  /* a plain string value flows into a mutable-string (shared handle) slot
+     losslessly: the write re-wraps it in the sp_String (#3227 phase 3) */
+  if ((a == TY_STRBUF && b == TY_STRING) || (a == TY_STRING && b == TY_STRBUF)) return TY_STRBUF;
   /* A heap object reference that also sees nil stays the object type: the
      object pointer's NULL encodes nil (legacy's `ClassName?`), so a nullable
      single-class reference need not widen to poly. */

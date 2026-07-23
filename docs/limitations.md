@@ -239,10 +239,19 @@ unaffected.
 **Strings DO have identity.** Every string is a real pointer (heap or
 static), and every literal *occurrence* is its own static object, so
 `"abc".equal?("abc")` is `false` across two occurrences and aliasing
-(`b = a`) answers `true`, matching plain CRuby. The one residue: re-evaluating
+(`b = a`) answers `true`, matching plain CRuby. One residue: re-evaluating
 the SAME occurrence (a literal inside a loop) yields one object where plain
-CRuby allocates per evaluation -- the `frozen_string_literal: true` semantics,
-consistent with Spinel's strings being immutable.
+CRuby allocates per evaluation -- the `frozen_string_literal: true` semantics.
+
+**Aliased in-place mutation is observed for `<<`.** A string that is both
+aliased (a second local, an array element, a hash value) and appended to with
+`<<` shares one mutable buffer: the append is visible through every alias and
+through the container, and `equal?` across the alias set is `true` (matching
+CRuby's mutable String objects). The conservative residue: the other in-place
+mutators (`upcase!` and friends, `concat`, `replace`, `prepend`, `insert`,
+`clear`) rebind only the receiver's own binding -- an alias made before such a
+call still sees the value from before it. Strings never mutated in place, or
+mutated but never aliased, keep the plain value representation (no cost).
 
 #### `Range#step` / `Range#%` return a materialized Array, not an ArithmeticSequence
 

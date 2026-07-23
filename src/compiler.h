@@ -277,6 +277,11 @@ typedef struct {
 typedef struct {
   const NodeTable *nt;
   TyKind *ntype;    /* [node_cap] node id -> inferred type */
+  unsigned char *strbuf_box; /* [node_cap] LocalVariableReadNode of a shared-
+                          mutable string in a container-store position: the
+                          read yields the sp_String* HANDLE (typed TY_STRBUF,
+                          boxed SP_BUILTIN_STRBUF), not the demoted cstr
+                          (#3227 phase 3) */
   TyKind *nilnarrow; /* [node_cap] param-read narrowed by a `return .. if p.nil?`
                         guard: the read's non-nil type (codegen unboxes the poly
                         slot at the read site); TY_UNKNOWN = not narrowed */
@@ -519,9 +524,12 @@ static inline TyKind comp_ntype(const Compiler *c, int id) {
   if (id < 0 || id >= c->nt->count) return TY_UNKNOWN;
   /* TY_STRBUF is a codegen-only storage refinement (mutable sp_String for a
      `<<`-appended local). All type-directed logic treats it as a string;
-     codegen consults the raw scope-local type where the distinction matters. */
+     codegen consults the raw scope-local type where the distinction matters.
+     Exception: a read marked strbuf_box yields the live HANDLE, so the
+     mutation is observable through the container it is stored in (#3227). */
   TyKind t = c->ntype[id];
-  return t == TY_STRBUF ? TY_STRING : t;
+  if (t == TY_STRBUF) return c->strbuf_box[id] ? TY_STRBUF : TY_STRING;
+  return t;
 }
 
 /* 1 iff t is a user-object type whose class is represented by value (sp_X,

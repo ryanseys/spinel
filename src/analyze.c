@@ -6243,6 +6243,147 @@ static int ctor_writes_ivar(Compiler *c, int ci, const char *ivname) {
 
 
 
+/* Shared-mutable strings, phase 3 (#3227): a container STORE (array/hash
+   literal element, `arr << s`, `arr[i] = s`) or an `equal?` argument of an
+   in-place-mutated string local promotes it to a shared TY_STRBUF handle
+   DURING the fixpoint, and marks that read in c->strbuf_box so infer types
+   it TY_STRBUF (the container then unifies to a poly variant and emit_boxed
+   wraps the sp_String* as SP_BUILTIN_STRBUF). Unmarked reads of the same
+   local keep demoting to TY_STRING, so ordinary consumers are unchanged. */
+static int promote_shared_stored_strings(Compiler *c) {
+  int changed = 0;
+  const NodeTable *nt = c->nt;
+  /* mutated string locals: receivers of an in-place mutator */
+  for (int w = 0; w < nt->count; w++) {
+    const char *wty = nt_type(nt, w);
+    if (!wty) continue;
+    int cand3[64]; int nc3 = 0;
+    if (sp_streq(wty, "ArrayNode")) {
+      int en3 = 0; const int *el3 = nt_arr(nt, w, "elements", &en3);
+      for (int e3 = 0; e3 < en3 && nc3 < 64; e3++) cand3[nc3++] = el3[e3];
+    }
+    else if (sp_streq(wty, "HashNode") || sp_streq(wty, "KeywordHashNode")) {
+      int en3 = 0; const int *el3 = nt_arr(nt, w, "elements", &en3);
+      for (int e3 = 0; e3 < en3 && nc3 < 64; e3++) {
+        if (nt_type(nt, el3[e3]) && sp_streq(nt_type(nt, el3[e3]), "AssocNode"))
+          cand3[nc3++] = nt_ref(nt, el3[e3], "value");
+      }
+    }
+    else if (sp_streq(wty, "CallNode")) {
+      const char *cn3 = nt_str(nt, w, "name");
+      int recv3 = nt_ref(nt, w, "receiver");
+      TyKind rt3 = recv3 >= 0 ? c->ntype[recv3] : TY_UNKNOWN;
+      if (cn3 && recv3 >= 0 &&
+          (sp_streq(cn3, "<<") || sp_streq(cn3, "push") ||
+           sp_streq(cn3, "append") || sp_streq(cn3, "unshift"))) {
+        /* only when the receiver is a container -- `s1 << s2` is a string
+           append, whose ARG must stay a plain read */
+        if (ty_is_array(rt3)) {
+          int a3 = nt_ref(nt, w, "arguments");
+          int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
+          for (int e3 = 0; e3 < an3 && nc3 < 64; e3++) cand3[nc3++] = av3[e3];
+        }
+      }
+      else if (cn3 && recv3 >= 0 && sp_streq(cn3, "[]=") &&
+               (ty_is_array(rt3) || ty_is_hash(rt3))) {
+        int a3 = nt_ref(nt, w, "arguments");
+        int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
+        if (an3 >= 2) cand3[nc3++] = av3[an3 - 1];
+      }
+      else if (cn3 && recv3 >= 0 &&
+               (sp_streq(cn3, "equal?") || sp_streq(cn3, "eql?"))) {
+        /* identity test against the shared handle */
+        int a3 = nt_ref(nt, w, "arguments");
+        int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
+        if (an3 == 1) cand3[nc3++] = av3[0];
+      }
+    }
+    for (int e3 = 0; e3 < nc3; e3++) {
+      int vnode = cand3[e3];
+      if (vnode < 0 || c->strbuf_box[vnode]) continue;
+      if (!nt_type(nt, vnode) ||
+          !sp_streq(nt_type(nt, vnode), "LocalVariableReadNode")) continue;
+      const char *vn3 = nt_str(nt, vnode, "name");
+      Scope *vs3 = comp_scope_of(c, vnode);
+      LocalVar *vlv = (vn3 && vs3) ? scope_local(vs3, vn3) : NULL;
+      if (!vlv || vlv->is_param || vlv->rbs_seeded || vlv->is_cell) continue;
+      if (vlv->type != TY_STRING && vlv->type != TY_STRBUF) continue;
+      /* mutated via `<<` (the one mutator the sp_String handle emits in
+         place)? A reassigning mutator (replace/prepend/insert/clear/concat
+         or a bang method) on the same local DISQUALIFIES it: codegen emits
+         those as `recv = ...` against a plain lvalue, which a promoted
+         handle slot cannot provide. Mirrors the storage-only scan below. */
+      int mutated = 0, reassign_mut = 0;
+      for (int u = 0; u < nt->count && !reassign_mut; u++) {
+        const char *uty = nt_type(nt, u);
+        if (!uty || !sp_streq(uty, "CallNode")) continue;
+        int ur = nt_ref(nt, u, "receiver");
+        if (ur < 0 || !nt_type(nt, ur) ||
+            !sp_streq(nt_type(nt, ur), "LocalVariableReadNode")) continue;
+        const char *urn = nt_str(nt, ur, "name");
+        if (!urn || !sp_streq(urn, vn3) || comp_scope_of(c, ur) != vs3) continue;
+        const char *un = nt_str(nt, u, "name");
+        if (!un) continue;
+        size_t ul = strlen(un);
+        if (sp_streq(un, "<<")) mutated = 1;
+        else if (sp_streq(un, "replace") || sp_streq(un, "prepend") ||
+                 sp_streq(un, "insert") || sp_streq(un, "clear") ||
+                 sp_streq(un, "concat") || (ul > 0 && un[ul - 1] == '!'))
+          reassign_mut = 1;
+      }
+      if (!mutated || reassign_mut) continue;
+      /* every write a fresh (non-frozen) string literal, as in the
+         storage-only scan: other writes may carry runtime frozen state the
+         sp_String wrapper would discard */
+      { int ok_writes = 1, saw_w = 0;
+        for (int u = 0; u < nt->count && ok_writes; u++) {
+          const char *uty = nt_type(nt, u);
+          if (!uty || !sp_streq(uty, "LocalVariableWriteNode")) continue;
+          const char *un = nt_str(nt, u, "name");
+          if (!un || !sp_streq(un, vn3) || comp_scope_of(c, u) != vs3) continue;
+          saw_w = 1;
+          int uv = nt_ref(nt, u, "value");
+          const char *uvty = uv >= 0 ? nt_type(nt, uv) : NULL;
+          if (!uvty || !sp_streq(uvty, "StringNode") || nt_int(nt, uv, "fzl", 0))
+            ok_writes = 0;
+        }
+        if (!saw_w || !ok_writes) continue; }
+      /* not passed into a byref out-param slot (needs const char** of a
+         plain local) */
+      { int byref = 0;
+        for (int u = 0; u < nt->count && !byref; u++) {
+          const char *uty = nt_type(nt, u);
+          if (!uty || !sp_streq(uty, "CallNode")) continue;
+          if (comp_scope_of(c, u) != vs3) continue;
+          int mi = an_unique_scope_by_name(c, nt_str(nt, u, "name"));
+          if (mi < 0) continue;
+          int argsN = nt_ref(nt, u, "arguments");
+          int uargc = 0;
+          const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
+          for (int j = 0; j < uargc && j < c->scopes[mi].nparams; j++) {
+            if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
+            const char *aty = nt_type(nt, uargv[j]);
+            const char *an2 = aty && sp_streq(aty, "LocalVariableReadNode")
+                                ? nt_str(nt, uargv[j], "name") : NULL;
+            if (an2 && sp_streq(an2, vn3)) { byref = 1; break; }
+          }
+        }
+        if (byref) continue; }
+      /* equal?/eql? args only join a set that is ALREADY shared (a store
+         made it a handle); they must not themselves force the promotion */
+      { const char *wn2 = nt_str(nt, w, "name");
+        int is_eq = wty && sp_streq(wty, "CallNode") && wn2 &&
+                    (sp_streq(wn2, "equal?") || sp_streq(wn2, "eql?"));
+        if (is_eq && !vlv->str_shared) continue; }
+      vlv->type = TY_STRBUF;
+      vlv->str_shared = 1;
+      c->strbuf_box[vnode] = 1;
+      changed = 1;
+    }
+  }
+  return changed;
+}
+
 void analyze_program(Compiler *c) {
   comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
   /* scope 0 = top level */
@@ -6784,6 +6925,7 @@ void analyze_program(Compiler *c) {
        first feeds the settled type into ivar inference. */
     ch |= infer_global_const_types(c);
     ch |= infer_multiwrite_const_types(c);
+    ch |= promote_shared_stored_strings(c);
     ch |= infer_ivar_types(c);
     ch |= infer_cvar_types(c);
     ch |= infer_inherited_ivars(c);
@@ -8017,6 +8159,7 @@ void analyze_program(Compiler *c) {
     tgt->type = TY_STRBUF;
     tgt->str_shared = 1;
   }
+
 
   /* Value-type object detection (Stage 1, conservative). A user class is
      represented by value (sp_X, no heap/GC) when it is a small, immutable,

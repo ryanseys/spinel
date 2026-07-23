@@ -57,6 +57,8 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     return;
   }
   if (ty_is_hash(t) && hash_box_cls(t)) { buf_printf(b, "sp_box_obj(%s, %s)", expr, hash_box_cls(t)); return; }
+  /* a shared-mutable string HANDLE (#3227 phase 3) */
+  if (t == TY_STRBUF) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", expr); return; }
   const char *fn = NULL;
   switch (t) {
     case TY_INT: fn = "sp_box_int"; break;       case TY_FLOAT: fn = "sp_box_float"; break;
@@ -428,6 +430,16 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_FLOAT_RANGE: fn = "sp_box_frange"; break;
     case TY_STR_RANGE: fn = "sp_box_srange"; break;
     case TY_TMS: fn = "sp_box_tms"; break;
+    case TY_STRBUF: {
+      /* a marked container-store read of a shared-mutable string: box the
+         sp_String* HANDLE so later in-place mutation is visible through the
+         container (#3227 phase 3). Marked nodes are local reads. */
+      const char *bn0 = nt_type(c->nt, node) &&
+                        sp_streq(nt_type(c->nt, node), "LocalVariableReadNode")
+                          ? nt_str(c->nt, node, "name") : NULL;
+      if (bn0) { buf_printf(b, "sp_box_obj(lv_%s, SP_BUILTIN_STRBUF)", rename_local(bn0)); return; }
+      buf_puts(b, "sp_box_str("); emit_expr(c, node, b); buf_puts(b, ")"); return;
+    }
     case TY_OPENSTRUCT:
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
       buf_puts(b, "), SP_BUILTIN_OPENSTRUCT)"); return;
