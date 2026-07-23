@@ -4482,6 +4482,20 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "return;\n");
   }
   else if (n > 0) {
+    TyKind r0n = ret_arg_ntype(c, a[0]);
+    /* A guarded `return v if v.is_a?(K)` whose value is statically NOT K:
+       the guard folded to constant false, so this return is dead -- but the
+       raw value would still be ill-typed C in the K-returning function.
+       Evaluate for effect and yield the slot's empty value (#3259). */
+    if (ty_is_object(g_ret_type) && !ty_is_object(r0n) &&
+        r0n != TY_POLY && r0n != TY_UNKNOWN && r0n != TY_VOID) {
+      buf_puts(b, "{ (void)("); emit_expr(c, a[0], b); buf_puts(b, "); return ");
+      if (comp_ty_value_obj(c, g_ret_type))
+        buf_printf(b, "(sp_%s){0}", c->classes[ty_object_class(g_ret_type)].c_name);
+      else buf_puts(b, "NULL");
+      buf_puts(b, "; }\n");
+      return;
+    }
     buf_puts(b, "return ");
     TyKind r0 = ret_arg_ntype(c, a[0]);
     if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);

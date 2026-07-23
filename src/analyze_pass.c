@@ -7781,6 +7781,47 @@ int infer_return_types(Compiler *c) {
   int *ret_head = (int *)malloc((size_t)(ns > 0 ? ns : 1) * sizeof(int));
   int *ret_next = (int *)malloc((size_t)(nt->count > 0 ? nt->count : 1) * sizeof(int));
   if (ret_head) for (int i = 0; i < ns; i++) ret_head[i] = -1;
+  /* `return v if v.is_a?(K)` with a user class K: that return can only ever
+     yield a K, so type it K instead of v's (wider) static type. Without this
+     a String-typed param made the method String|K, and dispatching a user
+     method named after a builtin (URI#join) on the union collapsed to the
+     builtin String signature (#3259). */
+  TyKind *ret_narrow = (TyKind *)calloc((size_t)(nt->count > 0 ? nt->count : 1), sizeof(TyKind));
+  if (ret_narrow) {
+    for (int id = 0; id < nt->count; id++) {
+      if (nt_kind(nt, id) != NK_IfNode) continue;
+      int pred = nt_ref(nt, id, "predicate");
+      const char *pty = pred >= 0 ? nt_type(nt, pred) : NULL;
+      if (!pty || !sp_streq(pty, "CallNode")) continue;
+      const char *pn = nt_str(nt, pred, "name");
+      if (!pn || (!sp_streq(pn, "is_a?") && !sp_streq(pn, "kind_of?") &&
+                  !sp_streq(pn, "instance_of?"))) continue;
+      int prec = nt_ref(nt, pred, "receiver");
+      if (prec < 0 || !nt_type(nt, prec) ||
+          !sp_streq(nt_type(nt, prec), "LocalVariableReadNode")) continue;
+      const char *vn = nt_str(nt, prec, "name");
+      int pargs = nt_ref(nt, pred, "arguments");
+      int pan = 0; const int *pav = pargs >= 0 ? nt_arr(nt, pargs, "arguments", &pan) : NULL;
+      if (pan != 1 || !pav) continue;
+      const char *aty = nt_type(nt, pav[0]);
+      const char *kn = (aty && (sp_streq(aty, "ConstantReadNode") ||
+                                sp_streq(aty, "ConstantPathNode")))
+                         ? nt_str(nt, pav[0], "name") : NULL;
+      int kcid = kn ? comp_class_index(c, kn) : -1;
+      if (kcid < 0) continue;
+      /* single-statement then-arm returning the SAME variable */
+      int stm = nt_ref(nt, id, "statements");
+      int sn = 0; const int *sb = stm >= 0 ? nt_arr(nt, stm, "body", &sn) : NULL;
+      if (sn != 1 || !sb || nt_kind(nt, sb[0]) != NK_ReturnNode) continue;
+      int ra = nt_ref(nt, sb[0], "arguments");
+      int ran = 0; const int *rav = ra >= 0 ? nt_arr(nt, ra, "arguments", &ran) : NULL;
+      if (ran != 1 || !rav || !nt_type(nt, rav[0]) ||
+          !sp_streq(nt_type(nt, rav[0]), "LocalVariableReadNode")) continue;
+      const char *rn = nt_str(nt, rav[0], "name");
+      if (!vn || !rn || !sp_streq(vn, rn)) continue;
+      ret_narrow[sb[0]] = ty_object(kcid);
+    }
+  }
   if (ret_acc && has_ret) {
     for (int id = 0; id < nt->count; id++) {
       if (nt_kind(nt, id) != NK_ReturnNode) continue;
@@ -7788,7 +7829,7 @@ int infer_return_types(Compiler *c) {
       if (!rs) continue;
       int si = (int)(rs - c->scopes);
       if (si < 0 || si >= ns) continue;
-      TyKind rt = return_node_type(c, id);
+      TyKind rt = (ret_narrow && ret_narrow[id]) ? ret_narrow[id] : return_node_type(c, id);
       ret_acc[si] = has_ret[si] ? ty_unify(ret_acc[si], rt) : rt;
       has_ret[si] = 1;
       if (ret_head && ret_next) { ret_next[id] = ret_head[si]; ret_head[si] = id; }
@@ -7936,7 +7977,7 @@ int infer_return_types(Compiler *c) {
     if (unified != TY_VOID) { sc->ret = unified; changed = 1; }
   }
 
-  free(ret_acc); free(has_ret); free(ret_head); free(ret_next);
+  free(ret_acc); free(has_ret); free(ret_head); free(ret_next); free(ret_narrow);
   return changed;
 }
 
