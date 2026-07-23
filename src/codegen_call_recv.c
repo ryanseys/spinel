@@ -4608,6 +4608,16 @@ else {
           buf_puts(b, ")");
           return 1;
         }
+        /* any other cross-variant merge (mismatched key or value layout):
+           fold both sides through the universal boxed merge -- passing the
+           argument raw into the receiver-layout helper read it through the
+           wrong struct (#3261). Matches the TY_POLY_POLY_HASH inference. */
+        if (ty_is_hash(at) && at != rt &&
+            !(rt == TY_STR_POLY_HASH && (at == TY_STR_STR_HASH || at == TY_STR_INT_HASH))) {
+          buf_puts(b, "sp_poly_hash_merge("); emit_boxed(c, recv, b);
+          buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+          return 1;
+        }
         buf_printf(b, "sp_%sHash_merge(", hn); emit_expr(c, recv, b); buf_puts(b, ", ");
         /* a str_poly receiver may be merged with a concrete str-keyed hash;
            coerce the argument to the receiver's variant first */

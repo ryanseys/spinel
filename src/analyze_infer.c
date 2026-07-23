@@ -4800,6 +4800,10 @@ else {
       /* cross-variant sym-keyed merge: both sym → sym_poly (only sym_poly exists) */
       if (ty_hash_key(rt) == TY_SYMBOL && ty_is_hash(at) && ty_hash_key(at) == TY_SYMBOL)
         return TY_SYM_POLY_HASH;
+      /* any other cross-variant merge (mismatched key or value layout) folds
+         into the universal PolyPoly hash -- passing one specialized layout to
+         another layout's merge helper read garbage / segfaulted (#3261) */
+      if (ty_is_hash(at) && at != rt) return TY_POLY_POLY_HASH;
       return rt;
     }
     /* replace(other) returns self, but self's SLOT widens to the universal
