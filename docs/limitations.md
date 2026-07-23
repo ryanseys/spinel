@@ -339,6 +339,42 @@ double, so that case raises `Math::DomainError` loudly (the class
 every float power to a boxed union. Compute via `Complex(x) ** y` where the
 complex result is really wanted.
 
+#### `defined?(@ivar)` is answered at compile time
+
+CRuby answers `defined?(@ivar)` from the object's runtime state: `nil` until
+the instance variable is first assigned, `"instance-variable"` after — which
+is what makes it usable as a memoization guard for falsy values
+(`return @x if defined?(@x)`).
+
+Spinel's instance variables are C struct fields. Every ivar the program
+mentions exists in the object's layout from allocation, pre-filled with its
+type's nil representation; there is no per-object "has been assigned" record
+to consult. `defined?(@ivar)` therefore folds at compile time: it is truthy
+iff the program contains an assignment to that ivar anywhere, regardless of
+whether *this* object has been assigned yet at run time. The falsy-value
+memoization pattern silently reads the unassigned slot on the first call:
+
+```ruby
+def foo
+  return @foo if defined?(@foo)   # compile-time truthy: an @foo= exists below
+  @foo = compute                  # never reached — foo returns nil forever
+end
+```
+
+Tracking runtime assignment would need a shadow presence bit per ivar written
+on every assignment — cost on every object and every ivar write to serve a
+rare pattern. Use a nil check (`@foo = compute if @foo.nil?`, i.e. `||=`) when
+`compute` never yields nil/false, or an explicit sentinel/flag ivar when it
+can:
+
+```ruby
+def foo
+  return @foo if @foo_set
+  @foo_set = true
+  @foo = compute
+end
+```
+
 #### `Hash#compare_by_identity`
 
 `compare_by_identity` is rejected at compile time (never silently ignored).
