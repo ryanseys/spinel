@@ -79,4 +79,13 @@ mrb_bool sp_exc_success_acc(sp_Exception *e);
 mrb_int sp_exc_signo_acc(sp_Exception *e);
 const char *sp_exc_signm_acc(sp_Exception *e);
 
+/* ---- Signal/Interrupt exception constructors: relocated from
+   sp_runtime.h (0 optcarrot uses). sp_signal_resolve/sp_signal_signame
+   are already non-static (resolved at the final link). ---- */
+int sp_signal_resolve(sp_RbVal sig);
+const char *sp_signal_signame(mrb_int no);
+sp_Exception *sp_signal_exc_new_m(sp_RbVal sig, const char *msg);
+sp_Exception *sp_signal_exc_new(sp_RbVal sig);
+sp_Exception *sp_interrupt_new(const char *msg);
+
 #endif

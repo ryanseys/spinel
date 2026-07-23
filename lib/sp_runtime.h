@@ -1321,83 +1321,9 @@ __attribute__((constructor)) static void sp_gc_install_tu_hooks(void) {
  * hash; the value (if present) is the replacement, otherwise the
  * matched substring is dropped (CRuby returns "", not the match).
  * Used by html_escape / json_escape idioms (gsub(/[&<>]/, ESCAPES)). */
-static const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
-  int64_t slen = (int64_t)strlen(str);
- /* malloc scratch (realloc-safe); exact-sized string emitted below. */
-  size_t cap = (slen * 2) + 64; char *out = (char *)malloc(cap); size_t olen = 0;
-  int64_t pos = 0; int caps[64];
-  while (pos <= slen) {
-    int n = re_exec(pat, str, slen, pos, caps, 64, 0);
-    if (n <= 0 || caps[0] < 0) break;
-    size_t before = caps[0] - pos;
-    int mlen = caps[1] - caps[0];
-    /* Lay a 0xff (rodata-literal) marker byte right before the transient key
-       so sp_str_hash's s[-1] read is in-bounds and routes to the plain
-       (non-caching) path -- this buffer has no sp_str_hdr to cache into. */
-    char keybuf[65]; keybuf[0] = (char)0xff;
-    char *kbuf = mlen + 1 < (int)sizeof(keybuf) ? keybuf : (char *)malloc(mlen + 2);
-    if (kbuf != keybuf) kbuf[0] = (char)0xff;
-    char *key = kbuf + 1;
-    memcpy(key, str + caps[0], mlen);
-    key[mlen] = 0;
-    const char *rep = sp_StrStrHash_has_key(h, key) ? sp_StrStrHash_get(h, key) : "";
-    size_t rlen = strlen(rep);
-    if (olen + before + rlen >= cap) { cap = ((olen + before + rlen) * 2) + 64; out = (char *)realloc(out, cap); }
-    memcpy(out + olen, str + pos, before); olen += before;
-    memcpy(out + olen, rep, rlen); olen += rlen;
-    if (kbuf != keybuf) free(kbuf);
-    if (caps[0] == caps[1]) {
- /* Zero-width match: keep the source char at this position and step
-    past it (see sp_re_gsub for the rationale). */
-      if (caps[1] < slen) {
-        if (olen + 1 >= cap) { cap = (olen * 2) + 64; out = (char *)realloc(out, cap); }
-        out[olen++] = str[caps[1]];
-      }
-      pos = caps[1] + 1;
-    }
-else {
-      pos = caps[1];
-    }
-  }
-  if (pos < slen) {
-    size_t rest = slen - pos;
-    if (olen + rest >= cap) { cap = olen + rest + 1; out = (char *)realloc(out, cap); }
-    memcpy(out + olen, str + pos, rest); olen += rest;
-  }
-  char *res = sp_str_alloc(olen);
-  memcpy(res, out, olen);
-  free(out);
-  return res;
-}
 
 /* Issue #910: sub(regex, hash) — same lookup semantics as
    sp_re_gsub_str_str_hash but only the first match. */
-static const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
-  int64_t slen = (int64_t)strlen(str);
-  int caps[64];
-  int n = re_exec(pat, str, slen, 0, caps, 64, 0);
-  if (n <= 0 || caps[0] < 0) return str;
-  int mlen = caps[1] - caps[0];
-  /* 0xff marker before the transient key: keeps sp_str_hash's s[-1] read
-     in-bounds and on the non-caching path (no sp_str_hdr behind this buffer). */
-  char keybuf[65]; keybuf[0] = (char)0xff;
-  char *kbuf = mlen + 1 < (int)sizeof(keybuf) ? keybuf : (char *)malloc(mlen + 2);
-  if (kbuf != keybuf) kbuf[0] = (char)0xff;
-  char *key = kbuf + 1;
-  memcpy(key, str + caps[0], mlen);
-  key[mlen] = 0;
-  const char *rep = (h && sp_StrStrHash_has_key(h, key)) ? sp_StrStrHash_get(h, key) : "";
-  size_t rlen = strlen(rep);
-  size_t rest = slen - caps[1];
-  size_t total = caps[0] + rlen + rest;
-  char *out = sp_str_alloc_raw(total + 1);
-  memcpy(out, str, caps[0]);
-  memcpy(out + caps[0], rep, rlen);
-  memcpy(out + caps[0] + rlen, str + caps[1], rest);
-  out[total] = 0;
-  if (kbuf != keybuf) free(kbuf);
-  return out;
-}
 
 /* Issue #910: sub(string, hash) — literal-substring pattern
    with a hash replacement. Replaces only the first match. */
@@ -7088,26 +7014,6 @@ mrb_int sp_process_kill1(sp_RbVal sig, mrb_int pid);
    and #signo rides the xkey slot (#2762, #2763). */
 /* msg: an explicit second argument overrides the SIG<name> message (only the
    Integer-signal form accepts one, matching CRuby); NULL keeps the default. */
-static sp_Exception *sp_signal_exc_new_m(sp_RbVal sig, const char *msg) {
-  if (msg && sig.tag != SP_TAG_INT)
-    sp_raise_cls("ArgumentError", "wrong number of arguments");
-  int no = sp_signal_resolve(sig);
-  const char *nm = sp_signal_signame(no);
-  sp_Exception *e = sp_exc_new("SignalException",
-                               msg ? msg : sp_sprintf("SIG%s", nm ? nm : "?"));
-  SP_GC_ROOT(e);
-  e->xkey = sp_box_int((mrb_int)no);
-  return e;
-}
-static sp_Exception *sp_signal_exc_new(sp_RbVal sig) {
-  return sp_signal_exc_new_m(sig, NULL);
-}
-static sp_Exception *sp_interrupt_new(const char *msg) {
-  sp_Exception *e = sp_exc_new("Interrupt", (msg && msg[0]) ? msg : "Interrupt");
-  SP_GC_ROOT(e);
-  e->xkey = sp_box_int((mrb_int)SIGINT);
-  return e;
-}
 
 /* ENV.delete_if/keep_if/select!/reject!/filter!: the proc judges each
    snapshot pair; `keep` selects which verdict survives (#2832). */

@@ -23,6 +23,7 @@
 #include "sp_str.h"     /* sp_str_hash / sp_str_eq / _sp_istr_idx */
 #include "sp_inspect.h" /* sp_inspect_container for the #inspect wrappers */
 #include "sp_string.h"  /* sp_String builder for sp_IntIntHash_inspect */
+#include "sp_re.h"      /* mrb_regexp_pattern for sp_re_gsub_str_str_hash/sub_str_str_hash */
 
 void sp_StrIntHash_fin(void*p);
 void sp_StrIntHash_scan(void*p);
@@ -113,5 +114,11 @@ sp_PolyArray*sp_IntStrHash_to_a(sp_IntStrHash*h);
 
 /* ---- sp_str_sub_str_str_hash relocated from sp_runtime.h (0 optcarrot uses). ---- */
 const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h);
+
+/* ---- Regexp#gsub/#sub with a replacement Hash: relocated from
+   sp_runtime.h (0 optcarrot uses). Needs mrb_regexp_pattern/re_exec
+   (sp_re.h, included by lib/sp_cold.c already). ---- */
+const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h);
+const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h);
 
 #endif
