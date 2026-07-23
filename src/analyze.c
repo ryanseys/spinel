@@ -6308,11 +6308,18 @@ static int promote_shared_stored_strings(Compiler *c) {
       LocalVar *vlv = (vn3 && vs3) ? scope_local(vs3, vn3) : NULL;
       if (!vlv || vlv->is_param || vlv->rbs_seeded || vlv->is_cell) continue;
       if (vlv->type != TY_STRING && vlv->type != TY_STRBUF) continue;
-      /* mutated via `<<` (the one mutator the sp_String handle emits in
-         place)? A reassigning mutator (replace/prepend/insert/clear/concat
-         or a bang method) on the same local DISQUALIFIES it: codegen emits
+      /* mutated via an in-place-capable mutator? codegen emits these against
+         the sp_String handle (append / set_bin replacement), so they qualify.
+         Any OTHER receiver-rebinding mutator (insert, clear, slice!, []=,
+         an unlisted bang method) still DISQUALIFIES the local: codegen emits
          those as `recv = ...` against a plain lvalue, which a promoted
-         handle slot cannot provide. Mirrors the storage-only scan below. */
+         handle slot cannot provide. */
+      static const char *const INPLACE_MUT[] = {
+        "<<", "concat", "prepend", "replace",
+        "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
+        "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
+        "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
+        "reverse!", "succ!", "next!", NULL };
       int mutated = 0, reassign_mut = 0;
       for (int u = 0; u < nt->count && !reassign_mut; u++) {
         const char *uty = nt_type(nt, u);
@@ -6325,10 +6332,13 @@ static int promote_shared_stored_strings(Compiler *c) {
         const char *un = nt_str(nt, u, "name");
         if (!un) continue;
         size_t ul = strlen(un);
-        if (sp_streq(un, "<<")) mutated = 1;
-        else if (sp_streq(un, "replace") || sp_streq(un, "prepend") ||
-                 sp_streq(un, "insert") || sp_streq(un, "clear") ||
-                 sp_streq(un, "concat") || (ul > 0 && un[ul - 1] == '!'))
+        int inplace = 0;
+        for (int q = 0; INPLACE_MUT[q]; q++)
+          if (sp_streq(un, INPLACE_MUT[q])) { inplace = 1; break; }
+        if (inplace) mutated = 1;
+        else if (sp_streq(un, "insert") || sp_streq(un, "clear") ||
+                 sp_streq(un, "setbyte") || sp_streq(un, "[]=") ||
+                 (ul > 0 && un[ul - 1] == '!'))
           reassign_mut = 1;
       }
       if (!mutated || reassign_mut) continue;
@@ -8118,6 +8128,20 @@ void analyze_program(Compiler *c) {
     }
     if (passed_byref) continue;
     lv->type = TY_STRBUF;
+  }
+
+  /* Shared-mutable strings (#3227): re-assert the phase-3 promotion. The
+     fixpoint pass (promote_shared_stored_strings) sets str_shared and the
+     strbuf_box read marks, but a later assign-based inference pass can
+     overwrite the LOCAL's type back to TY_STRING from its literal writes.
+     The marks (and so the container typing) are durable; restore the slot
+     type here so the local declares as the sp_String handle. */
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int i = 0; i < sc->nlocals; i++) {
+      LocalVar *lv = &sc->locals[i];
+      if (lv->str_shared && lv->type == TY_STRING) lv->type = TY_STRBUF;
+    }
   }
 
   /* Shared-mutable strings (#3227): a string local that is a pure ALIAS of an

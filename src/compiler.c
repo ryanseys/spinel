@@ -958,6 +958,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->init_guarded = 0;
   lv->rbs_seeded = 0;
   lv->push_widened = 0;
+  lv->str_shared = 0;
   return lv;
 }
 

@@ -245,6 +245,31 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       const char *rvt2 = nt_type(nt, recv);
       int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
                          sp_streq(rvt2, "InstanceVariableReadNode"));
+      /* A shared-mutable (STRBUF) local mutates its buffer IN PLACE so every
+         alias/container observes it: recompute via the non-bang transform of
+         the current contents, then replace the buffer (#3227). */
+      if (rvt2 && sp_streq(rvt2, "LocalVariableReadNode")) {
+        const char *rnmB = nt_str(nt, recv, "name");
+        Scope *rscB = rnmB ? comp_scope_of(c, recv) : NULL;
+        LocalVar *rlvB = rscB ? scope_local(rscB, rnmB) : NULL;
+        if (rlvB && rlvB->type == TY_STRBUF) {
+          int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
+          buf_printf(b, "({ sp_String *_t%d = lv_%s; const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ",
+                     tsb, rename_local(rnmB), tob, tsb, tob);
+          nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
+          Buf nbB; memset(&nbB, 0, sizeof nbB);
+          emit_expr(c, id, &nbB);
+          nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].bang);
+          buf_printf(b, "const char *_t%d = %s; sp_String_set_bin(_t%d, _t%d); ",
+                     tnb, nbB.p ? nbB.p : "", tsb, tnb);
+          free(nbB.p);
+          if (SBANG[sbi].nil_nc)
+            buf_printf(b, "sp_str_eq(_t%d, _t%d) ? NULL : _t%d; })", tob, tnb, tnb);
+          else
+            buf_printf(b, "_t%d; })", tnb);
+          return 1;
+        }
+      }
       int to = ++g_tmp, tn2 = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b); buf_puts(b, "; (void)_t"); buf_printf(b, "%d; ", to);
       /* an in-place mutator on a frozen string raises FrozenError (#3003) */
@@ -262,10 +287,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "_t%d; })", tn2);
       return 1;
     }
-    if ((sp_streq(name, "concat") || sp_streq(name, "<<")) && argc >= 1) {
+    if ((sp_streq(name, "concat") || sp_streq(name, "<<") ||
+         sp_streq(name, "prepend")) && argc >= 1) {
       /* a STRBUF-promoted local (repeated `<<`) appends in place: the read
          form sp_String_cstr(lv) is not an lvalue, so the generic write-back
-         below would emit an invalid assignment (#2020) */
+         below would emit an invalid assignment (#2020). prepend replaces the
+         buffer with args-then-contents, keeping the handle stable (#3227). */
       const char *rvt0 = nt_type(nt, recv);
       if (rvt0 && sp_streq(rvt0, "LocalVariableReadNode")) {
         const char *rnm0 = nt_str(nt, recv, "name");
@@ -274,10 +301,20 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         if (rlv0 && rlv0->type == TY_STRBUF) {
           int tb2 = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = lv_%s;", tb2, rename_local(rnm0));
-          for (int j = 0; j < argc; j++) {
-            buf_printf(b, " sp_String_append(_t%d, ", tb2);
-            emit_str_expr(c, argv[j], b);
-            buf_puts(b, ");");
+          if (sp_streq(name, "prepend")) {
+            int tp3 = ++g_tmp;
+            buf_printf(b, " const char *_t%d = ", tp3);
+            for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
+            emit_str_expr(c, argv[0], b);
+            for (int j = 1; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
+            buf_printf(b, ", sp_String_cstr(_t%d)); sp_String_set_bin(_t%d, _t%d);", tb2, tb2, tp3);
+          }
+          else {
+            for (int j = 0; j < argc; j++) {
+              buf_printf(b, " sp_String_append(_t%d, ", tb2);
+              emit_str_expr(c, argv[j], b);
+              buf_puts(b, ");");
+            }
           }
           buf_printf(b, " sp_String_cstr(_t%d); })", tb2);
           return 1;
@@ -394,6 +431,20 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "replace") && argc == 1) {
       const char *rvt2 = nt_type(nt, recv);
+      /* shared-mutable local: swap the buffer contents in place (#3227) */
+      if (rvt2 && sp_streq(rvt2, "LocalVariableReadNode")) {
+        const char *rnmR = nt_str(nt, recv, "name");
+        Scope *rscR = rnmR ? comp_scope_of(c, recv) : NULL;
+        LocalVar *rlvR = rscR ? scope_local(rscR, rnmR) : NULL;
+        if (rlvR && rlvR->type == TY_STRBUF) {
+          int tbR = ++g_tmp;
+          buf_printf(b, "({ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, ",
+                     tbR, rename_local(rnmR), tbR);
+          emit_str_expr(c, argv[0], b);
+          buf_printf(b, "); sp_String_cstr(_t%d); })", tbR);
+          return 1;
+        }
+      }
       int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
                          sp_streq(rvt2, "InstanceVariableReadNode"));
       int tn2 = ++g_tmp;

@@ -8294,6 +8294,16 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
 
   /* in-place string bang methods on an assignable receiver: reassign the
      receiver to the transformed value (value-semantics mutation, like <<). */
+  #define STRBUF_LOCAL_OF(recv_, out_) do { \
+    (out_) = NULL; \
+    const char *_rty = nt_type(nt, (recv_)); \
+    if (_rty && sp_streq(_rty, "LocalVariableReadNode")) { \
+      const char *_rn = nt_str(nt, (recv_), "name"); \
+      Scope *_rs = _rn ? comp_scope_of(c, (recv_)) : NULL; \
+      LocalVar *_rl = _rs ? scope_local(_rs, _rn) : NULL; \
+      if (_rl && _rl->type == TY_STRBUF) (out_) = _rn; \
+    } \
+  } while (0)
   if (rt == TY_STRING && argc == 0) {
     const char *base = NULL;
     if      (sp_streq(name, "chomp!"))      base = "chomp";
@@ -8309,6 +8319,19 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     else if (sp_streq(name, "squeeze!"))    base = "squeeze";
     if (base) {
       const char *rty = nt_type(nt, recv);
+      /* shared-mutable local: transform + replace the buffer in place (#3227) */
+      if (rty && sp_streq(rty, "LocalVariableReadNode")) {
+        const char *rnmS = nt_str(nt, recv, "name");
+        Scope *rscS = rnmS ? comp_scope_of(c, recv) : NULL;
+        LocalVar *rlvS = rscS ? scope_local(rscS, rnmS) : NULL;
+        if (rlvS && rlvS->type == TY_STRBUF) {
+          int tbS = ++g_tmp;
+          emit_indent(b, indent);
+          buf_printf(b, "{ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d))); }\n",
+                     tbS, rename_local(rnmS), tbS, base, tbS);
+          return 1;
+        }
+      }
       if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
         /* a frozen receiver raises FrozenError before the transform (#2314) */
         emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
@@ -8333,6 +8356,21 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     else if (sp_streq(name, "sub!"))    { abase = "sub";    abang = "sub!"; }
     else if (sp_streq(name, "tr!"))     { abase = "tr";     abang = "tr!"; }
     else if (sp_streq(name, "delete!")) { abase = "delete"; abang = "delete!"; }
+    if (abase) {
+      /* shared-mutable local: transform + replace the buffer in place (#3227) */
+      const char *sbnm = NULL; STRBUF_LOCAL_OF(recv, sbnm);
+      if (sbnm) {
+        int tbA = ++g_tmp;
+        nt_node_set_str((NodeTable *)nt, id, "name", abase);
+        emit_indent(b, indent);
+        buf_printf(b, "{ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, ",
+                   tbA, rename_local(sbnm), tbA);
+        emit_expr(c, id, b);
+        buf_puts(b, "); }\n");
+        nt_node_set_str((NodeTable *)nt, id, "name", abang);
+        return 1;
+      }
+    }
     if (abase && assignable2) {
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       nt_node_set_str((NodeTable *)nt, id, "name", abase);
@@ -8423,6 +8461,23 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, "sp_raise_frozen_str("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       return 1;
     }
+    if ((sp_streq(name, "replace") || sp_streq(name, "prepend")) && argc == 1) {
+      /* shared-mutable local: swap/prepend the buffer contents in place (#3227) */
+      const char *sbnm2 = NULL; STRBUF_LOCAL_OF(recv, sbnm2);
+      if (sbnm2) {
+        int tbR = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "{ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, ",
+                   tbR, rename_local(sbnm2), tbR);
+        if (sp_streq(name, "prepend")) {
+          buf_puts(b, "sp_str_concat("); emit_expr(c, argv[0], b);
+          buf_printf(b, ", sp_String_cstr(_t%d))", tbR);
+        }
+        else emit_expr(c, argv[0], b);
+        buf_puts(b, "); }\n");
+        return 1;
+      }
+    }
     if (assignable && sp_streq(name, "replace") && argc == 1) {
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = "); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
@@ -8451,6 +8506,19 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, "), sp_str_sub_range("); emit_expr(c, recv, b);
       buf_printf(b, ", _t%d, (mrb_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_printf(b, "))); }\n");
       return 1;
+    }
+    if ((sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!")) && argc == 1) {
+      const char *sbnm3 = NULL; STRBUF_LOCAL_OF(recv, sbnm3);
+      if (sbnm3) {
+        const char *base3 = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
+        int tbD = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "{ sp_String *_t%d = lv_%s; sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d), ",
+                   tbD, rename_local(sbnm3), tbD, base3, tbD);
+        emit_expr(c, argv[0], b);
+        buf_puts(b, ")); }\n");
+        return 1;
+      }
     }
     if (assignable && (sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!")) && argc == 1) {
       const char *base = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";

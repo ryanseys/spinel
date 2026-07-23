@@ -243,15 +243,18 @@ static), and every literal *occurrence* is its own static object, so
 the SAME occurrence (a literal inside a loop) yields one object where plain
 CRuby allocates per evaluation -- the `frozen_string_literal: true` semantics.
 
-**Aliased in-place mutation is observed for `<<`.** A string that is both
-aliased (a second local, an array element, a hash value) and appended to with
-`<<` shares one mutable buffer: the append is visible through every alias and
-through the container, and `equal?` across the alias set is `true` (matching
-CRuby's mutable String objects). The conservative residue: the other in-place
-mutators (`upcase!` and friends, `concat`, `replace`, `prepend`, `insert`,
-`clear`) rebind only the receiver's own binding -- an alias made before such a
-call still sees the value from before it. Strings never mutated in place, or
-mutated but never aliased, keep the plain value representation (no cost).
+**Aliased in-place mutation is observed.** A string that is both aliased and
+mutated in place shares one mutable buffer: the mutation is visible through
+every alias and through the container, and `equal?` across the alias set is
+`true` (matching CRuby's mutable String objects). Container aliases (an array
+element, a hash value) observe `<<`, `concat`, `prepend`, `replace`, and the
+transforming bang methods (`upcase!`, `gsub!`, `strip!`, `reverse!`, ...).
+Local aliases (`s2 = s1`) observe `<<`-driven sharing. The conservative
+residue: `insert`, `clear`, `slice!`, and index assignment (`s[i] = x`)
+rebind only the receiver's own binding, and a local-alias set whose only
+mutators are bang methods (no `<<`) keeps value-copy behavior. Strings never
+mutated in place, or mutated but never aliased, keep the plain value
+representation (no cost).
 
 #### `Range#step` / `Range#%` return a materialized Array, not an ArithmeticSequence
 
