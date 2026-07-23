@@ -1586,9 +1586,11 @@ TyKind infer_call(Compiler *c, int id) {
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
 
-  /* <method>.call(args) / [] -> the target method's return type. */
+  /* <method>.call(args) / [] / bind_call(obj, args) -> the target's return
+     type (bind_call = bind(obj).call(args), #3246). */
   if (recv >= 0 && rt == TY_METHOD &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]"))) {
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
+       (sp_streq(name, "bind_call") && argc >= 1))) {
     int mn = method_recv_node(c, recv);
     int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
     if (mi >= 0) return c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret;
