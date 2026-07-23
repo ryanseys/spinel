@@ -8640,6 +8640,30 @@ void emit_call(Compiler *c, int id, Buf *b) {
      target's owner is its defining class; a builtin target's owner is the
      receiver's class, and the receiver re-emits when doing so cannot repeat a
      side effect (a literal or a local read). */
+  /* `method(:m).receiver.equal?(self)` / `== self` for a bare top-level
+     method: the receiver IS the main object, so the identity test folds to
+     true. There is no materialized main-object value to emit for the
+     receiver alone, but the comparison's answer is static (#3245). */
+  if (recv >= 0 && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "==") || sp_streq(name, "eql?")) &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SelfNode") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "receiver")) {
+    int mrecv2 = nt_ref(nt, recv, "receiver");
+    if (mrecv2 >= 0 && comp_ntype(c, mrecv2) == TY_METHOD) {
+      int mn3 = method_recv_node(c, mrecv2);
+      int tg3 = mn3 >= 0 ? method_obj_target_mi(c, mn3) : -1;
+      int bare3 = mn3 >= 0 && nt_ref(nt, mn3, "receiver") < 0;
+      /* at top level (or any main-self context) a bare method's receiver is
+         self; an instance-method context binds self too, same answer */
+      if (tg3 >= 0 && bare3) {
+        buf_puts(b, "((void)(");
+        emit_expr(c, mrecv2, b);
+        buf_puts(b, "), (mrb_bool)1)");
+        return;
+      }
+    }
+  }
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
       (sp_streq(name, "owner") || sp_streq(name, "receiver"))) {
     int mn = method_recv_node(c, recv);
