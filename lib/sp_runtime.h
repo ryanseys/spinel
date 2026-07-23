@@ -18,6 +18,7 @@
 #include "sp_range.h"   /* Range helpers: hot inline core + sp_range_include/str cold (lib/sp_cold.c) */
 #include "sp_argf.h"    /* ARGV/ARGF state (extern; defined by main()) + cold ops (lib/sp_cold.c) */
 #include "sp_proc.h"    /* sp_Proc/sp_Curry + cold ops (lib/sp_proc.c) */
+#include "sp_exc.h"     /* sp_Exception + cold ops (lib/sp_exc.c) */
 sp_RbVal sp_env_shift(void);
 mrb_int sp_env_size(void);
 sp_StrStrHash *sp_env_to_h(void);
@@ -1431,8 +1432,6 @@ typedef uint64_t sp_RbValue;
    table as before. The element-type tag and the array cls_id are
    paired by `array_cls_id = -element_tag - 1`. */
 struct sp_Exception_s;
-static const char *sp_exc_class_name(volatile struct sp_Exception_s *ve);
-static const char *sp_exc_message(volatile struct sp_Exception_s *ve);
 /* Hash variant cls_ids — boxed into the cls_id of a poly slot so
    Hash#dig can recover the concrete hash type at runtime. */
 /* SP_BUILTIN_FOREIGN_PTR (-25), SP_BUILTIN_COMPLEX (-26) and
@@ -2246,8 +2245,8 @@ static mrb_float sp_num_to_f(sp_RbVal v) {
    #exit_value / #value / #args (#2753-#2756, #2770). Cleared on every raise.
    The bridges are extern so the cold lib TUs (frozen-string, nil-receiver
    raisers) can stage too. */
-static SP_TLS sp_RbVal sp_pending_exc_recv, sp_pending_exc_key, sp_pending_exc_val;
-static SP_TLS unsigned char sp_pending_exc_flags = 0;
+SP_TLS sp_RbVal sp_pending_exc_recv, sp_pending_exc_key, sp_pending_exc_val;
+SP_TLS unsigned char sp_pending_exc_flags = 0;
 /* Signal.trap state (defined with the Signal machinery below; declared here
    so the GC mark hook can keep installed proc handlers live). */
 struct sp_Proc;
@@ -5732,10 +5731,7 @@ static SP_TLS struct sp_proc_home *sp_unwind_home = NULL;  /* PROCRET target (TH
    tag is used because the sp_Exception typedef is defined further down; the
    result is stored as a void* in sp_exc_obj[]. */
 struct sp_Exception_s;
-static struct sp_Exception_s *sp_exc_new_for_catch(const char *cls, const char *msg);
 static void *sp_exc_recover_named(const char *cls, const char *msg);
-static void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj);
-static int sp_exc_exit_status(void *obj);
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
 #if SP_BT_AVAILABLE
   if (sp_bt_enabled) sp_bt_n = backtrace(sp_bt_buf, 256);
@@ -5812,86 +5808,13 @@ static void sp_mark_in_flight_exceptions(void) {
    to the per-class const string literal emitted by codegen
    (sp_class_names[] entry; not GC-managed). msg is GC-managed
    (sp_str_alloc'd). */
-typedef struct sp_Exception_s {
-  const char *cls_name;
-  const char *parent_cls_name; /* builtin ancestor for user subclasses, or NULL */
-  const char *msg;
-  struct sp_Exception_s *cause; /* the exception being handled when this was raised, or NULL */
-  sp_RbVal result;             /* StopIteration#result (the iteration's return value); nil otherwise */
-  sp_RbVal xname;              /* NameError/NoMethodError#name (the missing name); nil otherwise */
-  sp_RbVal xkey;               /* KeyError#key / UncaughtThrowError#tag / LocalJumpError#reason /
-                                  NoMethodError#args; nil otherwise */
-  sp_RbVal xrecv;              /* KeyError/NameError/NoMethodError/FrozenError#receiver; nil otherwise */
-  mrb_bool has_recv;           /* was a receiver actually recorded? nil is a legal
-                                  receiver (nil.foo), so the box cannot say (#3036) */
-  mrb_bool has_key;            /* likewise for KeyError#key (#3030) */
-  mrb_bool priv_call;          /* NoMethodError#private_call? (#3042) */
-} sp_Exception;
 /* Registered by the generated program to provide user exception hierarchy. */
-static const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
-static void sp_exc_gc_scan(void *p) {
-  sp_Exception *e = (sp_Exception *)p;
-  if (e->msg) sp_mark_string(e->msg);
-  if (e->cause) sp_gc_mark(e->cause);
-  sp_mark_rbval(e->result);
-  sp_mark_rbval(e->xname);
-  sp_mark_rbval(e->xkey);
-  sp_mark_rbval(e->xrecv);
-  /* cls_name/parent_cls_name point into rodata -- not GC-managed strings */
-}
-static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
-  sp_Exception *e = (sp_Exception *)sp_gc_alloc(sizeof(sp_Exception), NULL, sp_exc_gc_scan);
-  e->cls_name = cls_name ? cls_name : "RuntimeError";
-  e->parent_cls_name = NULL;
-  e->msg = NULL;    /* set below; scan-safe if the copy triggers a GC */
-  e->cause = NULL;  /* set all fields explicitly; sp_exc_gc_scan reads cause */
-  e->result = sp_box_nil();
-  e->xname = sp_box_nil();
-  /* An Interrupt carries SIGINT as its #signo however it was constructed --
-     including the bare `raise Interrupt` class form (#3039). */
-  e->xkey = (e->cls_name && !strcmp(e->cls_name, "Interrupt"))
-              ? sp_box_int((mrb_int)SIGINT) : sp_box_nil();
-  e->xrecv = sp_box_nil();
-  e->has_recv = 1;   /* cleared by the explicit .new emits that record neither */
-  e->has_key = 1;
-  /* Launder the message into a GC-heap string: sp_exc_gc_scan marks it via
-     the tag byte at msg[-1], which only heap strings carry -- keeping a
-     raise site's rodata literal would under-read one byte before it. */
-  SP_GC_ROOT(e);
-  e->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : (cls_name ? cls_name : "RuntimeError"));
-  return e;
-}
+const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
 /* Exception#==: same class and message (CRuby value equality); #equal?
    stays pointer identity at the emit site. */
-static mrb_bool sp_exc_eq(sp_Exception *a, sp_Exception *b) {
-  if (a == b) return 1;
-  if (!a || !b) return 0;
-  if (strcmp(a->cls_name ? a->cls_name : "", b->cls_name ? b->cls_name : "") != 0) return 0;
-  /* Exception#== compares class, the STORED message and the backtrace.
-     UncaughtThrowError alone leaves its stored message nil and renders
-     "uncaught throw :tag" lazily, so Ruby sees two of them as equal whatever
-     the tag. We keep the rendered text in ->msg, so skip it for that class
-     (#3098). Backtraces are empty here by design, see docs/limitations.md. */
-  if (a->cls_name && strcmp(a->cls_name, "UncaughtThrowError") == 0) return 1;
-  return strcmp(a->msg ? a->msg : "", b->msg ? b->msg : "") == 0;
-}
-static sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {
-  sp_Exception *e = sp_exc_new(cls_name, msg);   /* empty msg already fell back to cls_name */
-  e->parent_cls_name = parent_cls;
-  return e;
-}
 /* Exception#dup / #clone: a fresh allocation of the receiver's full
    (subclass-sized) payload -- the GC header carries the size, so subclass
    ivar fields copy along (as references, matching Object#dup). */
-static sp_Exception *sp_exc_dup(sp_Exception *e) {
-  if (!e) return e;
-  sp_gc_hdr *h = (sp_gc_hdr *)((char *)e - sizeof(sp_gc_hdr));
-  size_t payload = h->size - sizeof(sp_gc_hdr);
-  SP_GC_ROOT(e);
-  sp_Exception *n = (sp_Exception *)sp_gc_alloc(payload, h->finalize, h->scan);
-  memcpy(n, e, payload);
-  return n;
-}
 /* Build the carried NameError/NoMethodError with #name recovered from the
    message's first quoted token (see sp_raise_cls, #2758). */
 static void *sp_exc_recover_named(const char *cls, const char *msg) {
@@ -5920,19 +5843,7 @@ static void *sp_exc_recover_named(const char *cls, const char *msg) {
 }
 /* Write the staged introspection values (receiver/key/value) into the carried
    exception, creating one when the raise had none (see sp_raise_cls). */
-static void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {
-  sp_Exception *e = (sp_Exception *)obj;
-  if (!e) e = sp_exc_new(cls, msg);
-  if (sp_pending_exc_flags & 1) { e->xrecv = sp_pending_exc_recv; e->has_recv = 1; }
-  if (sp_pending_exc_flags & 2) { e->xkey = sp_pending_exc_key; e->has_key = 1; }
-  if (sp_pending_exc_flags & 4) e->result = sp_pending_exc_val;
-  return e;
-}
 /* SystemExit#status carried in the result slot; 0 when unset. */
-static int sp_exc_exit_status(void *obj) {
-  sp_Exception *e = (sp_Exception *)obj;
-  return (e && e->result.tag == SP_TAG_INT) ? (int)e->result.v.i : 0;
-}
 /* Kernel#exit: raises a rescuable SystemExit carrying the status; with no
    handler in scope it terminates directly (#2761). exit! stays direct. */
 static void sp_raise_exc(volatile sp_Exception *ve);   /* defined below */
@@ -5958,45 +5869,16 @@ SP_NORETURN SP_COLD static void sp_abort_raise(const char *msg) {
   exit(1);
 }
 /* Exception#exception(msg): a copy of the receiver carrying the new message. */
-static sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {
-  sp_Exception *n = sp_exc_dup(e);
-  SP_GC_ROOT(n);
-  n->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : (n->cls_name ? n->cls_name : "RuntimeError"));
-  return n;
-}
 /* Allocate a zeroed exception-subclass struct of `sz` bytes with the base
    {cls_name, parent_cls_name, msg} prefix set, for the degenerate catch path
    where a user subclass with ivars was raised without a carried object
    (#1415). Its ivar fields stay zero (nil/0). msg is the only heap field, so
    the base scan suffices. */
-static void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {
-  sp_Exception *e = (sp_Exception *)sp_gc_alloc(sz, NULL, sp_exc_gc_scan);
-  memset(e, 0, sz);
-  e->cls_name = cls_name ? cls_name : "RuntimeError";
-  e->result = sp_box_nil();   /* memset left tag 0 (int 0); StopIteration#result wants nil */
-  e->xname = sp_box_nil();
-  e->xkey = sp_box_nil();
-  e->xrecv = sp_box_nil();
-  if (sp_user_exc_parent_fn) e->parent_cls_name = sp_user_exc_parent_fn(e->cls_name);
-  /* heap-launder the message (see sp_exc_new); memset left msg NULL, so a GC
-     during the copy scans a consistent struct */
-  SP_GC_ROOT(e);
-  e->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : e->cls_name);
-  return e;
-}
 /* Accept `volatile` pointers: LV slots holding sp_Exception * are
    declared volatile when they live across setjmp, so callers may
    pass volatile-qualified pointers in. The pointee itself isn't
    volatile (cls_name/msg are stable post-construction), so we
    strip volatile internally for one access. */
-static const char *sp_exc_class_name(volatile sp_Exception *ve) {
-  sp_Exception *e = (sp_Exception *)ve;
-  return e ? e->cls_name : "RuntimeError";
-}
-static const char *sp_exc_message(volatile sp_Exception *ve) {
-  sp_Exception *e = (sp_Exception *)ve;
-  return e ? e->msg : sp_str_empty;
-}
 static void sp_raise_exc(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
   if (!e) sp_raise("(nil exception)");
@@ -6028,72 +5910,11 @@ SP_NORETURN void sp_raise_stop_iteration(sp_RbVal result) {
 }
 /* Create an exception for a `rescue => e` binding: like sp_exc_new but
    also looks up the parent class via the user hierarchy callback. */
-static sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
-  sp_Exception *e = sp_exc_new(cls, msg);
-  if (sp_user_exc_parent_fn) {
-    const char *par = sp_user_exc_parent_fn(cls);
-    if (par) e->parent_cls_name = par;
-  }
-  return e;
-}
 /* Exception#cause: the exception active when this one was raised, or NULL. */
-static sp_Exception *sp_exc_cause(volatile sp_Exception *ve) {
-  sp_Exception *e = (sp_Exception *)ve;
-  return e ? e->cause : NULL;
-}
 /* StopIteration#result: the value the finished iteration returned (nil for a
    non-StopIteration exception or a past-the-end materialized enumerator). */
-static sp_RbVal sp_exc_result(volatile sp_Exception *ve) {
-  sp_Exception *e = (sp_Exception *)ve;
-  return e ? e->result : sp_box_nil();
-}
 /* The builtin exception hierarchy, as {class, direct superclass} pairs. Shared
    by Exception#is_a? and the by-name #superclass lookup (#3031). */
-static const char *sp_exc_parent_of_name(const char *cls) {
-  if (!cls) return NULL;
-  static const char *const HIER[][2] = {
-    {"RuntimeError",          "StandardError"},
-    {"ArgumentError",         "StandardError"},
-    {"TypeError",             "StandardError"},
-    {"NameError",             "StandardError"},
-    {"NoMethodError",         "NameError"},
-    {"IndexError",            "StandardError"},
-    {"KeyError",              "IndexError"},
-    {"RangeError",            "StandardError"},
-    {"IOError",               "StandardError"},
-    {"EOFError",              "IOError"},
-    {"ZeroDivisionError",     "StandardError"},
-    {"NotImplementedError",   "ScriptError"},
-    {"StopIteration",         "IndexError"},
-    {"FloatDomainError",      "RangeError"},
-    {"Math::DomainError",      "StandardError"},
-    {"FrozenError",           "RuntimeError"},
-    {"EncodingError",         "StandardError"},
-    {"LoadError",             "StandardError"},
-    {"RegexpError",           "StandardError"},
-    {"StringScanner_Error",   "StandardError"},
-    {"FiberError",            "StandardError"},
-    {"UncaughtThrowError",    "ArgumentError"},
-    {"SyntaxError",           "ScriptError"},
-    {"ScriptError",           "Exception"},
-    {"StandardError",         "Exception"},
-    {"SecurityError",         "Exception"},
-    {"SignalException",       "Exception"},
-    {"Interrupt",             "SignalException"},
-    {"ThreadError",           "StandardError"},
-    {"ClosedQueueError",      "StopIteration"},
-    {"NoMatchingPatternError", "StandardError"},
-    {"NoMatchingPatternKeyError", "NoMatchingPatternError"},
-    {"LocalJumpError",        "StandardError"},   /* (#3025) */
-    {"SystemExit",            "Exception"},
-    {"SystemStackError",      "Exception"},
-    {"NoMemoryError",         "Exception"},
-    {NULL, NULL}
-  };
-  for (int i = 0; HIER[i][0]; i++)
-    if (!strcmp(cls, HIER[i][0])) return HIER[i][1];
-  return NULL;
-}
 /* Exception#is_a?(ClassName): checks class name and known hierarchy. */
 static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
   sp_Exception *e = (sp_Exception *)ve;
@@ -6127,98 +5948,20 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
 
 /* Check if exception class name `raised` is the same as or a subclass of
    `target`, using both the built-in hierarchy and the user hierarchy callback. */
-static int sp_exc_cls_matches(const char *raised, const char *target) {
-  if (!raised || !target) return 0;
-  static const char *const HIER2[][2] = {
-    {"RuntimeError",         "StandardError"},
-    {"ArgumentError",        "StandardError"},
-    {"TypeError",            "StandardError"},
-    {"NameError",            "StandardError"},
-    {"NoMethodError",        "NameError"},
-    {"IndexError",           "StandardError"},
-    {"KeyError",             "IndexError"},
-    {"RangeError",           "StandardError"},
-    {"IOError",              "StandardError"},
-    {"EOFError",             "IOError"},
-    {"ZeroDivisionError",    "StandardError"},
-    {"NotImplementedError",  "ScriptError"},
-    {"StopIteration",        "IndexError"},
-    {"FloatDomainError",     "RangeError"},
-    {"Math::DomainError",     "StandardError"},
-    {"FrozenError",          "RuntimeError"},
-    {"EncodingError",        "StandardError"},
-    {"LoadError",            "StandardError"},
-    {"RegexpError",          "StandardError"},
-    {"StringScanner_Error",  "StandardError"},
-    {"FiberError",           "StandardError"},
-    {"UncaughtThrowError",   "ArgumentError"},
-    {"SyntaxError",          "ScriptError"},
-    {"ScriptError",          "Exception"},
-    {"StandardError",        "Exception"},
-    {"SecurityError",        "Exception"},
-    {"SignalException",      "Exception"},
-    {"Interrupt",            "SignalException"},
-    {"ThreadError",          "StandardError"},
-    {"ClosedQueueError",     "StopIteration"},
-    {"NoMatchingPatternError", "StandardError"},
-    {"NoMatchingPatternKeyError", "NoMatchingPatternError"},
-    {NULL, NULL}
-  };
-  const char *cls = raised;
-  for (int depth = 0; depth < 30 && cls; depth++) {
-    if (!strcmp(cls, target)) return 1;
-    const char *parent = NULL;
-    /* user hierarchy first */
-    if (sp_user_exc_parent_fn) parent = sp_user_exc_parent_fn(cls);
-    if (!parent) {
-      for (int i = 0; HIER2[i][0]; i++)
-        if (!strcmp(cls, HIER2[i][0])) { parent = HIER2[i][1]; break; }
-    }
-    if (!parent) {
-      if (!strcmp(target, "Exception") || !strcmp(target, "Object") || !strcmp(target, "BasicObject")) return 1;
-      break;
-    }
-    cls = parent;
-  }
-  if (!strcmp(target, "Object") || !strcmp(target, "BasicObject") || !strcmp(target, "Kernel")) return 1;
-  return 0;
-}
 /* NameError#name (NoMethodError inherits it): the carried missing name.
    Any other exception class raises CRuby's NoMethodError -- the receiver
    type is class-erased at compile time, so the check is a runtime one. */
-static sp_RbVal sp_exc_name_acc(sp_Exception *e) {
-  if (!e) return sp_box_nil();
-  if (sp_exc_cls_matches(e->cls_name, "NameError")) return e->xname;
-  sp_raise_cls("NoMethodError",
-               sp_sprintf("undefined method 'name' for an instance of %s", e->cls_name));
-}
 /* Class-gated introspection accessors (#2753-#2756, #2770): each answers only
    on its CRuby-defining class (walking the name-carried hierarchy) and raises
    NoMethodError elsewhere, matching per-class method definitions. */
-SP_COLD static void sp_exc_acc_gate(sp_Exception *e, const char *cls, const char *acc) {
-  if (e && sp_exc_cls_matches(e->cls_name, cls)) return;
-  sp_raise_cls("NoMethodError",
-               sp_sprintf("undefined method '%s' for %s", acc,
-                          e ? sp_sprintf("an instance of %s", e->cls_name) : "nil"));
-}
 /* a reason/tag staged as a plain string interns back to the Symbol it names */
 static sp_RbVal sp_exc_sym_slot(sp_RbVal v) {
   if (v.tag == SP_TAG_STR && v.v.s) return sp_box_sym(sp_sym_intern(v.v.s));
   return v;
 }
-static sp_RbVal sp_exc_key_acc(sp_Exception *e) {
-  sp_exc_acc_gate(e, "KeyError", "key");
-  /* KeyError.new("m") records no key, and CRuby raises rather than
-     answering nil -- nil is a legal key (#3030) */
-  if (e && !e->has_key) sp_raise_cls("ArgumentError", "no key is available");
-  return e->xkey;
-}
 /* Exception accessors on a POLY receiver (an exception rescued into a
    union-typed local): unbox and delegate; a non-exception value is CRuby's
    NoMethodError (#3120, #3122). */
-static sp_RbVal sp_exc_key_acc(sp_Exception *e);
-static sp_RbVal sp_exc_receiver_acc(sp_Exception *e);
-static sp_RbVal sp_exc_name_acc(sp_Exception *e);
 static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p))
     sp_raise_cls("NoMethodError",
@@ -6231,47 +5974,13 @@ static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   if (!strcmp(which, "name"))    return sp_exc_name_acc(e);
   return sp_box_nil();
 }
-static sp_RbVal sp_exc_receiver_acc(sp_Exception *e) {
-  if (!(e && (sp_exc_cls_matches(e->cls_name, "NameError") ||
-              sp_exc_cls_matches(e->cls_name, "KeyError") ||
-              sp_exc_cls_matches(e->cls_name, "FrozenError"))))
-    sp_exc_acc_gate(e, "NameError", "receiver");
-  /* an explicitly built NameError.new(msg, name) never recorded one, and
-     CRuby raises rather than answering nil -- nil is a legal receiver (#3036) */
-  if (e && !e->has_recv) sp_raise_cls("ArgumentError", "no receiver is available");
-  return e->xrecv;
-}
-static sp_RbVal sp_exc_args_acc(sp_Exception *e) {
-  sp_exc_acc_gate(e, "NoMethodError", "args");
-  return e->xkey;
-}
-static mrb_bool sp_exc_private_call_acc(sp_Exception *e) {
-  sp_exc_acc_gate(e, "NoMethodError", "private_call?");
-  return e ? e->priv_call : 0;   /* set only by the explicit .new (#3042) */
-}
 static sp_RbVal sp_exc_reason_acc(sp_Exception *e) {
   sp_exc_acc_gate(e, "LocalJumpError", "reason");
   return sp_exc_sym_slot(e->xkey);
 }
-static sp_RbVal sp_exc_exit_value_acc(sp_Exception *e) {
-  sp_exc_acc_gate(e, "LocalJumpError", "exit_value");
-  return e->result;
-}
 static sp_RbVal sp_exc_tag_acc(sp_Exception *e) {
   sp_exc_acc_gate(e, "UncaughtThrowError", "tag");
   return sp_exc_sym_slot(e->xkey);
-}
-static sp_RbVal sp_exc_throw_value_acc(sp_Exception *e) {
-  sp_exc_acc_gate(e, "UncaughtThrowError", "value");
-  return e->result;
-}
-static mrb_int sp_exc_status_acc(sp_Exception *e) {
-  sp_exc_acc_gate(e, "SystemExit", "status");
-  return (mrb_int)sp_exc_exit_status(e);
-}
-static mrb_bool sp_exc_success_acc(sp_Exception *e) {
-  sp_exc_acc_gate(e, "SystemExit", "success?");
-  return sp_exc_exit_status(e) == 0;
 }
 
 /* Does `raised` descend from StandardError? Used by a bare `rescue` (no class),
@@ -6281,26 +5990,6 @@ static mrb_bool sp_exc_success_acc(sp_Exception *e) {
    (a C-raised package error like JSON::ParserError, or a user class with no
    registered parent) defaults to StandardError; only the listed roots and their
    subclasses answer false. */
-static int sp_exc_is_standard_error(const char *raised) {
-  if (!raised) return 0;
-  static const char *const NONSTD[] = {
-    "Exception", "NoMemoryError", "ScriptError", "LoadError",
-    "NotImplementedError", "SyntaxError", "SecurityError", "SignalException",
-    "Interrupt", "SystemExit", "SystemStackError", "fatal", NULL
-  };
-  const char *cls = raised;
-  for (int depth = 0; depth < 30 && cls; depth++) {
-    if (!strcmp(cls, "StandardError")) return 1;
-    for (int i = 0; NONSTD[i]; i++)
-      if (!strcmp(cls, NONSTD[i])) return 0;
-    /* walk user subclasses toward their declared parent; a builtin StandardError
-       subclass has no user parent and terminates here, defaulting to true. */
-    const char *parent = sp_user_exc_parent_fn ? sp_user_exc_parent_fn(cls) : NULL;
-    if (!parent) return 1;
-    cls = parent;
-  }
-  return 1;
-}
 
 /* Cross-TU bridge for sp_bigint.c (compiled as a separate translation
    unit; can't see static helpers in this header). Defined non-static
@@ -7450,14 +7139,6 @@ static sp_Exception *sp_interrupt_new(const char *msg) {
   SP_GC_ROOT(e);
   e->xkey = sp_box_int((mrb_int)SIGINT);
   return e;
-}
-static mrb_int sp_exc_signo_acc(sp_Exception *e) {
-  sp_exc_acc_gate(e, "SignalException", "signo");
-  return (e->xkey.tag == SP_TAG_INT) ? e->xkey.v.i : 0;
-}
-static const char *sp_exc_signm_acc(sp_Exception *e) {
-  sp_exc_acc_gate(e, "SignalException", "signm");
-  return sp_exc_message(e);
 }
 
 /* ENV.delete_if/keep_if/select!/reject!/filter!: the proc judges each

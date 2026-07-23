@@ -221,6 +221,10 @@ build/sp_str.o: lib/sp_str.c lib/sp_str.h lib/sp_array.h lib/sp_alloc.h lib/sp_c
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_str.c -o build/sp_str.o
 
+build/sp_exc.o: lib/sp_exc.c lib/sp_exc.h lib/sp_types.h lib/sp_gc.h lib/sp_alloc.h
+	@mkdir -p build
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_exc.c -o build/sp_exc.o
+
 build/sp_proc.o: lib/sp_proc.c lib/sp_proc.h lib/sp_types.h lib/sp_gc.h lib/sp_alloc.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_proc.c -o build/sp_proc.o
@@ -323,7 +327,7 @@ build/sp_cold.o: lib/sp_cold.c $(RT_HDRS)
 
 SP_RT_LIB = lib/libspinel_rt.a
 
-RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_dtoa sp_marshal sp_format sp_string sp_inspect sp_array sp_str sp_hash sp_proc sp_re sp_random sp_fiber sp_sched sp_io sp_cold
+RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_dtoa sp_marshal sp_format sp_string sp_inspect sp_array sp_str sp_hash sp_proc sp_exc sp_re sp_random sp_fiber sp_sched sp_io sp_cold
 
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS)))
 	ar rcs $@ $^
@@ -995,6 +999,7 @@ install: all bin/spin
 	install -m 644 lib/sp_str.h          $(SPNLDIR)/lib/
 	install -m 644 lib/sp_hash.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_proc.h         $(SPNLDIR)/lib/
+	install -m 644 lib/sp_exc.h          $(SPNLDIR)/lib/
 	install -m 644 lib/sp_range.h        $(SPNLDIR)/lib/
 	install -m 644 lib/sp_argf.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_re.h           $(SPNLDIR)/lib/
