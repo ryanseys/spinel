@@ -134,7 +134,11 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
     /* an object with #to_s (user-defined or a generated struct/data one) */
     const char *cn = obj_str_cname(c, ty_object_class(t), 0);
-    buf_puts(b, "{ const char *_ps = (const char *)(");
+    int ret_poly = obj_str_ret_poly(c, ty_object_class(t), 0);
+    /* A to_s that unions a String with another branch type (e.g. nil)
+       returns a boxed sp_RbVal; route it through sp_poly_to_s rather than a
+       pointer cast (#3266). */
+    buf_puts(b, ret_poly ? "{ const char *_ps = sp_poly_to_s(" : "{ const char *_ps = (const char *)(");
     buf_printf(b, "sp_%s_to_s((sp_%s *)", cn, cn);
     const char *rty = nt_type(c->nt, arg);
     if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode") || sp_streq(rty, "ConstantReadNode"))) {
@@ -248,7 +252,10 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     /* an object with #to_s: call it directly (like the puts arm); evaluate
        the argument first so its hoisted declarations land whole in g_pre */
     const char *cn = obj_str_cname(c, ty_object_class(t), 0);
-    buf_puts(b, "{ const char *_ps = (const char *)(");
+    int ret_poly = obj_str_ret_poly(c, ty_object_class(t), 0);
+    /* poly-returning to_s (String on one branch, e.g. nil on another) is a
+       boxed sp_RbVal: render via sp_poly_to_s, not a pointer cast (#3266). */
+    buf_puts(b, ret_poly ? "{ const char *_ps = sp_poly_to_s(" : "{ const char *_ps = (const char *)(");
     buf_printf(b, "sp_%s_to_s((sp_%s *)", cn, cn);
     const char *rty = nt_type(c->nt, arg);
     if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode") || sp_streq(rty, "ConstantReadNode"))) {

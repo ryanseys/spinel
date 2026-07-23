@@ -2783,6 +2783,16 @@ const char *obj_str_cname(Compiler *c, int cid, int want_inspect) {
   return NULL;
 }
 
+/* True when the resolved user to_s/inspect returns a boxed sp_RbVal (its
+   value flows through more than one branch type, e.g. a String on one arm
+   and nil on another). Callers that consume the result as a `const char *`
+   must route it through sp_poly_to_s instead of a pointer cast (#3266). */
+int obj_str_ret_poly(Compiler *c, int cid, int want_inspect) {
+  if (cid < 0 || cid >= c->nclasses) return 0;
+  int mi = comp_method_in_chain(c, cid, want_inspect ? "inspect" : "to_s", NULL);
+  return mi >= 0 && (TyKind)c->scopes[mi].ret == TY_POLY;
+}
+
 /* Return the builtin exception parent name for user exc subclass ci,
    walking up the chain until a builtin exception name is found. */
 const char *exc_builtin_parent(Compiler *c, int ci) {
