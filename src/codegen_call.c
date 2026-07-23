@@ -3254,11 +3254,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                      !is_lengthlike && !is_empty && !is_pred &&
                      !sp_streq(name, "to_s") && !sp_streq(name, "inspect") &&
                      sp_feature_required("ostruct");
+    /* `rewind` on a poly stream (a param unioning StringIO and IO, #3257):
+       both are builtins/native classes with no user arm, so without this
+       pre-arm the call was silently dropped. */
+    int is_io_rewind = sp_streq(name, "rewind") && !diag_user_defines(c, name);
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
           (c->classes[k].is_native_class && comp_native_method_find(c, k, name, 0, 0) >= 0)) ncand++;
-    if (ncand > 0 || is_lengthlike || is_pred || is_class_named || is_ostruct) {
+    if (ncand > 0 || is_lengthlike || is_pred || is_class_named || is_ostruct || is_io_rewind) {
       TyKind ret = comp_ntype(c, id);
       /* an OpenStruct member is a boxed value; but when a user class also
          defines the method, keep the user-inferred result type (the context
@@ -3308,6 +3312,17 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (ret == TY_POLY) buf_puts(b, osget);
         else emit_unbox_text(c, ret, osget, b);   /* result slot is user-typed (#3264) */
         buf_puts(b, "; else ");
+      }
+      /* rewind on a runtime IO / StringIO stream (#3257); value is the seed
+         (rewind's return is rarely consumed through a poly union) */
+      if (is_io_rewind) {
+        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO)"
+                      " { sp_File_rewind((sp_File *)_t%d.v.p); } else ", tv, tv, tv);
+        int sio_cid3 = comp_class_index(c, "StringIO");
+        if (sio_cid3 >= 0)
+          buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d)"
+                        " { sp_StringIO_rewind((sp_StringIO *)_t%d.v.p); } else ",
+                     tv, tv, sio_cid3, tv);
       }
       /* class 0 emits a `case 0:` arm here when it defines/inherits the method
          (nrequired 0) or exposes it as a reader; the dispatch key is then guarded
@@ -13059,6 +13074,40 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            strings keep the filename copy. */
         int a0_sio = node_is_stringio(c, argv[0]), a0_io = comp_ntype(c, argv[0]) == TY_IO;
         int a1_sio = node_is_stringio(c, argv[1]), a1_io = comp_ntype(c, argv[1]) == TY_IO;
+        int a0_poly = comp_ntype(c, argv[0]) == TY_POLY;
+        int a1_poly = comp_ntype(c, argv[1]) == TY_POLY;
+        /* a poly endpoint (a param unioning StringIO and IO, #3257) holds a
+           boxed stream object: dispatch read/write on its runtime class */
+        if ((a0_sio || a0_io || a0_poly) && (a1_sio || a1_io || a1_poly) &&
+            (a0_poly || a1_poly)) {
+          int sio_cid = comp_class_index(c, "StringIO");
+          int td = ++g_tmp;
+          buf_printf(b, "({ const char *_t%d = ", td);
+          if (a0_poly) {
+            int ts = ++g_tmp;
+            buf_printf(b, "({ sp_RbVal _t%d = ", ts); emit_expr(c, argv[0], b);
+            if (sio_cid >= 0)
+              buf_printf(b, "; _t%d.cls_id == %d ? sp_StringIO_read((sp_StringIO *)_t%d.v.p)"
+                            " : sp_File_read((sp_File *)_t%d.v.p); })", ts, sio_cid, ts, ts);
+            else
+              buf_printf(b, "; sp_File_read((sp_File *)_t%d.v.p); })", ts);
+          }
+          else if (a0_sio) { buf_puts(b, "sp_StringIO_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+          else { buf_puts(b, "sp_File_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+          buf_printf(b, "; SP_GC_ROOT(_t%d); ", td);
+          if (a1_poly) {
+            int tdd = ++g_tmp;
+            buf_printf(b, "sp_RbVal _t%d = ", tdd); emit_expr(c, argv[1], b);
+            if (sio_cid >= 0)
+              buf_printf(b, "; _t%d.cls_id == %d ? sp_StringIO_write((sp_StringIO *)_t%d.v.p, _t%d)"
+                            " : sp_File_write((sp_File *)_t%d.v.p, _t%d); })", tdd, sio_cid, tdd, td, tdd, td);
+            else
+              buf_printf(b, "; sp_File_write((sp_File *)_t%d.v.p, _t%d); })", tdd, td);
+          }
+          else if (a1_sio) { buf_puts(b, "sp_StringIO_write("); emit_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
+          else { buf_puts(b, "sp_File_write("); emit_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
+          return;
+        }
         if ((a0_sio || a0_io) && (a1_sio || a1_io)) {
           buf_puts(b, a1_sio ? "sp_StringIO_write(" : "sp_File_write(");
           emit_expr(c, argv[1], b);
