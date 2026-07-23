@@ -8360,6 +8360,36 @@ void emit_call(Compiler *c, int id, Buf *b) {
                name, default_value(comp_ntype(c, id)));
     return;
   }
+  /* UnboundMethod#bind_call(obj, args...) = bind(obj).call(args...): with a
+     statically-known target, call it directly with obj as self (#3246). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc >= 1 &&
+      sp_streq(name, "bind_call")) {
+    int mn2 = method_recv_node(c, recv);
+    int t2 = mn2 >= 0 ? method_obj_target_mi(c, mn2) : -1;
+    if (t2 >= 0 && ty_is_object(comp_ntype(c, argv[0]))) {
+      Scope *tm2 = &c->scopes[t2];
+      int cid2 = tm2->class_id;
+      emit_method_cname(c, tm2, b);
+      buf_puts(b, "(");
+      if (cid2 >= 0 && c->classes[cid2].is_value_type) emit_expr(c, argv[0], b);
+      else if (cid2 >= 0) {
+        buf_printf(b, "(sp_%s *)(", c->classes[cid2].c_name);
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else emit_expr(c, argv[0], b);
+      for (int k = 1; k < argc; k++) {
+        buf_puts(b, ", ");
+        if (k - 1 < tm2->nparams) emit_arg_or_default(c, tm2, k - 1, argv[k], b);
+        else emit_expr(c, argv[k], b);
+      }
+      for (int k2 = argc - 1; k2 < tm2->nparams; k2++) {
+        buf_puts(b, ", ");
+        emit_arg_or_default(c, tm2, k2, -1, b);
+      }
+      buf_puts(b, ")");
+      return;
+    }
+  }
   /* UnboundMethod#bind(obj): the same target with obj as self. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 1 && sp_streq(name, "bind")) {
     int mn2 = method_recv_node(c, recv);
@@ -8800,6 +8830,37 @@ void emit_call(Compiler *c, int id, Buf *b) {
     int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
     int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
     if (target >= 0 && target_recvless) {
+      /* A trailing splat argument (`m[*args]` / `m.call(*args)`) expands into
+         the remaining declared params at runtime: the target's arity is
+         static, so read the splatted array element-by-element into each slot
+         -- passing the raw array was a fixed-arity C call with one pointer
+         arg (#3248). */
+      int splat_at = -1;
+      for (int k = 0; k < argc; k++) {
+        const char *aty2 = nt_type(nt, argv[k]);
+        if (aty2 && sp_streq(aty2, "SplatNode")) { splat_at = k; break; }
+      }
+      if (splat_at >= 0 && splat_at == argc - 1) {
+        Scope *tms = &c->scopes[target];
+        int ts = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", ts);
+        emit_expr(c, argv[splat_at], b);   /* splat-to-array, normalized poly */
+        buf_printf(b, "; SP_GC_ROOT(_t%d); ", ts);
+        emit_method_cname(c, tms, b);
+        buf_puts(b, "(");
+        for (int k = 0; k < tms->nparams; k++) {
+          if (k) buf_puts(b, ", ");
+          if (k < splat_at) { emit_arg_or_default(c, tms, k, argv[k], b); continue; }
+          LocalVar *pp = tms->pnames ? scope_local(tms, tms->pnames[k]) : NULL;
+          TyKind pt2 = pp ? pp->type : TY_INT;
+          char el[64];
+          snprintf(el, sizeof el, "sp_PolyArray_get(_t%d, %d)", ts, k - splat_at);
+          if (pt2 == TY_POLY) buf_puts(b, el);
+          else emit_unbox_text(c, pt2, el, b);
+        }
+        buf_puts(b, "); })");
+        return;
+      }
       /* top-level / self method: direct call sp_<name>(args). Coerce each arg to
          the target's parameter type (emit_arg_or_default boxes an int arg into a
          poly param widened under promote, etc.). */
@@ -8831,13 +8892,45 @@ void emit_call(Compiler *c, int id, Buf *b) {
     int poly_abi = !tm && g_promote_mode;
     TyKind tret = tm ? (TyKind)tm->ret : (poly_abi ? TY_POLY : TY_INT);
     if (!is_scalar_ret(tret)) tret = TY_INT;  /* aggregate ret: raw carrier */
+    /* A trailing splat with a statically-known target expands into the
+       remaining declared params from the splatted array (#3248); the
+       effective arg count becomes the target's residual arity. */
+    int splat_at2 = -1;
+    for (int k = 0; k < argc; k++) {
+      const char *aty3 = nt_type(nt, argv[k]);
+      if (aty3 && sp_streq(aty3, "SplatNode")) { splat_at2 = k; break; }
+    }
+    int eargc = argc, tsplat = 0;
+    if (splat_at2 >= 0 && splat_at2 == argc - 1 && tm) {
+      eargc = tm->nparams - shift;
+      if (eargc < splat_at2) eargc = splat_at2;
+    }
+    else splat_at2 = -1;   /* mid-list splat / unknown target: old path */
     buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
+    if (splat_at2 >= 0) {
+      tsplat = ++g_tmp;
+      buf_printf(b, "sp_PolyArray *_t%d = ", tsplat);
+      emit_expr(c, argv[splat_at2], b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); ", tsplat);
+    }
     /* Hoist each argument into a temp so both call arms (self-ful / self-less)
        reference it without re-evaluating (#3252). */
-    int *atmp = argc ? (int *)calloc((size_t)argc, sizeof(int)) : NULL;
-    for (int k = 0; k < argc; k++) {
+    int *atmp = eargc ? (int *)calloc((size_t)eargc, sizeof(int)) : NULL;
+    for (int k = 0; k < eargc; k++) {
       atmp[k] = ++g_tmp;
-      if (tm && k + shift < tm->nparams) {
+      if (splat_at2 >= 0 && k >= splat_at2) {
+        /* an expanded splat element, coerced to the declared param type */
+        LocalVar *pp = (tm && k + shift < tm->nparams && tm->pnames)
+                         ? scope_local(tm, tm->pnames[k + shift]) : NULL;
+        TyKind pt3 = pp ? pp->type : TY_INT;
+        char el[64];
+        snprintf(el, sizeof el, "sp_PolyArray_get(_t%d, %d)", tsplat, k - splat_at2);
+        emit_ctype(c, pt3, b);
+        buf_printf(b, " _t%d = ", atmp[k]);
+        if (pt3 == TY_POLY) buf_puts(b, el);
+        else emit_unbox_text(c, pt3, el, b);
+      }
+      else if (tm && k + shift < tm->nparams) {
         LocalVar *pp = scope_local(tm, tm->pnames[k + shift]);
         emit_ctype(c, pp ? pp->type : TY_INT, b);
         buf_printf(b, " _t%d = ", atmp[k]); emit_arg_or_default(c, tm, k + shift, argv[k], b);
@@ -8856,7 +8949,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       if (arm) buf_puts(b, " : ");
       buf_puts(b, "(("); emit_ctype(c, tret, b); buf_puts(b, " (*)(");
       if (arm == 0) buf_puts(b, "void *");
-      for (int k = 0; k < argc; k++) {
+      for (int k = 0; k < eargc; k++) {
         if (arm == 0 || k) buf_puts(b, ", ");
         if (tm && k + shift < tm->nparams) {
           LocalVar *pp = scope_local(tm, tm->pnames[k + shift]);
@@ -8865,10 +8958,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
         else if (poly_abi) buf_puts(b, "sp_RbVal");
         else buf_puts(b, "mrb_int");
       }
-      if (arm != 0 && argc == 0) buf_puts(b, "void");
+      if (arm != 0 && eargc == 0) buf_puts(b, "void");
       buf_printf(b, "))(uintptr_t)_t%d->fn)(", tr);
       if (arm == 0) buf_printf(b, "(void *)_t%d->self", tr);
-      for (int k = 0; k < argc; k++) {
+      for (int k = 0; k < eargc; k++) {
         if (arm == 0 || k) buf_puts(b, ", ");
         buf_printf(b, "_t%d", atmp[k]);
       }
