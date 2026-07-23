@@ -121,4 +121,8 @@ const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrH
 const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h);
 const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h);
 
+/* ---- sp_IntStrHash_clear: missed in the original CRUD batch
+   (present for the other 3 hash types, overlooked for this one). ---- */
+void sp_IntStrHash_clear(sp_IntStrHash*h);
+
 #endif

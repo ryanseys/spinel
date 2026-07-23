@@ -716,7 +716,6 @@ static inline mrb_int sp_int_bit(mrb_int n, mrb_int i) {
    overread (and could alias a heap marker on some rodata layouts). */
 
 
-static void sp_IntStrHash_clear(sp_IntStrHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->used[i]=0;h->len=0;}
 
 /* Int → Int typed hash. Mirrors sp_IntStrHash's open-addressing
    layout (used[] bitmap so 0/-1 keys are distinguishable from
@@ -1430,11 +1429,6 @@ static inline mrb_int sp_int_shr(mrb_int a, mrb_int n) {
    SP_CLASS_BY_NAME itself now lives in sp_types.h (needed by sp_box_class_name
    in sp_alloc.h). */
 /* box a sp_Class into a poly slot (a name-backed class boxes by name). */
-static sp_Class sp_unbox_class(sp_RbVal v) {
-  if (v.tag != SP_TAG_CLASS) return SP_CLASS_NIL;
-  if (v.cls_id == SP_CLASS_BY_NAME) { sp_Class c = {-1, v.v.s}; return c; }
-  { sp_Class c = {(mrb_int)v.cls_id}; return c; }
-}
 /* box a sp_Bigint* into a poly slot (heterogeneous container element, or a
    promote-mode overflow result). */
 /* A poly value as a sp_Bigint*, so the bigint comparison/arith helpers can take
@@ -2654,42 +2648,12 @@ static sp_RbVal sp_PolyArray_delete(sp_PolyArray *a, sp_RbVal v) {
    be punned -- its ->data is sp_RbVal[] (boxed) -- so unbox element-wise into
    a fresh GC-tracked buffer (sp_gc_alloc_nogc: no collection mid-build, so a
    sibling array arg's buffer can't be swept; freed at a later GC). */
-static const int64_t *sp_PolyArray_ffi_int_data(sp_PolyArray *a) {
-  if (!a || a->len <= 0) return (const int64_t *)0;
-  int64_t *buf = (int64_t *)sp_gc_alloc_nogc((size_t)a->len * sizeof(int64_t), NULL, NULL);
-  for (mrb_int i = 0; i < a->len; i++) buf[i] = (int64_t)a->data[i].v.i;
-  return buf;
-}
-static const double *sp_PolyArray_ffi_float_data(sp_PolyArray *a) {
-  if (!a || a->len <= 0) return (const double *)0;
-  double *buf = (double *)sp_gc_alloc_nogc((size_t)a->len * sizeof(double), NULL, NULL);
-  for (mrb_int i = 0; i < a->len; i++) buf[i] = (double)a->data[i].v.f;
-  return buf;
-}
 /* FFI array hand-off from a POLY slot: dispatch on the RUNTIME storage kind.
    A poly value may hold any array variant -- an int array that poly-collapsed
    still boxes an sp_IntArray (cls_id INT_ARRAY), and reinterpreting its .v.p
    as sp_PolyArray* read garbage lengths and marshalled NULL (the toy LoRA
    flatline). nil passes as NULL (the C idiom for an absent array); any other
    runtime kind raises loudly rather than silently handing the callee NULL. */
-static const int64_t *sp_ffi_int_array_data(sp_RbVal v) {
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY)
-    return sp_IntArray_ffi_data((sp_IntArray *)v.v.p);
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)
-    return sp_PolyArray_ffi_int_data((sp_PolyArray *)v.v.p);
-  if (v.tag == SP_TAG_NIL) return (const int64_t *)0;
-  sp_raise_cls("TypeError", "no implicit conversion into an FFI :int_array");
-  return (const int64_t *)0;  /* unreached */
-}
-static const double *sp_ffi_float_array_data(sp_RbVal v) {
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLT_ARRAY)
-    return sp_FloatArray_ffi_data((sp_FloatArray *)v.v.p);
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)
-    return sp_PolyArray_ffi_float_data((sp_PolyArray *)v.v.p);
-  if (v.tag == SP_TAG_NIL) return (const double *)0;
-  sp_raise_cls("TypeError", "no implicit conversion into an FFI :float_array");
-  return (const double *)0;  /* unreached */
-}
 /* MatchData — holds the source string and the per-group byte offsets
    the engine produced. `[]`/captures extract substrings on demand;
    offset/begin/end report CHARACTER offsets (CRuby semantics), so
@@ -3473,17 +3437,6 @@ else {
    non-object, a user object, a hash, etc.). Lets assoc/rassoc skip non-array
    and too-short pairs without indexing them, so a `nil` search key cannot
    spuriously match an out-of-bounds (nil) read. */
-static mrb_int sp_array_kind_len(sp_RbVal el) {
-  if (el.tag != SP_TAG_OBJ || !el.v.p) return -1;
-  switch (el.cls_id) {
-    case SP_BUILTIN_INT_ARRAY:
-    case SP_BUILTIN_SYM_ARRAY:  return ((sp_IntArray *)el.v.p)->len;
-    case SP_BUILTIN_FLT_ARRAY:  return ((sp_FloatArray *)el.v.p)->len;
-    case SP_BUILTIN_STR_ARRAY:  return ((sp_StrArray *)el.v.p)->len;
-    case SP_BUILTIN_POLY_ARRAY: return ((sp_PolyArray *)el.v.p)->len;
-    default: return -1;
-  }
-}
 
 /* Box any array-kind element into a PolyArray so assoc/rassoc can return it
    through their PolyArray* type regardless of the matched pair's own kind

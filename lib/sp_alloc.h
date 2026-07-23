@@ -564,4 +564,13 @@ sp_RbVal sp_marv_box_complex(mrb_float re, mrb_float im);
 sp_RbVal sp_marv_box_rational(mrb_int n, mrb_int d);
 void sp_marv_raise(const char *cls, const char *msg);
 
+/* ---- FFI array data pointers, array-kind length probe, sp_Class
+   unboxing: relocated from sp_runtime.h (0 optcarrot uses). ---- */
+const int64_t *sp_ffi_int_array_data(sp_RbVal v);
+const double *sp_ffi_float_array_data(sp_RbVal v);
+const int64_t *sp_PolyArray_ffi_int_data(sp_PolyArray *a);
+const double *sp_PolyArray_ffi_float_data(sp_PolyArray *a);
+mrb_int sp_array_kind_len(sp_RbVal el);
+sp_Class sp_unbox_class(sp_RbVal v);
+
 #endif /* SP_ALLOC_H */

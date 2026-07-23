@@ -2566,3 +2566,53 @@ sp_Exception *sp_interrupt_new(const char *msg) {
   e->xkey = sp_box_int((mrb_int)SIGINT);
   return e;
 }
+
+/* ---- FFI array data / array-kind length / sp_Class unbox -- relocated
+   from sp_runtime.h. 0 optcarrot uses. ---- */
+
+const int64_t *sp_ffi_int_array_data(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY)
+    return sp_IntArray_ffi_data((sp_IntArray *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)
+    return sp_PolyArray_ffi_int_data((sp_PolyArray *)v.v.p);
+  if (v.tag == SP_TAG_NIL) return (const int64_t *)0;
+  sp_raise_cls("TypeError", "no implicit conversion into an FFI :int_array");
+  return (const int64_t *)0;  /* unreached */
+}
+const double *sp_ffi_float_array_data(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLT_ARRAY)
+    return sp_FloatArray_ffi_data((sp_FloatArray *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)
+    return sp_PolyArray_ffi_float_data((sp_PolyArray *)v.v.p);
+  if (v.tag == SP_TAG_NIL) return (const double *)0;
+  sp_raise_cls("TypeError", "no implicit conversion into an FFI :float_array");
+  return (const double *)0;  /* unreached */
+}
+const int64_t *sp_PolyArray_ffi_int_data(sp_PolyArray *a) {
+  if (!a || a->len <= 0) return (const int64_t *)0;
+  int64_t *buf = (int64_t *)sp_gc_alloc_nogc((size_t)a->len * sizeof(int64_t), NULL, NULL);
+  for (mrb_int i = 0; i < a->len; i++) buf[i] = (int64_t)a->data[i].v.i;
+  return buf;
+}
+const double *sp_PolyArray_ffi_float_data(sp_PolyArray *a) {
+  if (!a || a->len <= 0) return (const double *)0;
+  double *buf = (double *)sp_gc_alloc_nogc((size_t)a->len * sizeof(double), NULL, NULL);
+  for (mrb_int i = 0; i < a->len; i++) buf[i] = (double)a->data[i].v.f;
+  return buf;
+}
+mrb_int sp_array_kind_len(sp_RbVal el) {
+  if (el.tag != SP_TAG_OBJ || !el.v.p) return -1;
+  switch (el.cls_id) {
+    case SP_BUILTIN_INT_ARRAY:
+    case SP_BUILTIN_SYM_ARRAY:  return ((sp_IntArray *)el.v.p)->len;
+    case SP_BUILTIN_FLT_ARRAY:  return ((sp_FloatArray *)el.v.p)->len;
+    case SP_BUILTIN_STR_ARRAY:  return ((sp_StrArray *)el.v.p)->len;
+    case SP_BUILTIN_POLY_ARRAY: return ((sp_PolyArray *)el.v.p)->len;
+    default: return -1;
+  }
+}
+sp_Class sp_unbox_class(sp_RbVal v) {
+  if (v.tag != SP_TAG_CLASS) return SP_CLASS_NIL;
+  if (v.cls_id == SP_CLASS_BY_NAME) { sp_Class c = {-1, v.v.s}; return c; }
+  { sp_Class c = {(mrb_int)v.cls_id}; return c; }
+}
