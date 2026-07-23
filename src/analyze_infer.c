@@ -1588,6 +1588,8 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "cover?")) return TY_BOOL;
     if (sp_streq(name, "gcdlcm")) return TY_INT_ARRAY;
     if (sp_streq(name, "sum") && nt_ref(nt, id, "block") < 0) return TY_POLY;
+    if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
+        nt_ref(nt, id, "block") < 0 && infer_type(c, argv[0]) == TY_SYMBOL) return TY_POLY;
   }
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;

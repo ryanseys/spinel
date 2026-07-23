@@ -2680,8 +2680,35 @@ static void sp_poly_arr_writeback(sp_RbVal orig, sp_PolyArray *work) {
 }
 static sp_PolyArray *sp_poly_arr_recv(sp_RbVal v, const char *m) {
   if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return sp_poly_to_poly_array(v);
+  /* a user object with #to_a (a container-read Set): iterate its elements
+     through the generated hook (#3234) */
+  if (v.tag == SP_TAG_OBJ && sp_obj_to_a_fn) {
+    sp_RbVal a = sp_obj_to_a_fn(v);
+    if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id)) return sp_poly_to_poly_array(a);
+  }
   sp_raise_nomethod(sp_nomethod_msg(m, v));
   return NULL;  /* unreachable: sp_raise_nomethod does not return */
+}
+
+/* inject/reduce with a symbol op over a poly iterable (a container-read row
+   or a to_a-bearing user object like Set, #3234): fold through the numeric-
+   tower poly ops. Only the arithmetic four dispatch; anything else raises
+   like an unresolved method. */
+static sp_RbVal sp_poly_inject_sym(sp_RbVal v, sp_sym op) {
+  sp_PolyArray *a = sp_poly_arr_recv(v, "inject");
+  if (!a || a->len == 0) return sp_box_nil();
+  const char *nm = sp_sym_name_fn ? sp_sym_name_fn(op) : "";
+  sp_RbVal acc = sp_PolyArray_get(a, 0);
+  SP_GC_ROOT_RBVAL(acc);
+  for (mrb_int i = 1; i < a->len; i++) {
+    sp_RbVal e = sp_PolyArray_get(a, i);
+    if (nm[0] == '+' && !nm[1]) acc = sp_poly_add(acc, e);
+    else if (nm[0] == '-' && !nm[1]) acc = sp_poly_sub(acc, e);
+    else if (nm[0] == '*' && !nm[1]) acc = sp_poly_mul(acc, e);
+    else if (nm[0] == '/' && !nm[1]) acc = sp_poly_div(acc, e);
+    else sp_raise_nomethod(sp_nomethod_msg(nm, acc));
+  }
+  return acc;
 }
 /* The argument vector for `format`/`String#%` from a single poly right-hand
    side: an Array value is spread across the directives, any other value formats
@@ -4936,7 +4963,8 @@ static mrb_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_STR)return v.v.s?(mrb
 /* File#size / File::Stat#size on a boxed handle: the file's byte size via its
    path (a poly-held stat handle's .size read this as container length 0) (#3041) */
 case SP_BUILTIN_IO:{mrb_int sp_file_size(const char*);sp_File*_f=(sp_File*)v.v.p;if(_f&&sp_File_path(_f)[0]&&sp_File_path(_f)[0]!='<')return sp_file_size(sp_File_path(_f));return 0;}
-default:return 0;}}
+/* a user object with #to_a (a container-read Set, #3234): its element count */
+default: if (sp_obj_to_a_fn) { sp_RbVal _a = sp_obj_to_a_fn(v); if (_a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_a.cls_id)) return sp_poly_length(_a); } return 0;}}
 
 /* NilClass-aware conversions for a boxed receiver (a nil-holding local widens
    to poly): nil converts per NilClass, a value already of the target kind is
@@ -5174,6 +5202,11 @@ static sp_RbVal sp_poly_iter_elem(sp_RbVal recv, mrb_int i) {
     sp_PolyArray_push(pr, v);
     sp_RbVal out; out.tag = SP_TAG_OBJ; out.cls_id = SP_BUILTIN_POLY_ARRAY; out.v.p = pr;
     return out;
+  }
+  /* a user object with #to_a (a container-read Set, #3234) */
+  if (recv.tag == SP_TAG_OBJ && !sp_poly_is_array_kind(recv.cls_id) && sp_obj_to_a_fn) {
+    sp_RbVal _a = sp_obj_to_a_fn(recv);
+    if (_a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_a.cls_id)) return sp_poly_arr_get(_a, i);
   }
   return sp_poly_arr_get_hash(recv, i);
 }

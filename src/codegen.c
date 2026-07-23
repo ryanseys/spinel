@@ -3383,6 +3383,43 @@ static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: return sp_box_nil();\n  }\n}\n");
 }
 
+/* User-object #to_a, installed as sp_obj_to_a_fn: cls_id switch over every
+   instantiated class defining a no-arg to_a with a callable symbol, so a
+   container-read Set (or any to_a-bearing object) can be iterated by the
+   generic poly machinery (#3234). */
+static int obj_to_a_any(Compiler *c) {
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    if (ci->is_native_class || !ci->instantiated) continue;
+    int mi = comp_method_in_chain(c, i, "to_a", NULL);
+    if (mi >= 0 && c->scopes[mi].nparams == 0 && scope_has_callable_symbol(c, mi)) return 1;
+  }
+  return 0;
+}
+static void emit_obj_to_a_dispatch(Compiler *c, Buf *b) {
+  if (!obj_to_a_any(c)) return;
+  buf_puts(b, "static sp_RbVal sp_obj_to_a(sp_RbVal v) {\n");
+  buf_puts(b, "  switch (v.cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    if (ci->is_native_class || !ci->instantiated) continue;
+    int defc = -1;
+    int mi = comp_method_in_chain(c, i, "to_a", &defc);
+    if (mi < 0 || c->scopes[mi].nparams != 0 || !scope_has_callable_symbol(c, mi)) continue;
+    TyKind mret = (TyKind)c->scopes[mi].ret;
+    buf_printf(b, "    case %d: {\n", i);
+    char callx[256];
+    snprintf(callx, sizeof callx, "sp_%s_%s((sp_%s *)v.v.p)",
+             c->classes[defc].c_name, mc(c->scopes[mi].name), c->classes[defc].c_name);
+    buf_puts(b, "      return ");
+    if (mret == TY_POLY) buf_puts(b, callx);
+    else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mret, callx, &bx);
+           buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+    buf_puts(b, ";\n    }\n");
+  }
+  buf_puts(b, "    default: return sp_box_nil();\n  }\n}\n");
+}
+
 /* Data#with copy-update, installed as sp_obj_with_fn. cls_id switch over every
    instantiated Data: construct a fresh instance whose members come from the
    symbol-keyed override hash `ov` where present, else copied from the receiver.
@@ -4272,6 +4309,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "static sp_RbVal sp_obj_to_hash(sp_RbVal v);\n");
   if (g_gen_obj_to_h)
     buf_puts(b, "static sp_RbVal sp_obj_to_h(sp_RbVal v);\n");
+  if (obj_to_a_any(c))
+    buf_puts(b, "static sp_RbVal sp_obj_to_a(sp_RbVal v);\n");
   if (g_gen_obj_with)
     buf_puts(b, "static sp_RbVal sp_obj_with(sp_RbVal v, sp_RbVal ov);\n");
   if (g_gen_obj_hashkey)
@@ -4353,6 +4392,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "  sp_obj_to_hash_fn = sp_obj_to_hash;\n");
   if (g_gen_obj_to_h)
     buf_puts(b, "  sp_obj_to_h_fn = sp_obj_to_h;\n");
+  if (obj_to_a_any(c))
+    buf_puts(b, "  sp_obj_to_a_fn = sp_obj_to_a;\n");
   if (g_gen_obj_with)
     buf_puts(b, "  sp_obj_with_fn = sp_obj_with;\n");
   if (g_re_count > 0) {
@@ -5990,6 +6031,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_emit_obj_dispatch) emit_obj_inspect_dispatch(c, body);
   emit_obj_to_hash_dispatch(c, body);
   emit_obj_to_h_dispatch(c, body);
+  emit_obj_to_a_dispatch(c, body);
   emit_obj_with_dispatch(c, body);
   for (int s = 1; s < c->nscopes; s++) {
     if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));

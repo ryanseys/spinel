@@ -17169,6 +17169,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      `runs.map { |r| r.sum }` over chunk_while runs). The runtime helper switches
      on the element's cls_id. Skipped when a user class defines the same method
      (it falls through to the general poly dispatch below). */
+  /* inject/reduce(:op) on a container-read poly iterable (#3234) */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
+      comp_ntype(c, argv[0]) == TY_SYMBOL) {
+    int ncand8 = 0;
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_method_in_chain(c, k, name, NULL) >= 0) ncand8++;
+    if (ncand8 == 0) {
+      buf_puts(b, "sp_poly_inject_sym("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+  }
   /* sum(seed) on a container-read row: numeric-tower accumulation from the
      boxed seed (#3234) */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
