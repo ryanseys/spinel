@@ -7873,32 +7873,51 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, dv ? dv : "0");
         return;
       }
-      if (rrt == TY_POLY) {
-        /* poly &. method: nil check + dispatch on non-nil string/int/other */
+      if (rrt == TY_POLY && (sp_streq(name, "length") || sp_streq(name, "size")) &&
+          comp_ntype(c, id) == TY_POLY) {
+        /* poly&.length/size: the poly builtin emits an unboxed mrb_int, but
+           the safe-nav result is inferred poly -- box it so both ternary arms
+           are sp_RbVal (#3269). */
         int tsn = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _sn_%d = ", tsn); emit_expr(c, recv, b); buf_puts(b, "; ");
-        buf_printf(b, "_sn_%d.tag == SP_TAG_NIL ? sp_box_nil() : ", tsn);
-        /* dispatch the method on the non-nil value */
-        if (sp_streq(name, "upcase")) {
-          buf_printf(b, "sp_box_str(sp_str_upcase(_sn_%d.v.s))", tsn);
+        buf_printf(b, "({ sp_RbVal _sn_%d = ", tsn); emit_expr(c, recv, b);
+        buf_printf(b, "; _sn_%d.tag == SP_TAG_NIL ? sp_box_nil() : sp_box_int(sp_poly_length(_sn_%d)); })", tsn, tsn);
+        return;
+      }
+      if (rrt == TY_POLY && g_sn_skip != id) {
+        /* poly &. method: nil-guard, then re-enter the normal call emission
+           on the guarded temp so the method dispatches through the regular
+           poly runtime-class switch (a hardcoded whitelist used to drop every
+           other method, returning the receiver unchanged -- #3269). The temp
+           lives in g_pre so the re-entered dispatch's own hoists can still
+           see it, exactly like the object/string arm below.
+           The non-nil arm's C type must match the nil arm: when the safe-nav
+           result is inferred poly, force the call boxed; for a concretely-typed
+           result, emit the natural form and default the nil arm to match. */
+        int tsn = ++g_tmp;
+        TyKind ret2 = comp_ntype(c, id);
+        Buf rsn = expr_buf(c, recv);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _sn%d = %s; SP_GC_ROOT_RBVAL(_sn%d);\n",
+                   tsn, rsn.p ? rsn.p : "sp_box_nil()", tsn);
+        free(rsn.p);
+        buf_printf(b, "(_sn%d.tag == SP_TAG_NIL ? ", tsn);
+        if (ret2 == TY_INT) buf_puts(b, "SP_INT_NIL");
+        else if (ret2 == TY_FLOAT) buf_puts(b, "sp_float_nil()");
+        else if (ret2 == TY_STRING) buf_puts(b, "((const char *)NULL)");
+        else buf_puts(b, "sp_box_nil()");
+        buf_puts(b, " : (");
+        if (g_n_argov < MAX_ARG_OVERRIDE) {
+          int slot2 = g_n_argov++;
+          g_argov_node[slot2] = recv;
+          snprintf(g_argov_text[slot2], sizeof g_argov_text[0], "_sn%d", tsn);
+          int sv_skip = g_sn_skip; g_sn_skip = id;
+          if (ret2 == TY_INT || ret2 == TY_FLOAT || ret2 == TY_STRING) emit_expr(c, id, b);
+          else emit_boxed(c, id, b);
+          g_sn_skip = sv_skip;
+          g_n_argov--;
         }
-        else if (sp_streq(name, "downcase")) {
-          buf_printf(b, "sp_box_str(sp_str_downcase(_sn_%d.v.s))", tsn);
-        }
-        else if (sp_streq(name, "length") || sp_streq(name, "size")) {
-          buf_printf(b, "sp_box_int(sp_poly_length(_sn_%d))", tsn);
-        }
-        else if (sp_streq(name, "inspect")) {
-          buf_printf(b, "sp_box_str(sp_poly_inspect(_sn_%d))", tsn);
-        }
-        else if (sp_streq(name, "to_s")) {
-          buf_printf(b, "sp_box_str(sp_poly_to_s(_sn_%d))", tsn);
-        }
-        else {
-          /* fallback: return the poly value unchanged */
-          buf_printf(b, "_sn_%d", tsn);
-        }
-        buf_puts(b, "; })");
+        else emit_expr(c, recv, b);  /* override table full: degrade to unguarded */
+        buf_puts(b, "))");
         return;
       }
       /* A concretely-typed OBJECT receiver is still a nullable C pointer
