@@ -2107,7 +2107,15 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        case of this where the widening came from a use rather than a call. */
     TyKind merged;
     if (ty_is_array(p->type) && ty_is_array(at) && p->type != at)
-      merged = TY_POLY_ARRAY;
+      /* Two array kinds meet as the poly SCALAR, not the poly ARRAY: the
+         boxed value keeps its concrete array class, so the callee's array
+         methods dispatch through the poly runtime by cls_id, and every call
+         site pays an O(1) box instead of the O(n) element-boxing rebuild a
+         poly-ARRAY parameter forces on a concrete typed-array argument
+         (which regressed optcarrot 22% -- the empty-`[]`-seeded ivar arg
+         types POLY_ARRAY for the whole fixpoint and only re-narrows to the
+         int array after it, so the conflict is usually transient, not real). */
+      merged = TY_POLY;
     else if (p->push_widened && ty_is_array(at))
       merged = TY_POLY_ARRAY;
     else

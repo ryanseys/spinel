@@ -4383,6 +4383,60 @@ static sp_RbVal sp_poly_clear(sp_RbVal v) {
   }
   return v;
 }
+/* Array#pop / #shift on a poly value (an array-kind box reaching a poly
+   parameter, e.g. one call site passes a StrArray and another a PolyArray):
+   mutate the underlying container in place, dispatching on its runtime kind,
+   and return the removed element boxed (nil when empty). */
+static sp_RbVal sp_poly_pop(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.v.p) {
+    switch (v.cls_id) {
+      case SP_BUILTIN_INT_ARRAY: {
+        sp_IntArray *a = (sp_IntArray *)v.v.p;
+        if (a->len <= 0) return sp_box_nil();
+        return sp_box_int(sp_IntArray_pop(a));
+      }
+      case SP_BUILTIN_FLT_ARRAY: {
+        sp_FloatArray *a = (sp_FloatArray *)v.v.p;
+        if (a->len <= 0) return sp_box_nil();
+        return sp_box_float(sp_FloatArray_pop(a));
+      }
+      case SP_BUILTIN_STR_ARRAY: {
+        sp_StrArray *a = (sp_StrArray *)v.v.p;
+        if (a->len <= 0) return sp_box_nil();
+        return sp_box_str(sp_StrArray_pop(a));
+      }
+      case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_pop((sp_PolyArray *)v.v.p);
+      default: break;
+    }
+  }
+  sp_raise_nomethod(sp_nomethod_msg("pop", v));
+  return sp_box_nil();
+}
+static sp_RbVal sp_poly_shift(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.v.p) {
+    switch (v.cls_id) {
+      case SP_BUILTIN_INT_ARRAY: {
+        sp_IntArray *a = (sp_IntArray *)v.v.p;
+        if (a->len <= 0) return sp_box_nil();
+        return sp_box_int(sp_IntArray_shift(a));
+      }
+      case SP_BUILTIN_FLT_ARRAY: {
+        sp_FloatArray *a = (sp_FloatArray *)v.v.p;
+        if (a->len <= 0) return sp_box_nil();
+        return sp_box_float(sp_FloatArray_shift(a));
+      }
+      case SP_BUILTIN_STR_ARRAY: {
+        sp_StrArray *a = (sp_StrArray *)v.v.p;
+        if (a->len <= 0) return sp_box_nil();
+        return sp_box_str(sp_StrArray_shift(a));
+      }
+      case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_shift((sp_PolyArray *)v.v.p);
+      default: break;
+    }
+  }
+  sp_raise_nomethod(sp_nomethod_msg("shift", v));
+  return sp_box_nil();
+}
 /* Hash#delete for a poly-keyed hash: was entirely missing (only the
    String/Symbol-keyed hash kinds had a delete), so `poly_poly_hash.
    delete(k)` hit codegen's "unsupported call" catch-all -- e.g. doom's
