@@ -5221,6 +5221,18 @@ static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn) {
       if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       int val = nt_ref(nt, w, "value");
       if (val >= 0 && is_proc_create(c, val)) { create = val; break; }
+      /* the write's value may itself resolve through this walker -- a stored
+         Method (`m = method(:greet); g = m.to_proc.curry`) or a chained
+         local. Depth-guard against cyclic assignments (#3244). */
+      if (val >= 0) {
+        static int fcd_depth = 0;
+        if (fcd_depth < 64) {
+          fcd_depth++;
+          int ok2 = fwd_callable_def(c, val, out_body, out_pn);
+          fcd_depth--;
+          if (ok2) return 1;
+        }
+      }
     }
     /* a method param holding the callable: resolve through a call site's
        argument expression (the first site passing a proc literal wins) */
