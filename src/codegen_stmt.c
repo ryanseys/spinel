@@ -848,6 +848,7 @@ static int emit_proc_cell_lvalue(Compiler *c, int scope_node, const char *nm, Bu
   return 1;
 }
 
+static int str_append_chain_base(Compiler *c, int id);
 void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *nm = nt_str(c->nt, id, "name");
   int v = nt_ref(c->nt, id, "value");
@@ -936,9 +937,22 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
       emit_expr(c, v, b);
     }
     else {
-      /* otherwise a mutable-string local wraps the (const char*) RHS in a fresh
-         sp_String so later `<<` appends are amortized O(1). */
-      buf_puts(b, "sp_String_new_shared("); emit_expr(c, v, b); buf_puts(b, ")");
+      /* a value-position append chain over a shared base: run the chain (it
+         appends in place), then alias the BASE handle -- wrapping the cstr
+         would fork a second buffer and break the alias (#3307 family) */
+      int cb9 = str_append_chain_base(c, v);
+      char srefC9[192];
+      if (cb9 != v && lv->str_shared &&
+          strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9)) {
+        buf_puts(b, "({ (void)(");
+        emit_expr(c, v, b);
+        buf_printf(b, "); %s; })", srefC9);
+      }
+      else {
+        /* otherwise a mutable-string local wraps the (const char*) RHS in a
+           fresh sp_String so later `<<` appends are amortized O(1). */
+        buf_puts(b, "sp_String_new_shared("); emit_expr(c, v, b); buf_puts(b, ")");
+      }
     }
   }
   else if (is_empty_array && lv && array_kind(lv->type)) {
@@ -8624,8 +8638,16 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       }
     }
     if (assignable && sp_streq(name, "replace") && argc == 1) {
+      /* copy the source bytes: rebinding to the source value itself would
+         carry a frozen literal's marker into the receiver, so a later
+         mutation of the (CRuby-mutable) receiver would raise */
+      int trep = ++g_tmp;
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
-      emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = "); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      buf_printf(b, "{ const char *_t%d = ", trep); emit_expr(c, argv[0], b);
+      buf_printf(b, "; ");
+      emit_expr(c, recv, b);
+      buf_printf(b, " = sp_str_from_bytes(_t%d, sp_str_byte_len(_t%d)); }\n", trep, trep);
       return 1;
     }
     if (assignable && sp_streq(name, "prepend") && argc == 1) {
@@ -8634,8 +8656,10 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       return 1;
     }
     if (assignable && sp_streq(name, "clear") && argc == 0) {
+      /* a fresh unfrozen empty: the shared frozen "" literal would make a
+         later mutation of the cleared receiver raise */
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
-      emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = (&(\"\\xff\")[1]);\n");
+      emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = sp_str_from_bytes(\"\", 0);\n");
       return 1;
     }
     if (assignable && sp_streq(name, "insert") && argc == 2) {

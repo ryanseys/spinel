@@ -6380,14 +6380,42 @@ static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
   return buf;
 }
 /* Does local `vn` participate in a pure alias (`x = vn` or `vn = x`)? */
+/* The LocalVariableReadNode an aliasing string write bottoms out at: a bare
+   local read, or a value-position `<<`/`concat` chain over one (the chain's
+   value IS its base object). Parens unwrap. -1 when the shape is neither. */
+static int an_strbuf_alias_source(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  for (int depth = 0; v >= 0 && depth < 64; depth++) {
+    const char *vt = nt_type(nt, v);
+    if (!vt) return -1;
+    if (sp_streq(vt, "ParenthesesNode")) {
+      int pb = nt_ref(nt, v, "body");
+      int bn = 0; const int *bb = pb >= 0 ? nt_arr(nt, pb, "body", &bn) : NULL;
+      if (bn != 1) return -1;
+      v = bb[0]; continue;
+    }
+    if (sp_streq(vt, "LocalVariableReadNode")) return v;
+    if (sp_streq(vt, "CallNode")) {
+      const char *cn = nt_str(nt, v, "name");
+      int cr = nt_ref(nt, v, "receiver");
+      int ca = nt_ref(nt, v, "arguments"); int cac = 0;
+      if (ca >= 0) nt_arr(nt, ca, "arguments", &cac);
+      if (cn && (sp_streq(cn, "<<") || sp_streq(cn, "concat")) &&
+          cr >= 0 && cac == 1) { v = cr; continue; }
+      return -1;
+    }
+    return -1;
+  }
+  return -1;
+}
 static int an_local_has_alias(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
     if (comp_scope_of(c, w) != vs) continue;
     const char *wn = nt_str(nt, w, "name");
-    int wv = nt_ref(nt, w, "value");
-    if (wv < 0 || nt_kind(nt, wv) != NK_LocalVariableReadNode) continue;
+    int wv = an_strbuf_alias_source(c, nt_ref(nt, w, "value"));
+    if (wv < 0) continue;
     const char *rn = nt_str(nt, wv, "name");
     if (!wn || !rn || sp_streq(wn, rn)) continue;
     if (sp_streq(wn, vn) || sp_streq(rn, vn)) return 1;
@@ -6666,8 +6694,10 @@ static int promote_shared_stored_strings(Compiler *c) {
      sp_String_new, which inherits the source's frozen state. */
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-    int wv = nt_ref(nt, w, "value");
-    if (wv < 0 || nt_kind(nt, wv) != NK_LocalVariableReadNode) continue;
+    /* the aliasing shapes: `s2 = s1` and the value-position append chain
+       `s2 = (s1 << x)`, whose value IS the base object */
+    int wv = an_strbuf_alias_source(c, nt_ref(nt, w, "value"));
+    if (wv < 0) continue;
     const char *srcn = nt_str(nt, wv, "name");
     const char *tgtn = nt_str(nt, w, "name");
     Scope *ws = comp_scope_of(c, w);
@@ -8752,6 +8782,11 @@ void analyze_program(Compiler *c) {
         ci->ivar_types[iv] = TY_STRBUF;
   }
 
+  /* The local read a string-aliasing write bottoms out at: a bare local
+     read, or a value-position `<<`/`concat` chain over one -- the chain's
+     value IS its base object (`q = (v << x)` makes q an alias of v, and a
+     later `v << y` is visible through q). Parens unwrap. -1 if neither. */
+  /* (helper defined just below as a nested loop-free walk) */
   /* Shared-mutable strings (#3227): a string local that is a pure ALIAS of an
      in-place-mutated string (`s2 = s1` where s1 is now TY_STRBUF) must share
      s1's one sp_String* handle, so a later `s1 << x` is visible through s2 and
@@ -8764,9 +8799,8 @@ void analyze_program(Compiler *c) {
   for (int w = 0; w < c->nt->count; w++) {
     const char *wty = nt_type(c->nt, w);
     if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
-    int wv = nt_ref(c->nt, w, "value");
-    if (wv < 0 || !nt_type(c->nt, wv) ||
-        !sp_streq(nt_type(c->nt, wv), "LocalVariableReadNode")) continue;
+    int wv = an_strbuf_alias_source(c, nt_ref(c->nt, w, "value"));
+    if (wv < 0) continue;
     const char *srcn = nt_str(c->nt, wv, "name");
     Scope *ws = comp_scope_of(c, w);
     LocalVar *src = (srcn && ws) ? scope_local(ws, srcn) : NULL;
@@ -8775,16 +8809,14 @@ void analyze_program(Compiler *c) {
     LocalVar *tgt = tgtn ? scope_local(ws, tgtn) : NULL;
     if (!tgt || tgt == src || tgt->is_param || tgt->is_cell || tgt->rbs_seeded) continue;
     if (tgt->type != TY_STRING && tgt->type != TY_STRBUF) continue;
-    /* every write to the alias must itself be a bare local read (a pure alias) */
+    /* every write to the alias must itself be an aliasing shape */
     int pure_alias = 1;
     for (int u = 0; u < c->nt->count; u++) {
       const char *uty = nt_type(c->nt, u);
       if (!uty || !sp_streq(uty, "LocalVariableWriteNode")) continue;
       const char *un = nt_str(c->nt, u, "name");
       if (!un || !sp_streq(un, tgtn) || comp_scope_of(c, u) != ws) continue;
-      int uv = nt_ref(c->nt, u, "value");
-      if (uv < 0 || !nt_type(c->nt, uv) ||
-          !sp_streq(nt_type(c->nt, uv), "LocalVariableReadNode")) { pure_alias = 0; break; }
+      if (an_strbuf_alias_source(c, nt_ref(c->nt, u, "value")) < 0) { pure_alias = 0; break; }
     }
     if (!pure_alias) continue;
     src->str_shared = 1;
