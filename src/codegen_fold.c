@@ -5350,6 +5350,28 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
      filled default -- materializes a rooted temp and passes that: for a
      non-lvalue argument CRuby's mutation is equally invisible to the caller,
      for the rest this keeps the pre-byref behavior. */
+  /* shared-handle string parameter (#3227 P5): a shared slot argument passes
+     the handle itself; a plain value wraps a fresh handle (a non-lvalue
+     argument's mutation is invisible to the caller in CRuby too). */
+  if (p && pt == TY_STRBUF && p->str_shared) {
+    if (provided >= 0) {
+      char srefP[192];
+      if (strbuf_slot_ref(c, provided, srefP, sizeof srefP)) {
+        buf_puts(out, srefP);
+        return;
+      }
+      buf_puts(out, "sp_String_new_shared(");
+      emit_str_expr(c, provided, out);
+      buf_puts(out, ")");
+      return;
+    }
+    int dvP = m->pdefault[idx];
+    buf_puts(out, "sp_String_new_shared(");
+    if (dvP >= 0) emit_str_expr(c, dvP, out);
+    else buf_puts(out, "(&(\"\\xff\")[1])");
+    buf_puts(out, ")");
+    return;
+  }
   if (p && p->byref_out) {
     if (provided >= 0) {
       const char *aty = nt_type(c->nt, provided);

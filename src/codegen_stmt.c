@@ -923,6 +923,11 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     char srefV[192];
     if (lv->str_shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
       buf_puts(b, srefV);
+    else if (comp_ntype(c, v) == TY_STRBUF) {
+      /* a demand-marked read (a reader call, a container element) already
+         yields the handle: alias it directly (#3227 P5) */
+      emit_expr(c, v, b);
+    }
     else {
       /* otherwise a mutable-string local wraps the (const char*) RHS in a fresh
          sp_String so later `<<` appends are amortized O(1). */

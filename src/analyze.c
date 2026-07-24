@@ -6344,6 +6344,64 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
   return 1;
 }
 
+/* When `node` is an argument-less reader call (attr or a simple
+   `def m = @iv` method) over an object receiver, resolve the backing ivar:
+   returns the ivar name (into buf) and sets *defc, else NULL. */
+static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
+                                     char *buf, size_t cap) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode) return NULL;
+  if (nt_ref(nt, node, "block") >= 0) return NULL;
+  { int a2 = nt_ref(nt, node, "arguments"); int an2 = 0;
+    if (a2 >= 0) nt_arr(nt, a2, "arguments", &an2);
+    if (an2 != 0) return NULL; }
+  int rrecv = nt_ref(nt, node, "receiver");
+  if (rrecv < 0) return NULL;
+  TyKind rrt = infer_type(c, rrecv);
+  if (!ty_is_object(rrt)) return NULL;
+  int rcid = ty_object_class(rrt);
+  const char *mn = nt_str(nt, node, "name");
+  if (!mn) return NULL;
+  *defc = rcid;
+  if (comp_reader_in_chain(c, rcid, mn, defc)) {
+    snprintf(buf, cap, "@%s", comp_resolve_alias(c, rcid, mn));
+    return buf;
+  }
+  int rmi = comp_method_in_chain(c, rcid, mn, defc);
+  if (rmi < 0) return NULL;
+  int last2 = scope_body_last(c, rmi);
+  if (last2 < 0 || nt_kind(nt, last2) != NK_InstanceVariableReadNode) return NULL;
+  const char *ivn = nt_str(nt, last2, "name");
+  if (!ivn) return NULL;
+  snprintf(buf, cap, "%s", ivn);
+  if (*defc < 0) *defc = c->scopes[rmi].class_id;
+  return buf;
+}
+/* Is this argument node a shared-handle slot read (a str_shared local or a
+   shared ivar)? */
+static int an_arg_is_shared_handle(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  if (nt_kind(nt, node) == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, node, "name");
+    Scope *vs = vn ? comp_scope_of(c, node) : NULL;
+    LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+    /* str_shared is the durable flag; the slot type may transiently read
+       TY_STRING until the post-fixpoint re-assert runs */
+    return lv && lv->str_shared &&
+           (lv->type == TY_STRBUF || lv->type == TY_STRING);
+  }
+  if (nt_kind(nt, node) == NK_InstanceVariableReadNode) {
+    const char *vn = nt_str(nt, node, "name");
+    int cid = vn ? an_ivar_owner(c, node) : -1;
+    if (cid < 0) return 0;
+    int iv = comp_ivar_index(&c->classes[cid], vn);
+    return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF &&
+           c->classes[cid].ivar_str_shared[iv];
+  }
+  return 0;
+}
+
 /* Slot-shape eligibility for the shared handle: parameters, cells, byref
    out-params and rbs-pinned slots wait for the cross-method phase. */
 static int strbuf_slot_eligible_shape(Compiler *c, const char *vn, Scope *vs, LocalVar *lv);
@@ -6422,7 +6480,20 @@ static int promote_shared_stored_strings(Compiler *c) {
         /* identity test against the shared handle */
         int a3 = nt_ref(nt, w, "arguments");
         int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
-        if (an3 == 1) cand3[nc3++] = av3[0];
+        if (an3 == 1) {
+          cand3[nc3++] = av3[0];
+          /* a reader call over a shared ivar as the identity operand hands
+             out the handle too */
+          char ivb3[300]; int defc3 = -1;
+          const char *ivn3b = an_reader_ivar_of(c, av3[0], &defc3, ivb3, sizeof ivb3);
+          if (ivn3b && defc3 >= 0) {
+            int iv3b = comp_ivar_index(&c->classes[defc3], ivn3b);
+            if (iv3b >= 0 && c->classes[defc3].ivar_str_shared[iv3b] &&
+                !c->strbuf_box[av3[0]]) {
+              c->strbuf_box[av3[0]] = 1; changed = 1;
+            }
+          }
+        }
       }
     }
     for (int e3 = 0; e3 < nc3; e3++) {
@@ -6620,6 +6691,115 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (ch2) changed = 1;
     if (llv->type != TY_STRBUF || !llv->str_shared)
       { llv->type = TY_STRBUF; llv->str_shared = 1; changed = 1; }
+  }
+  /* external reader alias: `x = obj.reader` where the reader exposes an
+     in-place-mutated ivar -- x must hold the handle, so a later obj.bump
+     stays visible through it (#3227 P5). The read node is marked so the
+     reader emit hands out the handle instead of the safe copy. */
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    int wv = nt_ref(nt, w, "value");
+    if (wv < 0 || nt_kind(nt, wv) != NK_CallNode) continue;
+    if (nt_ref(nt, wv, "block") >= 0) continue;
+    { int a2 = nt_ref(nt, wv, "arguments"); int an2 = 0;
+      if (a2 >= 0) nt_arr(nt, a2, "arguments", &an2);
+      if (an2 != 0) continue; }
+    int rrecv = nt_ref(nt, wv, "receiver");
+    if (rrecv < 0) continue;
+    TyKind rrt = infer_type(c, rrecv);
+    if (!ty_is_object(rrt)) continue;
+    int rcid = ty_object_class(rrt);
+    const char *mn = nt_str(nt, wv, "name");
+    if (!mn) continue;
+    char ivbuf[300]; int defc = rcid;
+    const char *ivn = an_reader_ivar_of(c, wv, &defc, ivbuf, sizeof ivbuf);
+    if (!ivn || defc < 0) continue;
+    if (strbuf_ivar_mut_kind(c, defc, ivn) != 1) continue;
+    const char *lname2 = nt_str(nt, w, "name");
+    Scope *ls2 = comp_scope_of(c, w);
+    LocalVar *llv2 = (lname2 && ls2) ? scope_local(ls2, lname2) : NULL;
+    if (!llv2 || !strbuf_slot_eligible_shape(c, lname2, ls2, llv2)) continue;
+    if (llv2->type != TY_UNKNOWN && llv2->type != TY_STRING &&
+        llv2->type != TY_STRBUF && llv2->type != TY_POLY) continue;
+    if (strbuf_promote_ivar(c, defc, ivn)) changed = 1;
+    { int iv2 = comp_ivar_index(&c->classes[defc], ivn);
+      if (iv2 < 0 || !c->classes[defc].ivar_str_shared[iv2]) continue; }
+    if (!c->strbuf_box[wv]) { c->strbuf_box[wv] = 1; changed = 1; }
+    if (llv2->type != TY_STRBUF || !llv2->str_shared)
+      { llv2->type = TY_STRBUF; llv2->str_shared = 1; changed = 1; }
+  }
+  return changed;
+}
+
+static int convert_byref_handle_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  /* byref -> handle parameter conversion: a shared handle passed into a
+     string-mutating (byref) parameter converts that parameter to the handle
+     representation -- byref's const char** slot cannot carry the handle, so
+     the mutation silently landed in a discarded copy. Once converted, every
+     other call site's plain-local argument joins the shared set (so its own
+     caller still observes the mutation, as with byref). */
+  for (int mi2 = 1; mi2 < c->nscopes; mi2++) {
+    Scope *m2 = &c->scopes[mi2];
+    if (!m2->name || m2->nparams <= 0) continue;
+    for (int pj = 0; pj < m2->nparams; pj++) {
+      if (!m2->pnames[pj]) continue;
+      LocalVar *pp = scope_local(m2, m2->pnames[pj]);
+      if (!pp) continue;
+      int is_handle = (pp->is_param && pp->type == TY_STRBUF && pp->str_shared);
+      if (!pp->byref_out && !is_handle) continue;
+      /* one pass over this method's call sites: detect a handle arg, and
+         (once converted) pull plain-local args into the shared set */
+      int saw_handle = is_handle;
+      for (int u = 0; u < nt->count; u++) {
+        if (nt_kind(nt, u) != NK_CallNode) continue;
+        const char *un = nt_str(nt, u, "name");
+        if (!un || !sp_streq(un, m2->name)) continue;
+        if (an_unique_scope_by_name(c, un) != mi2) continue;
+        int argsN = nt_ref(nt, u, "arguments");
+        int uargc = 0;
+        const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
+        if (pj >= uargc) continue;
+        if (an_arg_is_shared_handle(c, uargv[pj])) saw_handle = 1;
+      }
+      if (!saw_handle) continue;
+      if (pp->byref_out) {
+        pp->byref_out = 0;
+        pp->is_cell = 0;
+        pp->type = TY_STRBUF;
+        pp->str_shared = 1;
+        changed = 1;
+      }
+      /* pull the remaining plain-local args into the shared set */
+      for (int u = 0; u < nt->count; u++) {
+        if (nt_kind(nt, u) != NK_CallNode) continue;
+        const char *un = nt_str(nt, u, "name");
+        if (!un || !sp_streq(un, m2->name)) continue;
+        if (an_unique_scope_by_name(c, un) != mi2) continue;
+        int argsN = nt_ref(nt, u, "arguments");
+        int uargc = 0;
+        const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
+        if (pj >= uargc) continue;
+        int an2 = uargv[pj];
+        if (nt_kind(nt, an2) == NK_LocalVariableReadNode) {
+          const char *vn2 = nt_str(nt, an2, "name");
+          Scope *vs2 = vn2 ? comp_scope_of(c, an2) : NULL;
+          LocalVar *alv = vs2 ? scope_local(vs2, vn2) : NULL;
+          if (!alv || !strbuf_slot_eligible_shape(c, vn2, vs2, alv)) continue;
+          if (alv->type != TY_UNKNOWN && alv->type != TY_STRING &&
+              alv->type != TY_STRBUF && alv->type != TY_POLY) continue;
+          if (alv->type != TY_STRBUF || !alv->str_shared)
+            { alv->type = TY_STRBUF; alv->str_shared = 1; changed = 1; }
+        }
+        else if (nt_kind(nt, an2) == NK_InstanceVariableReadNode) {
+          const char *vn2 = nt_str(nt, an2, "name");
+          int cid2 = vn2 ? an_ivar_owner(c, an2) : -1;
+          if (cid2 >= 0 && strbuf_ivar_mut_kind(c, cid2, vn2) >= 0)
+            if (strbuf_promote_ivar(c, cid2, vn2)) changed = 1;
+        }
+      }
+    }
   }
   return changed;
 }
@@ -8271,6 +8451,9 @@ void analyze_program(Compiler *c) {
      the promotion can exclude locals whose address is passed to a byref slot
      (a STRBUF local is an sp_String*, not the const char* slot byref needs). */
   compute_byref_out_params(c);
+  /* handle args cannot ride byref's const char** slot: convert such params
+     to the handle representation, cascading through transitive passes */
+  while (convert_byref_handle_params(c)) {}
 
   /* Promote `<<`-appended string locals to mutable strings (TY_STRBUF) so the
      append is amortized O(1) instead of an O(n) copy-concat (which makes a

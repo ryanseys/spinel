@@ -5756,7 +5756,18 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
            (#2307). Hoist the receiver first so its in-place append lands
            before the argument's cstr is read. */
         int eq_sblv = 0;
-        {
+        /* a demand-marked reader-call argument already emits the handle */
+        if (!eq_sblv && comp_ntype(c, argv[0]) == TY_STRBUF &&
+            nt_kind(nt, argv[0]) == NK_CallNode) {
+          char rrefE2[192];
+          if (strbuf_slot_ref(c, recv, rrefE2, sizeof rrefE2)) {
+            buf_printf(b, "(%s == ", rrefE2);
+            emit_expr(c, argv[0], b);
+            buf_puts(b, ")");
+            eq_sblv = 1;
+          }
+        }
+        if (!eq_sblv) {
           char arefE[192];
           if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {
             /* If the receiver is ALSO a strbuf slot (local or ivar), compare
@@ -7432,6 +7443,23 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
     }
     int mi = comp_method_in_chain(c, cid, name, NULL);
+    /* a demand-marked read through a simple hand-written reader
+       (`def body = @body`) hands out the ivar HANDLE via a field access:
+       the C reader function returns the safe copy (#3227 P5) */
+    if (mi >= 0 && c->strbuf_box[id]) {
+      int lastH = scope_body_last(c, mi);
+      if (lastH >= 0 && nt_kind(nt, lastH) == NK_InstanceVariableReadNode) {
+        const char *ivnH = nt_str(nt, lastH, "name");
+        int defcH = c->scopes[mi].class_id;
+        int ivH = (ivnH && defcH >= 0) ? comp_ivar_index(&c->classes[defcH], ivnH) : -1;
+        if (ivH >= 0 && c->classes[defcH].ivar_types[ivH] == TY_STRBUF) {
+          buf_puts(b, "(");
+          emit_expr(c, recv, b);
+          buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", iv_c(ivnH + 1));
+          return 1;
+        }
+      }
+    }
     if (mi >= 0) {
       /* a value-type receiver is passed by value; an ordinary object by
          pointer. For a value recv we hand emit_dispatch the value expression
