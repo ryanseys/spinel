@@ -130,9 +130,9 @@ static int g_emit_line = 0;
    table is unavailable (syntax-sugar changed the line count) -- and the
    whole-program gate read by the analyzer's mutable-string-buffer pass. */
 int g_frozen_string_literal = 0;
-/* Default for files with NO frozen_string_literal pragma: 1 (Spinel declares
-   fsl:true semantics; see docs/limitations.md). --disable=frozen-string-literal
-   restores the chilled-CRuby default for a whole build. */
+/* Files with NO frozen_string_literal pragma default to 1: Spinel declares
+   fsl:true semantics unconditionally (there is no chilled mode; an explicit
+   `false` pragma warns and is ignored -- see docs/limitations.md). */
 int g_fsl_default = 1;
 /* Per-line pragma flags for the final spliced buffer (0-based line index). */
 static unsigned char *g_fsl_lines = NULL;
@@ -158,10 +158,20 @@ static int sp_scan_fsl_pragma(const char *src) {
       while (*m == ' ' || *m == '\t') m++;
       if (strncmp(m, "true", 4) == 0) {
         char c = m[4];
-        return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                 (c >= '0' && c <= '9') || c == '_');
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_')) return 1;
       }
-      return 0;   /* explicit `false` (or anything else): plain semantics */
+      else {
+        /* Spinel has no chilled mode: string literals are always frozen
+           (the mutable-string machinery needs the whole-program guarantee;
+           see docs/limitations.md). An explicit opt-out is ignored loudly
+           rather than honored partially. */
+        fprintf(stderr,
+                "warning: frozen_string_literal: false is not supported in "
+                "Spinel (string literals are always frozen); the pragma is "
+                "ignored\n");
+      }
+      return 1;
     }
     p = nl ? nl + 1 : NULL;
   }

@@ -1,9 +1,8 @@
-# frozen_string_literal: false
 # Deep-return sharing (P6): a method that keeps its shared string AND
 # returns it -- the caller's binding is the same object.
 $store = []
 def make_held
-  s = "kept"
+  s = +"kept"
   $store << s
   s << "-in"
   s
@@ -16,8 +15,8 @@ p r.equal?($store[0])
 
 # multiple returns, all shared
 def pick(flag)
-  a = "aa"
-  b = "bb"
+  a = +"aa"
+  b = +"bb"
   $store << a
   $store << b
   a << "1"

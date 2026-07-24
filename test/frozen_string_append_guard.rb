@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # <<, concat, and prepend on a frozen String raise FrozenError with the CRuby
 # message (including contents), whether the receiver is a chained .freeze or a
 # frozen local; a mutable string appends normally.
@@ -8,4 +7,4 @@ begin; "hi".freeze.concat("!"); rescue FrozenError => e; puts e.message; end
 begin; "yo".freeze.prepend(">"); rescue FrozenError => e; puts e.message; end
 d = "abc".dup.freeze
 begin; d << "z"; rescue FrozenError => e; puts e.message; end
-m = "go"; m << "!"; puts m
+m = +"go"; m << "!"; puts m

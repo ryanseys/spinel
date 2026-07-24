@@ -1,9 +1,8 @@
-# frozen_string_literal: false
 # yjit-bench: str_concat - string concatenation performance
 # Ported from https://github.com/Shopify/yjit-bench
 
 def concat_test(n, str_to_add)
-  s = ""
+  s = +""
   i = 0
   while i < n
     s << str_to_add

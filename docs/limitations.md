@@ -242,9 +242,12 @@ semantics).** Spinel's baseline is the direction Ruby itself is headed
 a literal is frozen (`"lit".frozen?` is `true`), mutating one raises
 FrozenError, and mutable strings come from `+"lit"`, `String.new`,
 interpolation, or `dup` -- exactly as under CRuby's
-`--enable=frozen-string-literal`. A file can opt back into plain mutable
-literals with an explicit `# frozen_string_literal: false` magic comment,
-and a whole build with `--disable=frozen-string-literal`.
+`--enable=frozen-string-literal`. There is no opt-out: a
+`# frozen_string_literal: false` magic comment warns at compile time and
+is ignored, and `--disable=frozen-string-literal` is rejected. (The
+whole-program shared-mutable-string machinery relies on the frozen-literal
+guarantee; a chilled mode would be a second, subtly different mutation
+semantics.)
 
 A note on identity: what `frozen_string_literal` specifies is frozenness,
 not object identity, so the identity of frozen literals is
@@ -258,8 +261,7 @@ literals is exactly the implementation-defined corner. Value semantics
 (`==`, hashing, matching) are unaffected.
 
 **Aliased in-place mutation is observed.** A mutable string (from
-`String.new`, `+"lit"`, interpolation, `dup`, or any literal in a
-`frozen_string_literal: false` file) that is both aliased and mutated in
+`String.new`, `+"lit"`, interpolation, or `dup`) that is both aliased and mutated in
 place shares one mutable buffer, matching CRuby's mutable String objects:
 the mutation is visible through every reference and `equal?` across the
 alias set is `true`. This covers the full in-place mutator surface --
@@ -419,15 +421,17 @@ two distinct ones, so even a dedicated identity mode would diverge from CRuby
 on the exact programs that need it. Restructure identity-keyed lookups to use
 an explicit unique key (an Integer id, a Symbol) instead.
 
-#### `String#equal?` and shared literals
+#### `String#equal?` and literal identity
 
-`equal?` on strings is pointer identity, and identical string literals share
-storage. Two equal-valued literals therefore ARE identity-equal
-(`"x".equal?("x")` is `true`) -- the answer CRuby gives under
-`# frozen_string_literal: true`, though Spinel's literals stay mutable.
-Everything else about identity is truthful on this representation:
-`s.freeze.equal?(s)` is `true` (freeze marks in place), aliasing compares
-equal, and distinct-valued strings compare `false`.
+`equal?` on strings is pointer identity. Each literal OCCURRENCE compiles
+to its own frozen static object (see the identity note under the
+frozen-string-literal section): `"x".equal?("x")` is `false`, and
+re-evaluating one occurrence (a literal in a loop) yields the same object.
+Both facets are implementation-defined under `frozen_string_literal`
+semantics and programs should not depend on them. Everything else about
+identity is truthful: `s.freeze.equal?(s)` is `true` (freeze marks in
+place), aliasing compares equal, `-lit` dedups interned content to one
+object, and distinct-valued strings compare `false`.
 
 #### `defined?`
 

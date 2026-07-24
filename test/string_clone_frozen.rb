@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # String#clone preserves the frozen state; String#dup always returns unfrozen.
 def id(x) = x
 
@@ -6,8 +5,8 @@ def id(x) = x
 p id("x").freeze.clone.frozen?     # true
 p id("x").freeze.dup.frozen?       # false
 # unfrozen original: both stay unfrozen
-p id("abc").clone.frozen?          # false
-p id("abc").dup.frozen?            # false
+p id(+"abc").clone.frozen?         # false
+p id(+"abc").dup.frozen?           # false
 # value is preserved across clone
 p id("hi").freeze.clone            # "hi"
 # through a local variable

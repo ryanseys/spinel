@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # Bundled tests:
 #   - array_ptr_array_inspect
 #   - array_push
@@ -172,7 +171,7 @@ def t_array_replace
   puts f[1]        # 8.5
   
   # Mutable string (existing path; <<-promoted)
-  ms = ""
+  ms = +""
   ms << "hello"
   ms.replace("world")
   puts ms          # world

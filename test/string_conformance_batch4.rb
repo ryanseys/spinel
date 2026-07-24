@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # String conformance (KieranP #2308,#2310,#2312,#2313)
 p("hello".match?("l"))              # #2310 match? String pattern
 p("hello".match?("z"))
@@ -12,7 +11,7 @@ p("\e".inspect)
 p("\a\b\t\n\v\f\r".inspect)
 p("\x00\x1c\x7f".inspect)
 begin                                # #2308 negative codepoint RangeError
-  s = "a"; s << -1
+  s = +"a"; s << -1
   p :no_error
 rescue RangeError => e
   p e.class

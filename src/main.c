@@ -221,11 +221,13 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--rbs"))         { if (++i < argc) rbs_dir = argv[i]; i++; }
     else if (sp_streq(a, "--disable=frozen-string-literal") ||
              sp_streq(a, "--disable-frozen-string-literal")) {
-      extern int g_fsl_default; g_fsl_default = 0; i++;
+      fprintf(stderr, "spinel: --disable=frozen-string-literal is not "
+                      "supported: string literals are always frozen\n");
+      return 1;
     }
     else if (sp_streq(a, "--enable=frozen-string-literal") ||
              sp_streq(a, "--enable-frozen-string-literal")) {
-      extern int g_fsl_default; g_fsl_default = 1; i++;
+      i++;   /* the default; accepted for CRuby command-line compatibility */
     }
     else if (!strncmp(a, "--int-overflow=", 15)) { int_overflow = a + 15; i++; }
     else if (sp_streq(a, "--int-overflow")) { if (++i < argc) int_overflow = argv[i]; i++; }

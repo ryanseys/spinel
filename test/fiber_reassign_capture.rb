@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # A Fiber / proc body that REBINDS a captured heap object (String / Array /
 # Hash / object) to a new value now propagates that reassignment to the
 # enclosing scope, matching value-type captures. Heap captures ride a typed-
@@ -21,7 +20,7 @@ Fiber.new { h = {b: 2, c: 3}; Fiber.yield }.resume
 p h
 
 # In-place mutation of a non-rebound capture still propagates by pointer
-buf = "x"
+buf = +"x"
 Fiber.new { buf << "y"; Fiber.yield }.resume
 puts buf
 
@@ -30,7 +29,7 @@ Fiber.new { acc << 42; Fiber.yield }.resume
 p acc
 
 # Rebind AND in-place mutate the same captured string
-t = "a"
+t = +"a"
 Fiber.new { t << "b"; t = t + "c"; Fiber.yield }.resume
 puts t
 

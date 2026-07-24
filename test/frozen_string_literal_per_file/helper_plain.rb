@@ -3,8 +3,7 @@ def plain_helper_lit
   "helper plain lit"
 end
 
-def plain_helper_build
+def plain_helper_mutate
   s = "plain"
-  s << "!"
-  s
+  s << "!"   # FrozenError: the false pragma is ignored (always frozen)
 end

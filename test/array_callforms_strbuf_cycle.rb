@@ -1,12 +1,11 @@
-# frozen_string_literal: false
 # String#<< as an expression on a STRBUF-promoted local; Array slice(i)/
 # slice(range), pop(n)/shift(n), max(n){cmp}/min(n){cmp}, sum(str){blk};
 # blockless cycle(n)/each_entry chains; collect_concat as a flat_map alias.
-s = "ab"
+s = +"ab"
 t = s << "cd"
 p t
 p s
-u = "x"
+u = +"x"
 p(u << "y" << "z")
 p([10, 20, 30, 40].slice(1))
 p([10, 20, 30, 40].slice(1..3))

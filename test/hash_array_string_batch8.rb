@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # Hash.try_convert, Array member?/entries/find_all/
 # grep(variable pattern or block)/chain, String tr_s!/delete_prefix!/
 # delete_suffix!/byteindex(Regexp)/dedup.
@@ -36,10 +35,10 @@ p([1, 2].chain([3, 4]).to_a)
 p([1, 2].chain([3], [4, 5]).to_a)
 
 # String bang mutators and byte searches
-p "hello".tr_s!("l", "r")
-p "hello".delete_prefix!("hel")
-p "hello".delete_suffix!("llo")
-p "abc".delete_prefix!("x")
+p (+"hello").tr_s!("l", "r")
+p (+"hello").delete_prefix!("hel")
+p (+"hello").delete_suffix!("llo")
+p (+"abc").delete_prefix!("x")
 p "hello".byteindex("l")
 p "hello".byteindex(/l+/)
 p "hello".byterindex("l")

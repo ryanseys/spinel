@@ -1,8 +1,7 @@
-# frozen_string_literal: false
 # Shared-mutable strings, phase 3: a container-stored string shares its
 # sp_String handle, so later in-place mutation is visible through the
 # container and equal? is handle identity.
-s1 = "hi"
+s1 = +"hi"
 arr = [s1]
 s1 << "!"
 p arr[0]
@@ -12,7 +11,7 @@ s1 << "?"
 p h[:k]
 
 # consumers of the container-read handle
-a = "abc"
+a = +"abc"
 box = [a, "z", 1]
 a << "def"
 puts "#{box[0]}!"
@@ -31,13 +30,13 @@ box[0] << "g"
 p a
 
 # hash value + string-keyed hash
-v = "x"
+v = +"x"
 hs = { "k" => v }
 v << "y"
 hs.each { |k, w| puts "#{k}=#{w}" }
 
 # push-store shape + sort/mul/cmp via the handle
-seed = "ab"
+seed = +"ab"
 acc = []
 acc << seed
 seed << "c"

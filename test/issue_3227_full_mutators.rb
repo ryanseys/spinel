@@ -1,7 +1,6 @@
-# frozen_string_literal: false
 # Shared-mutable strings: every in-place mutator shares through aliases and
 # containers (P1+P2 of the reference-semantics plan).
-s = "hello world"
+s = +"hello world"
 arr = [s]
 s << "!"
 s["world"] = "ruby"
@@ -15,18 +14,18 @@ p arr[0]
 p arr[0].equal?(s)
 
 # bang-only alias set
-b1 = "low"
+b1 = +"low"
 b2 = b1
 b1.upcase!
 p b2
 # mixed alias set
-c1 = "a"
+c1 = +"a"
 c2 = c1
 c1 << "b"
 c1.upcase!
 p c2
 # replace via alias
-d1 = "abc"
+d1 = +"abc"
 d2 = d1
 d1.replace("xyz")
 p d2
@@ -47,7 +46,7 @@ rescue FrozenError
 end
 p f2
 # setbyte shares
-g1 = "Abc"
+g1 = +"Abc"
 g2 = g1
 g1.setbyte(0, 97)
 p g2

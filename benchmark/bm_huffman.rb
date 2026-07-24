@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # Huffman encoding benchmark
 # Counts byte frequencies in a generated text, builds a Huffman tree,
 # generates per-byte codes, and outputs the total encoded bit length.
@@ -18,7 +17,7 @@ end
 # Generate a deterministic ~N-byte text from a small alphabet.
 def gen_text(n)
   letters = "abcdefghijklmnopqrstuvwxyz ,.?!"
-  out = ""
+  out = +""
   seed = 12345
   i = 0
   while i < n

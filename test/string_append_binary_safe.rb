@@ -1,13 +1,12 @@
-# frozen_string_literal: false
 # String#<< must preserve embedded NUL bytes: a mutable string's payload buffer
 # is length-tracked (a header on the 0xfd buffer), not NUL-terminated, so
 # appending content that begins with (or contains) 0x00 keeps every byte.
 # (matz/spinel#1479)
 
-a = "a"; a << "\x00"
+a = +"a"; a << "\x00"
 puts a.length                 # 2
 
-b = "a"; b << 0.chr
+b = +"a"; b << 0.chr
 puts b.length                 # 2
 
 c = String.new
@@ -16,7 +15,7 @@ puts c.length                 # 3
 puts c.bytes.inspect          # [126, 0, 200]
 
 # Operand carrying an interior NUL.
-d = "x"
+d = +"x"
 d << "\x7e\x00\xc8"
 puts d.bytesize               # 4
 puts d.bytes.inspect          # [120, 126, 0, 200]
@@ -31,7 +30,7 @@ puts frame.getbyte(2)         # 0
 puts frame.getbyte(3)         # 130
 
 # Mutating via <<, then reading the escaped value (length over a const char*).
-e = "ab"
+e = +"ab"
 e << 0.chr
 e << "cd"
 puts e.length                 # 5

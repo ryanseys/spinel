@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # Ruby evaluates a mutator's arguments before the call runs, so a
 # side-effecting argument (and an op-assign RHS) must still execute even when
 # the receiver is frozen and the mutation ultimately raises FrozenError. Each
@@ -12,4 +11,4 @@ h = {n: 1}.freeze
 begin; h[:n] += note(9); rescue FrozenError; puts "hash raised"; end
 
 # sanity: the unfrozen path still evaluates the arg AND mutates
-m = "go"; m << note("!"); puts m
+m = +"go"; m << note("!"); puts m

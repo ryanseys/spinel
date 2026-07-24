@@ -1,6 +1,5 @@
-# frozen_string_literal: false
 # In-place mutation through a local alias is observed (shared String object).
-s1 = "hello"
+s1 = +"hello"
 s2 = s1
 p s1.equal?(s2)
 s1 << " world"
@@ -9,7 +8,7 @@ p s2
 p s1.equal?(s2)
 
 # chained aliases share the one object
-a = "x"
+a = +"x"
 b = a
 c = b
 a << "y"

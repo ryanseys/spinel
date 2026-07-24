@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # Under-supplied calls raise at runtime in value position, `Class => var`
 # bindings in typed-array patterns, hash-pattern **rest / **nil, Method
 # objects over builtin receivers, **hash degrading into *args, char-range
@@ -52,5 +51,5 @@ p bar(**hh)
 p ("a".."e").each_slice(2).to_a
 p ("a".."e").each_cons(2).to_a
 p ("a".."c").map { |s| s * 2 }
-p [1, 2, 3].each_with_object("") { |x, s| s << x.to_s }
-p [1, 2, 3].each_with_object("x") { |i, s| s << "-" }
+p [1, 2, 3].each_with_object(+"") { |x, s| s << x.to_s }
+p [1, 2, 3].each_with_object(+"x") { |i, s| s << "-" }

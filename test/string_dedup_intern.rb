@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # String#-@ / #dedup interns by content: two dedups of equal contents return
 # the same immortal frozen object (#2462).
 p("hello".dedup.equal?("hello".dedup))

@@ -1,10 +1,9 @@
-# frozen_string_literal: false
 # Promoted-ivar reads through reflection and formatting paths hand out safe
 # copies (never the raw handle); instance_variable_set joins the shared set.
 class W
   attr_reader :a, :b
   def initialize
-    @a = "aa"
+    @a = +"aa"
     @b = "bb"
     t = @a
     @a << "!"

@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # Bundled tests:
 #   - string_lines
 #   - strings
@@ -132,14 +131,14 @@ def t_mutable_str
   # was previously split across mutable_str.rb / _2.rb / _3.rb.
   
   # << (true mutation, not reassignment)
-  a = "hello"
+  a = +"hello"
   a << " world"
   a << "!"
   puts a          # hello world!
   puts a.length   # 12
   
   # Build string incrementally
-  buf = ""
+  buf = +""
   5.times do |i|
     buf << i.to_s
     buf << ","
@@ -153,44 +152,44 @@ def t_mutable_str
   puts b.include?("World")      # true
   
   # replace / clear
-  c = "hello"
+  c = +"hello"
   c.replace("world")
   puts c          # world
   c.clear
   puts c.length   # 0
   
   # [] on mutable string
-  d = "abcdef"
+  d = +"abcdef"
   d << "ghi"
   puts d[0]       # a
   puts d[-1]      # i
   puts d.length   # 9
   
   # gsub on mutable receiver
-  e = "hello"
+  e = +"hello"
   e << " world"
   puts e.gsub("o", "0")  # hell0 w0rld
   
   # split on mutable receiver
-  f = "a"
+  f = +"a"
   f << ",b,c"
   parts = f.split(",")
   puts parts.length  # 3
   
   # + creates a new string, does not mutate the receiver
-  g = "foo"
+  g = +"foo"
   g << "bar"
   h = g + "baz"
   puts g        # foobar (unchanged)
   puts h        # foobarbaz
   
   # to_s on mutable receiver
-  tst = "test"
+  tst = +"test"
   tst << "ing"
   puts tst.to_s   # testing
   
   # downcase / strip / capitalize / start_with? / end_with? / empty?
-  j = ""
+  j = +""
   j << "Hello"
   j << " "
   j << "World"
@@ -207,12 +206,12 @@ def t_mutable_str
   puts j.sub("World", "Ruby")  # Hello Ruby
   
   # to_i via mutable receiver
-  n = ""
+  n = +""
   n << "42"
   puts n.to_i    # 42
   
   # ljust / rjust
-  t = ""
+  t = +""
   t << "hi"
   puts t.ljust(10)   # "hi        "
   puts t.rjust(10)   # "        hi"

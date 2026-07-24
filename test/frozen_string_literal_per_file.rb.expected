@@ -1,5 +1,5 @@
 true
-false
+true
 true
 can't modify frozen String: "helper buf"
-"plain!"
+can't modify frozen String: "plain"

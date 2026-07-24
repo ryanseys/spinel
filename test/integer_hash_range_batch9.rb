@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # Integer quo/gcdlcm/pow/digits edges, Hash compact!/update/store/merge!/
 # each_with_object(String memo), and endless Range#to_a.
 
@@ -28,7 +27,7 @@ p(h)
 h2 = { a: 1 }
 h2.update({ b: 2 }, { c: 3 })
 p(h2)
-p({ "a" => 1, "b" => 2 }.each_with_object("") { |(k, _v), acc| acc << k })
+p({ "a" => 1, "b" => 2 }.each_with_object(+"") { |(k, _v), acc| acc << k })
 h3 = {}
 h3.store(:a, 1)
 p(h3)

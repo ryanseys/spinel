@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 # Shared-mutable strings, ivar slots (P4): an in-place-mutated ivar string
 # shares its handle with local aliases and containers; multiple instances
 # stay independent; external attr reads are safe copies.
@@ -14,8 +13,8 @@ class Doc
   def bump = @title << "+"
   def shout = @title.upcase!
 end
-d1 = Doc.new("aaa")
-d2 = Doc.new("bbb")
+d1 = Doc.new(+"aaa")
+d2 = Doc.new(+"bbb")
 d1.bump
 p d1.title
 p d2.title
@@ -24,7 +23,7 @@ p d1.title
 p d1.title.length
 
 # Toplevel ivar
-@log = "start"
+@log = +"start"
 snap = @log
 @log << "-x"
 p snap
@@ -36,7 +35,7 @@ p box[0]
 # hand-written reader over a promoted ivar
 class Memo
   def initialize
-    @body = "b"
+    @body = +"b"
     keep = @body
     @body << "1"
     p keep

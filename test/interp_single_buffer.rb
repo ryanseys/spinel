@@ -1,4 +1,3 @@
-# frozen_string_literal: false
 x = 42
 y = -7
 name = "matz"

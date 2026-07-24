@@ -1,7 +1,6 @@
-# frozen_string_literal: false
 # Shared-mutable strings captured by closures (P6): the handle rides a
 # typed-pointer cell, so capture+mutation and capture+rebinding both share.
-s = "cap"
+s = +"cap"
 t = s
 cb = -> { s << "!" }
 cb.call
@@ -10,13 +9,13 @@ p s.equal?(t)
 
 u = "one"
 v = u
-rb = -> { u = "two"; u << "!" }
+rb = -> { u = +"two"; u << "!" }
 rb.call
 p u
 p v
 
 procs = []
-w = "held"
+w = +"held"
 x = w
 procs << -> { w << "." }
 2.times { procs[0].call }
