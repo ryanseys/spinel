@@ -11908,11 +11908,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
     }
   }
-  /* SomeClass.name / .to_s / .inspect -> the class-name string */
+  /* SomeClass.name / .to_s / .inspect -> the class-name string. A
+     user-defined singleton (def self.name) shadows the builtin: skip the
+     fold and let the normal class-method dispatch emit the call. */
   if (recv >= 0 && argc == 0 &&
       (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0) {
+      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0 &&
+      comp_cmethod_in_chain(c, comp_class_index(c, nt_str(nt, recv, "name")), name, NULL) < 0) {
     buf_printf(b, "SPL(\"%s\")", nt_str(nt, recv, "name"));
     return;
   }
@@ -11921,7 +11924,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) {
     Scope *encl = comp_scope_of(c, id);
-    if (encl && encl->is_cmethod && encl->class_id >= 0) {
+    if (encl && encl->is_cmethod && encl->class_id >= 0 &&
+        comp_cmethod_in_chain(c, encl->class_id, name, NULL) < 0) {
       buf_printf(b, "SPL(\"%s\")", c->classes[encl->class_id].name);
       return;
     }
@@ -11929,7 +11933,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* bare `name` inside a class method body -> the class name */
   if (recv < 0 && sp_streq(name, "name") && argc == 0) {
     Scope *encl = comp_scope_of(c, id);
-    if (encl && encl->is_cmethod && encl->class_id >= 0) {
+    if (encl && encl->is_cmethod && encl->class_id >= 0 &&
+        comp_cmethod_in_chain(c, encl->class_id, name, NULL) < 0) {
       buf_printf(b, "SPL(\"%s\")", c->classes[encl->class_id].name);
       return;
     }
@@ -12275,7 +12280,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* TY_CLASS method dispatch */
   if (recv >= 0 && comp_ntype(c, recv) == TY_CLASS) {
     int _clt = ++g_tmp;
-    if (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect")) {
+    /* A user-defined singleton (def self.name / to_s / inspect) shadows the
+       builtin stringification; a statically-named receiver falls through to
+       the class-method dispatch below. */
+    int cls_shadowed = 0;
+    if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+        nt_str(nt, recv, "name")) {
+      int sci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (sci >= 0 && comp_cmethod_in_chain(c, sci, name, NULL) >= 0) cls_shadowed = 1;
+    }
+    if (!cls_shadowed &&
+        (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect"))) {
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_class_to_s(_cl%d); })", _clt);
       return;
