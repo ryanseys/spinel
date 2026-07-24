@@ -3265,6 +3265,33 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* String#replace / #prepend / #concat on a poly value: swap or extend
+     the shared handle's buffer in place (#3227 P6); other tags raise. */
+  if ((sp_streq(name, "prepend") || sp_streq(name, "concat")) && argc >= 1) {
+    int tv2 = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv2);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; sp_RbVal _r%d; if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) {"
+                  " sp_String *_m%d = (sp_String *)_t%d.v.p; ",
+               tv2, tv2, tv2, tv2, tv2);
+    if (sp_streq(name, "concat")) {
+      for (int j = 0; j < argc; j++) {
+        buf_printf(b, "sp_String_append_bin(_m%d, ", tv2);
+        emit_str_expr(c, argv[j], b);
+        buf_puts(b, "); ");
+      }
+    }
+    else if (sp_streq(name, "prepend")) {
+      buf_printf(b, "sp_String_set_bin(_m%d, ", tv2);
+      for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
+      emit_str_expr(c, argv[0], b);
+      for (int j = 1; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
+      buf_printf(b, ", sp_String_cstr(_m%d))); ", tv2);
+    }
+    buf_printf(b, "_r%d = _t%d; }\nelse { sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); _r%d = sp_box_nil(); } _r%d; })",
+               tv2, tv2, name, tv2, tv2, tv2);
+    return 1;
+  }
   /* Array#pop / #shift on a poly value (an array-kind box reaching a poly
      parameter): in-place removal through the runtime kind dispatch. */
   if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) {

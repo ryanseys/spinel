@@ -1018,6 +1018,12 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "clear"))
     return TY_POLY;
+  /* String#replace/prepend/concat on a poly value: self, boxed */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && argc >= 1 &&
+      (sp_streq(name, "replace") || sp_streq(name, "prepend") ||
+       sp_streq(name, "concat")))
+    return TY_POLY;
   /* in-place string mutators on a poly value: self (boxed) or nil */
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && name[0] && strlen(name) > 1 &&

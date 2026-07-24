@@ -4382,6 +4382,12 @@ static sp_RbVal sp_poly_clear(sp_RbVal v) {
     case SP_BUILTIN_FLT_ARRAY:      ((sp_FloatArray *)v.v.p)->len = 0; break;
     case SP_BUILTIN_STR_ARRAY:      ((sp_StrArray *)v.v.p)->len = 0; break;
     case SP_BUILTIN_POLY_ARRAY:     ((sp_PolyArray *)v.v.p)->len = 0; break;
+    case SP_BUILTIN_STRBUF: {
+      sp_String *_m = (sp_String *)v.v.p;
+      if (sp_String_is_frozen(_m)) { sp_raise_frozen_str(_m->data); break; }
+      _m->len = 0; _m->data[0] = 0; sp_fd_publish(_m);
+      break;
+    }
     case SP_BUILTIN_STR_INT_HASH:   sp_StrIntHash_clear((sp_StrIntHash *)v.v.p); break;
     case SP_BUILTIN_STR_STR_HASH:   sp_StrStrHash_clear((sp_StrStrHash *)v.v.p); break;
     case SP_BUILTIN_INT_STR_HASH:   sp_IntStrHash_clear((sp_IntStrHash *)v.v.p); break;
