@@ -4704,11 +4704,17 @@ else {
     while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
       const char *nm = nt_str(nt, cur, "name");
       if (!nm) { ok = 0; break; }
-      if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
+      if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
+        int lrcv9 = nt_ref(nt, cur, "receiver");
+        if (chain_is_lazy_valued(c, lrcv9)) { saw_op = 1; cur = lrcv9; continue; }
+        lazy_src = lrcv9;
+        break;
+      }
       /* blockless counter stages fuse into the pipeline (codegen re-validates
          the single integer argument). */
       if ((sp_streq(nm, "take") || sp_streq(nm, "drop") ||
-           ((sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) && cur == recv)) &&
+           (sp_streq(nm, "each_slice") && cur == recv) ||
+           sp_streq(nm, "each_cons")) &&
           nt_ref(nt, cur, "block") < 0) {
         saw_op = 1; cur = nt_ref(nt, cur, "receiver"); continue;
       }

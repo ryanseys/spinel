@@ -219,7 +219,7 @@ int chain_is_lazy_valued(Compiler *c, int node) {
   static const char *const transforms[] = {
     "lazy", "map", "collect", "select", "filter", "find_all", "reject",
     "filter_map", "flat_map", "collect_concat", "take", "drop", "take_while",
-    "drop_while", "each_slice", "with_index", "zip", NULL };
+    "drop_while", "each_slice", "each_cons", "with_index", "zip", NULL };
   int ok = 0;
   for (int i = 0; transforms[i]; i++) if (sp_streq(top, transforms[i])) { ok = 1; break; }
   if (!ok) return 0;

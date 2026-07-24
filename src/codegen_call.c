@@ -1404,14 +1404,19 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     const char *nm = nt_str(nt, cur, "name");
     if (!nm) return 0;
     if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
-      lazy_src = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
+      int lrcv = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
+      /* re-lazy on an already-lazy chain (`...lazy.each_cons(2).lazy.select`)
+         is transparent: keep walking the underlying chain (#3318) */
+      if (chain_is_lazy_valued(c, lrcv)) { cur = lrcv; continue; }
+      lazy_src = lrcv;
       break;
     }
     /* Blockless counter stages: `take(n)` limits the stream to n elements
        (break once reached), `drop(n)` skips the first n. Both stay lazy in
        CRuby, fusing straight into the loop. */
     if ((sp_streq(nm, "take") || sp_streq(nm, "drop") ||
-         ((sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) && nops == 0)) &&
+         (sp_streq(nm, "each_slice") && nops == 0) ||
+         sp_streq(nm, "each_cons")) &&
         nt_ref(nt, cur, "block") < 0) {
       int ar = nt_ref(nt, cur, "arguments");
       int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
@@ -1646,26 +1651,25 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       continue;
     }
     if (ops[oi].kind == OP_EACHCONS) {
-      /* sliding n-window of the stream: keep the last n elements rolling and
-         emit a COPY of the window each time it is full; only ever the
-         terminal-adjacent stage (oi == 0), so it owns the result push */
+      /* sliding n-window of the stream: keep the last n elements rolling;
+         an incomplete window skips this element, a full one becomes the
+         running value (a boxed COPY -- the window keeps rolling) for the
+         later stages / the terminal push. */
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", ops[oi].cnt, vbuf);
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) > _t%d) sp_PolyArray_shift(_t%d);\n",
                  ops[oi].cnt, ops[oi].lim, ops[oi].cnt);
       emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) == _t%d) {\n", ops[oi].cnt, ops[oi].lim);
-      emit_indent(g_pre, g_indent + 2);
-      buf_printf(g_pre, "sp_PolyArray *_w = sp_PolyArray_new(); SP_GC_ROOT(_w);\n");
+      buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) < _t%d) continue;\n",
+                 ops[oi].cnt, ops[oi].lim);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "{ sp_PolyArray *_w = sp_PolyArray_new(); SP_GC_ROOT(_w);\n");
       emit_indent(g_pre, g_indent + 2);
       buf_printf(g_pre, "for (mrb_int _k = 0; _k < _t%d; _k++) sp_PolyArray_push(_w, sp_PolyArray_get(_t%d, _k));\n",
                  ops[oi].lim, ops[oi].cnt);
       emit_indent(g_pre, g_indent + 2);
-      buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_w));\n", tres);
-      emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
-      emit_indent(g_pre, g_indent + 1);
-      buf_puts(g_pre, "continue;\n");
+      buf_printf(g_pre, "%s = sp_box_poly_array(_w); }\n", vbuf);
       continue;
     }
     int blk = ops[oi].block;
