@@ -3092,10 +3092,13 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
               bt == TY_COMPLEX || bt == TY_BIGINT))
       acc_ty = TY_POLY;
     /* Even over a concretely-typed (int/float) element array, a block whose
-       value is a boxed Rational/Complex cannot fold back into a scalar numeric
-       accumulator slot -- keep the accumulator boxed (#3220). */
+       value is boxed (a Rational/Complex, or poly because a fold OPERAND is
+       poly -- a parameter called with Integer and Rational call sites) cannot
+       fold back into a scalar numeric accumulator slot -- keep the
+       accumulator boxed (#3220, #3308). */
     else if (acc_ty != TY_POLY && init >= 0 && ty_is_numeric(acc_ty) &&
-             (bt == TY_RATIONAL || bt == TY_COMPLEX))
+             (bt == TY_RATIONAL || bt == TY_COMPLEX || bt == TY_POLY ||
+              bt == TY_BIGINT))
       acc_ty = TY_POLY;
   }
   /* A hash/array/object seed whose block body evaluates to a boxed poly value

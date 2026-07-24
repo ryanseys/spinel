@@ -8024,10 +8024,22 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      (matz/spinel#1484, matching the class-variable form that already worked).
      Plain `x = v` / `||=` / `&&=` stay statements for now: routing a tail ivar
      write of nil through the value path perturbs nullable-scalar inference. */
+  /* A tail ivar write of an OBJECT value (`def m = @x = build`) is the
+     method's return value in Ruby: returning the statement default (NULL)
+     instead hands callers a null object (#3317). Route it through the
+     generic value path below (whose return-slot conversions apply); other
+     value shapes keep the statement form -- routing a scalar/nil tail ivar
+     write through the value path perturbs nullable-scalar inference, per
+     the note below. */
+  int _iv_tail_val = 0;
+  if (sp_streq(ty, "InstanceVariableWriteNode")) {
+    TyKind _ivt9 = comp_ntype(c, nt_ref(nt, id, "value"));
+    if (ty_is_object(_ivt9)) _iv_tail_val = 1;
+  }
   if (sp_streq(ty, "LocalVariableWriteNode") ||
       sp_streq(ty, "LocalVariableOrWriteNode") ||
       sp_streq(ty, "LocalVariableAndWriteNode") ||
-      sp_streq(ty, "InstanceVariableWriteNode") ||
+      (sp_streq(ty, "InstanceVariableWriteNode") && !_iv_tail_val) ||
       sp_streq(ty, "GlobalVariableWriteNode") ||
       sp_streq(ty, "ConstantWriteNode") ||
       sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") ||
@@ -8107,8 +8119,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         _setnm[_setlen - 2] != '<' && _setnm[_setlen - 2] != '>') {
       TyKind _setrt = comp_ntype(c, _setrecv);
       if (ty_is_object(_setrt) || _setrt == TY_POLY) {
-        emit_stmt(c, id, b, indent);
-        return;
+        /* `[]=` in tail position yields the ASSIGNED VALUE (CRuby): fall
+           through to the generic value path below, whose return-slot
+           conversions apply (#3316). Other setters stay statements. */
+        if (!sp_streq(_setnm, "[]=")) {
+          emit_stmt(c, id, b, indent);
+          return;
+        }
       }
     }
   }

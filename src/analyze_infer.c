@@ -1049,6 +1049,10 @@ TyKind infer_call(Compiler *c, int id) {
       !an_user_defines_method(c, name) &&
       (sp_streq(name, "pop") || sp_streq(name, "shift")))
     return TY_POLY;
+  /* Array#insert on a poly value: in-place, returns the receiver (boxed). */
+  if (recv >= 0 && rt == TY_POLY && argc == 2 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && sp_streq(name, "insert"))
+    return TY_POLY;
   /* Time accessors on a poly value (a Time read out of a container): the
      codegen dispatch runs sp_time_* on the TIME tag and raises otherwise,
      so the non-raising result is an int (#3311). Declined when any class
@@ -1069,10 +1073,6 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && argc <= 1 && nt_ref(nt, id, "block") >= 0 &&
       !an_user_defines_method(c, name) &&
       (sp_streq(name, "reduce") || sp_streq(name, "inject")))
-    return TY_POLY;
-  /* Array#insert on a poly value: in-place, returns the receiver (boxed). */
-  if (recv >= 0 && rt == TY_POLY && argc == 2 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_defines_method(c, name) && sp_streq(name, "insert"))
     return TY_POLY;
   /* String#start_with? / #end_with? on a poly value: a bool. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
@@ -3884,10 +3884,14 @@ else {
               else if (it != TY_POLY && ty_array_elem(rt) == TY_POLY &&
                        (bt == TY_POLY || ty_is_object(bt) || bt == TY_RATIONAL ||
                         bt == TY_COMPLEX || bt == TY_BIGINT)) it = TY_POLY;
-              /* a block yielding a boxed Rational/Complex cannot fold back into
-                 a scalar numeric seed slot, even over an int/float array (#3220) */
+              /* a block yielding a boxed value (a Rational/Complex, or poly
+                 because a fold OPERAND is poly -- a parameter called with
+                 Integer and Rational call sites) cannot fold back into a
+                 scalar numeric seed slot, even over an int/float array
+                 (#3220, #3308) */
               else if (it != TY_POLY && ty_is_numeric(it) &&
-                       (bt == TY_RATIONAL || bt == TY_COMPLEX)) it = TY_POLY;
+                       (bt == TY_RATIONAL || bt == TY_COMPLEX ||
+                        bt == TY_POLY || bt == TY_BIGINT)) it = TY_POLY;
             }
             /* reduce(init, :op) symbol-operator form has no block, so the block
                promotion above cannot fire: an int seed folded over floats with

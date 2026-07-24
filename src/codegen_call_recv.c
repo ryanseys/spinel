@@ -1425,6 +1425,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                          : at == TY_FLOAT_ARRAY ? "sp_PolyArray_from_float_array" : NULL;
         buf_printf(b, " sp_PolyArray *_t%d = ", base + ai);
         if (from) { buf_printf(b, "%s(", from); emit_expr(c, argv[ai], b); buf_puts(b, ")"); }
+        else if (at == TY_POLY || at == TY_UNKNOWN) {
+          /* a boxed argument (a rest param widened to poly): unbox to the
+             working array through the runtime kind dispatch (#3317) */
+          buf_puts(b, "sp_poly_to_poly_array("); emit_boxed(c, argv[ai], b); buf_puts(b, ")");
+        }
         else emit_expr(c, argv[ai], b);   /* already a poly array */
         buf_printf(b, "; SP_GC_ROOT(_t%d);", base + ai);
       }

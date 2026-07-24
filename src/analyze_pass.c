@@ -7486,8 +7486,11 @@ int infer_block_params(Compiler *c) {
       TyKind acc_t = (rargc > 0 && rargv) ? infer_type(c, rargv[0]) : et2;
       if (acc_t == TY_UNKNOWN) acc_t = et2;
       /* the accumulator is reassigned to the block's value each step, so a
-         boxed block result widens it rather than truncating (#2982) */
-      if (acc_t != TY_POLY && et2 == TY_POLY && rargc > 0) {
+         boxed block result widens it rather than truncating -- whatever the
+         element type (an int-array fold whose OPERAND is poly, e.g. a
+         parameter called with Integer and Rational, still folds boxed;
+         #2982, #3308) */
+      if (acc_t != TY_POLY) {
         int rbody = nt_ref(nt, block, "body");
         int rbn = 0; const int *rbb = rbody >= 0 ? nt_arr(nt, rbody, "body", &rbn) : NULL;
         TyKind bt3 = rbn > 0 ? infer_type(c, rbb[rbn - 1]) : TY_UNKNOWN;
