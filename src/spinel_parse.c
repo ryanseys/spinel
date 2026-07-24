@@ -2698,6 +2698,21 @@ static char *rewrite_syntax_sugar(char *source) {
       lsp++; lstk[lsp].st = LX_DQ; lstk[lsp].open = 0; lstk[lsp].close = source[i]; lstk[lsp].depth = 1;
       OUT_CHAR(source[i]); i++; continue;
     }
+    /* Regex literal in expression position: open a frame so its escaped
+       quotes (`/\"(.*?)\"/`) do not toggle the string state and poison the
+       rest of the scan. Heuristic mirrors Ruby's lexer: a `/` is a regex
+       when the previous non-space char can END no value (operator, opener,
+       separator, or line start); after an identifier/closing token it is
+       division. Interpolation inside the regex rides the LX_DQ frame. */
+    if (source[i] == '/' && lsp < 63) {
+      size_t backR = oi;
+      while (backR > 0 && (out[backR - 1] == ' ' || out[backR - 1] == '\t')) backR--;
+      char pvR = backR > 0 ? out[backR - 1] : '\n';
+      if (strchr("=(,[{;\n!&|~^+-*%<>?:", pvR)) {
+        lsp++; lstk[lsp].st = LX_DQ; lstk[lsp].open = 0; lstk[lsp].close = '/'; lstk[lsp].depth = 1;
+        OUT_CHAR(source[i]); i++; continue;
+      }
+    }
     /* %-literals: %w %W %i %I %q %Q with any delimiter always; a bare
        %<delim> only in operator position (else it is modulo) */
     if (source[i] == '%' && i + 1 < len && lsp < 63) {
