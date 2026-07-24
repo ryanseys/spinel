@@ -635,10 +635,131 @@ int class_is_blank_slate(Compiler *c, int ci) {
 
 /* Does the program define a method of this name itself? A builtin fallback for
    a poly receiver must decline then: the user method is the likelier target. */
+/* The scan below is O(nclasses * chain) per query and the fallback arms ask it
+   per call site per fixpoint iteration; memoize per name. The answer depends
+   only on scope/class shape, so stamp entries with the scope-index epoch (the
+   same invalidation hash_new_default_arg's memo rides) plus the scope/class
+   counts for the unfrozen phases where the epoch doesn't tick. */
+static unsigned udm_gen = 0;
+static int udm_nscopes = -1, udm_nclasses = -1, udm_cap = 0, udm_n = 0;
+static char **udm_names = NULL;
+static signed char *udm_ans = NULL;
+static int *udm_next = NULL, *udm_head = NULL;
+static unsigned udm_hash(const char *s) {
+  unsigned h = 2166136261u;
+  for (const char *p = s; *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+  return h;
+}
+/* Per-epoch string sets making the memo fill O(1) for the common case:
+   every instance-method name any class defines, and every alias source name.
+   Open-addressed; rebuilt alongside the memo on an epoch change. */
+typedef struct { char **v; int n, cap; } UdmSet;
+static UdmSet udm_defined_set, udm_aliased_set;
+static int udm_sets_stale = 1;
+static void udm_set_clear(UdmSet *s) {
+  for (int i = 0; i < s->cap; i++) { free(s->v[i]); s->v[i] = NULL; }
+  s->n = 0;
+}
+static void udm_set_add(UdmSet *s, const char *k) {
+  if (!k) return;
+  if (s->n * 2 >= s->cap) {
+    int ncap = s->cap ? s->cap * 2 : 1024;
+    char **nv = calloc((size_t)ncap, sizeof(char *));
+    if (!nv) return;
+    for (int i = 0; i < s->cap; i++)
+      if (s->v[i]) {
+        unsigned j = udm_hash(s->v[i]) & (unsigned)(ncap - 1);
+        while (nv[j]) j = (j + 1) & (unsigned)(ncap - 1);
+        nv[j] = s->v[i];
+      }
+    free(s->v); s->v = nv; s->cap = ncap;
+  }
+  unsigned j = udm_hash(k) & (unsigned)(s->cap - 1);
+  while (s->v[j]) {
+    if (sp_streq(s->v[j], k)) return;
+    j = (j + 1) & (unsigned)(s->cap - 1);
+  }
+  s->v[j] = strdup(k);
+  if (s->v[j]) s->n++;
+}
+static int udm_set_has(const UdmSet *s, const char *k) {
+  if (!s->cap) return 0;
+  unsigned j = udm_hash(k) & (unsigned)(s->cap - 1);
+  while (s->v[j]) {
+    if (sp_streq(s->v[j], k)) return 1;
+    j = (j + 1) & (unsigned)(s->cap - 1);
+  }
+  return 0;
+}
+static void udm_sets_fill(Compiler *c) {
+  udm_set_clear(&udm_defined_set);
+  udm_set_clear(&udm_aliased_set);
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].class_id >= 0 && !c->scopes[s].is_cmethod && c->scopes[s].name)
+      udm_set_add(&udm_defined_set, c->scopes[s].name);
+  for (int k = 0; k < c->nclasses; k++)
+    for (int i = 0; i < c->classes[k].naliases; i++)
+      udm_set_add(&udm_aliased_set, c->classes[k].alias_new[i]);
+  udm_sets_stale = 0;
+}
+static int udm_defined_name(Compiler *c, const char *name) {
+  if (udm_sets_stale) udm_sets_fill(c);
+  return udm_set_has(&udm_defined_set, name);
+}
+static int udm_aliased_name(Compiler *c, const char *name) {
+  if (udm_sets_stale) udm_sets_fill(c);
+  return udm_set_has(&udm_aliased_set, name);
+}
 int an_user_defines_method(Compiler *c, const char *name) {
-  for (int uk = 0; uk < c->nclasses; uk++)
-    if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
-  return comp_method_index(c, name) >= 0;
+  if (!name) return 0;
+  if (!comp_scope_index_is_frozen()) {
+    /* scope shape may still change without the counts moving (renames);
+       don't consult or populate the memo outside the frozen fixpoint. */
+    for (int uk = 0; uk < c->nclasses; uk++)
+      if (comp_method_in_chain(c, uk, name, NULL) >= 0) return 1;
+    return comp_method_index(c, name) >= 0;
+  }
+  unsigned gen = comp_scope_index_gen();
+  if (gen != udm_gen || c->nscopes != udm_nscopes || c->nclasses != udm_nclasses) {
+    for (int i = 0; i < udm_n; i++) free(udm_names[i]);
+    udm_n = 0;
+    if (!udm_cap) {
+      udm_cap = 4096;
+      udm_names = malloc(sizeof(char *) * (size_t)udm_cap);
+      udm_ans = malloc((size_t)udm_cap);
+      udm_next = malloc(sizeof(int) * (size_t)udm_cap);
+      udm_head = malloc(sizeof(int) * (size_t)udm_cap);
+      if (!udm_names || !udm_ans || !udm_next || !udm_head) { udm_cap = 0; }
+    }
+    for (int i = 0; i < udm_cap; i++) udm_head[i] = -1;
+    udm_gen = gen; udm_nscopes = c->nscopes; udm_nclasses = c->nclasses;
+    udm_sets_stale = 1;
+  }
+  unsigned b = udm_cap ? udm_hash(name) & (unsigned)(udm_cap - 1) : 0;
+  if (udm_cap)
+    for (int i = udm_head[b]; i >= 0; i = udm_next[i])
+      if (sp_streq(udm_names[i], name)) return udm_ans[i];
+  int ans = 0;
+  if (udm_aliased_name(c, name)) {
+    /* the name is an alias source somewhere: per-class resolution can redirect
+       it, so only the full scan answers exactly (rare -- memoized above) */
+    for (int uk = 0; uk < c->nclasses; uk++)
+      if (comp_method_in_chain(c, uk, name, NULL) >= 0) { ans = 1; break; }
+  } else {
+    /* no alias redirects this name anywhere, so resolution is the identity for
+       every class: defined iff some class's own method table has it (take that
+       class as the chain start) */
+    ans = udm_defined_name(c, name);
+  }
+  if (!ans) ans = comp_method_index(c, name) >= 0;
+  if (udm_cap && udm_n < udm_cap) {
+    udm_names[udm_n] = strdup(name);
+    if (udm_names[udm_n]) {
+      udm_ans[udm_n] = (signed char)ans;
+      udm_next[udm_n] = udm_head[b]; udm_head[b] = udm_n; udm_n++;
+    }
+  }
+  return ans;
 }
 
 TyKind yield_aware_elem_ty(Compiler *c, int node) {
