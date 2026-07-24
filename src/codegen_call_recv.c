@@ -5767,6 +5767,20 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
             eq_sblv = 1;
           }
         }
+        /* strbuf receiver vs a POLY operand (a container read): runtime
+           handle identity against the boxed value (#3227 P6) */
+        if (!eq_sblv && comp_ntype(c, argv[0]) == TY_POLY) {
+          char rrefE3[192];
+          if (strbuf_slot_ref(c, recv, rrefE3, sizeof rrefE3)) {
+            int teq3 = ++g_tmp;
+            buf_printf(b, "({ sp_RbVal _t%d = ", teq3);
+            emit_boxed(c, argv[0], b);
+            buf_printf(b, "; (mrb_bool)(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF"
+                          " && (sp_String *)_t%d.v.p == %s); })",
+                       teq3, teq3, teq3, rrefE3);
+            eq_sblv = 1;
+          }
+        }
         if (!eq_sblv) {
           char arefE[192];
           if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {

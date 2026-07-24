@@ -6729,6 +6729,47 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (llv2->type != TY_STRBUF || !llv2->str_shared)
       { llv2->type = TY_STRBUF; llv2->str_shared = 1; changed = 1; }
   }
+  /* deep-return alias: `r = make_held` where EVERY return path of the
+     (receiverless, uniquely-named) callee yields a shared handle -- r joins
+     the set and the call is marked so the emitter picks the handle off the
+     side channel (#3227 P6). */
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    int wv = nt_ref(nt, w, "value");
+    if (wv < 0 || nt_kind(nt, wv) != NK_CallNode) continue;
+    if (c->strbuf_box[wv]) continue;
+    if (nt_ref(nt, wv, "receiver") >= 0) continue;
+    if (nt_ref(nt, wv, "block") >= 0) continue;
+    const char *mn = nt_str(nt, wv, "name");
+    int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
+    if (mi3 <= 0) continue;
+    Scope *m3 = &c->scopes[mi3];
+    /* every return tail (implicit + explicit) must be a shared slot read */
+    int shared_ok = 1, saw_tail = 0;
+    { int lastT = scope_body_last(c, mi3);
+      if (lastT >= 0) {
+        saw_tail = 1;
+        if (!an_arg_is_shared_handle(c, lastT)) shared_ok = 0;
+      } }
+    for (int u = 0; shared_ok && u < nt->count; u++) {
+      if (nt_kind(nt, u) != NK_ReturnNode) continue;
+      if (comp_scope_of(c, u) != m3) continue;
+      int ra = nt_ref(nt, u, "arguments");
+      int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
+      saw_tail = 1;
+      if (rn2 != 1 || !an_arg_is_shared_handle(c, rv2[0])) shared_ok = 0;
+    }
+    if (!shared_ok || !saw_tail) continue;
+    const char *lname3 = nt_str(nt, w, "name");
+    Scope *ls3 = comp_scope_of(c, w);
+    LocalVar *llv3 = (lname3 && ls3) ? scope_local(ls3, lname3) : NULL;
+    if (!llv3 || !strbuf_slot_eligible_shape(c, lname3, ls3, llv3)) continue;
+    if (llv3->type != TY_UNKNOWN && llv3->type != TY_STRING &&
+        llv3->type != TY_STRBUF && llv3->type != TY_POLY) continue;
+    c->strbuf_box[wv] = 1; changed = 1;
+    if (llv3->type != TY_STRBUF || !llv3->str_shared)
+      { llv3->type = TY_STRBUF; llv3->str_shared = 1; changed = 1; }
+  }
   return changed;
 }
 

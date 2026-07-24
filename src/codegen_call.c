@@ -7018,6 +7018,22 @@ static int class_includes_module_named(Compiler *c, int cid, const char *mod_nam
 }
 
 void emit_call(Compiler *c, int id, Buf *b) {
+  /* deep-return pickup (#3227 P6): a marked receiverless call to a method
+     whose every return path yields a shared handle -- reset the side
+     channel, run the ordinary call (its shared-slot tail read publishes),
+     then take the handle (falling back to a fresh wrap of the returned
+     copy if a path did not publish). */
+  if (c->strbuf_box[id] && nt_ref(c->nt, id, "receiver") < 0 &&
+      nt_ref(c->nt, id, "block") < 0) {
+    int tvD = ++g_tmp;
+    buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
+    c->strbuf_box[id] = 0;
+    emit_call(c, id, b);
+    c->strbuf_box[id] = 1;
+    buf_printf(b, "; _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
+                  " : sp_String_new_shared(_v%d); })", tvD);
+    return;
+  }
   const NodeTable *nt = c->nt;
   /* each_slice/each_cons over a user Enumerable: the redirect made this read
      the flat element array, so run it for its side effects and yield the

@@ -860,9 +860,14 @@ void emit_expr(Compiler *c, int id, Buf *b) {
          sp_String buffer is not itself a GC object, so a bare cstr pointer
          would dangle once the wrapper is unreachable (e.g. after `return`).
          Transient append/length use the raw sp_String via dedicated paths. */
-      buf_puts(b, "sp_str_concat(sp_String_cstr(");
+      /* publish the handle to the deep-return side channel as the copy is
+         read out: a marked caller of a shared-returning method picks it up
+         right after the call (#3227 P6) */
+      buf_puts(b, "(_sp_ret_strbuf = (void *)");
       emit_local_ref(c, id, lrn, b);
-      buf_puts(b, "), (&(\"\\xff\")[1]))");
+      buf_puts(b, ", sp_str_concat(sp_String_cstr(");
+      emit_local_ref(c, id, lrn, b);
+      buf_puts(b, "), (&(\"\\xff\")[1])))");
       return;
     }
     emit_local_ref(c, id, lrn, b); return;
@@ -1326,8 +1331,8 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       c->strbuf_box[id] = (unsigned char)svm;
       if (is_sb) {
         if (svm) buf_printf(b, "%s", srefI);
-        else buf_printf(b, "(%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
-                        srefI, srefI);
+        else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
+                        srefI, srefI, srefI);
         return;
       } }
     if (cs && cs->is_cmethod && cs->class_id >= 0)

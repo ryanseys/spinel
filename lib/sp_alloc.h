@@ -90,6 +90,12 @@ struct sp_str_lcache_entry {
    its own; it is cleared at every safepoint park (before a sweep can recycle a
    cached string's address) and by the string sweep on the collector. */
 extern SP_TLS struct sp_str_lcache_entry sp_str_lcache[SP_STR_LCACHE_SIZE];
+/* Deep-return side channel (#3227): a method whose every return path yields
+   a shared-mutable string publishes the sp_String* handle here as the copy
+   is read out; a demand-marked call site picks it up right after the call
+   (resetting it to NULL first). Never read unless the analysis marked the
+   site, so ordinary callers are untouched. */
+extern SP_TLS void *_sp_ret_strbuf;
 
 /* Cold; single definitions in sp_alloc.c. sp_str_sweep is wired to the GC via a
    constructor so it runs from sp_gc_collect regardless of which TU triggered
