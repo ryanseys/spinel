@@ -614,7 +614,8 @@ void mark_proc_captures(Compiler *c) {
            in the body reaches the enclosing scope. In-place mutation of a
            non-reassigned capture stays by pointer (the var isn't `owned`, so it
            never reaches here). Value-type objects have no stable pointer. */
-        int heap_ptr = (lv->type == TY_STRING || ty_is_array(lv->type) ||
+        int heap_ptr = (lv->type == TY_STRING || lv->type == TY_STRBUF ||
+                        ty_is_array(lv->type) ||
                         ty_is_hash(lv->type) || ty_is_object(lv->type)) &&
                        !comp_ty_value_obj(c, lv->type);
         if (fib_create && lv->type != TY_INT && lv->type != TY_BOOL &&
@@ -6414,7 +6415,7 @@ static int strbuf_slot_eligible(Compiler *c, const char *vn, Scope *vs, LocalVar
    while its type is still a transient UNKNOWN/POLY mid-fixpoint */
 static int strbuf_slot_eligible_shape(Compiler *c, const char *vn, Scope *vs, LocalVar *lv) {
   const NodeTable *nt = c->nt;
-  if (!lv || lv->is_param || lv->rbs_seeded || lv->is_cell) return 0;
+  if (!lv || lv->is_param || lv->rbs_seeded) return 0;
   for (int u = 0; u < nt->count; u++) {
     const char *uty = nt_type(nt, u);
     if (!uty || !sp_streq(uty, "CallNode")) continue;
@@ -7980,30 +7981,6 @@ void analyze_program(Compiler *c) {
      enclosing locals never got heap cells (#3166). Re-run the capture pass now
      that the yields flags are final; it only sets is_cell and is idempotent. */
   if (lowered_recursive_yield) mark_proc_captures(c);
-
-  /* A shared-mutable local that turned out to be CAPTURED (is_cell was set
-     by the post-fixpoint capture pass, after the promotion ran) falls back
-     to the plain value-copy representation: the cell machinery has no
-     sp_String* cell yet (#3227 P6). Clears the read marks so container
-     stores box the copy again. */
-  for (int s2 = 0; s2 < c->nscopes; s2++) {
-    Scope *sc2 = &c->scopes[s2];
-    for (int i2 = 0; i2 < sc2->nlocals; i2++) {
-      LocalVar *lv2 = &sc2->locals[i2];
-      if (!lv2->is_cell || (!lv2->str_shared && lv2->type != TY_STRBUF)) continue;
-      if (lv2->type == TY_STRBUF) lv2->type = TY_STRING;
-      if (!lv2->str_shared) continue;
-      lv2->str_shared = 0;
-      for (int nd = 0; nd < c->nt->count; nd++) {
-        if (!c->strbuf_box[nd]) continue;
-        if (nt_kind(c->nt, nd) != NK_LocalVariableReadNode) continue;
-        const char *ndn = nt_str(c->nt, nd, "name");
-        if (!ndn || !lv2->name || !sp_streq(ndn, lv2->name)) continue;
-        if (comp_scope_of(c, nd) != sc2) continue;
-        c->strbuf_box[nd] = 0;
-      }
-    }
-  }
 
   /* Post-fixpoint: propagate include-copy param types back to the source
      scope so the final infer_type scan (which uses comp_scope_of, mapping

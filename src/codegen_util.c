@@ -651,7 +651,14 @@ int strbuf_ivar_owner(Compiler *c, int node) {
    Returns 1 and fills `out`, or 0 when the receiver is neither (#3227). */
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   const char *rn = strbuf_local_name(c, recv);
-  if (rn) { snprintf(out, cap, "lv_%s", rename_local(rn)); return 1; }
+  if (rn) {
+    /* via emit_local_ref: a celled/captured local derefs its cell */
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_local_ref(c, recv, rn, &rb);
+    snprintf(out, cap, "%s", rb.p ? rb.p : "");
+    free(rb.p);
+    return 1;
+  }
   if (recv < 0 || nt_kind(c->nt, recv) != NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(c->nt, recv, "name");
   if (!nm) return 0;

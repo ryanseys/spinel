@@ -1279,7 +1279,7 @@ int proc_body_node(Compiler *c, int create) {
    (string/array/hash/object) is laundered through (mrb_int)(uintptr_t). Other
    shapes (float, poly, range, time) don't fit the slot and defer. */
 int proc_slot_is_direct(TyKind t) { return t == TY_INT || t == TY_BOOL || t == TY_SYMBOL || t == TY_NIL || t == TY_UNKNOWN; }
-int proc_slot_is_ptr(TyKind t) { return t == TY_STRING || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t); }
+int proc_slot_is_ptr(TyKind t) { return t == TY_STRING || t == TY_STRBUF || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t); }
 
 /* True if a closure cell for `lv` carries the variable's real typed pointer
    (string / array / hash / object), as opposed to a laundered or scalar slot.
