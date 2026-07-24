@@ -138,6 +138,16 @@ static int coerce_const_raise(const char *txt, const char *zero, Buf *b) {
    where the runtime ABI demands a raw integer (array indices, etc.) but the
    expression's static type widened to poly. */
 void emit_int_expr(Compiler *c, int node, Buf *b) {
+  const char *nty = nt_type(c->nt, node);
+  /* `*a` forwarded into a scalar int slot (a builtin arg): the value is the
+     splat's first element, not the array box. */
+  if (nty && sp_streq(nty, "SplatNode")) {
+    int inner = nt_ref(c->nt, node, "expression");
+    buf_puts(b, "sp_poly_to_i(sp_PolyArray_get(sp_poly_to_poly_array(sp_splat_to_array(");
+    if (inner >= 0) emit_boxed(c, inner, b); else buf_puts(b, "sp_box_nil()");
+    buf_puts(b, ")), 0))");
+    return;
+  }
   if (comp_ntype(c, node) == TY_POLY) {
     buf_puts(b, "sp_poly_to_i("); emit_expr(c, node, b); buf_puts(b, ")");
     return;

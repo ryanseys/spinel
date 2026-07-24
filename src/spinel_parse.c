@@ -2758,6 +2758,75 @@ static char *rewrite_syntax_sugar(char *source) {
        lack #send and must raise (#2725). The analyze-side send desugar
        retargets it with the receiver's class in hand. `.__send__` stays: it
        IS a BasicObject method, so the blind rewrite is always right. */
+    /* Forwardable: `def_delegator :@recv, :meth[, :alias]` and
+       `def_delegators :@recv, :m1, :m2, ...` rewrite in place (single line,
+       preserving line count) to plain forwarding defs:
+       `def alias(*a) = a.length == 0 ? @recv.meth : @recv.meth(*a)`.
+       The runtime arity split keeps zero-arg delegation off the splat path
+       (a builtin target's optional-arg arm would otherwise see the empty
+       rest array as an argument). Block forwarding is not emitted (known
+       forwarding gap). The receiver symbol may be an ivar (:@foo) or a
+       method (:foo). Only fires at a statement start (preceded by
+       newline/semicolon + indentation). */
+    if ((strncmp(source + i, "def_delegator", 13) == 0)) {
+      size_t back3 = oi;
+      while (back3 > 0 && (out[back3 - 1] == ' ' || out[back3 - 1] == '\t')) back3--;
+      char pv3 = back3 > 0 ? out[back3 - 1] : '\n';
+      int plural = (i + 14 <= len && source[i + 13] == 's');
+      size_t j3 = i + 13 + (plural ? 1 : 0);
+      while (j3 < len && (source[j3] == ' ' || source[j3] == '(')) j3++;
+      if ((pv3 == '\n' || pv3 == ';') && j3 < len && source[j3] == ':') {
+        /* parse the symbol list on this line */
+        char syms[17][160]; int nsym = 0;
+        size_t k3 = j3;
+        while (k3 < len && source[k3] != '\n' && nsym < 17) {
+          while (k3 < len && (source[k3] == ' ' || source[k3] == ',' ||
+                              source[k3] == '(' || source[k3] == ')')) k3++;
+          if (k3 >= len || source[k3] != ':') break;
+          k3++;
+          size_t s3 = k3;
+          if (k3 < len && source[k3] == '@') k3++;
+          while (k3 < len && sp_is_method_name_char(source[k3])) k3++;
+          size_t l3 = k3 - s3;
+          if (l3 == 0 || l3 >= sizeof(syms[0])) { nsym = 0; break; }
+          memcpy(syms[nsym], source + s3, l3);
+          syms[nsym][l3] = 0;
+          nsym++;
+        }
+        /* trailing junk after the list (a real expression) -> leave alone */
+        size_t t3 = k3;
+        while (t3 < len && (source[t3] == ' ' || source[t3] == ')' ||
+                            source[t3] == '\r')) t3++;
+        int clean = (t3 >= len || source[t3] == '\n' || source[t3] == '#');
+        int min_syms = plural ? 2 : 2;
+        int max_syms = plural ? 17 : 3;
+        if (nsym >= min_syms && nsym <= max_syms && clean) {
+          const char *recvtxt = syms[0];
+          char line3[2048]; line3[0] = 0;
+          if (!plural) {
+            const char *meth3 = syms[1];
+            const char *als3 = nsym == 3 ? syms[2] : syms[1];
+            snprintf(line3, sizeof line3,
+                     "def %s(*_fw_a) = _fw_a.length == 0 ? %s.%s : %s.%s(*_fw_a)",
+                     als3, recvtxt, meth3, recvtxt, meth3);
+          }
+          else {
+            size_t off3 = 0;
+            for (int q3 = 1; q3 < nsym; q3++) {
+              off3 += (size_t)snprintf(line3 + off3, sizeof line3 - off3,
+                       "%sdef %s(*_fw_a) = _fw_a.length == 0 ? %s.%s : %s.%s(*_fw_a)",
+                       q3 > 1 ? "; " : "", syms[q3], recvtxt, syms[q3], recvtxt, syms[q3]);
+              if (off3 >= sizeof line3 - 1) { line3[0] = 0; break; }
+            }
+          }
+          if (line3[0]) {
+            OUT_STR(line3);
+            i = t3;   /* resume at end-of-line remainder (newline/comment) */
+            continue;
+          }
+        }
+      }
+    }
     /* .__send__(:foo, args) → .foo(args). CRuby's overrides-resistant
        alias of send; semantically identical for Spinel's static dispatch. */
     if (i + 11 < len && strncmp(source + i, ".__send__(:", 11) == 0) {
