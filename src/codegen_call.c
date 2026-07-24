@@ -3692,6 +3692,23 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         buf_printf(b, " case SP_BUILTIN_STR_INT_HASH: _t%d = %s((sp_StrIntHash *)_t%d.v.p)->len%s; break;", tr, bopen, tv, bclose);
         buf_printf(b, " case SP_BUILTIN_INT_STR_HASH: _t%d = %s((sp_IntStrHash *)_t%d.v.p)->len%s; break;", tr, bopen, tv, bclose);
       }
+      /* built-in container receivers reaching a poly clear dispatch (a seeded
+         boxed ivar array): empty in place through the runtime kind dispatch;
+         without these arms the switch missed the cls_id and silently kept
+         the contents (#3326). */
+      if (sp_streq(name, "clear") && argc == 0) {
+        buf_printf(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY:"
+                      " case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_STR_ARRAY:"
+                      " case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_STRBUF:"
+                      " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_STR_STR_HASH:"
+                      " case SP_BUILTIN_INT_STR_HASH: case SP_BUILTIN_INT_INT_HASH:"
+                      " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_SYM_POLY_HASH:"
+                      " case SP_BUILTIN_POLY_POLY_HASH:");
+        if (ret == TY_POLY)
+          buf_printf(b, " _t%d = sp_poly_clear(_t%d); break;", tr, tv);
+        else
+          buf_printf(b, " sp_poly_clear(_t%d); break;", tv);
+      }
       /* built-in array / hash receivers reaching a poly empty? dispatch (#1438) */
       if (is_empty) {
         buf_printf(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY: _t%d = %ssp_IntArray_length((sp_IntArray *)_t%d.v.p) == 0%s; break;", tr, ebopen, tv, ebclose);
