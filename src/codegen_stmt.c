@@ -7753,6 +7753,19 @@ else {
         buf_puts(b, ";\n");
       }
     }
+    else {
+      /* the loop's value is unused, but Ruby still EVALUATES the break
+         value expression for its side effects (`break kept.concat(list)`,
+         #3297): run each argument for effect before leaving. */
+      int bargs = nt_ref(nt, id, "arguments");
+      int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
+      for (int k = 0; k < bvargc; k++) {
+        emit_indent(b, indent);
+        buf_puts(b, "(void)(");
+        emit_boxed(c, bvargs[k], b);
+        buf_puts(b, ");\n");
+      }
+    }
     emit_indent(b, indent);
     /* leaving through live begin/rescue frames opened inside the loop body:
        pop them, or their jmp_bufs dangle (same accounting as emit_return) */
