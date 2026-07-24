@@ -4045,6 +4045,43 @@ int desugar_method_curry(Compiler *c) {
   return changed;
 }
 
+/* n.times.with_index / upto / downto (and with_object/each_with_index):
+   a blockless Integer enumerator types as a range, which has no with_index
+   arm. Interpose `.each` -- range.each stays an external Enumerator ahead
+   of these chains, whose machinery already serves both the blockless and
+   the block forms. Fires once: afterwards the receiver is the each call. */
+int desugar_int_enum_with_index(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "with_index") && !sp_streq(nm, "with_object") &&
+                !sp_streq(nm, "each_with_index"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
+    if (nt_ref(nt, recv, "block") >= 0) continue;
+    const char *rnm = nt_str(nt, recv, "name");
+    if (!rnm || (!sp_streq(rnm, "times") && !sp_streq(rnm, "upto") &&
+                 !sp_streq(rnm, "downto"))) continue;
+    if (infer_type(c, recv) != TY_RANGE) continue;
+    int base = nt->count;
+    int ec = nt_new_node(nt, "CallNode");
+    if (ec < 0) continue;
+    nt_node_set_ref(nt, ec, "receiver", recv);
+    nt_node_set_str(nt, ec, "name", "each");
+    nt_node_set_ref(nt, ec, "arguments", -1);
+    nt_node_set_ref(nt, ec, "block", -1);
+    nt_node_set_ref(nt, id, "receiver", ec);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* reduce(&pr) / inject(init, &pr): forward the proc through a literal
    two-param block calling it -- `{ |__fa, __fb| pr.call(__fa, __fb) }` -- so
    the fold machinery sees an ordinary block (#2684). The fold emitter places
