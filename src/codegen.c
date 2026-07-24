@@ -2776,7 +2776,8 @@ int is_builtin_reopen(const char *name) {
          sp_streq(name, "Float")     || sp_streq(name, "Symbol")  ||
          sp_streq(name, "TrueClass") || sp_streq(name, "FalseClass") ||
          sp_streq(name, "NilClass")  || sp_streq(name, "Array")   ||
-         sp_streq(name, "Object")    || sp_streq(name, "Numeric");
+         sp_streq(name, "Object")    || sp_streq(name, "Numeric") ||
+         sp_streq(name, "Dir");
 }
 
 /* Returns 1 if n is a known built-in exception class name. */
