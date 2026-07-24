@@ -506,6 +506,13 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "{ sp_Proc *_pp = ("); emit_expr(c, arg, b);
     buf_puts(b, "); fputs(sp_proc_inspect(_pp), stdout); putchar('\\n'); }\n");
   }
+  else if (t == TY_CURRY) {
+    /* a curried proc reports as a Proc, lambda-ness from its source */
+    buf_puts(b, "{ sp_Curry *_pc = ("); emit_expr(c, arg, b);
+    buf_puts(b, "); fputs(_pc ? sp_sprintf(_pc->target && _pc->target->lambda_p ?"
+              " \"#<Proc:0x%016llx (lambda)>\" : \"#<Proc:0x%016llx>\","
+              " (unsigned long long)(uintptr_t)_pc) : \"nil\", stdout); putchar('\\n'); }\n");
+  }
   else if (t == TY_METHOD) {
     /* the stamped #<Method: ...> rendering; a NULL (nil super_method) prints nil */
     buf_puts(b, "{ sp_BoundMethod *_pm = ("); emit_expr(c, arg, b);

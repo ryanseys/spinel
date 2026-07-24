@@ -1657,6 +1657,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "unbind")) return TY_METHOD;
     if (sp_streq(name, "super_method")) return TY_METHOD;
     if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
+    if (sp_streq(name, "box")) return TY_NIL;  /* namespace-less: never boxed */
   }
   if (recv >= 0 && rt == TY_METHOD && argc == 1 &&
       (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "equal?")))

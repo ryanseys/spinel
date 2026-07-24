@@ -1151,16 +1151,10 @@ int method_recv_node(Compiler *c, int recv) {
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !vn || !sp_streq(wn, vn)) continue;
       int val = nt_ref(nt, w, "value");
-      if (is_method_obj_call(c, val)) return val;
-      if (val >= 0 && nt_kind(nt, val) == NK_CallNode && nt_str(nt, val, "name") &&
-          sp_streq(nt_str(nt, val, "name"), "super_method") &&
-          method_recv_node(c, nt_ref(nt, val, "receiver")) >= 0)
-        return val;
-      if (val >= 0 && nt_kind(nt, val) == NK_CallNode && nt_str(nt, val, "name") &&
-          sp_streq(nt_str(nt, val, "name"), "bind")) {
-        int inner = method_recv_node(c, nt_ref(nt, val, "receiver"));
-        if (inner >= 0) return inner;
-      }
+      /* resolve the written expression with the same rules as a direct
+         receiver (sees through bind/dup/clone chains, super_method) */
+      int inner = method_recv_node(c, val);
+      if (inner >= 0) return inner;
     }
   }
   return -1;

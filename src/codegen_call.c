@@ -8631,6 +8631,16 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* Method#box: Spinel has no namespaces, so no method is ever boxed --
+     nil, as CRuby answers for an unboxed method. Evaluate the receiver
+     for effect (it may construct the Method). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      sp_streq(name, "box")) {
+    buf_puts(b, "((void)(");
+    emit_expr(c, recv, b);
+    buf_puts(b, "), sp_box_nil())");
+    return;
+  }
   /* Method/UnboundMethod#inspect / #to_s: the stamped rendering (#3249). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
       (sp_streq(name, "inspect") || sp_streq(name, "to_s"))) {
