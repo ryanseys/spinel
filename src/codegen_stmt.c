@@ -8198,6 +8198,41 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
 
+  /* Guard-narrowed POLY receiver (#3227): `x << "!" if x.is_a?(String)`
+     narrows the read to TY_STRING, but the SLOT is poly -- the string-value
+     emitters would write the box's .v.s field and lose the shared handle
+     (or misread a strbuf box). Re-route through the poly mutator emission
+     by restoring the node's poly type for this call. */
+  if (rt == TY_STRING && nt_kind(nt, recv) == NK_LocalVariableReadNode) {
+    static const char *const NARROW_MUT[] = {
+      "<<", "concat", "prepend", "replace", "clear", "bytesplice",
+      "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
+      "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
+      "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
+      "reverse!", "succ!", "next!", NULL };
+    int is_nm = 0;
+    for (int q = 0; NARROW_MUT[q]; q++)
+      if (sp_streq(name, NARROW_MUT[q])) { is_nm = 1; break; }
+    if (is_nm) {
+      const char *rnN = nt_str(nt, recv, "name");
+      Scope *rsN = rnN ? comp_scope_of(c, recv) : NULL;
+      LocalVar *rlN = rsN ? scope_local(rsN, rnN) : NULL;
+      if (rlN && rlN->type == TY_POLY) {
+        TyKind svN = c->ntype[recv];
+        TyKind svNN = c->nilnarrow[recv];
+        c->ntype[recv] = TY_POLY;
+        c->nilnarrow[recv] = TY_UNKNOWN;
+        emit_indent(b, indent);
+        buf_puts(b, "(void)(");
+        emit_call(c, id, b);
+        buf_puts(b, ");\n");
+        c->ntype[recv] = svN;
+        c->nilnarrow[recv] = svNN;
+        return 1;
+      }
+    }
+  }
+
   /* Shared-mutable shim (#3227): a strbuf-local receiver of a rebinding
      string mutator re-runs the existing value-semantics arm against a plain
      SHADOW copy (a rename entry plus a temporary slot-type flip point every

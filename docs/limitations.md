@@ -261,10 +261,9 @@ mutated in place, or mutated but never aliased, keep the plain value
 representation (no cost; a hash string KEY is snapshot-frozen on store,
 exactly CRuby's dup-and-freeze).
 
-Known corner residues (conservative, fall back to the pre-sharing copy
-behavior rather than misbehaving): `bytesplice`; iteration-variable
-sharing requires the receiver's elements to be provably strings; a slot
-pinned by an `--rbs` seed keeps its declared representation.
+(`bytesplice` / `append_as_bytes`, mixed-element iteration via runtime
+dispatch, guard-narrowed receivers, and `--rbs`-declared String slots all
+share the same way; there is no residual mutator or storage shape.)
 
 #### `Range#step` / `Range#%` return a materialized Array, not an ArithmeticSequence
 

@@ -613,6 +613,18 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   /* bytesplice(range, str): lower the Range index to (start, len) (#2396) */
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 2 && recv >= 0 &&
       comp_ntype(c, argv[0]) == TY_RANGE) {
+    { char srefBR[192];
+      if (strbuf_slot_ref(c, recv, srefBR, sizeof srefBR)) {
+        int tm2 = ++g_tmp, tr3 = ++g_tmp, tn3 = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = %s; sp_Range _t%d = ", tm2, srefBR, tr3);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d),"
+                      " _t%d.first, _t%d.last - _t%d.first + (_t%d.excl ? 0 : 1), ",
+                   tn3, tm2, tr3, tr3, tr3, tr3);
+        emit_str_expr(c, argv[1], b);
+        buf_printf(b, "); sp_String_set_bin(_t%d, _t%d); _t%d; })", tm2, tn3, tn3);
+        return 1;
+      } }
     const char *rvt9 = nt_type(nt, recv);
     int lvw9 = rvt9 && (sp_streq(rvt9, "LocalVariableReadNode") ||
                         sp_streq(rvt9, "InstanceVariableReadNode"));
@@ -628,6 +640,19 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   }
   /* append_as_bytes: raw byte append == << for spinel's byte strings (#2397) */
   if (rt == TY_STRING && sp_streq(name, "append_as_bytes") && argc >= 1 && recv >= 0) {
+    { char srefAB[192];
+      if (strbuf_slot_ref(c, recv, srefAB, sizeof srefAB)) {
+        int tm2 = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefAB);
+        for (int a9 = 0; a9 < argc; a9++) {
+          buf_printf(b, " sp_String_append_bin(_t%d, ", tm2);
+          if (comp_ntype(c, argv[a9]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[a9], b); buf_puts(b, ")"); }
+          else emit_str_expr(c, argv[a9], b);
+          buf_puts(b, ");");
+        }
+        buf_printf(b, " sp_String_cstr(_t%d); })", tm2);
+        return 1;
+      } }
     const char *rvt9 = nt_type(nt, recv);
     int lvw9 = rvt9 && (sp_streq(rvt9, "LocalVariableReadNode") ||
                         sp_streq(rvt9, "InstanceVariableReadNode"));
@@ -650,6 +675,19 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 3 && recv >= 0) {
+    /* shared handle receiver: swap the buffer in place (#3227) */
+    { char srefBS[192];
+      if (strbuf_slot_ref(c, recv, srefBS, sizeof srefBS)) {
+        int tm2 = ++g_tmp, tn3 = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = %s;"
+                      " const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d), ",
+                   tm2, srefBS, tn3, tm2);
+        emit_int_expr(c, argv[0], b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+        buf_puts(b, ", "); emit_str_expr(c, argv[2], b);
+        buf_printf(b, "); sp_String_set_bin(_t%d, _t%d); _t%d; })", tm2, tn3, tn3);
+        return 1;
+      } }
     const char *rvt2 = nt_type(nt, recv);
     int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
                        sp_streq(rvt2, "InstanceVariableReadNode"));

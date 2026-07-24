@@ -1018,6 +1018,10 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "clear"))
     return TY_POLY;
+  /* String#bytesplice on a poly value: the new contents, boxed */
+  if (recv >= 0 && rt == TY_POLY && argc == 3 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && sp_streq(name, "bytesplice"))
+    return TY_POLY;
   /* String#replace/prepend/concat on a poly value: self, boxed */
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && argc >= 1 &&

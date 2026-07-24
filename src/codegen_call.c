@@ -3292,6 +3292,24 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* String#bytesplice(i, len, str) on a poly value: in-place byte splice
+     on the shared handle (#3227). */
+  if (sp_streq(name, "bytesplice") && argc == 3) {
+    int tvB = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tvB);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; sp_RbVal _r%d; if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) {"
+                  " sp_String *_m%d = (sp_String *)_t%d.v.p;"
+                  " const char *_n%d = sp_str_bytesplice(sp_String_cstr(_m%d), ",
+               tvB, tvB, tvB, tvB, tvB, tvB, tvB);
+    emit_int_expr(c, argv[0], b);
+    buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+    buf_puts(b, ", "); emit_str_expr(c, argv[2], b);
+    buf_printf(b, "); sp_String_set_bin(_m%d, _n%d); _r%d = sp_box_str(_n%d); }\n"
+                  "else { sp_raise_nomethod(sp_nomethod_msg(\"bytesplice\", _t%d)); _r%d = sp_box_nil(); } _r%d; })",
+               tvB, tvB, tvB, tvB, tvB, tvB, tvB);
+    return 1;
+  }
   /* String#replace / #prepend / #concat on a poly value: swap or extend
      the shared handle's buffer in place (#3227 P6); other tags raise. */
   if ((sp_streq(name, "prepend") || sp_streq(name, "concat")) && argc >= 1) {
@@ -16874,7 +16892,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; ");
       char v[32]; snprintf(v, sizeof v, "_t%d", t);
       if (sp_streq(cn, "Integer") || sp_streq(cn, "Fixnum")) buf_printf(b, "%s.tag == SP_TAG_INT", v);
-      else if (sp_streq(cn, "String"))   buf_printf(b, "%s.tag == SP_TAG_STR", v);
+      else if (sp_streq(cn, "String"))
+        buf_printf(b, "(%s.tag == SP_TAG_STR || (%s.tag == SP_TAG_OBJ && %s.cls_id == SP_BUILTIN_STRBUF))", v, v, v);
       else if (sp_streq(cn, "Float"))    buf_printf(b, "%s.tag == SP_TAG_FLT", v);
       else if (sp_streq(cn, "Symbol"))   buf_printf(b, "%s.tag == SP_TAG_SYM", v);
       else if (sp_streq(cn, "NilClass")) buf_printf(b, "%s.tag == SP_TAG_NIL", v);
@@ -17376,7 +17395,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, argv[0], b); buf_printf(b, "; ");
         char v[32]; snprintf(v, sizeof v, "_t%d", tv);
         if (sp_streq(cn, "Integer") || sp_streq(cn, "Fixnum")) buf_printf(b, "%s.tag == SP_TAG_INT", v);
-        else if (sp_streq(cn, "String"))   buf_printf(b, "%s.tag == SP_TAG_STR", v);
+        else if (sp_streq(cn, "String"))
+        buf_printf(b, "(%s.tag == SP_TAG_STR || (%s.tag == SP_TAG_OBJ && %s.cls_id == SP_BUILTIN_STRBUF))", v, v, v);
         else if (sp_streq(cn, "Float"))    buf_printf(b, "%s.tag == SP_TAG_FLT", v);
         else if (sp_streq(cn, "Symbol"))   buf_printf(b, "%s.tag == SP_TAG_SYM", v);
         else if (sp_streq(cn, "NilClass")) buf_printf(b, "%s.tag == SP_TAG_NIL", v);

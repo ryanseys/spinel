@@ -6258,6 +6258,7 @@ static int strbuf_mut_kind(Compiler *c, const char *vn, Scope *vs) {
   static const char *const INPLACE_MUT2[] = {
     "<<", "concat", "prepend", "replace",
     "insert", "clear", "slice!", "[]=", "setbyte",
+    "bytesplice", "append_as_bytes",
     "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
     "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
     "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
@@ -6279,7 +6280,7 @@ static int strbuf_mut_kind(Compiler *c, const char *vn, Scope *vs) {
     for (int q = 0; INPLACE_MUT2[q]; q++)
       if (sp_streq(un, INPLACE_MUT2[q])) { inplace = 1; break; }
     if (inplace) mutated = 1;
-    else if (sp_streq(un, "bytesplice") || (ul > 0 && un[ul - 1] == '!'))
+    else if (ul > 0 && un[ul - 1] == '!')
       return -1;
   }
   return mutated;
@@ -6290,6 +6291,7 @@ static int strbuf_mut_kind(Compiler *c, const char *vn, Scope *vs) {
 static int strbuf_ivar_mut_kind(Compiler *c, int cid, const char *nm) {
   static const char *const IV_MUT[] = {
     "<<", "concat", "prepend", "replace", "clear",
+    "bytesplice", "append_as_bytes",
     "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
     "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
     "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
@@ -6316,7 +6318,7 @@ static int strbuf_ivar_mut_kind(Compiler *c, int cid, const char *nm) {
     if (inplace) mutated = 1;
     else if (sp_streq(un, "insert") || sp_streq(un, "slice!") ||
              sp_streq(un, "[]=") || sp_streq(un, "setbyte") ||
-             sp_streq(un, "bytesplice") || (ul > 0 && un[ul - 1] == '!'))
+             (ul > 0 && un[ul - 1] == '!'))
       return -1;
   }
   return mutated;
@@ -6337,7 +6339,6 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
   ClassInfo *ci = &c->classes[cid];
   int iv = comp_ivar_index(ci, nm);
   if (iv < 0) return 0;
-  if (ci->ivars[iv] && class_ivar_pinned(ci, ci->ivars[iv])) return 0;
   if (ci->ivar_types[iv] != TY_STRING && ci->ivar_types[iv] != TY_STRBUF) return 0;
   if (ci->ivar_types[iv] == TY_STRBUF && ci->ivar_str_shared[iv]) return 0;
   ci->ivar_types[iv] = TY_STRBUF;
@@ -6500,7 +6501,9 @@ static int strbuf_slot_eligible(Compiler *c, const char *vn, Scope *vs, LocalVar
    while its type is still a transient UNKNOWN/POLY mid-fixpoint */
 static int strbuf_slot_eligible_shape(Compiler *c, const char *vn, Scope *vs, LocalVar *lv) {
   const NodeTable *nt = c->nt;
-  if (!lv || lv->is_param || lv->rbs_seeded) return 0;
+  /* an rbs-seeded String slot may still take the handle REPRESENTATION:
+     the pin constrains the Ruby-level type, not the C storage (#3227) */
+  if (!lv || lv->is_param) return 0;
   for (int u = 0; u < nt->count; u++) {
     const char *uty = nt_type(nt, u);
     if (!uty || !sp_streq(uty, "CallNode")) continue;
@@ -6633,6 +6636,7 @@ static int promote_shared_stored_strings(Compiler *c) {
       static const char *const MUT3[] = {
         "<<", "concat", "prepend", "replace",
         "insert", "clear", "slice!", "setbyte",
+        "bytesplice", "append_as_bytes",
         "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
         "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
         "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
@@ -6784,7 +6788,15 @@ static int promote_shared_stored_strings(Compiler *c) {
     /* the container's elements must be strings: gate on the receiver's
        (settled or literal) element type so an array-of-arrays each+<<
        never promotes its param */
-    if (contv4->type != TY_STR_ARRAY) continue;
+    if (contv4->type != TY_STR_ARRAY && contv4->type != TY_POLY_ARRAY) continue;
+    if (contv4->type == TY_POLY_ARRAY) {
+      /* mixed / not-provably-string elements: demand the string stores into
+         handles and bind the param POLY -- the runtime mutator arms resolve
+         `<<` per element kind (string append vs array push) (#3227) */
+      changed |= strbuf_demand_container_stores(c, contn4, conts4);
+      if (bpv4->type != TY_POLY) { bpv4->type = TY_POLY; changed = 1; }
+      continue;
+    }
     if (0) {
       /* only proceed when every literal store into the container is a
          string (a conservative element-type witness) */
@@ -6926,7 +6938,7 @@ static int convert_byref_handle_params(Compiler *c) {
           LocalVar *alv0 = avs ? scope_local(avs, avn) : NULL;
           /* shape check WITHOUT the byref-arg clause: being this byref
              param's argument is exactly the situation we are converting */
-          if (alv0 && !alv0->is_param && !alv0->rbs_seeded && !alv0->is_cell &&
+          if (alv0 && !alv0->is_param && !alv0->is_cell &&
               (alv0->type == TY_STRING || alv0->type == TY_UNKNOWN ||
                alv0->type == TY_STRBUF) &&
               an_local_has_alias(c, avn, avs))
