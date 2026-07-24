@@ -9058,7 +9058,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "reverse"))    { buf_puts(b, "sp_poly_reverse("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
     if (sp_streq(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "chop"))       { buf_puts(b, "sp_box_str(sp_str_chop(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (sp_streq(name, "chr"))        { buf_puts(b, "sp_box_str(sp_str_chr(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "chr")) {
+      /* dispatch on the runtime tag: (48 + n).chr through a widened int
+         must be Integer#chr -- stringifying first turned 61.chr into
+         "61".chr == "6", corrupting percent-encoding digits (#3328) */
+      int tvC = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tvC); emit_boxed(c, recv, b);
+      buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_box_str(sp_int_chr(_t%d.v.i))"
+                    " : sp_box_str(sp_str_chr(sp_poly_to_s(_t%d))); })", tvC, tvC, tvC);
+      return 1;
+    }
     /* poly.bytes / poly.codepoints -> concrete TY_INT_ARRAY, no boxing (matches
        the inference rule). A String that widened to poly (a binary lump slice)
        reaches here; without this arm .bytes hit the generic poly method
