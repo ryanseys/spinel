@@ -1347,7 +1347,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     Scope *cs = comp_scope_of(c, id);
     /* a shared-mutable string slot: a marked read yields the live HANDLE, an
        ordinary read a GC copy of the current contents (NULL stays nil) (#3227) */
-    { char srefI[192];
+    { char srefI[1024];
       int svm = c->strbuf_box[id];
       c->strbuf_box[id] = 1;   /* let slot_ref resolve regardless of mark */
       int is_sb = strbuf_slot_ref(c, id, srefI, sizeof srefI);

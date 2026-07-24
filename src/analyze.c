@@ -6687,6 +6687,68 @@ static int promote_shared_stored_strings(Compiler *c) {
     changed |= strbuf_demand_container_stores(c, contn, conts);
   }
 
+  /* External reader mutation (`expr.reader << x`): the mutator reaches the
+     ivar THROUGH its reader, with the receiver an arbitrary object-typed
+     expression (a container read, a call result). Promote the ivar to the
+     shared handle and mark the reader read so its emission hands out the
+     handle instead of the safe copy -- otherwise the mutation lands in a
+     read-out copy and is silently lost. */
+  for (int mu = 0; mu < nt->count; mu++) {
+    if (nt_kind(nt, mu) != NK_CallNode) continue;
+    const char *mun = nt_str(nt, mu, "name");
+    if (!mun) continue;
+    {
+      static const char *const MUT4[] = {
+        "<<", "concat", "prepend", "replace", "clear",
+        "bytesplice", "append_as_bytes",
+        "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
+        "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!",
+        "tr!", "delete!", "tr_s!", "delete_prefix!", "delete_suffix!",
+        "reverse!", "succ!", "next!", NULL };
+      int is_mut4 = 0;
+      for (int q = 0; MUT4[q]; q++) if (sp_streq(mun, MUT4[q])) { is_mut4 = 1; break; }
+      if (!is_mut4) continue;
+    }
+    int mrecv = nt_ref(nt, mu, "receiver");
+    if (mrecv < 0 || nt_kind(nt, mrecv) != NK_CallNode) continue;
+    if (nt_ref(nt, mrecv, "block") >= 0) continue;
+    { int ma = nt_ref(nt, mrecv, "arguments"); int mac = 0;
+      if (ma >= 0) nt_arr(nt, ma, "arguments", &mac);
+      if (mac != 0) continue; }
+    int rrecv = nt_ref(nt, mrecv, "receiver");
+    if (rrecv < 0) continue;
+    TyKind rrt = infer_type(c, rrecv);
+    if (ty_is_object(rrt)) {
+      char ivbuf4[300]; int defc4 = ty_object_class(rrt);
+      const char *ivn4 = an_reader_ivar_of(c, mrecv, &defc4, ivbuf4, sizeof ivbuf4);
+      if (!ivn4 || defc4 < 0) continue;
+      if (strbuf_ivar_mut_kind(c, defc4, ivn4) < 0) continue;
+      if (strbuf_promote_ivar(c, defc4, ivn4)) changed = 1;
+      { int iv4 = comp_ivar_index(&c->classes[defc4], ivn4);
+        if (iv4 < 0 || !c->classes[defc4].ivar_str_shared[iv4]) continue; }
+      if (!c->strbuf_box[mrecv]) { c->strbuf_box[mrecv] = 1; changed = 1; }
+    }
+    else if (rrt == TY_POLY || rrt == TY_UNKNOWN) {
+      /* boxed receiver (a container-read element): the runtime class is any
+         instantiated class exposing the reader -- promote each candidate's
+         backing ivar so the poly reader dispatch hands out handles */
+      const char *rdn4 = nt_str(nt, mrecv, "name");
+      int any4 = 0;
+      for (int k4 = 0; rdn4 && k4 < c->nclasses; k4++) {
+        int rdc4 = -1;
+        if (!comp_reader_in_chain(c, k4, rdn4, &rdc4) || rdc4 < 0) continue;
+        char ivb4[300];
+        snprintf(ivb4, sizeof ivb4, "@%s", comp_resolve_alias(c, k4, rdn4));
+        if (strbuf_ivar_mut_kind(c, rdc4, ivb4) < 0) continue;
+        if (strbuf_promote_ivar(c, rdc4, ivb4)) changed = 1;
+        { int iv4 = comp_ivar_index(&c->classes[rdc4], ivb4);
+          if (iv4 < 0 || !c->classes[rdc4].ivar_str_shared[iv4]) continue; }
+        any4 = 1;
+      }
+      if (any4 && !c->strbuf_box[mrecv]) { c->strbuf_box[mrecv] = 1; changed = 1; }
+    }
+  }
+
   /* Pure-alias pairs (`s2 = s1`): when either endpoint of the alias is
      in-place mutated, both share the one handle -- CRuby's mutable String
      objects -- regardless of which mutator (a bang-only alias set shares

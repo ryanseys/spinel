@@ -928,7 +928,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
        HANDLE, not the buffer, so the two names denote one object: a later
        `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
-    char srefV[192];
+    char srefV[1024];
     if (lv->str_shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
       buf_puts(b, srefV);
     else if (comp_ntype(c, v) == TY_STRBUF) {
@@ -941,7 +941,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
          appends in place), then alias the BASE handle -- wrapping the cstr
          would fork a second buffer and break the alias (#3307 family) */
       int cb9 = str_append_chain_base(c, v);
-      char srefC9[192];
+      char srefC9[1024];
       if (cb9 != v && lv->str_shared &&
           strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9)) {
         buf_puts(b, "({ (void)(");
@@ -5819,7 +5819,7 @@ else {
       /* shared handle slot: an alias RHS (a shared local/ivar read) copies
          the handle; anything else wraps a fresh handle, inheriting the
          source's frozen state (#3227 P4) */
-      char srefW[192];
+      char srefW[1024];
       if (vty && sp_streq(vty, "NilNode")) buf_puts(b, "NULL");
       else if (strbuf_slot_ref(c, v, srefW, sizeof srefW)) buf_puts(b, srefW);
       else {
@@ -8374,7 +8374,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       chain[nchain++] = cav[0];
       cur = crecv;
     }
-    char srefC[192];
+    char srefC[1024];
     if (nchain > 0 && strbuf_slot_ref(c, cur, srefC, sizeof srefC)) {
       for (int j = nchain - 1; j >= 0; j--) {
         int arg = chain[j];
@@ -8466,7 +8466,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       if (_rl && _rl->type == TY_STRBUF) (out_) = _rn; \
     } \
   } while (0)
-  if (rt == TY_STRING && argc == 0) {
+  if ((rt == TY_STRING || rt == TY_STRBUF) && argc == 0) {
     const char *base = NULL;
     if      (sp_streq(name, "chomp!"))      base = "chomp";
     else if (sp_streq(name, "chop!"))       base = "chop";
@@ -8482,7 +8482,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (base) {
       const char *rty = nt_type(nt, recv);
       /* shared-mutable local: transform + replace the buffer in place (#3227) */
-      { char srefS[192];
+      { char srefS[1024];
         if (strbuf_slot_ref(c, recv, srefS, sizeof srefS)) {
           int tbS = ++g_tmp;
           emit_indent(b, indent);
@@ -8506,7 +8506,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
      nil-when-unchanged return is not modeled). slice! removes the matched
      span: the string form deletes the first occurrence, the (i, len) form
      splices the span out. */
-  if (rt == TY_STRING && argc >= 1) {
+  if ((rt == TY_STRING || rt == TY_STRBUF) && argc >= 1) {
     const char *rty2 = nt_type(nt, recv);
     int assignable2 = rty2 && (sp_streq(rty2, "LocalVariableReadNode") ||
                                sp_streq(rty2, "InstanceVariableReadNode") || sp_streq(rty2, "SelfNode"));
@@ -8517,7 +8517,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     else if (sp_streq(name, "delete!")) { abase = "delete"; abang = "delete!"; }
     if (abase) {
       /* shared-mutable local: transform + replace the buffer in place (#3227) */
-      char srefA[192];
+      char srefA[1024];
       if (strbuf_slot_ref(c, recv, srefA, sizeof srefA)) {
         int tbA = ++g_tmp;
         nt_node_set_str((NodeTable *)nt, id, "name", abase);
@@ -8622,7 +8622,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     }
     if ((sp_streq(name, "replace") || sp_streq(name, "prepend")) && argc == 1) {
       /* shared-mutable local: swap/prepend the buffer contents in place (#3227) */
-      char srefR2[192];
+      char srefR2[1024];
       if (strbuf_slot_ref(c, recv, srefR2, sizeof srefR2)) {
         int tbR = ++g_tmp;
         emit_indent(b, indent);
@@ -8677,7 +8677,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       return 1;
     }
     if ((sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!")) && argc == 1) {
-      char srefD[192];
+      char srefD[1024];
       if (strbuf_slot_ref(c, recv, srefD, sizeof srefD)) {
         const char *base3 = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
         int tbD = ++g_tmp;

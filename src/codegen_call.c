@@ -3621,6 +3621,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
              this class's ivar widened to poly: coerce down. */
           else if (ret != TY_POLY && ivt == TY_POLY)
             emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, fld, b);
+          /* shared-mutable ivar read into a plain string slot: the safe
+             copy, not the raw handle pointer (#3227) */
+          else if (ivt == TY_STRBUF && ret == TY_STRING)
+            buf_printf(b, "%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL", fld, fld);
           else buf_puts(b, fld);
           buf_puts(b, "; break;");
         }

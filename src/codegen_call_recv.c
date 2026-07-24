@@ -289,7 +289,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       /* A shared-mutable (STRBUF) local mutates its buffer IN PLACE so every
          alias/container observes it: recompute via the non-bang transform of
          the current contents, then replace the buffer (#3227). */
-      { char srefB[192];
+      { char srefB[1024];
         if (strbuf_slot_ref(c, recv, srefB, sizeof srefB)) {
           int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ",
@@ -331,7 +331,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
          form sp_String_cstr(lv) is not an lvalue, so the generic write-back
          below would emit an invalid assignment (#2020). prepend replaces the
          buffer with args-then-contents, keeping the handle stable (#3227). */
-      { char sref0[192];
+      { char sref0[1024];
         if (strbuf_slot_ref(c, recv, sref0, sizeof sref0)) {
           int tb2 = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s;", tb2, sref0);
@@ -466,7 +466,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "replace") && argc == 1) {
       const char *rvt2 = nt_type(nt, recv);
       /* shared-mutable local: swap the buffer contents in place (#3227) */
-      { char srefR[192];
+      { char srefR[1024];
         if (strbuf_slot_ref(c, recv, srefR, sizeof srefR)) {
           int tbR = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
@@ -613,7 +613,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   /* bytesplice(range, str): lower the Range index to (start, len) (#2396) */
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 2 && recv >= 0 &&
       comp_ntype(c, argv[0]) == TY_RANGE) {
-    { char srefBR[192];
+    { char srefBR[1024];
       if (strbuf_slot_ref(c, recv, srefBR, sizeof srefBR)) {
         int tm2 = ++g_tmp, tr3 = ++g_tmp, tn3 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s; sp_Range _t%d = ", tm2, srefBR, tr3);
@@ -640,7 +640,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   }
   /* append_as_bytes: raw byte append == << for spinel's byte strings (#2397) */
   if (rt == TY_STRING && sp_streq(name, "append_as_bytes") && argc >= 1 && recv >= 0) {
-    { char srefAB[192];
+    { char srefAB[1024];
       if (strbuf_slot_ref(c, recv, srefAB, sizeof srefAB)) {
         int tm2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefAB);
@@ -676,7 +676,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   }
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 3 && recv >= 0) {
     /* shared handle receiver: swap the buffer in place (#3227) */
-    { char srefBS[192];
+    { char srefBS[1024];
       if (strbuf_slot_ref(c, recv, srefBS, sizeof srefBS)) {
         int tm2 = ++g_tmp, tn3 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;"
@@ -7411,7 +7411,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, ")%siv_%s = ", acc, iv_c(sym + 1));
           if (mt == TY_POLY) emit_boxed(c, argv[1], b);
           else if (mt == TY_STRBUF) {
-            char srefIS[192];
+            char srefIS[1024];
             if (strbuf_slot_ref(c, argv[1], srefIS, sizeof srefIS)) buf_puts(b, srefIS);
             else {
               buf_puts(b, "sp_String_new_shared(");

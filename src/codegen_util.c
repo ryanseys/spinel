@@ -659,6 +659,19 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
     free(rb.p);
     return 1;
   }
+  /* a demand-marked reader call typed as the handle (external reader
+     mutation, e.g. `subs[0].topic << x`): the emitted read IS the sp_String*
+     expression. Declined when it does not fit the caller's buffer (the
+     branches then fall through to the value-form arms). */
+  if (recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode &&
+      c->strbuf_box[recv] && comp_ntype(c, recv) == TY_STRBUF) {
+    Buf rb2; memset(&rb2, 0, sizeof rb2);
+    emit_expr(c, recv, &rb2);
+    int fit = rb2.p && strlen(rb2.p) + 3 <= cap;
+    if (fit) snprintf(out, cap, "(%s)", rb2.p);
+    free(rb2.p);
+    return fit;
+  }
   if (recv < 0 || nt_kind(c->nt, recv) != NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(c->nt, recv, "name");
   if (!nm) return 0;
