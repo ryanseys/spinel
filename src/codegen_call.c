@@ -3359,6 +3359,17 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; _sv%d.tag == SP_TAG_NIL ? SP_INT_NIL : sp_poly_to_i(_sv%d); })", tv, tv);
     return 1;
   }
+  /* Array#insert on a poly value: one value at an index, in place. */
+  if (sp_streq(name, "insert") && argc == 2) {
+    buf_puts(b, "sp_poly_insert(");
+    emit_expr(c, recv, b);
+    buf_puts(b, ", ");
+    emit_int_expr(c, argv[0], b);
+    buf_puts(b, ", ");
+    emit_boxed(c, argv[1], b);
+    buf_puts(b, ")");
+    return 1;
+  }
   /* Array#delete_at on a poly value (#3298): in-place removal through the
      runtime kind dispatch. */
   if (sp_streq(name, "delete_at") && argc == 1) {

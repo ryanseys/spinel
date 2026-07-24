@@ -1049,6 +1049,10 @@ TyKind infer_call(Compiler *c, int id) {
       !an_user_defines_method(c, name) &&
       (sp_streq(name, "pop") || sp_streq(name, "shift")))
     return TY_POLY;
+  /* Array#insert on a poly value: in-place, returns the receiver (boxed). */
+  if (recv >= 0 && rt == TY_POLY && argc == 2 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && sp_streq(name, "insert"))
+    return TY_POLY;
   /* String#start_with? / #end_with? on a poly value: a bool. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) &&

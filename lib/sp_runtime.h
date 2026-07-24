@@ -4447,6 +4447,36 @@ static sp_RbVal sp_poly_pop(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("pop", v));
   return sp_box_nil();
 }
+/* Array#insert on a poly value: in-place insertion of one value at an index
+   through the runtime kind dispatch; returns the receiver. */
+static sp_RbVal sp_poly_insert(sp_RbVal v, mrb_int i, sp_RbVal x) {
+  if (v.tag == SP_TAG_OBJ && v.v.p) {
+    switch (v.cls_id) {
+      case SP_BUILTIN_INT_ARRAY:
+        sp_IntArray_insert((sp_IntArray *)v.v.p, i, sp_poly_to_i(x));
+        return v;
+      case SP_BUILTIN_FLT_ARRAY: {
+        sp_FloatArray *a = (sp_FloatArray *)v.v.p;
+        mrb_int orig = i, i2 = i < 0 ? i + a->len + 1 : i;
+        if (i2 < 0)
+          sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",
+                                                (long long)orig, (long long)(-(a->len + 1))));
+        while (i2 > a->len) sp_FloatArray_push(a, (mrb_float)0);
+        { mrb_float fv = sp_poly_to_f(x); sp_FloatArray_splice(a, i2, 0, &fv, 1); }
+        return v;
+      }
+      case SP_BUILTIN_STR_ARRAY:
+        sp_StrArray_insert((sp_StrArray *)v.v.p, i, sp_poly_to_s(x));
+        return v;
+      case SP_BUILTIN_POLY_ARRAY:
+        sp_PolyArray_insert((sp_PolyArray *)v.v.p, i, x);
+        return v;
+      default: break;
+    }
+  }
+  sp_raise_nomethod(sp_nomethod_msg("insert", v));
+  return sp_box_nil();
+}
 /* Array#delete_at on a poly value: in-place removal at an index through the
    runtime kind dispatch; the removed element boxed, nil when out of range. */
 static sp_RbVal sp_poly_delete_at(sp_RbVal v, mrb_int i) {
