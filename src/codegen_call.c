@@ -15203,10 +15203,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      /re/.match?(str[, pos])  and  str !~ /re/  and  str.match?(/re/[, pos]) */
   {
     int rre = re_lit_index(c, recv);
-    if (rre >= 0 && (sp_streq(name, "match?") || sp_streq(name, "===")) && argc == 1) {
-      /* /re/ === str and /re/.match?(str) both yield a match boolean */
+    if (rre >= 0 && sp_streq(name, "match?") && argc == 1) {
+      /* /re/.match?(str): a match boolean that leaves $~ alone (CRuby) */
       if (a0 == TY_POLY) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, sp_poly_to_s(", rre); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
       else { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      return;
+    }
+    if (rre >= 0 && sp_streq(name, "===") && argc == 1) {
+      /* /re/ === x updates the $~ registers, unlike match? */
+      if (a0 == TY_STRING) { buf_printf(b, "(sp_re_match(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b); buf_puts(b, ") >= 0)"); }
+      else { buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, ", rre); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
       return;
     }
     if (rre >= 0 && sp_streq(name, "match?") && argc == 2) {

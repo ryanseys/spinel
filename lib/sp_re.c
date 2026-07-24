@@ -9,6 +9,7 @@
 #include "sp_re.h"
 #include "sp_string.h"   /* sp_String builder */
 #include "sp_inspect.h"  /* sp_inspect_container (poly element render) */
+#include "sp_gc.h"       /* sp_sym_name_fn (Symbol operand of === ) */
 
 #ifndef SPL
 #define SPL(s) (&("\xff" s)[1])
@@ -248,6 +249,27 @@ mrb_bool sp_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_int pos)
   if (pos < 0 || pos > slen) return FALSE;
   int caps[2];
   return re_exec(pat, str, slen, (mrb_int)pos, caps, 2, 0) > 0;
+}
+/* Regexp#=== on a boxed operand (a case/when arm, an explicit ===). Only a
+   String (plain or shared-mutable handle) or a Symbol can match; a match
+   updates the $~ registers like =~. Any other operand answers false and
+   clears the registers (CRuby sets the backref to nil there). */
+mrb_bool sp_re_case_eq(mrb_regexp_pattern *pat, sp_RbVal v) {
+  const char *s = NULL;
+  if (v.tag == SP_TAG_STR) s = v.v.s ? v.v.s : "";
+  else if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
+    s = sp_String_cstr((sp_String *)v.v.p);
+  else if (v.tag == SP_TAG_SYM && sp_sym_name_fn)
+    s = sp_sym_name_fn((sp_sym)v.v.i);
+  if (!s) {
+    for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
+    sp_re_last_str = NULL;
+    sp_re_match_str = NULL;
+    sp_re_match_pre = NULL;
+    sp_re_match_post = NULL;
+    return FALSE;
+  }
+  return sp_re_match(pat, s) >= 0;
 }
 void sp_re_expand_rep(const mrb_regexp_pattern *pat,
                              char **out_io, size_t *olen_io, size_t *cap_io,

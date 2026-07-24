@@ -1847,13 +1847,16 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
        expression is an mrb_regexp_pattern*, so run it against the scrutinee
        string (a poly scrutinee matches only when it holds a string). */
     if (comp_ntype(c, ex) == TY_REGEX && (pt == TY_STRING || pt == TY_POLY)) {
-      if (pt == TY_POLY)
-        buf_printf(b, "(_t%d.tag == SP_TAG_STR && sp_re_match_p(", t);
-      else
-        buf_puts(b, "sp_re_match_p(");
-      emit_expr(c, ex, b);
-      if (pt == TY_POLY) buf_printf(b, ", _t%d.v.s))", t);
-      else buf_printf(b, ", _t%d)", t);
+      if (pt == TY_POLY) {
+        buf_puts(b, "sp_re_case_eq(");
+        emit_expr(c, ex, b);
+        buf_printf(b, ", _t%d)", t);
+      }
+      else {
+        buf_puts(b, "(sp_re_match(");
+        emit_expr(c, ex, b);
+        buf_printf(b, ", _t%d) >= 0)", t);
+      }
       return 1;
     }
     emit_pm_eq(c, t, pt, ex, b);
@@ -3504,7 +3507,13 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           else {
           int reidx = re_lit_index(c, conds[j]);
           if (reidx >= 0 && pt == TY_STRING) {
-            buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d)", reidx, t);
+            buf_printf(b, "(sp_re_match(sp_re_pat_%d, _t%d) >= 0)", reidx, t);
+          }
+          else if (reidx >= 0 && pt == TY_POLY) {
+            buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, _t%d)", reidx, t);
+          }
+          else if (reidx >= 0 && pt == TY_SYMBOL) {
+            buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, sp_box_sym(_t%d))", reidx, t);
           }
           else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
             /* emitted the lexicographic cover check */
@@ -3749,7 +3758,9 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else if (cn2) { int yes = ty_matches_class(pt, cn2, 0); buf_printf(b, "%d", yes > 0 ? 1 : 0); }
         else {
         int reidx = re_lit_index(c, conds[j]);
-        if (reidx >= 0 && pt == TY_STRING) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d)", reidx, t); }
+        if (reidx >= 0 && pt == TY_STRING) { buf_printf(b, "(sp_re_match(sp_re_pat_%d, _t%d) >= 0)", reidx, t); }
+        else if (reidx >= 0 && pt == TY_POLY) { buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, _t%d)", reidx, t); }
+        else if (reidx >= 0 && pt == TY_SYMBOL) { buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, sp_box_sym(_t%d))", reidx, t); }
         else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
           /* emitted the lexicographic cover check */
         }
