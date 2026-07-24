@@ -1855,6 +1855,13 @@ static inline sp_RbVal sp_poly_strbuf_deref(sp_RbVal v) {
     return sp_box_str(sp_String_cstr((sp_String *)v.v.p));
   return v;
 }
+/* The shared handle behind a boxed value: a strbuf box directly, a plain
+   string box via a fresh handle (an unanalyzed flow -- conservative). */
+static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF) return (sp_String *)v.v.p;
+  if (v.tag == SP_TAG_STR && v.v.s) return sp_String_new(v.v.s);
+  return sp_String_new((&("\xff")[1]));
+}
 static inline mrb_bool sp_poly_is_strbuf(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF;
 }

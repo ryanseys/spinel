@@ -106,6 +106,7 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     case TY_BOOL:   buf_printf(b, "(%s).v.b", expr); return;
     case TY_SYMBOL: buf_printf(b, "(sp_sym)(%s).v.i", expr); return;
     case TY_BIGINT: buf_printf(b, "(sp_Bigint *)(%s).v.p", expr); return;
+    case TY_STRBUF: buf_printf(b, "sp_poly_as_strbuf(%s)", expr); return;
     default: break;
   }
   if (t == TY_TIME) { buf_printf(b, "(*(sp_Time *)(%s).v.p)", expr); return; }  /* boxed by-value copy */

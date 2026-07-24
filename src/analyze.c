@@ -6403,6 +6403,76 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
   return 0;
 }
 
+static int strbuf_slot_eligible(Compiler *c, const char *vn, Scope *vs, LocalVar *lv);
+static int strbuf_mut_kind(Compiler *c, const char *vn, Scope *vs);
+/* Demand every string stored into container local (contn, conts) to be a
+   shared handle: stored eligible locals promote, everything else marks for
+   a fresh-handle wrap at the store site. Returns changed. */
+static int strbuf_demand_container_stores(Compiler *c, const char *contn, Scope *conts) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+    /* every store into this container local (same scope): array/hash
+       literal writes, push/<<, []= */
+    for (int w2 = 0; w2 < nt->count; w2++) {
+      int nst = 0; int stores[64];
+      NodeKind wk = nt_kind(nt, w2);
+      if (wk == NK_LocalVariableWriteNode) {
+        const char *wn2 = nt_str(nt, w2, "name");
+        if (!wn2 || !sp_streq(wn2, contn) || comp_scope_of(c, w2) != conts) continue;
+        int val2 = nt_ref(nt, w2, "value");
+        if (val2 < 0) continue;
+        NodeKind vk = nt_kind(nt, val2);
+        if (vk == NK_ArrayNode) {
+          int en2 = 0; const int *el2 = nt_arr(nt, val2, "elements", &en2);
+          for (int e2 = 0; e2 < en2 && nst < 64; e2++) stores[nst++] = el2[e2];
+        }
+        else if (vk == NK_HashNode || vk == NK_KeywordHashNode) {
+          int en2 = 0; const int *el2 = nt_arr(nt, val2, "elements", &en2);
+          for (int e2 = 0; e2 < en2 && nst < 64; e2++)
+            if (nt_kind(nt, el2[e2]) == NK_AssocNode)
+              stores[nst++] = nt_ref(nt, el2[e2], "value");
+        }
+      }
+      else if (wk == NK_CallNode) {
+        int wr2 = nt_ref(nt, w2, "receiver");
+        if (wr2 < 0 || nt_kind(nt, wr2) != NK_LocalVariableReadNode) continue;
+        const char *wrn2 = nt_str(nt, wr2, "name");
+        if (!wrn2 || !sp_streq(wrn2, contn) || comp_scope_of(c, wr2) != conts) continue;
+        const char *wcn2 = nt_str(nt, w2, "name");
+        if (!wcn2) continue;
+        int a2 = nt_ref(nt, w2, "arguments");
+        int an2 = 0; const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &an2) : NULL;
+        if (sp_streq(wcn2, "<<") || sp_streq(wcn2, "push") ||
+            sp_streq(wcn2, "append") || sp_streq(wcn2, "unshift")) {
+          for (int e2 = 0; e2 < an2 && nst < 64; e2++) stores[nst++] = av2[e2];
+        }
+        else if (sp_streq(wcn2, "[]=") && an2 >= 2) stores[nst++] = av2[an2 - 1];
+        else continue;
+      }
+      else continue;
+      for (int e3 = 0; e3 < nst; e3++) {
+        int sn = stores[e3];
+        if (sn < 0 || c->strbuf_box[sn]) continue;
+        NodeKind sk = nt_kind(nt, sn);
+        if (sk == NK_LocalVariableReadNode) {
+          const char *snm = nt_str(nt, sn, "name");
+          Scope *sns = comp_scope_of(c, sn);
+          LocalVar *snv = (snm && sns) ? scope_local(sns, snm) : NULL;
+          if (!snv || !strbuf_slot_eligible(c, snm, sns, snv)) continue;
+          if (strbuf_mut_kind(c, snm, sns) < 0) continue;
+          snv->type = TY_STRBUF; snv->str_shared = 1;
+          c->strbuf_box[sn] = 1; changed = 1;
+        }
+        else {
+          TyKind st2 = infer_type(c, sn);
+          if (st2 != TY_STRING && st2 != TY_STRBUF) continue;
+          c->strbuf_box[sn] = 1; changed = 1;
+        }
+      }
+    }
+  return changed;
+}
+
 /* Slot-shape eligibility for the shared handle: parameters, cells, byref
    out-params and rbs-pinned slots wait for the cross-method phase. */
 static int strbuf_slot_eligible_shape(Compiler *c, const char *vn, Scope *vs, LocalVar *lv);
@@ -6565,65 +6635,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     LocalVar *contv = (contn && conts) ? scope_local(conts, contn) : NULL;
     if (!contv || (!ty_is_array(contv->type) && !ty_is_hash(contv->type) &&
                    contv->type != TY_UNKNOWN)) continue;
-    /* every store into this container local (same scope): array/hash
-       literal writes, push/<<, []= */
-    for (int w2 = 0; w2 < nt->count; w2++) {
-      int nst = 0; int stores[64];
-      NodeKind wk = nt_kind(nt, w2);
-      if (wk == NK_LocalVariableWriteNode) {
-        const char *wn2 = nt_str(nt, w2, "name");
-        if (!wn2 || !sp_streq(wn2, contn) || comp_scope_of(c, w2) != conts) continue;
-        int val2 = nt_ref(nt, w2, "value");
-        if (val2 < 0) continue;
-        NodeKind vk = nt_kind(nt, val2);
-        if (vk == NK_ArrayNode) {
-          int en2 = 0; const int *el2 = nt_arr(nt, val2, "elements", &en2);
-          for (int e2 = 0; e2 < en2 && nst < 64; e2++) stores[nst++] = el2[e2];
-        }
-        else if (vk == NK_HashNode || vk == NK_KeywordHashNode) {
-          int en2 = 0; const int *el2 = nt_arr(nt, val2, "elements", &en2);
-          for (int e2 = 0; e2 < en2 && nst < 64; e2++)
-            if (nt_kind(nt, el2[e2]) == NK_AssocNode)
-              stores[nst++] = nt_ref(nt, el2[e2], "value");
-        }
-      }
-      else if (wk == NK_CallNode) {
-        int wr2 = nt_ref(nt, w2, "receiver");
-        if (wr2 < 0 || nt_kind(nt, wr2) != NK_LocalVariableReadNode) continue;
-        const char *wrn2 = nt_str(nt, wr2, "name");
-        if (!wrn2 || !sp_streq(wrn2, contn) || comp_scope_of(c, wr2) != conts) continue;
-        const char *wcn2 = nt_str(nt, w2, "name");
-        if (!wcn2) continue;
-        int a2 = nt_ref(nt, w2, "arguments");
-        int an2 = 0; const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &an2) : NULL;
-        if (sp_streq(wcn2, "<<") || sp_streq(wcn2, "push") ||
-            sp_streq(wcn2, "append") || sp_streq(wcn2, "unshift")) {
-          for (int e2 = 0; e2 < an2 && nst < 64; e2++) stores[nst++] = av2[e2];
-        }
-        else if (sp_streq(wcn2, "[]=") && an2 >= 2) stores[nst++] = av2[an2 - 1];
-        else continue;
-      }
-      else continue;
-      for (int e3 = 0; e3 < nst; e3++) {
-        int sn = stores[e3];
-        if (sn < 0 || c->strbuf_box[sn]) continue;
-        NodeKind sk = nt_kind(nt, sn);
-        if (sk == NK_LocalVariableReadNode) {
-          const char *snm = nt_str(nt, sn, "name");
-          Scope *sns = comp_scope_of(c, sn);
-          LocalVar *snv = (snm && sns) ? scope_local(sns, snm) : NULL;
-          if (!snv || !strbuf_slot_eligible(c, snm, sns, snv)) continue;
-          if (strbuf_mut_kind(c, snm, sns) < 0) continue;
-          snv->type = TY_STRBUF; snv->str_shared = 1;
-          c->strbuf_box[sn] = 1; changed = 1;
-        }
-        else if (sk == NK_StringNode) {
-          TyKind st2 = infer_type(c, sn);
-          if (st2 != TY_STRING && st2 != TY_STRBUF) continue;
-          c->strbuf_box[sn] = 1; changed = 1;
-        }
-      }
-    }
+    changed |= strbuf_demand_container_stores(c, contn, conts);
   }
 
   /* Pure-alias pairs (`s2 = s1`): when either endpoint of the alias is
@@ -6728,6 +6740,61 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (!c->strbuf_box[wv]) { c->strbuf_box[wv] = 1; changed = 1; }
     if (llv2->type != TY_STRBUF || !llv2->str_shared)
       { llv2->type = TY_STRBUF; llv2->str_shared = 1; changed = 1; }
+  }
+  /* iteration-variable mutation: `arr.each { |x| x << "!" }` mutates the
+     ELEMENT through the block binding, so the container's stored strings
+     become handles and the block param binds the handle (#3227 P6). */
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_CallNode) continue;
+    const char *itn = nt_str(nt, w, "name");
+    if (!itn || (!sp_streq(itn, "each") && !sp_streq(itn, "each_with_index")))
+      continue;
+    int blk4 = nt_ref(nt, w, "block");
+    if (blk4 < 0) continue;
+    int recv4 = nt_ref(nt, w, "receiver");
+    if (recv4 < 0 || nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
+    const char *contn4 = nt_str(nt, recv4, "name");
+    Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
+    LocalVar *contv4 = (contn4 && conts4) ? scope_local(conts4, contn4) : NULL;
+    if (!contv4 || (!ty_is_array(contv4->type) && contv4->type != TY_UNKNOWN))
+      continue;
+    const char *bp4 = block_param_name(c, blk4, 0);
+    if (!bp4) continue;
+    Scope *bs4 = comp_scope_of(c, blk4);
+    LocalVar *bpv4 = bs4 ? scope_local(bs4, bp4) : NULL;
+    if (!bpv4) continue;
+    if (strbuf_mut_kind(c, bp4, bs4) != 1) continue;
+    /* the container's elements must be strings: gate on the receiver's
+       (settled or literal) element type so an array-of-arrays each+<<
+       never promotes its param */
+    if (contv4->type != TY_STR_ARRAY) continue;
+    if (0) {
+      /* only proceed when every literal store into the container is a
+         string (a conservative element-type witness) */
+      int all_str = 1, saw_lit = 0;
+      for (int u2 = 0; u2 < nt->count && all_str; u2++) {
+        if (nt_kind(nt, u2) != NK_LocalVariableWriteNode) continue;
+        const char *un2 = nt_str(nt, u2, "name");
+        if (!un2 || !sp_streq(un2, contn4) || comp_scope_of(c, u2) != conts4) continue;
+        int uv2 = nt_ref(nt, u2, "value");
+        if (uv2 < 0 || nt_kind(nt, uv2) != NK_ArrayNode) continue;
+        int en2 = 0; const int *el2 = nt_arr(nt, uv2, "elements", &en2);
+        for (int e2 = 0; e2 < en2; e2++) {
+          saw_lit = 1;
+          TyKind et2 = infer_type(c, el2[e2]);
+          if (et2 != TY_STRING && et2 != TY_STRBUF) all_str = 0;
+        }
+      }
+      if (!saw_lit || !all_str) continue;
+    }
+    /* accept (and correct) a str_array mis-guess of the param: a binding
+       over string elements cannot itself be an array */
+    if (bpv4->type != TY_UNKNOWN && bpv4->type != TY_STRING &&
+        bpv4->type != TY_STRBUF && bpv4->type != TY_POLY &&
+        bpv4->type != TY_STR_ARRAY) continue;
+    changed |= strbuf_demand_container_stores(c, contn4, conts4);
+    if (bpv4->type != TY_STRBUF || !bpv4->str_shared)
+      { bpv4->type = TY_STRBUF; bpv4->str_shared = 1; changed = 1; }
   }
   /* deep-return alias: `r = make_held` where EVERY return path of the
      (receiverless, uniquely-named) callee yields a shared handle -- r joins
@@ -8599,7 +8666,8 @@ void analyze_program(Compiler *c) {
     Scope *sc = &c->scopes[s];
     for (int i = 0; i < sc->nlocals; i++) {
       LocalVar *lv = &sc->locals[i];
-      if (lv->str_shared && lv->type == TY_STRING) lv->type = TY_STRBUF;
+      if (lv->str_shared &&
+          (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv->type = TY_STRBUF;
     }
   }
   for (int ci2 = 0; ci2 < c->nclasses; ci2++) {
