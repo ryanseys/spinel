@@ -255,6 +255,29 @@ static int call_returns_nullable_int(Compiler *c, int node) {
     int r = nt_ref(nt, node, "receiver");
     if (r >= 0 && comp_ntype(c, r) == TY_MATCHDATA) return 1;
   }
+  /* an attr-reader over an int ivar: int ivars are SP_INT_NIL-defaulted
+     (ivar_scalar_nil_init), so the read can carry the sentinel -- boxing it
+     as a plain int made `stored.nil?` false while inspect printed nil
+     (#3288). box_int_or_nil is a no-op on a real int. */
+  {
+    int r = nt_ref(nt, node, "receiver");
+    int a2 = nt_ref(nt, node, "arguments");
+    int an2 = 0; if (a2 >= 0) nt_arr(nt, a2, "arguments", &an2);
+    if (r >= 0 && an2 == 0 && nt_ref(nt, node, "block") < 0) {
+      TyKind rt2 = comp_ntype(c, r);
+      if (ty_is_object(rt2)) {
+        int cid2 = ty_object_class(rt2), defc2 = -1;
+        if (comp_reader_in_chain(c, cid2, nm, &defc2)) {
+          char ivb2[300];
+          snprintf(ivb2, sizeof ivb2, "@%s", comp_resolve_alias(c, cid2, nm));
+          int iv2 = comp_ivar_index(&c->classes[defc2 >= 0 ? defc2 : cid2], ivb2);
+          if (iv2 >= 0 &&
+              c->classes[defc2 >= 0 ? defc2 : cid2].ivar_types[iv2] == TY_INT)
+            return 1;
+        }
+      }
+    }
+  }
   return 0;
 }
 
@@ -421,7 +444,9 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
        --int-overflow=promote (where int? widens to poly); in default/wrap mode
        a real int is never the sentinel, so skip the per-box check there -- it is
        on the hot path (every int boxed into poly, e.g. optcarrot's pixels). */
-    case TY_INT:    fn = (g_promote_mode || call_returns_nullable_int(c, node)) ? "sp_box_int_or_nil" : "sp_box_int"; break;
+    case TY_INT:    fn = (g_promote_mode || call_returns_nullable_int(c, node) ||
+                          nt_kind(c->nt, node) == NK_InstanceVariableReadNode)
+                           ? "sp_box_int_or_nil" : "sp_box_int"; break;
     case TY_FLOAT:  fn = "sp_box_float"; break;
     case TY_BIGINT: fn = "sp_box_bigint"; break;
     case TY_STRING: fn = "sp_box_str";   break;

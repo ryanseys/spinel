@@ -3588,7 +3588,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
           TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
           buf_printf(b, " case %d: _t%d = ", k, tr);
-          if (ret == TY_POLY && ivt != TY_POLY) emit_boxed_text(c, ivt, fld, b);
+          /* an int ivar is SP_INT_NIL-defaulted: box the sentinel as nil
+             (#3288); or_nil is a no-op on a real int */
+          if (ret == TY_POLY && ivt == TY_INT)
+            buf_printf(b, "sp_box_int_or_nil(%s)", fld);
+          else if (ret == TY_POLY && ivt != TY_POLY) emit_boxed_text(c, ivt, fld, b);
           /* The slot is scalar (e.g. a length dispatch fixed to mrb_int) but
              this class's ivar widened to poly: coerce down. */
           else if (ret != TY_POLY && ivt == TY_POLY)
