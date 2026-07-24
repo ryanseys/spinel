@@ -473,7 +473,18 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       const char *bn0 = nt_type(c->nt, node) &&
                         sp_streq(nt_type(c->nt, node), "LocalVariableReadNode")
                           ? nt_str(c->nt, node, "name") : NULL;
-      if (bn0) { buf_printf(b, "sp_box_obj(lv_%s, SP_BUILTIN_STRBUF)", rename_local(bn0)); return; }
+      if (bn0) {
+        /* the mark can outlive the slot's own type: a local that settled
+           POLY already holds a boxed value -- wrapping it as a raw handle
+           would reinterpret an sp_RbVal as sp_String* (#3325) */
+        Scope *bs0 = comp_scope_of(c, node);
+        LocalVar *blv0 = bs0 ? scope_local(bs0, bn0) : NULL;
+        if (blv0 && blv0->type == TY_POLY)
+          buf_printf(b, "lv_%s", rename_local(bn0));
+        else
+          buf_printf(b, "sp_box_obj(lv_%s, SP_BUILTIN_STRBUF)", rename_local(bn0));
+        return;
+      }
       { char srefX[192];
         if (nt_kind(c->nt, node) == NK_InstanceVariableReadNode &&
             strbuf_slot_ref(c, node, srefX, sizeof srefX)) {

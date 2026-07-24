@@ -8884,7 +8884,23 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       (sp_streq(name, "<<") || sp_streq(name, "push") || sp_streq(name, "append")) && argc >= 1) {
     /* A poly value that holds an array at runtime appends via sp_poly_shl.
        `<<` takes one arg; push/append take any number (each boxed in turn).
-       Skip when a user class defines the name -- the poly value may be that
+       A `<<` whose receiver is an ASSIGNABLE slot REBINDS the result: a
+       plain-string runtime value appends by concat (sp_poly_shl returns the
+       new box), so discarding the result loses the append (#3325); arrays
+       and shared handles return the receiver, making the rebind an identity.
+       The rebind routes through the value form so a user-defined `<<` still
+       dispatches per class. */
+    if (sp_streq(name, "<<") && argc == 1 && nt_type(nt, recv) &&
+        (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
+         sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) {
+      emit_indent(b, indent);
+      emit_expr(c, recv, b);
+      buf_puts(b, " = ");
+      emit_call(c, id, b);
+      buf_puts(b, ";\n");
+      return 1;
+    }
+    /* Skip when a user class defines the name -- the poly value may be that
        object, so let it reach the per-class poly dispatch instead of forcing
        the builtin-array append. */
     int has_user = 0;
