@@ -5925,6 +5925,35 @@ else {
       buf_printf(b, "%s = sp_str_concat(%s, ", ref, ref);
       emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ");\n");
     }
+    else if (op && sp_streq(op, "+") && ty_is_array(vt)) {
+      /* `@arr += other` = `@arr = @arr + other` (#3289), mirroring the
+         local-variable arm: same-kind concat, empty-literal rhs is a no-op
+         concat with NULL */
+      int ival2 = nt_ref(nt, id, "value");
+      TyKind rvt2 = comp_ntype(c, ival2);
+      const char *k2 = (vt == TY_POLY_ARRAY) ? "Poly" : array_kind(vt);
+      int rhs_empty2 = 0;
+      { const char *vty2 = nt_type(nt, ival2);
+        if (vty2 && sp_streq(vty2, "ArrayNode")) {
+          int nel2 = 0; nt_arr(nt, ival2, "elements", &nel2);
+          rhs_empty2 = (nel2 == 0);
+        } }
+      if (k2 && (rvt2 == vt || rhs_empty2)) {
+        buf_printf(b, "%s = sp_%sArray_concat(%s, ", ref, k2, ref);
+        if (rhs_empty2) buf_puts(b, "NULL");
+        else emit_expr(c, ival2, b);
+        buf_puts(b, ");\n");
+      }
+      else if (vt == TY_POLY_ARRAY) {
+        buf_printf(b, "%s = sp_poly_to_poly_array(sp_poly_add(sp_box_poly_array(%s), ",
+                   ref, ref);
+        emit_boxed(c, ival2, b);
+        buf_puts(b, "));\n");
+      }
+      else {
+        unsupported(c, id, "ivar += with a mismatched array kind");
+      }
+    }
     else if (op && ty_is_object(vt)) {
       int idefcls = -1;
       int icid = ty_object_class(vt);
