@@ -4337,7 +4337,10 @@ else {
         if (mi >= 0) { r = found ? ty_unify(r, c->scopes[mi].ret) : c->scopes[mi].ret; found = 1; continue; }
         int rdcls = -1;
         if (comp_reader_in_chain(c, k, name, &rdcls)) {
-          char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", name);
+          /* resolve alias so `alias_method :required?, :required` reads the
+             backing @required, not a bogus @required? */
+          const char *rname = comp_resolve_alias(c, k, name);
+          char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rname);
           int iv = comp_ivar_index(&c->classes[rdcls], ivn);
           TyKind rt2 = iv >= 0 ? c->classes[rdcls].ivar_types[iv] : TY_UNKNOWN;
           r = found ? ty_unify(r, rt2) : rt2; found = 1;
