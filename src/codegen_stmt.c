@@ -8655,6 +8655,17 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ");\n");
       return 1;
     }
+    if (!assignable && sp_streq(name, "clear") && argc == 0 &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+      /* clear on an unnamed mutable receiver ((+"abc").clear): the temp's
+         mutation is unobservable, so evaluate the receiver (a frozen value
+         still raises, as CRuby) and yield a fresh unfrozen empty */
+      int tcl9 = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "{ const char *_t%d = ", tcl9); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_str_check_mutable(_t%d); (void)_t%d; }\n", tcl9, tcl9);
+      return 1;
+    }
     if (assignable && sp_streq(name, "clear") && argc == 0) {
       /* a fresh unfrozen empty: the shared frozen "" literal would make a
          later mutation of the cleared receiver raise */

@@ -99,6 +99,39 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       }
     }
   }
+  /* String#clear in VALUE position on an unnamed mutable receiver
+     ((+"abc").clear): the temp's mutation is unobservable, so evaluate the
+     receiver (a frozen value still raises, as CRuby) and yield a fresh
+     unfrozen empty string. Named receivers keep the assignable arms. */
+  {
+    const NodeTable *ntC = c->nt;
+    const char *nmC = nt_str(ntC, id, "name");
+    int recvC = nt_ref(ntC, id, "receiver");
+    int rcore = recvC;
+    while (rcore >= 0 && nt_type(ntC, rcore) &&
+           sp_streq(nt_type(ntC, rcore), "ParenthesesNode")) {
+      int pb0 = nt_ref(ntC, rcore, "body"); int pbn0 = 0;
+      const int *pbb0 = pb0 >= 0 ? nt_arr(ntC, pb0, "body", &pbn0) : NULL;
+      rcore = pbn0 == 1 ? pbb0[0] : -1;
+    }
+    if (nmC && sp_streq(nmC, "clear") && recvC >= 0 && rcore >= 0 &&
+        comp_ntype(c, recvC) == TY_STRING &&
+        nt_type(ntC, rcore) &&
+        (sp_streq(nt_type(ntC, rcore), "CallNode") ||
+         sp_streq(nt_type(ntC, rcore), "StringNode") ||
+         sp_streq(nt_type(ntC, rcore), "InterpolatedStringNode")) &&
+        !strbuf_local_name(c, rcore)) {
+      int aC = nt_ref(ntC, id, "arguments"); int anC = 0;
+      if (aC >= 0) nt_arr(ntC, aC, "arguments", &anC);
+      if (anC == 0 && nt_ref(ntC, id, "block") < 0) {
+        int tC = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", tC);
+        emit_expr(c, recvC, b);
+        buf_printf(b, "; sp_str_check_mutable(_t%d); (void)_t%d; sp_str_from_bytes(\"\", 0); })", tC, tC);
+        return 1;
+      }
+    }
+  }
   /* Array#slice(i) / #slice(range) are exactly #[](...) -- reuse that arm
      through a rename re-entry (the two-argument slice already works). */
   {

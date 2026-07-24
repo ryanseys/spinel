@@ -16266,14 +16266,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     const char *rty = nt_type(nt, recv);
     if (rty && (sp_streq(rty, "LocalVariableReadNode") ||
                 sp_streq(rty, "InstanceVariableReadNode"))) {
+      /* a fresh unfrozen empty: the shared frozen "" would make a later
+         mutation of the cleared receiver raise */
       buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, recv, b);
-      buf_puts(b, "); "); emit_expr(c, recv, b); buf_puts(b, " = (&(\"\\xff\")[1]); ");
+      buf_puts(b, "); "); emit_expr(c, recv, b); buf_puts(b, " = sp_str_from_bytes(\"\", 0); ");
       emit_expr(c, recv, b); buf_puts(b, "; })");
       return;
     }
-    /* a direct literal receiver has no binding to empty; the value is "" (#2370) */
+    /* a direct literal receiver is frozen: FrozenError, as CRuby */
     if (rty && sp_streq(rty, "StringNode")) {
-      buf_puts(b, "(&(\"\\xff\")[1])");
+      buf_puts(b, "((const char *)(sp_raise_frozen_str(");
+      emit_expr(c, recv, b);
+      buf_puts(b, "), (&(\"\\xff\")[1])))");
       return;
     }
   }

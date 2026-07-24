@@ -21,4 +21,4 @@ p w
 x = +"abcd"
 p(x[1..2] = "Z")
 p x
-p("abc".clear)                 # #2370 clear on a literal receiver
+p(("abc".clear rescue $!.class))   # a literal receiver is frozen (FrozenError)
