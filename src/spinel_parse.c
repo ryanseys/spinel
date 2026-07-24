@@ -2925,12 +2925,26 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
      splice -- acceptable for a convenience heuristic. */
   if (!strstr(source, "require \"set\"") && !strstr(source, "require 'set'") &&
       !strstr(source, "class Set") && source_references_set(source)) {
+    /* Insert AFTER the leading shebang/comment block, not at position 0: a
+       prepend at the top pushed the `# frozen_string_literal:` magic comment
+       off the first lines, so the entry file's pragma silently reverted to
+       the default (#3298 -- "Set-Cookie" in a string is enough to trip the
+       textual Set heuristic). */
+    const char *ins = source;
+    while (*ins) {
+      const char *q = ins; while (*q == ' ' || *q == '\t') q++;
+      if (*q != '#') break;
+      const char *nl = strchr(ins, '\n');
+      if (!nl) { ins = ins + strlen(ins); break; }
+      ins = nl + 1;
+    }
     const char *head = "require \"set\"\n";
-    size_t sl = strlen(source), hl = strlen(head);
+    size_t sl = strlen(source), hl = strlen(head), off = (size_t)(ins - source);
     char *ns = (char *)malloc(sl + hl + 1);
     if (ns) {
-      memcpy(ns, head, hl);
-      memcpy(ns + hl, source, sl + 1);
+      memcpy(ns, source, off);
+      memcpy(ns + off, head, hl);
+      memcpy(ns + off + hl, source + off, sl - off + 1);
       free(source);
       source = ns;
     }

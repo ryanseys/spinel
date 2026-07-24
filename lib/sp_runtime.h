@@ -4435,6 +4435,43 @@ static sp_RbVal sp_poly_pop(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("pop", v));
   return sp_box_nil();
 }
+/* Array#delete_at on a poly value: in-place removal at an index through the
+   runtime kind dispatch; the removed element boxed, nil when out of range. */
+static sp_RbVal sp_poly_delete_at(sp_RbVal v, mrb_int i) {
+  if (v.tag == SP_TAG_OBJ && v.v.p) {
+    switch (v.cls_id) {
+      case SP_BUILTIN_INT_ARRAY: {
+        sp_IntArray *a = (sp_IntArray *)v.v.p;
+        mrb_int r = sp_IntArray_delete_at(a, i);
+        return r == SP_INT_NIL ? sp_box_nil() : sp_box_int(r);
+      }
+      case SP_BUILTIN_FLT_ARRAY: {
+        sp_FloatArray *a = (sp_FloatArray *)v.v.p;
+        mrb_int i2 = i < 0 ? i + a->len : i;
+        if (i2 < 0 || i2 >= a->len) return sp_box_nil();
+        return sp_box_float(sp_FloatArray_delete_at(a, i));
+      }
+      case SP_BUILTIN_STR_ARRAY: {
+        const char *r = sp_StrArray_delete_at((sp_StrArray *)v.v.p, i);
+        return r ? sp_box_str(r) : sp_box_nil();
+      }
+      case SP_BUILTIN_POLY_ARRAY: {
+        sp_PolyArray *a = (sp_PolyArray *)v.v.p;
+        mrb_int i2 = i < 0 ? i + a->len : i;
+        if (i2 < 0 || i2 >= a->len) return sp_box_nil();
+        if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); }
+        sp_RbVal r = a->data[i2];
+        memmove(a->data + i2, a->data + i2 + 1,
+                (size_t)(a->len - i2 - 1) * sizeof(sp_RbVal));
+        a->len--;
+        return r;
+      }
+      default: break;
+    }
+  }
+  sp_raise_nomethod(sp_nomethod_msg("delete_at", v));
+  return sp_box_nil();
+}
 static sp_RbVal sp_poly_shift(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.v.p) {
     switch (v.cls_id) {

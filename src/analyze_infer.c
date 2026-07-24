@@ -1040,6 +1040,10 @@ TyKind infer_call(Compiler *c, int id) {
     for (int q = 0; PBN[q]; q++)
       if (sp_streq(name, PBN[q])) return TY_POLY;
   }
+  /* Array#delete_at on a poly value: the removed element, boxed. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) && sp_streq(name, "delete_at"))
+    return TY_POLY;
   /* Array#pop / #shift on a poly value: the removed element, boxed. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) &&
