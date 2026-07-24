@@ -4716,7 +4716,12 @@ else {
            (sp_streq(nm, "each_slice") && cur == recv) ||
            sp_streq(nm, "each_cons")) &&
           nt_ref(nt, cur, "block") < 0) {
-        saw_op = 1; cur = nt_ref(nt, cur, "receiver"); continue;
+        saw_op = 1; cur = nt_ref(nt, cur, "receiver");
+        if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+          int a9 = lazy_alias_chain(c, cur);
+          if (a9 >= 0) cur = a9;
+        }
+        continue;
       }
       if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
       if (!sp_streq(nm, "map") && !sp_streq(nm, "collect") && !sp_streq(nm, "select") &&

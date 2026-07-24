@@ -1229,7 +1229,7 @@ int lazy_alias_write_suppressible(Compiler *c, int write) {
     static const char *const lazy_xf[] = {
       "map", "collect", "select", "filter", "find_all", "reject",
       "filter_map", "flat_map", "collect_concat", "take", "drop",
-      "take_while", "drop_while", "each_slice", NULL };
+      "take_while", "drop_while", "each_slice", "each_cons", "lazy", NULL };
     int forced = 0, node = r;
     for (int depth = 0; depth < 16; depth++) {
       int call = -1;
@@ -1428,6 +1428,12 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       ops[nops].cnt = -1; ops[nops].lim = -1;
       nops++;
       cur = nt_ref(nt, cur, "receiver");
+      /* the rest of the chain may be held in a variable
+         (`s = src.lazy.select{}; s.each_cons(2).first(2)`) */
+      if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+        int a = lazy_alias_chain(c, cur);
+        if (a >= 0) cur = a;
+      }
       continue;
     }
     int blk = nt_ref(nt, cur, "block");
