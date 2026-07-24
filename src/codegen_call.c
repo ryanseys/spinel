@@ -10950,6 +10950,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_puts(b, "sp_str_to_i_strict_base("); emit_expr(c, av[0], b);
         buf_puts(b, ", "); emit_expr(c, av[1], b); buf_puts(b, ")");
       }
+      else if (at == TY_POLY || at == TY_UNKNOWN) {
+        /* a poly value is only known at runtime: a string (plain or shared
+           handle) parses with the base; nil and non-strings raise as CRuby */
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _kv%d = ", tv); emit_boxed(c, av[0], b);
+        buf_printf(b, "; const char *_ks%d = _kv%d.tag == SP_TAG_STR ? (_kv%d.v.s ? _kv%d.v.s : \"\") : "
+                      "(_kv%d.tag == SP_TAG_OBJ && _kv%d.cls_id == SP_BUILTIN_STRBUF && _kv%d.v.p) ? "
+                      "sp_String_cstr((sp_String *)_kv%d.v.p) : NULL; ",
+                   tv, tv, tv, tv, tv, tv, tv, tv);
+        buf_printf(b, "_ks%d ? sp_str_to_i_strict_base(_ks%d, ", tv, tv);
+        emit_int_expr(c, av[1], b);
+        buf_printf(b, ") : (sp_raise_cls(\"ArgumentError\", "
+                      "\"base specified for non string value\"), (mrb_int)0); })");
+        (void)tv;
+      }
       /* a base with a non-String value raises ArgumentError, as CRuby (#2515) */
       else { buf_puts(b, "((void)("); emit_expr(c, av[0], b); buf_puts(b, "), (void)("); emit_expr(c, av[1], b); buf_puts(b, "), sp_raise_cls(\"ArgumentError\", \"base specified for non string value\"), (mrb_int)0)"); }
       return;
