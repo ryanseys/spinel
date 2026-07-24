@@ -3338,21 +3338,45 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     return 1;
   }
   /* Array#pop / #shift on a poly value (an array-kind box reaching a poly
-     parameter): in-place removal through the runtime kind dispatch. */
+     parameter): in-place removal through the runtime kind dispatch. The
+     node's static type can be a scalar (a stale element type when the
+     receiver widened to poly late in the fixpoint): coerce the boxed
+     result so the C assignment target type still matches, with nil
+     mapping to the scalar's nil representation. */
   if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) {
+    TyKind want = comp_ntype(c, id);
+    int tv = 0;
+    if (want == TY_STRING || want == TY_INT) {
+      tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _sv%d = ", tv);
+    }
     buf_printf(b, "sp_poly_%s(", sp_streq(name, "pop") ? "pop" : "shift");
     emit_expr(c, recv, b);
     buf_puts(b, ")");
+    if (want == TY_STRING)
+      buf_printf(b, "; _sv%d.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(_sv%d); })", tv, tv);
+    else if (want == TY_INT)
+      buf_printf(b, "; _sv%d.tag == SP_TAG_NIL ? SP_INT_NIL : sp_poly_to_i(_sv%d); })", tv, tv);
     return 1;
   }
   /* Array#delete_at on a poly value (#3298): in-place removal through the
      runtime kind dispatch. */
   if (sp_streq(name, "delete_at") && argc == 1) {
+    TyKind want = comp_ntype(c, id);
+    int tv = 0;
+    if (want == TY_STRING || want == TY_INT) {
+      tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _sv%d = ", tv);
+    }
     buf_puts(b, "sp_poly_delete_at(");
     emit_expr(c, recv, b);
     buf_puts(b, ", ");
     emit_int_expr(c, argv[0], b);
     buf_puts(b, ")");
+    if (want == TY_STRING)
+      buf_printf(b, "; _sv%d.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(_sv%d); })", tv, tv);
+    else if (want == TY_INT)
+      buf_printf(b, "; _sv%d.tag == SP_TAG_NIL ? SP_INT_NIL : sp_poly_to_i(_sv%d); })", tv, tv);
     return 1;
   }
   /* Integer#gcd / #lcm on poly operands (destructured pair elements): both are
