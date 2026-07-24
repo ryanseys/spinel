@@ -1048,6 +1048,21 @@ void emit_c_escaped(Buf *b, const char *s) {
    `frozen?` is true and mutation raises FrozenError. Synthesized strings
    (symbol names, ivar names, ...) go through emit_str_literal, which is never
    frozen: the pragma only affects literals written in the source. */
+/* Open/close a static frozen-literal object around caller-streamed escaped
+   bytes. The 0xf1 marker promises a REAL sp_str_hdr immediately in front of
+   the data (hash cache, mutation guards), so every frozen literal -- single
+   or an adjacent-literal fold -- must carry this header (#1749). */
+int emit_frozen_literal_open(Buf *b, size_t raw_len) {
+  static int g_fzl_ctr = 0;
+  int id = g_fzl_ctr++;
+  size_t dl = raw_len + 1;
+  buf_printf(b, "({ static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _fzl_%d = "
+                "{ { NULL, %zu, %zu, 0 }, 0xf1, \"", dl, id, dl, raw_len);
+  return id;
+}
+void emit_frozen_literal_close(Buf *b, int id) {
+  buf_printf(b, "\" }; _fzl_%d.d; })", id);
+}
 void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen) {
   const char *mk = frozen ? "\\xf1" : "\\xff";
   /* A frozen literal must carry a REAL sp_str_hdr: the 0xf1 marker promises
@@ -1061,13 +1076,9 @@ void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen) {
      string exactly (hdr | marker | bytes), the hash cache write hits our
      own static storage, and next=NULL keeps it off the sweep list. */
   if (frozen) {
-    static int g_fzl_ctr = 0;
-    int id = g_fzl_ctr++;
-    size_t dl = (content ? len : 0) + 1;
-    buf_printf(b, "({ static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _fzl_%d = "
-                  "{ { NULL, %zu, %zu, 0 }, 0xf1, \"", dl, id, dl, (content ? len : 0));
+    int id = emit_frozen_literal_open(b, content ? len : 0);
     if (content && len) emit_c_escaped_n(b, content, len);
-    buf_printf(b, "\" }; _fzl_%d.d; })", id);
+    emit_frozen_literal_close(b, id);
     return;
   }
   if (!content || len == 0) { buf_printf(b, "(&(\"%s\")[1])", mk); return; }

@@ -519,6 +519,8 @@ void emit_box_close(Compiler *c, TyKind t, Buf *b);
 const char *array_kind(TyKind t);
 void emit_c_escaped_n(Buf *b, const char *s, size_t len);
 void emit_c_escaped(Buf *b, const char *s);
+int emit_frozen_literal_open(Buf *b, size_t raw_len);
+void emit_frozen_literal_close(Buf *b, int id);
 void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen);
 void emit_str_literal(Buf *b, const char *content);
 void emit_str_literal_src(Buf *b, const char *content, size_t len, int frozen);
