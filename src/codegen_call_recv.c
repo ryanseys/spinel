@@ -7409,8 +7409,27 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         if (is_set) {
           buf_puts(b, "(("); emit_expr(c, recv, b);
           buf_printf(b, ")%siv_%s = ", acc, iv_c(sym + 1));
-          if (mt == TY_POLY) emit_boxed(c, argv[1], b); else emit_expr(c, argv[1], b);
+          if (mt == TY_POLY) emit_boxed(c, argv[1], b);
+          else if (mt == TY_STRBUF) {
+            char srefIS[192];
+            if (strbuf_slot_ref(c, argv[1], srefIS, sizeof srefIS)) buf_puts(b, srefIS);
+            else {
+              buf_puts(b, "sp_String_new_shared(");
+              emit_str_expr(c, argv[1], b);
+              buf_puts(b, ")");
+            }
+          }
+          else emit_expr(c, argv[1], b);
           buf_puts(b, ")");
+        }
+        else if (mt == TY_STRBUF) {
+          /* a shared-mutable slot reads out as a GC copy; the raw handle
+             must not leak into a plain string context (#3227) */
+          int tvG = ++g_tmp;
+          buf_printf(b, "({ sp_String *_t%d = (", tvG);
+          emit_expr(c, recv, b);
+          buf_printf(b, ")%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
+                     acc, iv_c(sym + 1), tvG, tvG);
         }
         else {
           buf_puts(b, "("); emit_expr(c, recv, b);
