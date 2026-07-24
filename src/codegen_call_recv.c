@@ -807,6 +807,28 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     g_n_argov--;
     return 1;
   }
+  /* `poly.reduce/inject { }` (with or without a seed) where poly is an
+     array read out of a container (a transpose row, a nested element):
+     coerce to a poly array and re-enter the array fold emitter with the
+     receiver overridden (#3312). */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") >= 0 &&
+      (sp_streq(name, "reduce") || sp_streq(name, "inject")) &&
+      argc <= 1 && g_n_argov < MAX_ARG_OVERRIDE) {
+    int ta = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
+               ta, rb.p ? rb.p : "sp_box_nil()", name, ta);
+    free(rb.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+    g_n_argov++;
+    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    emit_expr(c, id, b);
+    c->ntype[recv] = sv;
+    g_n_argov--;
+    return 1;
+  }
   /* `poly.reject/select/filter { |x| ... }` where poly is an array read out of
      a container: coerce to a poly array and filter it into a fresh poly array,
      mirroring the find arm above (this TY_POLY receiver would otherwise skip to

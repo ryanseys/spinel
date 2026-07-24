@@ -1387,7 +1387,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     else if (ac != 0) return 0;
   }
 
-  enum { OP_MAP, OP_FILTER, OP_TAKEWHILE, OP_DROPWHILE, OP_FILTERMAP, OP_FLATMAP, OP_TAKE, OP_DROP, OP_EACHSLICE };
+  enum { OP_MAP, OP_FILTER, OP_TAKEWHILE, OP_DROPWHILE, OP_FILTERMAP, OP_FLATMAP, OP_TAKE, OP_DROP, OP_EACHSLICE, OP_EACHCONS };
   /* arg/cnt/lim are used only by the blockless counter stages (take/drop):
      arg is the count AST node, lim a prelude temp holding its value, cnt a
      prelude counter initialised to 0. */
@@ -1411,12 +1411,14 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
        (break once reached), `drop(n)` skips the first n. Both stay lazy in
        CRuby, fusing straight into the loop. */
     if ((sp_streq(nm, "take") || sp_streq(nm, "drop") ||
-         (sp_streq(nm, "each_slice") && nops == 0)) && nt_ref(nt, cur, "block") < 0) {
+         ((sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) && nops == 0)) &&
+        nt_ref(nt, cur, "block") < 0) {
       int ar = nt_ref(nt, cur, "arguments");
       int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
       if (ac != 1 || !av || nops >= 16) return 0;
       ops[nops].kind = sp_streq(nm, "take") ? OP_TAKE :
-                       sp_streq(nm, "drop") ? OP_DROP : OP_EACHSLICE;
+                       sp_streq(nm, "drop") ? OP_DROP :
+                       sp_streq(nm, "each_slice") ? OP_EACHSLICE : OP_EACHCONS;
       ops[nops].block = -1; ops[nops].negate = 0; ops[nops].arg = av[0];
       ops[nops].cnt = -1; ops[nops].lim = -1;
       nops++;
@@ -1500,7 +1502,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "int _t%d = 1;\n", ops[oi].cnt);
       continue;
     }
-    if (ops[oi].kind == OP_EACHSLICE) {
+    if (ops[oi].kind == OP_EACHSLICE || ops[oi].kind == OP_EACHCONS) {
       Buf ab = expr_buf(c, ops[oi].arg);
       ops[oi].lim = ++g_tmp; emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "mrb_int _t%d = %s;\n", ops[oi].lim, ab.p ? ab.p : "0"); free(ab.p);
@@ -1638,6 +1640,29 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tres, ops[oi].cnt);
       emit_indent(g_pre, g_indent + 2);
       buf_printf(g_pre, "_t%d = sp_PolyArray_new();\n", ops[oi].cnt);
+      emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+      emit_indent(g_pre, g_indent + 1);
+      buf_puts(g_pre, "continue;\n");
+      continue;
+    }
+    if (ops[oi].kind == OP_EACHCONS) {
+      /* sliding n-window of the stream: keep the last n elements rolling and
+         emit a COPY of the window each time it is full; only ever the
+         terminal-adjacent stage (oi == 0), so it owns the result push */
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", ops[oi].cnt, vbuf);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) > _t%d) sp_PolyArray_shift(_t%d);\n",
+                 ops[oi].cnt, ops[oi].lim, ops[oi].cnt);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) == _t%d) {\n", ops[oi].cnt, ops[oi].lim);
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_PolyArray *_w = sp_PolyArray_new(); SP_GC_ROOT(_w);\n");
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "for (mrb_int _k = 0; _k < _t%d; _k++) sp_PolyArray_push(_w, sp_PolyArray_get(_t%d, _k));\n",
+                 ops[oi].lim, ops[oi].cnt);
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_w));\n", tres);
       emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
       emit_indent(g_pre, g_indent + 1);
       buf_puts(g_pre, "continue;\n");

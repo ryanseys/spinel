@@ -1049,6 +1049,27 @@ TyKind infer_call(Compiler *c, int id) {
       !an_user_defines_method(c, name) &&
       (sp_streq(name, "pop") || sp_streq(name, "shift")))
     return TY_POLY;
+  /* Time accessors on a poly value (a Time read out of a container): the
+     codegen dispatch runs sp_time_* on the TIME tag and raises otherwise,
+     so the non-raising result is an int (#3311). Declined when any class
+     exposes the name as a method OR a reader (a Data/Struct member like
+     `day` dispatches to the member, #3239). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      !an_user_defines_method(c, name) &&
+      (sp_streq(name, "year") || sp_streq(name, "mon") || sp_streq(name, "month") ||
+       sp_streq(name, "mday") || sp_streq(name, "day") || sp_streq(name, "hour") ||
+       sp_streq(name, "sec") || sp_streq(name, "wday") || sp_streq(name, "yday"))) {
+    int has_reader9 = 0;
+    for (int k9 = 0; k9 < c->nclasses && !has_reader9; k9++)
+      if (comp_reader_in_chain(c, k9, name, NULL)) has_reader9 = 1;
+    if (!has_reader9) return TY_INT;
+  }
+  /* reduce/inject on a poly value (an array read out of a container): the
+     fold runs over boxed elements, so the result is boxed. */
+  if (recv >= 0 && rt == TY_POLY && argc <= 1 && nt_ref(nt, id, "block") >= 0 &&
+      !an_user_defines_method(c, name) &&
+      (sp_streq(name, "reduce") || sp_streq(name, "inject")))
+    return TY_POLY;
   /* Array#insert on a poly value: in-place, returns the receiver (boxed). */
   if (recv >= 0 && rt == TY_POLY && argc == 2 && nt_ref(nt, id, "block") < 0 &&
       !an_user_defines_method(c, name) && sp_streq(name, "insert"))
@@ -4572,18 +4593,34 @@ else {
       if (a >= 0) lrecv = a;
     }
   if (lrecv >= 0 && nt_type(nt, lrecv) && sp_streq(nt_type(nt, lrecv), "CallNode")) {
-    const char *rname = nt_str(nt, lrecv, "name");
     int lazy_src = -1;
-    if (rname && sp_streq(rname, "lazy")) {
-      lazy_src = nt_ref(nt, lrecv, "receiver");
-    }
-    else if (rname && (sp_streq(rname, "select") || sp_streq(rname, "reject") || sp_streq(rname, "filter"))) {
-      int inner = nt_ref(nt, lrecv, "receiver");
-      if (inner >= 0 && nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "CallNode")) {
-        const char *iname = nt_str(nt, inner, "name");
-        if (iname && sp_streq(iname, "lazy")) lazy_src = nt_ref(nt, inner, "receiver");
+    int grouped = 0;   /* a terminal-adjacent each_cons/each_slice groups the stream */
+    {
+      /* peel the chain terminal-first: an optional grouping stage, then the
+         filtering stages, down to the blockless `lazy` (mirrors the shapes
+         emit_lazy_pipeline_expr fuses) */
+      int cur9 = lrecv;
+      const char *rname9 = nt_str(nt, cur9, "name");
+      if (rname9 && (sp_streq(rname9, "each_cons") || sp_streq(rname9, "each_slice")) &&
+          nt_ref(nt, cur9, "block") < 0) {
+        grouped = 1;
+        cur9 = nt_ref(nt, cur9, "receiver");
+      }
+      while (cur9 >= 0 && nt_type(nt, cur9) && sp_streq(nt_type(nt, cur9), "CallNode")) {
+        const char *nm9 = nt_str(nt, cur9, "name");
+        if (!nm9) break;
+        if (sp_streq(nm9, "lazy") && nt_ref(nt, cur9, "block") < 0) {
+          lazy_src = nt_ref(nt, cur9, "receiver");
+          break;
+        }
+        if (sp_streq(nm9, "select") || sp_streq(nm9, "reject") || sp_streq(nm9, "filter")) {
+          cur9 = nt_ref(nt, cur9, "receiver");
+          continue;
+        }
+        break;
       }
     }
+    (void)grouped;
     TyKind lst = lazy_src >= 0 ? infer_type(c, lazy_src) : TY_UNKNOWN;
     /* emit_lazy_pipeline_expr collects into a PolyArray; the counted form is
        that array, the bare form its first (boxed) element (#2994). */
@@ -4667,7 +4704,8 @@ else {
       /* blockless counter stages fuse into the pipeline (codegen re-validates
          the single integer argument). */
       if ((sp_streq(nm, "take") || sp_streq(nm, "drop") ||
-           (sp_streq(nm, "each_slice") && cur == recv)) && nt_ref(nt, cur, "block") < 0) {
+           ((sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) && cur == recv)) &&
+          nt_ref(nt, cur, "block") < 0) {
         saw_op = 1; cur = nt_ref(nt, cur, "receiver"); continue;
       }
       if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
