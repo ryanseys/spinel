@@ -877,8 +877,20 @@ static const char *sp_str_dedup(const char *s) {
 }
 static inline const char *sp_str_uminus_val(const char *s) {
   if (!s) return s;
-  /* an already-frozen receiver dedups to itself (#2630) */
-  if (((const unsigned char *)s)[-1] == 0xf1) return s;
+  /* An already-frozen receiver (0xf1) still interns by content (CRuby
+     rb_fstring): the first frozen holder of a content registers itself,
+     later dedups of equal contents return that same object -- even when
+     every literal occurrence is its own frozen object under fsl. Frozen
+     entries are immortal, so registering the receiver is copy-free. A
+     0xff rodata value string (frozen? false by design) takes the plain
+     dedup below, which hands back a frozen interned copy. */
+  if (((const unsigned char *)s)[-1] == 0xf1) {
+    SP_HEAP_LOCK();
+    const char *hit = sp_fstr_lookup(s);
+    if (!hit) { sp_fstr_insert(s); hit = s; }
+    SP_HEAP_UNLOCK();
+    return hit;
+  }
   /* otherwise intern by content so two dedups of equal contents share one
      frozen object (#2462). The result reports frozen? (0xf1). */
   return sp_str_dedup(s);
