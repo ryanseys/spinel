@@ -223,10 +223,24 @@ int chain_is_lazy_valued(Compiler *c, int node) {
   int ok = 0;
   for (int i = 0; transforms[i]; i++) if (sp_streq(top, transforms[i])) { ok = 1; break; }
   if (!ok) return 0;
-  for (int cur = node; cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode");
-       cur = nt_ref(nt, cur, "receiver")) {
+  int hops = 0;
+  for (int cur = node; cur >= 0; ) {
+    /* part of the chain may be held in a variable
+       (`s = src.lazy.select{}; s.each_cons(2).lazy...`): resolve the
+       single-plain-write alias and keep walking. Bounded: a
+       self-referential write (`s = s.map{}`) would otherwise recurse
+       through lazy_alias_chain forever (#3324). */
+    if (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+      if (++hops > 8) return 0;
+      int a = lazy_alias_chain(c, cur);
+      if (a < 0) return 0;
+      cur = a;
+      continue;
+    }
+    if (!nt_type(nt, cur) || !sp_streq(nt_type(nt, cur), "CallNode")) return 0;
     const char *nm = nt_str(nt, cur, "name");
     if (nm && sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) return 1;
+    cur = nt_ref(nt, cur, "receiver");
   }
   return 0;
 }
