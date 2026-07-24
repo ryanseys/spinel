@@ -4067,13 +4067,60 @@ int desugar_int_enum_with_index(Compiler *c) {
                  !sp_streq(rnm, "downto"))) continue;
     if (infer_type(c, recv) != TY_RANGE) continue;
     int base = nt->count;
-    int ec = nt_new_node(nt, "CallNode");
-    if (ec < 0) continue;
-    nt_node_set_ref(nt, ec, "receiver", recv);
-    nt_node_set_str(nt, ec, "name", "each");
-    nt_node_set_ref(nt, ec, "arguments", -1);
-    nt_node_set_ref(nt, ec, "block", -1);
-    nt_node_set_ref(nt, id, "receiver", ec);
+    int blk = nt_ref(nt, id, "block");
+    if (blk >= 0 && (sp_streq(nm, "with_index") || sp_streq(nm, "each_with_index"))) {
+      /* Block form returns the Integer RECEIVER (CRuby: the enumerator's
+         underlying each return), not the range: hoist the receiver into a
+         temp, run the chain for effect, and make the original call a
+         transparent `.itself` on `(t = n; t.times.each.with_index {..}; t)`
+         so the value is the int evaluated once. */
+      int ircv = nt_ref(nt, recv, "receiver");
+      if (ircv < 0) continue;
+      char tmpn[32]; snprintf(tmpn, sizeof tmpn, "_spwi%d", id);
+      /* register_locals already ran: intern the temp into the enclosing
+         scope now; its type comes from the following inference passes. */
+      { int encl0 = c->nscope[id];
+        if (encl0 >= 0 && encl0 < c->nscopes)
+          scope_local_intern(&c->scopes[encl0], tmpn); }
+      int w = nt_new_node(nt, "LocalVariableWriteNode");
+      int rd1 = nt_new_node(nt, "LocalVariableReadNode");
+      int rd2 = nt_new_node(nt, "LocalVariableReadNode");
+      int ec = nt_new_node(nt, "CallNode");
+      int inner = nt_new_node(nt, "CallNode");
+      int stmts = nt_new_node(nt, "StatementsNode");
+      int paren = nt_new_node(nt, "ParenthesesNode");
+      if (w < 0 || rd1 < 0 || rd2 < 0 || ec < 0 || inner < 0 ||
+          stmts < 0 || paren < 0) continue;
+      nt_node_set_str(nt, w, "name", tmpn);
+      nt_node_set_ref(nt, w, "value", ircv);
+      nt_node_set_str(nt, rd1, "name", tmpn);
+      nt_node_set_str(nt, rd2, "name", tmpn);
+      nt_node_set_ref(nt, recv, "receiver", rd1);
+      nt_node_set_ref(nt, ec, "receiver", recv);
+      nt_node_set_str(nt, ec, "name", "each");
+      nt_node_set_ref(nt, ec, "arguments", -1);
+      nt_node_set_ref(nt, ec, "block", -1);
+      nt_node_set_str(nt, inner, "name", nm);
+      nt_node_set_ref(nt, inner, "receiver", ec);
+      nt_node_set_ref(nt, inner, "arguments", nt_ref(nt, id, "arguments"));
+      nt_node_set_ref(nt, inner, "block", blk);
+      { int items[3] = { w, inner, rd2 };
+        nt_node_set_arr(nt, stmts, "body", items, 3); }
+      nt_node_set_ref(nt, paren, "body", stmts);
+      nt_node_set_str(nt, id, "name", "itself");
+      nt_node_set_ref(nt, id, "receiver", paren);
+      nt_node_set_ref(nt, id, "block", -1);
+      nt_node_set_ref(nt, id, "arguments", -1);
+    }
+    else {
+      int ec = nt_new_node(nt, "CallNode");
+      if (ec < 0) continue;
+      nt_node_set_ref(nt, ec, "receiver", recv);
+      nt_node_set_str(nt, ec, "name", "each");
+      nt_node_set_ref(nt, ec, "arguments", -1);
+      nt_node_set_ref(nt, ec, "block", -1);
+      nt_node_set_ref(nt, id, "receiver", ec);
+    }
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
