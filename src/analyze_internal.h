@@ -237,6 +237,7 @@ int desugar_builtin_class_var_recv(Compiler *c);
 int desugar_compose_method_operand(Compiler *c);
 int desugar_method_curry(Compiler *c);
 int desugar_int_enum_with_index(Compiler *c);
+int widen_shared_cmp_params(Compiler *c);
 int desugar_reduce_proc_arg(Compiler *c);
 int desugar_block_capture_wrap(Compiler *c);
 int desugar_user_not_match(Compiler *c);

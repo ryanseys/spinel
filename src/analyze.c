@@ -7584,6 +7584,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_compose_method_operand(c);   /* proc >> meth -> proc >> meth.to_proc */
     ch |= desugar_method_curry(c);             /* meth.curry -> meth.to_proc.curry */
     ch |= desugar_int_enum_with_index(c);      /* n.times.with_index -> n.times.each.with_index */
+    ch |= widen_shared_cmp_params(c);          /* multi-class <=> takes its operand boxed */
     ch |= desugar_reduce_proc_arg(c);          /* reduce(&pr) -> reduce { |a,b| pr.call(a,b) } */
     ch |= desugar_block_capture_wrap(c);       /* { |i| ->{i} } -> { |i| (->(i){ ->{i} }).call(i) } */
     ch |= desugar_user_not_match(c);            /* a !~ b -> !(a =~ b) for a user =~ (#3019) */
@@ -7726,6 +7727,7 @@ void analyze_program(Compiler *c) {
            each iteration's top, so a promote gated on STRING must see the
            freshly re-derived type, not the cleared UNKNOWN (#3227 P4) */
         ch |= promote_shared_stored_strings(c);
+        ch |= widen_shared_cmp_params(c);
         ch |= infer_cvar_types(c);
         ch |= infer_inherited_ivars(c);
         ch |= infer_return_types(c);
@@ -8843,6 +8845,7 @@ void analyze_program(Compiler *c) {
       if (ci->ivar_str_shared[iv] && ci->ivar_types[iv] == TY_STRING)
         ci->ivar_types[iv] = TY_STRBUF;
   }
+
 
   /* The local read a string-aliasing write bottoms out at: a bare local
      read, or a value-position `<<`/`concat` chain over one -- the chain's

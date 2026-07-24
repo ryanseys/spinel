@@ -4014,6 +4014,27 @@ int desugar_compose_method_operand(Compiler *c) {
   return changed;
 }
 
+/* A user `<=>` shared by multiple classes (a Comparable base with several
+   subclasses) must take its operand boxed: the cmp-hook dispatch hands it
+   any sibling in the hierarchy, and a monomorphic call site would otherwise
+   specialize the param to one subclass, failing cross-subclass sorts closed
+   (and calling that subclass's methods on a sibling cast). */
+int widen_shared_cmp_params(Compiler *c) {
+  int changed = 0;
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (!m->name || !sp_streq(m->name, "<=>") || m->class_id < 0) continue;
+    if (m->nparams < 1) continue;
+    int users = 0;
+    for (int k = 0; k < c->nclasses && users < 2; k++)
+      if (comp_method_in_chain(c, k, "<=>", NULL) == mi) users++;
+    if (users < 2) continue;
+    LocalVar *p = scope_local(m, m->pnames[0]);
+    if (p && p->type != TY_POLY) { p->type = TY_POLY; changed = 1; }
+  }
+  return changed;
+}
+
 /* method.curry -> method.to_proc.curry: the Proc curry machinery (arity
    typing, boxed accumulation, param widening) then applies unchanged. The
    rewrite fires once: afterwards curry's receiver is the synthesized
