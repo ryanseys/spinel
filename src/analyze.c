@@ -6378,6 +6378,21 @@ static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
   if (*defc < 0) *defc = c->scopes[rmi].class_id;
   return buf;
 }
+/* Does local `vn` participate in a pure alias (`x = vn` or `vn = x`)? */
+static int an_local_has_alias(Compiler *c, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  for (int w = 0; w < nt->count; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    if (comp_scope_of(c, w) != vs) continue;
+    const char *wn = nt_str(nt, w, "name");
+    int wv = nt_ref(nt, w, "value");
+    if (wv < 0 || nt_kind(nt, wv) != NK_LocalVariableReadNode) continue;
+    const char *rn = nt_str(nt, wv, "name");
+    if (!wn || !rn || sp_streq(wn, rn)) continue;
+    if (sp_streq(wn, vn) || sp_streq(rn, vn)) return 1;
+  }
+  return 0;
+}
 /* Is this argument node a shared-handle slot read (a str_shared local or a
    shared ivar)? */
 static int an_arg_is_shared_handle(Compiler *c, int node) {
@@ -6588,7 +6603,9 @@ static int promote_shared_stored_strings(Compiler *c) {
       Scope *vs3 = comp_scope_of(c, vnode);
       LocalVar *vlv = (vn3 && vs3) ? scope_local(vs3, vn3) : NULL;
       if (!strbuf_slot_eligible(c, vn3, vs3, vlv)) continue;
-      if (strbuf_mut_kind(c, vn3, vs3) != 1) continue;
+      /* already-shared (e.g. demanded through a return edge) qualifies even
+         without a direct mutator of its own */
+      if (strbuf_mut_kind(c, vn3, vs3) != 1 && !vlv->str_shared) continue;
       /* equal?/eql? args only join a set that is ALREADY shared (a store
          made it a handle); they must not themselves force the promotion */
       { const char *wn2 = nt_str(nt, w, "name");
@@ -6826,9 +6843,38 @@ static int promote_shared_stored_strings(Compiler *c) {
       saw_tail = 1;
       if (rn2 != 1 || !an_arg_is_shared_handle(c, rv2[0])) shared_ok = 0;
     }
-    if (!shared_ok || !saw_tail) continue;
     const char *lname3 = nt_str(nt, w, "name");
     Scope *ls3 = comp_scope_of(c, w);
+    if (saw_tail && !shared_ok && lname3 && ls3 &&
+        strbuf_mut_kind(c, lname3, ls3) == 1) {
+      /* the CALLER mutates the result (`rr = mk; rr << x`): demand the
+         callee's returned locals into the shared set; the uniform gate then
+         admits the site on a later iteration */
+      int lastD = scope_body_last(c, mi3);
+      int tails[33]; int ntails = 0;
+      if (lastD >= 0 && ntails < 32) tails[ntails++] = lastD;
+      for (int u = 0; u < nt->count && ntails < 32; u++) {
+        if (nt_kind(nt, u) != NK_ReturnNode) continue;
+        if (comp_scope_of(c, u) != m3) continue;
+        int ra = nt_ref(nt, u, "arguments");
+        int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
+        if (rn2 == 1) tails[ntails++] = rv2[0];
+      }
+      for (int t2 = 0; t2 < ntails; t2++) {
+        int tn2 = tails[t2];
+        if (tn2 < 0 || nt_kind(nt, tn2) != NK_LocalVariableReadNode) continue;
+        const char *tvn = nt_str(nt, tn2, "name");
+        Scope *tvs = tvn ? comp_scope_of(c, tn2) : NULL;
+        LocalVar *tlv = tvs ? scope_local(tvs, tvn) : NULL;
+        if (!tlv || !strbuf_slot_eligible_shape(c, tvn, tvs, tlv)) continue;
+        if (tlv->type != TY_UNKNOWN && tlv->type != TY_STRING &&
+            tlv->type != TY_STRBUF && tlv->type != TY_POLY) continue;
+        if (tlv->type != TY_STRBUF || !tlv->str_shared)
+          { tlv->type = TY_STRBUF; tlv->str_shared = 1; changed = 1; }
+      }
+      continue;
+    }
+    if (!shared_ok || !saw_tail) continue;
     LocalVar *llv3 = (lname3 && ls3) ? scope_local(ls3, lname3) : NULL;
     if (!llv3 || !strbuf_slot_eligible_shape(c, lname3, ls3, llv3)) continue;
     if (llv3->type != TY_UNKNOWN && llv3->type != TY_STRING &&
@@ -6871,6 +6917,21 @@ static int convert_byref_handle_params(Compiler *c) {
         const int *uargv = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &uargc) : NULL;
         if (pj >= uargc) continue;
         if (an_arg_is_shared_handle(c, uargv[pj])) saw_handle = 1;
+        /* an ALIASED plain-local argument also demands the handle: the
+           callee's mutation must stay visible through the caller's alias
+           (byref reassigns only the one slot) */
+        else if (nt_kind(nt, uargv[pj]) == NK_LocalVariableReadNode) {
+          const char *avn = nt_str(nt, uargv[pj], "name");
+          Scope *avs = avn ? comp_scope_of(c, uargv[pj]) : NULL;
+          LocalVar *alv0 = avs ? scope_local(avs, avn) : NULL;
+          /* shape check WITHOUT the byref-arg clause: being this byref
+             param's argument is exactly the situation we are converting */
+          if (alv0 && !alv0->is_param && !alv0->rbs_seeded && !alv0->is_cell &&
+              (alv0->type == TY_STRING || alv0->type == TY_UNKNOWN ||
+               alv0->type == TY_STRBUF) &&
+              an_local_has_alias(c, avn, avs))
+            saw_handle = 1;
+        }
       }
       if (!saw_handle) continue;
       if (pp->byref_out) {

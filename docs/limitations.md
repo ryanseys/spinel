@@ -244,17 +244,28 @@ the SAME occurrence (a literal inside a loop) yields one object where plain
 CRuby allocates per evaluation -- the `frozen_string_literal: true` semantics.
 
 **Aliased in-place mutation is observed.** A string that is both aliased and
-mutated in place shares one mutable buffer: the mutation is visible through
-every alias and through the container, and `equal?` across the alias set is
-`true` (matching CRuby's mutable String objects). Container aliases (an array
-element, a hash value) observe `<<`, `concat`, `prepend`, `replace`, and the
-transforming bang methods (`upcase!`, `gsub!`, `strip!`, `reverse!`, ...).
-Local aliases (`s2 = s1`) observe `<<`-driven sharing. The conservative
-residue: `insert`, `clear`, `slice!`, and index assignment (`s[i] = x`)
-rebind only the receiver's own binding, and a local-alias set whose only
-mutators are bang methods (no `<<`) keeps value-copy behavior. Strings never
+mutated in place shares one mutable buffer, matching CRuby's mutable String
+objects: the mutation is visible through every reference and `equal?` across
+the alias set is `true`. This covers the full in-place mutator surface —
+`<<`, `concat`, `prepend`, `replace`, `insert`, `clear`, `slice!`, index
+assignment (`s[i] = x`), `setbyte`, and the transforming bang methods
+(`upcase!`, `gsub!`, `strip!`, `reverse!`, ...) — across every storage
+shape: local aliases (`s2 = s1`), array elements and hash values (stored or
+read back, including mutation THROUGH a container read like
+`arr[0].upcase!`), instance variables (with attr and hand-written readers),
+method parameters (a callee's mutation stays visible through the caller's
+aliases), returned values (including a string the callee also retained),
+closure captures, and iteration variables (`arr.each { |x| x << "!" }`).
+Frozen strings keep raising FrozenError through every path. Strings never
 mutated in place, or mutated but never aliased, keep the plain value
-representation (no cost).
+representation (no cost; a hash string KEY is snapshot-frozen on store,
+exactly CRuby's dup-and-freeze).
+
+Known corner residues (conservative, fall back to the pre-sharing copy
+behavior rather than misbehaving): `bytesplice` and a regexp-argument
+`gsub!` reached through an untyped (poly) receiver; iteration-variable
+sharing requires the receiver's elements to be provably strings; a slot
+pinned by an `--rbs` seed keeps its declared representation.
 
 #### `Range#step` / `Range#%` return a materialized Array, not an ArithmeticSequence
 
