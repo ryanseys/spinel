@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Under-supplied calls raise at runtime in value position, `Class => var`
 # bindings in typed-array patterns, hash-pattern **rest / **nil, Method
 # objects over builtin receivers, **hash degrading into *args, char-range

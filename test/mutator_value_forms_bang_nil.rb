@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String mutators as expressions (with lvalue write-back and the
 # nil-when-unchanged bang contract), Array#insert with several values
 # (negative index normalized once), Array#flatten!/uniq!/compact! as

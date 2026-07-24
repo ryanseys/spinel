@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Bundled tests:
 #   - array_ptr_array_inspect
 #   - array_push

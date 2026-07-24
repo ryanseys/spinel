@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # A string param mutated via `<<` is a byref out-param: the append lands in
 # the caller's variable, like CRuby's shared-object semantics (the classic
 # pass-an-output-buffer serializer pattern).

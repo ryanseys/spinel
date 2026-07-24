@@ -236,34 +236,46 @@ at startup and every textually-equal literal names that one object, so
 shared-immutable-storage treatment as above; `==`/`eql?`/matching are
 unaffected.
 
-**Strings DO have identity.** Every string is a real pointer (heap or
-static), and every literal *occurrence* is its own static object, so
-`"abc".equal?("abc")` is `false` across two occurrences and aliasing
-(`b = a`) answers `true`, matching plain CRuby. One residue: re-evaluating
-the SAME occurrence (a literal inside a loop) yields one object where plain
-CRuby allocates per evaluation -- the `frozen_string_literal: true` semantics.
+**String literals are frozen by default (`frozen_string_literal: true`
+semantics).** Spinel's baseline is the direction Ruby itself is headed
+(plain CRuby already warns "literal string will be frozen in the future"):
+a literal is frozen (`"lit".frozen?` is `true`), mutating one raises
+FrozenError, and mutable strings come from `+"lit"`, `String.new`,
+interpolation, or `dup` -- exactly as under CRuby's
+`--enable=frozen-string-literal`. A file can opt back into plain mutable
+literals with an explicit `# frozen_string_literal: false` magic comment,
+and a whole build with `--disable=frozen-string-literal`.
 
-**Aliased in-place mutation is observed.** A string that is both aliased and
-mutated in place shares one mutable buffer, matching CRuby's mutable String
-objects: the mutation is visible through every reference and `equal?` across
-the alias set is `true`. This covers the full in-place mutator surface —
+A note on identity: what `frozen_string_literal` specifies is frozenness,
+not object identity, so the identity of frozen literals is
+implementation-dependent. CRuby happens to intern equal-content literals
+(`"abc".equal?("abc")` is `true` there); Spinel compiles each literal
+OCCURRENCE to its own static object, so the same comparison answers
+`false`, while re-evaluating one occurrence (a literal in a loop) yields
+the same object where plain CRuby would allocate per evaluation. Programs
+should not depend on either arrangement -- `equal?`/`object_id` on frozen
+literals is exactly the implementation-defined corner. Value semantics
+(`==`, hashing, matching) are unaffected.
+
+**Aliased in-place mutation is observed.** A mutable string (from
+`String.new`, `+"lit"`, interpolation, `dup`, or any literal in a
+`frozen_string_literal: false` file) that is both aliased and mutated in
+place shares one mutable buffer, matching CRuby's mutable String objects:
+the mutation is visible through every reference and `equal?` across the
+alias set is `true`. This covers the full in-place mutator surface --
 `<<`, `concat`, `prepend`, `replace`, `insert`, `clear`, `slice!`, index
-assignment (`s[i] = x`), `setbyte`, and the transforming bang methods
-(`upcase!`, `gsub!`, `strip!`, `reverse!`, ...) — across every storage
-shape: local aliases (`s2 = s1`), array elements and hash values (stored or
-read back, including mutation THROUGH a container read like
-`arr[0].upcase!`), instance variables (with attr and hand-written readers),
-method parameters (a callee's mutation stays visible through the caller's
-aliases), returned values (including a string the callee also retained),
-closure captures, and iteration variables (`arr.each { |x| x << "!" }`).
-Frozen strings keep raising FrozenError through every path. Strings never
+assignment (`s[i] = x`), `setbyte`, `bytesplice`, `append_as_bytes`, and
+the transforming bang methods (`upcase!`, `gsub!`, `strip!`, `reverse!`,
+...) -- across every storage shape: local aliases, array elements and hash
+values (stored or read back, including mutation THROUGH a container read
+like `arr[0].upcase!`), instance variables (with attr and hand-written
+readers), method parameters (a callee's mutation stays visible through the
+caller's aliases), returned values (including a string the callee also
+retained), closure captures, and iteration variables. Frozen strings keep
+raising FrozenError through every path; a hash string KEY is
+snapshot-frozen on store, exactly CRuby's dup-and-freeze. Strings never
 mutated in place, or mutated but never aliased, keep the plain value
-representation (no cost; a hash string KEY is snapshot-frozen on store,
-exactly CRuby's dup-and-freeze).
-
-(`bytesplice` / `append_as_bytes`, mixed-element iteration via runtime
-dispatch, guard-narrowed receivers, and `--rbs`-declared String slots all
-share the same way; there is no residual mutator or storage shape.)
+representation (no cost).
 
 #### `Range#step` / `Range#%` return a materialized Array, not an ArithmeticSequence
 
@@ -520,7 +532,7 @@ now work on current master:
 
 | Feature | Status |
 |---|---|
-| Mutable string literals (`s = "x"; s << "y"`; `"x".frozen?` → `false`) | works |
+| Mutable strings and aliased in-place mutation (`s = +"x"; s << "y"`; literals are frozen by default — see the String section) | works |
 | Hash missing key → `nil` (string- and int-keyed, including `Hash.new(default)`) | works |
 | `define_method(:name) { ... }` with a literal name | works |
 | Block-param arity (un-yielded params are `nil`, not a sentinel) | works |

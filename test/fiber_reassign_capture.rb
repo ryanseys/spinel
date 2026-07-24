@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # A Fiber / proc body that REBINDS a captured heap object (String / Array /
 # Hash / object) to a new value now propagates that reassignment to the
 # enclosing scope, matching value-type captures. Heap captures ride a typed-

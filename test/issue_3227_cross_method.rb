@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Shared-mutable strings across method boundaries (P5): a shared handle
 # passed into a string-mutating parameter, and aliases taken through
 # readers outside the class.

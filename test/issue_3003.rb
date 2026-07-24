@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 s = "abc".freeze
 p (s.upcase! rescue $!.class); p s
 p ("xyz".freeze.reverse! rescue $!.class)

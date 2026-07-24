@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # A Fiber (or Enumerator.new) block that assigns an enclosing value-type local
 # now shares it: the write reaches the outer scope (a heap cell, like an escaping
 # proc captures), so it is no longer silently lost. A captured heap object is

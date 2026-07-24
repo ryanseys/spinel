@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Embedded NUL bytes survive frozen-string operations (dedup / .freeze): the
 # 0xf1 frozen marker carries the real byte length, so nothing truncates at NUL.
 s = "a\u0000b"

@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String#<< must preserve embedded NUL bytes: a mutable string's payload buffer
 # is length-tracked (a header on the 0xfd buffer), not NUL-terminated, so
 # appending content that begins with (or contains) 0x00 keeps every byte.

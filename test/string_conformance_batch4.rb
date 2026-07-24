@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String conformance (KieranP #2308,#2310,#2312,#2313)
 p("hello".match?("l"))              # #2310 match? String pattern
 p("hello".match?("z"))

@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Shared-mutable strings: every in-place mutator shares through aliases and
 # containers (P1+P2 of the reference-semantics plan).
 s = "hello world"

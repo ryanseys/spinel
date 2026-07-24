@@ -130,6 +130,10 @@ static int g_emit_line = 0;
    table is unavailable (syntax-sugar changed the line count) -- and the
    whole-program gate read by the analyzer's mutable-string-buffer pass. */
 int g_frozen_string_literal = 0;
+/* Default for files with NO frozen_string_literal pragma: 1 (Spinel declares
+   fsl:true semantics; see docs/limitations.md). --disable=frozen-string-literal
+   restores the chilled-CRuby default for a whole build. */
+int g_fsl_default = 1;
 /* Per-line pragma flags for the final spliced buffer (0-based line index). */
 static unsigned char *g_fsl_lines = NULL;
 static size_t g_fsl_nlines = 0;
@@ -157,11 +161,11 @@ static int sp_scan_fsl_pragma(const char *src) {
         return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                  (c >= '0' && c <= '9') || c == '_');
       }
-      return 0;
+      return 0;   /* explicit `false` (or anything else): plain semantics */
     }
     p = nl ? nl + 1 : NULL;
   }
-  return 0;
+  return g_fsl_default;
 }
 
 /* Lines of `s` as the require splicers count them: one per '\n', plus one for

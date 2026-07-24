@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # #504. Several String methods receiving the wrong arg shape used
 # to SEGV. CRuby raises ArgumentError; spinel can't raise but we
 # should at least not crash. Codegen emits compile_arg0 -> "0"

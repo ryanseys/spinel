@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Shared-mutable strings, ivar slots (P4): an in-place-mutated ivar string
 # shares its handle with local aliases and containers; multiple instances
 # stay independent; external attr reads are safe copies.

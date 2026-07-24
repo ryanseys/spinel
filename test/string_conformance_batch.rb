@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String conformance: to_f underscores, -@ frozen, clear as a value,
 # byteslice OOB->nil / boundary / Range, === with a non-String arg.
 p "1_000.5".to_f

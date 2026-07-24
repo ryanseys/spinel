@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Shared-mutable strings: container-held aliases observe the in-place
 # transforming mutators, not just <<.
 m = "low"

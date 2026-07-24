@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # User-defined << / >> dispatch to the class method, not a raw C shift.
 class Buf
   def initialize

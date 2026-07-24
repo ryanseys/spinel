@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # In-place mutators through a poly (container-read) receiver: replace,
 # prepend, concat, clear swap or extend the shared buffer.
 arr = ["abc"]

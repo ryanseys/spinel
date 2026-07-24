@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String#replace / prepend / insert / clear mutate a string held in a
 # local variable. The analyzer widens such a local to a mutable_str
 # (or, for clear, reassigns it), so these match CRuby instead of being

@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 def plain_helper_lit
   "helper plain lit"
 end

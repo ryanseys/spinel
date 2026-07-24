@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Deep-return sharing (P6): a method that keeps its shared string AND
 # returns it -- the caller's binding is the same object.
 $store = []

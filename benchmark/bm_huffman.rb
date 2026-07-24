@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Huffman encoding benchmark
 # Counts byte frequencies in a generated text, builds a Huffman tree,
 # generates per-byte codes, and outputs the total encoded bit length.

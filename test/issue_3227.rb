@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # In-place mutation through a local alias is observed (shared String object).
 s1 = "hello"
 s2 = s1

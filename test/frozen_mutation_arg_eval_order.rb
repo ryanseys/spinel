@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Ruby evaluates a mutator's arguments before the call runs, so a
 # side-effecting argument (and an op-assign RHS) must still execute even when
 # the receiver is frozen and the mutation ultimately raises FrozenError. Each

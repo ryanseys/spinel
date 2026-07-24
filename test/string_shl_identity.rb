@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String#<< returns the receiver itself (identity), not a copy (KieranP #2307).
 # The mutable-buffer receiver appends in place; the expression value and a
 # subsequent read of the variable are the same object.

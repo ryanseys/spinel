@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # mutator × storage 最終確認 matrix
 puts "== local alias =="
 a1="x"; a2=a1; a1<<"1"; p a2

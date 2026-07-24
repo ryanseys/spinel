@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Symbol case conversions / succ preserve Symbol class through &:sym blocks
 # and variables; String#setbyte copy-on-write on value-semantics strings;
 # String#chr / #intern / #to_c.

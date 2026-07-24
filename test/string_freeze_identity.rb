@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String#freeze marks in place and returns the SAME object:
 # s.freeze.equal?(s) is true and s.frozen? flips. equal? on two string
 # expressions compares pointers (identical literals share storage, like

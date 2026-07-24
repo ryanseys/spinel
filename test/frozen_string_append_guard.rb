@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # <<, concat, and prepend on a frozen String raise FrozenError with the CRuby
 # message (including contents), whether the receiver is a chained .freeze or a
 # frozen local; a mutable string appends normally.

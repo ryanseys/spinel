@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Bundled tests:
 #   - string_lines
 #   - strings

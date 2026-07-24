@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Hash.try_convert, Array member?/entries/find_all/
 # grep(variable pattern or block)/chain, String tr_s!/delete_prefix!/
 # delete_suffix!/byteindex(Regexp)/dedup.

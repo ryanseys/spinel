@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String#[]= beyond the single integer index: Range, (start, length),
 # substring, and Regexp forms, plus the raising misses.
 s = "hello"

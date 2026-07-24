@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # The last three corner cases (P6): bytesplice/append_as_bytes share,
 # poly-container iteration mutates string elements via runtime dispatch,
 # and guard-narrowed poly receivers keep the shared handle.

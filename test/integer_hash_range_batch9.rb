@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Integer quo/gcdlcm/pow/digits edges, Hash compact!/update/store/merge!/
 # each_with_object(String memo), and endless Range#to_a.
 

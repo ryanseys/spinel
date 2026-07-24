@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String conformance (KieranP #2369, #2370)
 a = "abc".freeze
 p((-a).equal?(a))              # #2369 frozen receiver: -@ is identity

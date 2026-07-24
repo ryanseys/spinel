@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Shared-mutable strings, phase 3: a container-stored string shares its
 # sp_String handle, so later in-place mutation is visible through the
 # container and equal? is handle identity.

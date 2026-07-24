@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Iteration-variable mutation (P6): the block binding holds the element
 # handle, so in-place mutators reach the container's elements.
 arr = ["a", "b"]

@@ -219,6 +219,14 @@ int main(int argc, char **argv) {
     else if (!strncmp(a, "--cc=", 5))     { cc_cmd = a + 5; i++; }
     else if (!strncmp(a, "--rbs=", 6))    { rbs_dir = a + 6; i++; }
     else if (sp_streq(a, "--rbs"))         { if (++i < argc) rbs_dir = argv[i]; i++; }
+    else if (sp_streq(a, "--disable=frozen-string-literal") ||
+             sp_streq(a, "--disable-frozen-string-literal")) {
+      extern int g_fsl_default; g_fsl_default = 0; i++;
+    }
+    else if (sp_streq(a, "--enable=frozen-string-literal") ||
+             sp_streq(a, "--enable-frozen-string-literal")) {
+      extern int g_fsl_default; g_fsl_default = 1; i++;
+    }
     else if (!strncmp(a, "--int-overflow=", 15)) { int_overflow = a + 15; i++; }
     else if (sp_streq(a, "--int-overflow")) { if (++i < argc) int_overflow = argv[i]; i++; }
     else if (sp_streq(a, "-o"))            { if (++i < argc) output = argv[i]; i++; }

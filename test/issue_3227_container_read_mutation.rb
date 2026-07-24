@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Mutation THROUGH a container read: the element is the shared handle, so
 # the container (and any source local) observes it.
 arr = ["hello", "world"]

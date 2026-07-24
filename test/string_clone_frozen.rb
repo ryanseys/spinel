@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # String#clone preserves the frozen state; String#dup always returns unfrozen.
 def id(x) = x
 

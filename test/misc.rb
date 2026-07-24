@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # Test miscellaneous features: is_a?, respond_to?, String <<, Array#reduce, upto/downto
 
 # String << (append/concat mutating)

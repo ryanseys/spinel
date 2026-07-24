@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # In-place gsub!/sub!/tr!/delete!/slice! reassign the transformed value
 # (statement position; the nil-when-unchanged return is not modeled, like
 # the other bang methods).
