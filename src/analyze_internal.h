@@ -139,6 +139,14 @@ extern int g_yvt_unify_all;
 TyKind method_call_ret(Compiler *c, int mi, int call_id);
 /* is_proc_constant / is_proc_literal are declared in analyze.h (codegen needs them). */
 int is_proc_create(Compiler *c, int id);
+
+/* Shared cached local-write index (analyze_pass.c): bucket walk over
+   (scope, name) for "every write of local X in scope S" queries, instead of
+   a whole-table rescan per query. Callers must still confirm scope/name
+   (hash collisions) and node kind on each record. */
+int lw_shared_first(Compiler *c, const char *name, int scope);
+int lw_shared_node(int rec);
+int lw_shared_next(int rec);
 TyKind proc_node_ret(Compiler *c, int create);
 TyKind proc_ret_of(Compiler *c, int node);
 TyKind proc_call_ret(Compiler *c, int recv);

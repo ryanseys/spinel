@@ -228,10 +228,15 @@ int infer_param_hash_value(Compiler *c) {
    assigns an empty `{}` hash literal -- i.e. it is a hash container whose
    contents come from elsewhere (passed by reference into a callee). Such a
    local can safely adopt a hash type from a parameter it is passed to. */
+/* Shared cached write-index accessors (defined after the LWIndex machinery
+   below): bucket walk over (scope, name) instead of a whole-table rescan per
+   query. */
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
   const NodeTable *nt = c->nt;
   int saw = 0;
-  for (int id = 0; id < nt->count; id++) {
+  int si = (int)(sc - c->scopes);
+  for (int r = lw_shared_first(c, name, si); r >= 0; r = lw_shared_next(r)) {
+    int id = lw_shared_node(r);
     if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
     const char *wn = nt_str(nt, id, "name");
     if (!wn || !sp_streq(wn, name) || comp_scope_of(c, id) != sc) continue;
@@ -251,7 +256,9 @@ int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
 static int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name) {
   const NodeTable *nt = c->nt;
   int saw = 0;
-  for (int id = 0; id < nt->count; id++) {
+  int si = (int)(sc - c->scopes);
+  for (int r = lw_shared_first(c, name, si); r >= 0; r = lw_shared_next(r)) {
+    int id = lw_shared_node(r);
     if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
     const char *wn = nt_str(nt, id, "name");
     if (!wn || !sp_streq(wn, name) || comp_scope_of(c, id) != sc) continue;
@@ -288,11 +295,21 @@ static unsigned lw_hash(const char *name, int scope) {
   return h;
 }
 
+static const NodeKind lw_write_kinds[4] = {
+  NK_LocalVariableWriteNode, NK_LocalVariableOrWriteNode,
+  NK_LocalVariableAndWriteNode, NK_LocalVariableOperatorWriteNode};
+
 static void lw_index_build(Compiler *c, LWIndex *ix) {
   const NodeTable *nt = c->nt;
+  /* Iterate only the write kinds (kind-grouped id lists) rather than the whole
+     table: the write population is a small fraction of the node count, and
+     this build runs per pass -- and per query while the scope index is
+     unfrozen. Chain order becomes kind-grouped instead of globally ascending;
+     every consumer is an order-independent existence/uniqueness walk. */
   int n = 0;
-  for (int id = 0; id < nt->count; id++)
-    if (lw_is_write_kind(nt_kind(nt, id))) n++;
+  for (int t = 0; t < 4; t++) {
+    int kn; nt_nodes_of_kind(nt, lw_write_kinds[t], &kn); n += kn;
+  }
   int cap = 16;
   while (cap < n * 2) cap <<= 1;
   ix->cap = cap;
@@ -301,15 +318,18 @@ static void lw_index_build(Compiler *c, LWIndex *ix) {
   ix->head = (int *)malloc(sizeof(int) * cap);
   for (int i = 0; i < cap; i++) ix->head[i] = -1;
   int k = 0;
-  for (int id = 0; id < nt->count; id++) {
-    if (!lw_is_write_kind(nt_kind(nt, id))) continue;
-    const char *nm = nt_str(nt, id, "name");
-    int sc = (int)(comp_scope_of(c, id) - c->scopes);
-    unsigned h = lw_hash(nm, sc) & (unsigned)(cap - 1);
-    ix->node[k] = id;
-    ix->next[k] = ix->head[h];
-    ix->head[h] = k;
-    k++;
+  for (int t = 0; t < 4; t++) {
+    int kn; const int *ids = nt_nodes_of_kind(nt, lw_write_kinds[t], &kn);
+    for (int j = 0; j < kn; j++) {
+      int id = ids[j];
+      const char *nm = nt_str(nt, id, "name");
+      int sc = (int)(comp_scope_of(c, id) - c->scopes);
+      unsigned h = lw_hash(nm, sc) & (unsigned)(cap - 1);
+      ix->node[k] = id;
+      ix->next[k] = ix->head[h];
+      ix->head[h] = k;
+      k++;
+    }
   }
 }
 
@@ -322,6 +342,31 @@ static void lw_index_free(LWIndex *ix) {
 static int lw_index_first(const LWIndex *ix, const char *name, int scope) {
   return ix->head[lw_hash(name, scope) & (unsigned)(ix->cap - 1)];
 }
+
+/* Long-lived LWIndex behind the local_all_writes_empty_* queries above.
+   Rebuilt when the node table or scope shape moves (append-only table, so
+   count is the growth signal; the scope-index epoch covers renames/reshapes
+   that re-home writes without growing the table). */
+static LWIndex lw_shared_ix;
+static const NodeTable *lw_shared_nt = NULL;
+static int lw_shared_ntc = -1;
+static unsigned lw_shared_gen = 0;
+int lw_shared_first(Compiler *c, const char *name, int scope) {
+  unsigned gen = comp_scope_index_gen();
+  /* While unfrozen, scope shape can move without the epoch ticking; rebuild
+     per query (the build is one table walk -- the same order as the scan
+     these helpers used to do, so the unfrozen phases pay what they always
+     paid while the frozen fixpoint gets the cached bucket walk). */
+  if (!comp_scope_index_is_frozen() ||
+      lw_shared_nt != c->nt || lw_shared_ntc != c->nt->count || lw_shared_gen != gen) {
+    if (lw_shared_nt) lw_index_free(&lw_shared_ix);
+    lw_index_build(c, &lw_shared_ix);
+    lw_shared_nt = c->nt; lw_shared_ntc = c->nt->count; lw_shared_gen = gen;
+  }
+  return lw_index_first(&lw_shared_ix, name, scope);
+}
+int lw_shared_node(int rec) { return lw_shared_ix.node[rec]; }
+int lw_shared_next(int rec) { return lw_shared_ix.next[rec]; }
 
 /* Per-pass index of instance-variable write nodes keyed by ivar name -- the
    ivar analogue of LWIndex. The usage-driven promotion scans below ask "does

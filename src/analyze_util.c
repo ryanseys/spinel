@@ -347,10 +347,12 @@ static int hash_new_default_arg_compute(Compiler *c, int recv) {
     const char *vn = nt_str(nt, recv, "name");
     if (!vn) return -1;
     Scope *sc = comp_scope_of(c, recv);
+    if (!sc) return -1;
     int found = -1;
-    for (int w = 0; w < nt->count; w++) {
-      const char *wty = nt_type(nt, w);
-      if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
+    for (int r = lw_shared_first(c, vn, (int)(sc - c->scopes)); r >= 0;
+         r = lw_shared_next(r)) {
+      int w = lw_shared_node(r);
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       int val = nt_ref(nt, w, "value");
