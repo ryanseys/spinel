@@ -9,3 +9,8 @@ arr[0].concat("!!")
 p arr
 arr[0].clear
 p arr
+arr2 = ["axa"]
+arr2[0].gsub!(/x/, "Y")
+p arr2
+arr2[0].sub!(/a/, "b")
+p arr2

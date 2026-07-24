@@ -262,8 +262,7 @@ representation (no cost; a hash string KEY is snapshot-frozen on store,
 exactly CRuby's dup-and-freeze).
 
 Known corner residues (conservative, fall back to the pre-sharing copy
-behavior rather than misbehaving): `bytesplice` and a regexp-argument
-`gsub!` reached through an untyped (poly) receiver; iteration-variable
+behavior rather than misbehaving): `bytesplice`; iteration-variable
 sharing requires the receiver's elements to be provably strings; a slot
 pinned by an `--rbs` seed keeps its declared representation.
 

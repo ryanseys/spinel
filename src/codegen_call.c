@@ -3242,6 +3242,20 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     int pbi = -1;
     for (int j = 0; PB[j].bang; j++)
       if (sp_streq(name, PB[j].bang) && argc == PB[j].an) { pbi = j; break; }
+    /* argument suitability: a regexp literal is admitted only as
+       gsub!/sub!'s pattern (routed through the compiled-pattern helper);
+       any other non-string argument falls through to the default arm
+       rather than coercing into a const char* slot. */
+    int pb_re = 0;
+    if (pbi >= 0) {
+      for (int j = 0; j < argc; j++) {
+        if (j == 0 && re_lit_index(c, argv[0]) >= 0 &&
+            (sp_streq(name, "gsub!") || sp_streq(name, "sub!"))) { pb_re = 1; continue; }
+        TyKind at2 = comp_ntype(c, argv[j]);
+        if (at2 != TY_STRING && at2 != TY_STRBUF && at2 != TY_UNKNOWN) { pbi = -1; break; }
+        if (re_lit_index(c, argv[j]) >= 0) { pbi = -1; break; }
+      }
+    }
     if (pbi >= 0) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
@@ -3249,11 +3263,24 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_RbVal _r%d; if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) {"
                     " sp_String *_m%d = (sp_String *)_t%d.v.p;"
                     " const char *_o%d = sp_str_concat(sp_String_cstr(_m%d), (&(\"\\xff\")[1]));"
-                    " const char *_n%d = sp_str_%s(_o%d",
-                 tv, tv, tv, tv, tv, tv, tv, tv, PB[pbi].base, tv);
-      for (int j = 0; j < argc; j++) {
-        buf_puts(b, ", ");
-        emit_str_expr(c, argv[j], b);
+                    " const char *_n%d = ",
+                 tv, tv, tv, tv, tv, tv, tv, tv);
+      if (pb_re) {
+        /* regex pattern: the compiled-pattern helper (gsub -> sp_re_gsub) */
+        buf_printf(b, "sp_re_%s(sp_re_pat_%d, _o%d",
+                   sp_streq(name, "gsub!") ? "gsub" : "sub",
+                   re_lit_index(c, argv[0]), tv);
+        for (int j = 1; j < argc; j++) {
+          buf_puts(b, ", ");
+          emit_str_expr(c, argv[j], b);
+        }
+      }
+      else {
+        buf_printf(b, "sp_str_%s(_o%d", PB[pbi].base, tv);
+        for (int j = 0; j < argc; j++) {
+          buf_puts(b, ", ");
+          emit_str_expr(c, argv[j], b);
+        }
       }
       buf_printf(b, "); sp_String_set_bin(_m%d, _n%d); ", tv, tv);
       if (PB[pbi].nil_nc)
