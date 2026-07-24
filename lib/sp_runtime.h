@@ -2538,7 +2538,14 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
       return a;
     }
     if (a.cls_id == SP_BUILTIN_STR_ARRAY) {
-      sp_StrArray_push((sp_StrArray *)a.v.p, b.tag == SP_TAG_STR ? (const char *)b.v.p : sp_str_empty);
+      /* a shared-mutable handle pushed into a typed string array stores its
+         CONTENTS (the typed storage cannot hold the handle); an empty push
+         here silently blanked the element (#3327) */
+      const char *_es = b.tag == SP_TAG_STR ? (const char *)b.v.p
+                      : (b.tag == SP_TAG_OBJ && b.cls_id == SP_BUILTIN_STRBUF && b.v.p)
+                          ? sp_String_cstr((sp_String *)b.v.p)
+                          : sp_str_empty;
+      sp_StrArray_push((sp_StrArray *)a.v.p, _es);
       return a;
     }
     if (a.cls_id == SP_BUILTIN_STRBUF && a.v.p) {
