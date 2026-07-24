@@ -626,6 +626,52 @@ int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
    constant, a registered class/module, or a well-known builtin the
    DefinedNode emit answers "constant" for (keep the list in sync with the
    ConstantReadNode arm in codegen_expr.c). */
+/* Is `cn` defined at the TOP LEVEL (a `::cn` anchor's requirement)? The
+   class/constant tables are flat by short name -- a module nested inside
+   another module registers under its own name -- so `defined?(::Rails)`
+   inside `module Underscore::Rails` must not resolve through the nested
+   entry. Walks the AST: a Class/Module/ConstantWrite of that name counts
+   only when not enclosed by another class/module body. Builtins count. */
+static int const_top_level_walk(Compiler *c, int node, const char *cn, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || !nt_type(nt, node)) return 0;
+  const char *ty = nt_type(nt, node);
+  int is_mod = sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode");
+  if (is_mod || sp_streq(ty, "ConstantWriteNode")) {
+    const char *nm = NULL;
+    if (is_mod) {
+      int cp = nt_ref(nt, node, "constant_path");
+      /* a qualified definition (`module A::B`) defines B under A, so only
+         an unqualified path can define the TOP-LEVEL name */
+      if (cp >= 0 && nt_type(nt, cp) && sp_streq(nt_type(nt, cp), "ConstantReadNode"))
+        nm = nt_str(nt, cp, "name");
+    }
+    else nm = nt_str(nt, node, "name");
+    if (nm && depth == 0 && sp_streq(nm, cn)) return 1;
+  }
+  int ndepth = depth + (is_mod ? 1 : 0);
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (const_top_level_walk(c, nt_ref_at(nt, node, i), cn, ndepth)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int k = 0; k < n; k++)
+      if (const_top_level_walk(c, ids[k], cn, ndepth)) return 1;
+  }
+  return 0;
+}
+static int const_name_resolves_top_level(Compiler *c, const char *cn) {
+  if (!cn) return 0;
+  static const char *const builtins2[] = {
+    "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
+    "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
+    "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
+    "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
+    "STDOUT", "STDERR", "STDIN", NULL };
+  for (int bi = 0; builtins2[bi]; bi++) if (sp_streq(cn, builtins2[bi])) return 1;
+  return const_top_level_walk(c, c->nt->root_id, cn, 0);
+}
 static int const_name_resolves(Compiler *c, const char *cn) {
   if (!cn) return 0;
   if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) return 1;
@@ -670,7 +716,7 @@ int comp_defined_guard_false(Compiler *c, int pred) {
     for (int seg = v; ; ) {
       if (!const_name_resolves(c, nt_str(nt, seg, "name"))) return 1;
       int par = nt_ref(nt, seg, "parent");
-      if (par < 0) return 0;                     /* ::Root form, all resolved */
+      if (par < 0) return !const_name_resolves_top_level(c, nt_str(nt, seg, "name"));
       const char *pty = nt_type(nt, par);
       if (pty && sp_streq(pty, "ConstantPathNode")) { seg = par; continue; }
       if (pty && sp_streq(pty, "ConstantReadNode"))
@@ -701,7 +747,9 @@ int comp_defined_guard_true(Compiler *c, int pred) {
     for (int seg = v; ; ) {
       if (!const_name_resolves(c, nt_str(nt, seg, "name"))) return 0;
       int par = nt_ref(nt, seg, "parent");
-      if (par < 0) return 1;                     /* ::Root form, all resolved */
+      /* `::Root` anchor: the root must be defined at the TOP level, not
+         through a same-named nested module (#3320) */
+      if (par < 0) return const_name_resolves_top_level(c, nt_str(nt, seg, "name"));
       const char *pty = nt_type(nt, par);
       if (pty && sp_streq(pty, "ConstantPathNode")) { seg = par; continue; }
       if (pty && sp_streq(pty, "ConstantReadNode"))
