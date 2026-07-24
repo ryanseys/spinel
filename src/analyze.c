@@ -7981,6 +7981,30 @@ void analyze_program(Compiler *c) {
      that the yields flags are final; it only sets is_cell and is idempotent. */
   if (lowered_recursive_yield) mark_proc_captures(c);
 
+  /* A shared-mutable local that turned out to be CAPTURED (is_cell was set
+     by the post-fixpoint capture pass, after the promotion ran) falls back
+     to the plain value-copy representation: the cell machinery has no
+     sp_String* cell yet (#3227 P6). Clears the read marks so container
+     stores box the copy again. */
+  for (int s2 = 0; s2 < c->nscopes; s2++) {
+    Scope *sc2 = &c->scopes[s2];
+    for (int i2 = 0; i2 < sc2->nlocals; i2++) {
+      LocalVar *lv2 = &sc2->locals[i2];
+      if (!lv2->is_cell || (!lv2->str_shared && lv2->type != TY_STRBUF)) continue;
+      if (lv2->type == TY_STRBUF) lv2->type = TY_STRING;
+      if (!lv2->str_shared) continue;
+      lv2->str_shared = 0;
+      for (int nd = 0; nd < c->nt->count; nd++) {
+        if (!c->strbuf_box[nd]) continue;
+        if (nt_kind(c->nt, nd) != NK_LocalVariableReadNode) continue;
+        const char *ndn = nt_str(c->nt, nd, "name");
+        if (!ndn || !lv2->name || !sp_streq(ndn, lv2->name)) continue;
+        if (comp_scope_of(c, nd) != sc2) continue;
+        c->strbuf_box[nd] = 0;
+      }
+    }
+  }
+
   /* Post-fixpoint: propagate include-copy param types back to the source
      scope so the final infer_type scan (which uses comp_scope_of, mapping
      body nodes to the ORIGINAL scope) sees the correctly-typed params.
