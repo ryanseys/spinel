@@ -4014,6 +4014,37 @@ int desugar_compose_method_operand(Compiler *c) {
   return changed;
 }
 
+/* method.curry -> method.to_proc.curry: the Proc curry machinery (arity
+   typing, boxed accumulation, param widening) then applies unchanged. The
+   rewrite fires once: afterwards curry's receiver is the synthesized
+   to_proc call, which infers TY_PROC. */
+int desugar_method_curry(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "curry")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    if (infer_type(c, recv) != TY_METHOD) continue;
+    int base = nt->count;
+    int tp = nt_new_node(nt, "CallNode");
+    if (tp < 0) continue;
+    nt_node_set_ref(nt, tp, "receiver", recv);
+    nt_node_set_str(nt, tp, "name", "to_proc");
+    nt_node_set_ref(nt, tp, "arguments", -1);
+    nt_node_set_ref(nt, tp, "block", -1);
+    nt_node_set_ref(nt, id, "receiver", tp);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* reduce(&pr) / inject(init, &pr): forward the proc through a literal
    two-param block calling it -- `{ |__fa, __fb| pr.call(__fa, __fb) }` -- so
    the fold machinery sees an ordinary block (#2684). The fold emitter places
