@@ -2640,6 +2640,9 @@ else if (orecv >= 0 && onm) {
     LocalVar *lv = scope_local(bs, locals.v[i]);
     /* a celled local is a captured var (accessed via _cap), not a fn-local */
     /* skip virtual &block slots (TY_UNKNOWN) but allow rescue-bind vars (TY_EXCEPTION) */
+    /* a reassigned PARAMETER is already bound by the arg prologue above --
+       re-declaring it is a C redefinition (#3309) */
+    if (nameset_has(&params, locals.v[i])) continue;
     if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) declare_local(c, pb, lv, 0);
   }
   if (ret_ptr) {

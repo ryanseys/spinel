@@ -7734,8 +7734,10 @@ else {
     /* break inside a lambda body: a return from the lambda (CRuby). A break-
        capable lambda's ret is widened to poly, so the value returns through
        the proc ABI's _sp_proc_poly_ret slot (g_result_var) with `return 0`;
-       ensure deferral still applies through emit_return otherwise. */
-    if (g_proc_body_kind == 1) {
+       ensure deferral still applies through emit_return otherwise. Inside a
+       C loop within the lambda (`loop { break }`) the break exits THAT loop,
+       not the lambda -- fall through to the plain C break below. */
+    if (g_proc_body_kind == 1 && g_c_loop_depth == 0) {
       if (g_result_var && g_ensure_depth == 0) {
         int bargs = nt_ref(nt, id, "arguments");
         int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
@@ -7758,8 +7760,9 @@ else {
       return;
     }
     /* break inside a non-lambda proc body: throw to the captured creating
-       scope's serial; a dead/foreign scope raises LocalJumpError. */
-    if (g_proc_body_kind == 2 && g_proc_brk_home) {
+       scope's serial; a dead/foreign scope raises LocalJumpError. A C loop
+       inside the proc owns its own break, as above. */
+    if (g_proc_body_kind == 2 && g_c_loop_depth == 0 && g_proc_brk_home) {
       int bargs = nt_ref(nt, id, "arguments");
       int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
       emit_indent(b, indent); buf_printf(b, "sp_brk_throw(%s, ", g_proc_brk_home);
