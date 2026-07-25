@@ -16464,17 +16464,29 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else { buf_puts(b, "(~"); emit_expr(c, recv, b); buf_puts(b, ")"); }
     return;
   }
-  /* poly numeric predicates: coerce the poly value to int and test. */
+  /* poly sign predicates: test the value AS A DOUBLE. Coercing to int first
+     truncates, so a poly holding 0.004 answered zero? -> true and positive? ->
+     false. Every numeric tag sp_poly_to_f understands (Integer, Float, Bigint,
+     Rational) keeps both its sign and its zeroness through the conversion:
+     rounding a nonzero integer to double can neither reach zero nor flip sign.
+     NaN compares false against 0.0 in all three, which is what Ruby answers. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
-      (sp_streq(name, "even?") || sp_streq(name, "odd?") || sp_streq(name, "zero?") ||
-       sp_streq(name, "positive?") || sp_streq(name, "negative?"))) {
+      (sp_streq(name, "zero?") || sp_streq(name, "positive?") || sp_streq(name, "negative?"))) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ mrb_float _t%d = sp_poly_to_f(", t); emit_expr(c, recv, b); buf_puts(b, "); ");
+    if (sp_streq(name, "zero?")) buf_printf(b, "(_t%d == 0.0); })", t);
+    else if (sp_streq(name, "positive?")) buf_printf(b, "(_t%d > 0.0); })", t);
+    else buf_printf(b, "(_t%d < 0.0); })", t);
+    return;
+  }
+  /* poly parity predicates: Integer-only in Ruby, so truncation cannot lose a
+     value that legally reaches them and the int coercion stays correct. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
+      (sp_streq(name, "even?") || sp_streq(name, "odd?"))) {
     int t = ++g_tmp;
     buf_printf(b, "({ mrb_int _t%d = sp_poly_to_i(", t); emit_expr(c, recv, b); buf_puts(b, "); ");
     if (sp_streq(name, "even?")) buf_printf(b, "(_t%d %% 2 == 0); })", t);
-    else if (sp_streq(name, "odd?")) buf_printf(b, "(_t%d %% 2 != 0); })", t);
-    else if (sp_streq(name, "zero?")) buf_printf(b, "(_t%d == 0); })", t);
-    else if (sp_streq(name, "positive?")) buf_printf(b, "(_t%d > 0); })", t);
-    else buf_printf(b, "(_t%d < 0); })", t);
+    else buf_printf(b, "(_t%d %% 2 != 0); })", t);
     return;
   }
 
