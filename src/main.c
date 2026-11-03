@@ -513,7 +513,8 @@ static void usage(void) {
     "              method has no frame in Exception#backtrace; --debug keeps them)\n"
     "  --timing    Report on stderr how long each compile phase took (the\n"
     "              analysis, its passes, the C generation, the cc steps);\n"
-    "              the same as SP_TIMING=1 (docs/profiling.md)\n"
+    "              the same as SP_TIMING=1 (docs/profiling.md);\n"
+    "              --timing=cpu (SP_TIMING=cpu) reports CPU time in its place\n"
     "  --profile   Profiling build: -O2 -g -fno-omit-frame-pointer, unstripped,\n"
     "              and writes <out>.symbols.json (perf record -g ready)\n"
     "  --debug     Debug build: step through the .rb in gdb/lldb (#line, -g -O0)\n"
@@ -1043,6 +1044,7 @@ int main(int argc, char **argv) {
     else if (parse_flag(a))                { i++; }
     else if (sp_streq(a, "-c"))            { c_only = 1; i++; }
     else if (sp_streq(a, "--timing"))      { set_env("SP_TIMING", "1"); i++; }
+    else if (sp_streq(a, "--timing=cpu"))  { set_env("SP_TIMING", "cpu"); i++; }
     else if (sp_streq(a, "-I"))            { if (++i < argc) sp_add_feature_root(argv[i]); i++; }
     else if (!strncmp(a, "-I", 2) && a[2]) { sp_add_feature_root(a + 2); i++; }
     else if (sp_streq(a, "-S"))            { stdout_mode = 1; i++; }
