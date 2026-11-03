@@ -12655,7 +12655,7 @@ int a_proc_params_node(Compiler *c, int create); /* forward decl */
    single `target(...)` call) starting at `mi` until reaching the method that
    actually yields (or owns the &block). Returns that method's index, or -1.
    Lets a block passed to a forwarder be typed from the real yielder's args. */
-static int forwarding_yield_target(Compiler *c, int mi, int depth) {
+int forwarding_yield_target(Compiler *c, int mi, int depth) {
   if (mi < 0 || depth > 16) return -1;
   Scope *m = &c->scopes[mi];
   if (m->yields || (m->blk_param && m->blk_param[0])) return mi;
@@ -17202,9 +17202,11 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
     if (bx >= 0 && nt_kind(nt, bx) == NK_CallNode && nt_str(nt, bx, "name") &&
         sp_streq(nt_str(nt, bx, "name"), "to_proc") && nt_ref(nt, bx, "arguments") < 0)
       bx = nt_ref(nt, bx, "receiver");
-    int tmi = bx >= 0 && nt_kind(nt, bx) == NK_CallNode ? method_obj_target_mi(c, bx) : -1;
+    /* ... and `rd = method(:m); run(s, &rd)` names it through the local */
+    int bmn = bx >= 0 ? method_recv_node(c, bx) : -1;
+    int tmi = bmn >= 0 ? method_obj_target_mi(c, bmn) : -1;
     int ymi = -1;
-    if (tmi >= 0 && !method_call_param_shift(c, bx, tmi)) {
+    if (tmi >= 0 && !method_call_param_shift(c, bmn, tmi)) {
       if (recv < 0) ymi = comp_self_call_mi(c, id, name);
       else if (infer_type(c, recv) == TY_STRING || infer_type(c, recv) == TY_STRBUF) ymi = cplan_user_fresh(c, id)->mi;
       else if (sp_streq(name, "new") && (nt_kind(nt, recv) == NK_ConstantReadNode ||

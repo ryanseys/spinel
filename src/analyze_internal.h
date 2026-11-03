@@ -655,6 +655,7 @@ void infer_bigint_loop_locals(Compiler *c);
 void block_sites_index(Compiler *c);
 int block_sites(Compiler *c, int si, const int **sites);
 int block_site_args(Compiler *c, int si, int site, int call);
+int forwarding_yield_target(Compiler *c, int mi, int depth);
 int a_super_target(Compiler *c, Scope *m);
 int a_is_fiber_or_gen_create(Compiler *c, int id);   /* analyze.c */
 /* A block's (or a proc literal's) parameters as its binders count them:
