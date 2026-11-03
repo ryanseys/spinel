@@ -211,7 +211,11 @@ spinel-timing: phase=frontend ms=4.4
 spinel-timing: phase=analysis_fixpoint ms=3.2 rounds=4
 ```
 
-`ms` is wall time on a monotonic clock. Phases, in the order they finish:
+`ms` is wall time on a monotonic clock. `--timing=cpu` (`SP_TIMING=cpu`)
+reports the compiler process's CPU time in its place, which a loaded host does
+not inflate: on a host running other builds, a phase's wall time can be five
+times its CPU time. The `cc_*` phases run their compiles in child processes, so
+under `--timing=cpu` they read close to 0. Phases, in the order they finish:
 
 | phase | covers |
 |---|---|
