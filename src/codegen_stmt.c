@@ -14585,9 +14585,15 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
         /* (one-String mode: a String of either face, `return (@iv || x)`,
            into the bytes the funnel holds) */
         else if (g_ret_type == TY_STRING) {
+          /* (a new String clears the channel and a conditional publishes
+             its bytes' handle, as the flat return's do) */
+          int unpub = one_tail_fresh(c, a[0]), pub_b = !unpub && one_tail_cond(c, a[0]);
+          if (unpub) buf_puts(b, "sp_strface_unpub(");
+          if (pub_b) buf_puts(b, "sp_strface_pub_b(");
           buf_puts(b, "SP_STR_B(");
           emit_tail_value(c, a[0], b);
           buf_puts(b, ")");
+          if (unpub || pub_b) buf_puts(b, ")");
         }
         else {
           /* a subclass through an ancestor-typed slot, as the flat return
@@ -14685,10 +14691,14 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
     if (g_ret_oint && oint_kind(g_ret_type)) buf_puts(b, oint_ctype(g_ret_type));
     else emit_ctype(c, g_ret_type == TY_UNKNOWN ? TY_INT : g_ret_type, b);
     buf_printf(b, " _t%d = ", tr);
-    /* (one representation: a String return is bytes, read through SP_STR_B) */
-    int one_ret_b = g_ret_type == TY_STRING;
+    /* (one representation: a String return is bytes, read through SP_STR_B;
+       a handle slot's is the handle, which it publishes) */
+    int one_ret_b = g_ret_type == TY_STRING, one_ret_h = g_ret_type == TY_STRBUF;
     int one_unpub = one_ret_b && one_tail_fresh(c, a[0]);
+    int one_pub_b = one_ret_b && !one_unpub && one_tail_cond(c, a[0]);
     if (one_unpub) buf_puts(b, "sp_strface_unpub(");
+    if (one_pub_b) buf_puts(b, "sp_strface_pub_b(");
+    if (one_ret_h) buf_puts(b, "sp_strface_pub_h(SP_STR_HDL(");
     if (one_ret_b) buf_puts(b, "SP_STR_B(");
     if (g_ret_oint && oint_kind(g_ret_type)) emit_oint_expr(c, a[0], g_ret_type, b);
     else if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
@@ -14701,7 +14711,8 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
       emit_tail_value(c, a[0], b);
     }
     if (one_ret_b) buf_puts(b, ")");
-    if (one_unpub) buf_puts(b, ")");
+    if (one_ret_h) buf_puts(b, "))");
+    if (one_unpub || one_pub_b) buf_puts(b, ")");
     buf_puts(b, "; ");
     emit_frame_unwind(b, 0, NULL);
     buf_printf(b, "return _t%d; }\n", tr);
@@ -14748,10 +14759,14 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "return ");
     /* (one representation: a String return is bytes; a value of either face
        is read through SP_STR_B, a handle's view keeping it alive through
-       the caller's root as a fresh String's bytes do) */
-    int one_ret_b = g_ret_type == TY_STRING;
+       the caller's root as a fresh String's bytes do. A handle slot's is the
+       handle, which it publishes, as the tail does) */
+    int one_ret_b = g_ret_type == TY_STRING, one_ret_h = g_ret_type == TY_STRBUF;
     int one_unpub = one_ret_b && one_tail_fresh(c, a[0]);
+    int one_pub_b = one_ret_b && !one_unpub && one_tail_cond(c, a[0]);
     if (one_unpub) buf_puts(b, "sp_strface_unpub(");
+    if (one_pub_b) buf_puts(b, "sp_strface_pub_b(");
+    if (one_ret_h) buf_puts(b, "sp_strface_pub_h(SP_STR_HDL(");
     if (one_ret_b) buf_puts(b, "SP_STR_B(");
     TyKind r0 = ret_arg_ntype(c, a[0]);
     if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
@@ -14767,7 +14782,8 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
       emit_tail_value(c, a[0], b);   /* coerces an unresolved TY_UNKNOWN token */
     }
     if (one_ret_b) buf_puts(b, ")");
-    if (one_unpub) buf_puts(b, ")");
+    if (one_ret_h) buf_puts(b, "))");
+    if (one_unpub || one_pub_b) buf_puts(b, ")");
     buf_puts(b, ";\n");
   }
   else if (g_ret_type == TY_POLY) buf_puts(b, "return sp_box_nil();\n");
@@ -14779,6 +14795,8 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
      bare `return;` (illegal in a non-void C function -- e.g. `Db.close` returns
      a nullable DbPool*, where nil is NULL). default_value already yields the
      by-value nil form for struct types (e.g. (sp_Range){0}). */
+  /* (a handle slot's nil is published as its handle is) */
+  else if (g_ret_type == TY_STRBUF) buf_puts(b, "return sp_strface_pub_h(NULL);\n");
   else { buf_puts(b, "return "); emit_ret_nil(c, g_ret_type, b); buf_puts(b, ";\n"); }
 }
 
@@ -22522,7 +22540,9 @@ static void emit_tail_slot(Compiler *c, TyKind slot, const char *ref, Buf *b, in
   if (want_poly && slot != TY_POLY) emit_boxed_text(c, slot, ref, &bx);
   else if (!want_poly && slot == TY_POLY && ret != TY_POLY) emit_unbox_ret_text(c, ret, ref, &bx, unbox_ret_pub(c, ret, node));
   else buf_puts(&bx, ref);
-  buf_printf(b, "%s;\n", bx.p ? bx.p : "sp_box_nil()");
+  /* (a handle slot's answer is published as it returns) */
+  int pub = !g_result_var && ret == TY_STRBUF && slot == TY_STRBUF;
+  buf_printf(b, pub ? "sp_strface_pub_h(%s);\n" : "%s;\n", bx.p ? bx.p : "sp_box_nil()");
   free(bx.p);
 }
 
@@ -22661,6 +22681,10 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       else if (slot_t == TY_POLY_ARRAY && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY))
         buf_printf(b, "sp_PolyArray_from_%s_array(_t%d);\n",
                    rt == TY_INT_ARRAY ? "int" : rt == TY_STR_ARRAY ? "str" : "float", t);
+      /* (a handle slot's answer is published as it returns: the ensure's
+         reads, and each arm's, published others) */
+      else if (!g_result_var && g_ret_type == TY_STRBUF && rt == TY_STRBUF)
+        buf_printf(b, "sp_strface_pub_h(_t%d);\n", t);
       else buf_printf(b, "_t%d;\n", t);
       return;
     }
@@ -22999,7 +23023,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       TyKind tct = repr_of(c, id).as_ty;
       if ((g_result_var ? g_result_oint : g_ret_oint) && repr_of(c, _rr).kind != RK_BOXED)
         emit_oint_expr(c, _rr, tct, b);
-      else emit_tail_recv_value(c, id, _rr, b);
+      else {
+        /* (a handle slot's answer is published as it returns) */
+        int pub = !g_result_var && g_ret_type == TY_STRBUF;
+        if (pub) buf_puts(b, "sp_strface_pub_h(");
+        emit_tail_recv_value(c, id, _rr, b);
+        if (pub) buf_puts(b, ")");
+      }
       buf_puts(b, ";\n");
     }
     else if (_named) {
@@ -23059,6 +23089,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       /* (--share-strings: a result variable read as the handle, a begin's
          under the demand, takes the receiver's handle) */
       else if (g_result_var && g_result_ty == TY_STRBUF) emit_strbuf_handle_of(c, _sbase, b);
+      /* (...and so does a handle slot, which publishes it as it returns) */
+      else if (!g_result_var && g_ret_type == TY_STRBUF) {
+        buf_puts(b, "sp_strface_pub_h(");
+        emit_strbuf_handle_of(c, _sbase, b);
+        buf_puts(b, ")");
+      }
       else emit_expr(c, _sbase, b);
       buf_puts(b, ";\n");
       return;
@@ -23190,14 +23226,18 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     /* (a result slot too: the function returns the slot as it is, and a
        read in the body, a rescue's or an earlier statement's, published) */
     int one_unpub = one_tail_b && one_tail_fresh(c, id);
-    /* (...and in a handle slot as its handle) */
+    int one_pub_b = one_tail_b && !one_unpub && one_tail_cond(c, id);
+    /* (...and in a handle slot as its handle, which the return publishes) */
     int one_tail_h = !want_poly && tail_slot_ty == TY_STRBUF;
+    int one_pub_h = one_tail_h && !g_result_var;
     if (one_unpub) buf_puts(b, "sp_strface_unpub(");
+    if (one_pub_b) buf_puts(b, "sp_strface_pub_b(");
+    if (one_pub_h) buf_puts(b, "sp_strface_pub_h(");
     if (one_tail_b) buf_puts(b, "SP_STR_B(");
     if (one_tail_h) buf_puts(b, "SP_STR_HDL(");
     emit_tail_value(c, id, b);
     if (one_tail_b || one_tail_h) buf_puts(b, ")");
-    if (one_unpub) buf_puts(b, ")");
+    if (one_unpub || one_pub_b || one_pub_h) buf_puts(b, ")");
   }
   buf_puts(b, ";\n");
 }

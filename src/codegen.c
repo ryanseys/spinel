@@ -7821,10 +7821,13 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       /* The box is the selected return, even if its evaluation or an
          intervening ensure published a different String. */
       int pub = s->ret == TY_STRING && (s->ret_handle || s->ret_pub_fresh);
+      /* (a handle slot answers the handle, which it publishes) */
+      int pub_h = s->ret == TY_STRBUF;
       if (pub) buf_puts(b, "(_sp_ret_strbuf = sp_poly_is_strbuf(_h.val) ? _h.val.v.p : NULL, ");
+      if (pub_h) buf_puts(b, "sp_strface_pub_h(");
       if (method_ret_is_oint(s)) buf_printf(b, "%s(_h.val)", oint_unbox(s->ret));
       else emit_unbox_text(c, s->ret, "_h.val", b);
-      if (pub) buf_puts(b, ")");
+      if (pub || pub_h) buf_puts(b, ")");
       buf_puts(b, "; }\n");
     }
     else {
@@ -7851,7 +7854,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   else if (pr_frame) {
     emit_stmts_tail(c, s->body, b, 1);
     g_result_var = sv_rv2; g_result_poly = sv_rp2; g_result_ty = sv_rty2; g_result_oint = sv_ro2;
-    buf_puts(b, "    }\n  _pr_done: ;\n  sp_proc_ret_head = _h.prev;\n  return _prret;\n");
+    buf_puts(b, "    }\n  _pr_done: ;\n  sp_proc_ret_head = _h.prev;\n");
+    buf_puts(b, s->ret == TY_STRBUF ? "  return sp_strface_pub_h(_prret);\n" : "  return _prret;\n");
   }
   else {
     /* no call reads the value (an_mark_unread_returns): the body runs as
@@ -7869,6 +7873,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
        and the tail returned the empty string, so `.nil?` answered false and
        `compact` kept it (#4250). */
     else if (method_ret_is_oint(s)) buf_printf(b, "%s;\n", oint_nil(s->ret));
+    /* (a handle slot's nil is published as its handle is) */
+    else if (s->ret == TY_STRBUF) buf_puts(b, "sp_strface_pub_h(NULL);\n");
     else if (s->ret_rbs_nilable)
       buf_printf(b, "%s;\n", s->ret == TY_STRING ? "NULL" : default_value_from_compiler(c, s->ret));
     else buf_printf(b, "%s;\n", default_value_from_compiler(c, s->ret));
