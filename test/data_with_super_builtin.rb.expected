@@ -1,0 +1,18 @@
+#<data D a=5, b=2>
+true
+true
+#<data E a=1, b="y">
+#<data E a=3, b="z">
+"unknown keyword: :c"
+#<data F a=0, b=9>
+#<data F a=40, b=2>
+#<data G n=2, tag=:t>
+#<data G n=nil, tag=:u>
+[#<data H v=2>, false]
+[#<data H v=1>, true]
+#<data M x=7>
+#<data W n="now a String">
+#<data W n=2.5>
+true
+#<data R x=nil, y=3>
+#<data R x=nil, y=2>
