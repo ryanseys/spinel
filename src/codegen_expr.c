@@ -4346,6 +4346,106 @@ static void emit_str_lit_late(Compiler *c, const int *els, int n, int t) {
   free(hnd);
 }
 
+/* A literal's run of constant elements (a number, Symbol, nil, true, false
+   or String literal) is one call over a static table of them, sp_*_lits:
+   a call apiece cost code per element, and a program's constant tables
+   were most of its init function. A shorter run keeps its calls. */
+#define LIT_RUN_MIN 3
+typedef struct { const char *ctype, *fn; int t, n; Buf cells, plain; } LitRun;
+
+static int lit_run_node(const NodeTable *nt, int v) {
+  NodeKind k = nt_kind(nt, v);
+  return k == NK_IntegerNode || k == NK_FloatNode || k == NK_SymbolNode || k == NK_NilNode ||
+         k == NK_TrueNode || k == NK_FalseNode || k == NK_StringNode;
+}
+/* The length of the C number `t` starts with (`-12LL`, `0.25`), 0 for none */
+static size_t lit_num_len(const char *t, int flt) {
+  const char *d = t + (*t == '-'), *p = d;
+  while (isdigit((unsigned char)*p) || (flt && (*p == '.' || *p == 'e' || *p == 'E' ||
+         ((*p == '+' || *p == '-') && (p[-1] == 'e' || p[-1] == 'E'))))) p++;
+  if (p == d || !isdigit((unsigned char)*d)) return 0;
+  if (!flt) { if (strncmp(p, "LL", 2)) return 0; p += 2; }
+  return (size_t)(p - t);
+}
+/* Is `t` the text `pre` <mid> `post`? <mid> goes into `mid` */
+static int lit_wrapped(const char *t, const char *pre, const char *post, Buf *mid) {
+  size_t n = strlen(t), a = strlen(pre), z = strlen(post);
+  if (n <= a + z || strncmp(t, pre, a) || strcmp(t + n - z, post)) return 0;
+  mid->len = 0;
+  buf_putn(mid, t + a, n - a - z);
+  return 1;
+}
+/* The table cell for an element whose emitted text is `t`, or 0 when it is
+   no constant. `want` TY_POLY reads a box, as an sp_lit's kind and value;
+   TY_STRING, TY_INT, TY_FLOAT and TY_SYMBOL the scalar a typed slot takes. */
+static int lit_cell(const char *t, TyKind want, Buf *cell) {
+  Buf m; memset(&m, 0, sizeof m);
+  const char *kind = NULL, *fld = "i";
+  size_t n;
+  int id = -1, ok = 0;
+  if (!t) return 0;
+  if (want != TY_POLY) {
+    if (want == TY_STRING && (id = fzl_text_id(t)) >= 0) buf_printf(cell, "((char *)_fzl_%s.d)", fzl_id_name(id));
+    else if ((want == TY_INT || want == TY_FLOAT) && (n = lit_num_len(t, want == TY_FLOAT)) && !t[n]) buf_puts(cell, t);
+    else if (want == TY_SYMBOL && lit_wrapped(t, "((sp_sym)", ")", &m) && (n = lit_num_len(m.p, 1)) && !m.p[n] &&
+             !strpbrk(m.p, ".eE-")) buf_puts(cell, m.p);
+    else id = -2;
+    free(m.p);
+    return id != -2;
+  }
+  if (!strcmp(t, "sp_box_nil()")) kind = "SP_LIT_NIL";
+  else if (!strcmp(t, "sp_box_bool(0)")) kind = "SP_LIT_FALSE";
+  else if (!strcmp(t, "sp_box_bool(1)")) kind = "SP_LIT_TRUE";
+  else if (lit_wrapped(t, "sp_box_int(", ")", &m) && lit_cell(m.p, TY_INT, cell)) kind = "SP_LIT_INT";
+  else if (lit_wrapped(t, "sp_box_float(", ")", &m) && lit_cell(m.p, TY_FLOAT, cell)) kind = "SP_LIT_FLT", fld = "f";
+  else if (lit_wrapped(t, "sp_box_sym(", ")", &m) && lit_cell(m.p, TY_SYMBOL, cell)) kind = "SP_LIT_SYM";
+  else if ((lit_wrapped(t, "SP_STR_BOX(sp_String_new_shared(SP_STR_B(", ")))", &m) && (ok = 1)) ||
+           lit_wrapped(t, "SP_STR_BOX(", ")", &m))
+    if (lit_cell(m.p, TY_STRING, cell)) kind = ok ? "SP_LIT_STR_NEW" : "SP_LIT_STR", fld = "s";
+  free(m.p);
+  if (!kind) return 0;
+  /* the value, written into `cell` above, goes after its kind */
+  char *v = cell->p ? strdup(cell->p) : NULL;
+  cell->len = 0;
+  if (v) buf_printf(cell, "%s, {.%s = %s}", kind, fld, v);
+  else buf_printf(cell, "%s, {0}", kind);
+  free(v);
+  return 1;
+}
+static void lit_run_flush(LitRun *r) {
+  if (r->n >= LIT_RUN_MIN) {
+    int lt = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "{ static const %s _lit%d[] = {%s}; %s(_t%d, _lit%d, %d); }\n",
+               r->ctype, lt, r->cells.p, r->fn, r->t, lt, r->n);
+  }
+  else if (r->plain.p) buf_puts(g_pre, r->plain.p);
+  free(r->cells.p); free(r->plain.p);
+  memset(&r->cells, 0, sizeof r->cells); memset(&r->plain, 0, sizeof r->plain);
+  r->n = 0;
+}
+/* An element (or a pair) whose emission put its preludes in `pre`: added
+   to the run when `cell` is its constant and it had no preludes, with
+   `stmt`, the store that sets it alone should the run stay short. Else the
+   run is flushed and the preludes follow it, for the caller's own store. */
+static int lit_run_take(LitRun *r, Buf *pre, const char *cell, const char *stmt) {
+  int took = r->fn && cell && cell[0] && !pre->len;
+  if (took) {
+    if (r->n) buf_puts(&r->cells, ", ");
+    buf_puts(&r->cells, cell);
+    emit_indent(&r->plain, g_indent);
+    buf_puts(&r->plain, stmt);
+    r->n++;
+  }
+  else {
+    lit_run_flush(r);
+    if (pre->p) buf_puts(g_pre, pre->p);
+  }
+  free(pre->p);
+  memset(pre, 0, sizeof *pre);
+  return took;
+}
+
 /* An Array or Hash literal ([...], {...}, a keyword hash) (emit_expr_node's arms, in their order) */
 static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "ArrayNode")) {
@@ -4370,8 +4470,10 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new();\n", t);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+      LitRun run = { "sp_lit", "sp_PolyArray_push_lits", t, 0, {0}, {0} };
       for (int j = 0; j < n; j++) {
         NodeKind ek = nt_kind(nt, els[j]);
+        if (!lit_run_node(nt, els[j])) lit_run_flush(&run);
         if (ek == NK_SplatNode) {
           /* [*arr] or [*range] -- expand into poly */
           int inner = nt_ref(nt, els[j], "expression");
@@ -4451,10 +4553,23 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
           buf_printf(g_pre, "if (sp_poly_length(_t%d) > 0) sp_PolyArray_push(_t%d, _t%d);\n", th, t, th);
         }
         else {
-          Buf el; memset(&el, 0, sizeof el);
+          Buf el, pre; memset(&el, 0, sizeof el); memset(&pre, 0, sizeof pre);
+          Buf *saved_pre = g_pre;
+          if (run.fn && lit_run_node(nt, els[j])) g_pre = &pre;
           /* (a published String before an element that can change it is
              boxed as its handle: emit_boxed_operand) */
           emit_boxed_operand(c, els, n, j, &el);
+          if (g_pre == &pre) {
+            g_pre = saved_pre;
+            Buf cell, st; memset(&cell, 0, sizeof cell); memset(&st, 0, sizeof st);
+            Buf lc; memset(&lc, 0, sizeof lc);
+            if (lit_cell(el.p, TY_POLY, &lc)) buf_printf(&cell, "{0, %s}", lc.p);
+            free(lc.p);
+            buf_printf(&st, "sp_PolyArray_push(_t%d, %s);\n", t, el.p ? el.p : "");
+            int took = lit_run_take(&run, &pre, cell.p, st.p);
+            free(cell.p); free(st.p);
+            if (took) { free(el.p); continue; }
+          }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t);
           buf_puts(g_pre, el.p ? el.p : "");
@@ -4462,6 +4577,7 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
           free(el.p);
         }
       }
+      lit_run_flush(&run);
       buf_printf(b, "_t%d", t);
       return 1;
     }
@@ -4476,8 +4592,13 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
       buf_printf(b, "_t%d", t);
       return 1;
     }
+    TyKind lw = sp_streq(k, "Str") ? TY_STRING : sp_streq(k, "Int") ? TY_INT : sp_streq(k, "Float") ? TY_FLOAT : TY_UNKNOWN;
+    LitRun run = { lw == TY_STRING ? "char *const" : lw == TY_INT ? "sp_int" : "sp_float",
+                   lw == TY_STRING ? "sp_StrArray_push_lits" : lw == TY_INT ? "sp_IntArray_push_lits" :
+                   lw == TY_FLOAT ? "sp_FloatArray_push_lits" : NULL, t, 0, {0}, {0} };
     for (int j = 0; j < n; j++) {
       NodeKind ek = nt_kind(nt, els[j]);
+      if (!lit_run_node(nt, els[j])) lit_run_flush(&run);
       if (ek == NK_SplatNode) {
         /* [*range] or [*arr] inside a typed array literal */
         int inner = nt_ref(nt, els[j], "expression");
@@ -4535,9 +4656,22 @@ else {
            token, a void call) is coerced to the element type */
         /* an element that can be nil stores with it (the array's own nil) */
         const char *esfx = nil_store_sfx(c, k, els[j]);
+        Buf pre; memset(&pre, 0, sizeof pre);
+        Buf *saved_pre = g_pre;
+        if (run.fn && !esfx[0] && lit_run_node(nt, els[j]) && !repr_of(c, els[j]).untyped) g_pre = &pre;
+        else lit_run_flush(&run);
         if (esfx[0] && (sp_streq(k, "Int") || sp_streq(k, "Float"))) emit_elem_store_value(c, k, els[j], &el);
         else if (repr_of(c, els[j]).untyped) emit_unresolved_coerced(c, els[j], ty_array_elem(at), &el);
         else emit_coerce(c, els[j], ty_array_elem(at), CO_HOLD, "an Array literal's element", &el);
+        if (g_pre == &pre) {
+          g_pre = saved_pre;
+          Buf cell, st; memset(&cell, 0, sizeof cell); memset(&st, 0, sizeof st);
+          lit_cell(el.p, lw, &cell);
+          buf_printf(&st, "sp_%sArray_push(_t%d, %s);\n", k, t, el.p ? el.p : "");
+          int took = lit_run_take(&run, &pre, cell.p, st.p);
+          free(cell.p); free(st.p);
+          if (took) { free(el.p); continue; }
+        }
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", k, esfx, t);
         buf_puts(g_pre, el.p ? el.p : "");
@@ -4545,6 +4679,7 @@ else {
         free(el.p);
       }
     }
+    lit_run_flush(&run);
     buf_printf(b, "_t%d", t);
     return 1;
   }
@@ -4567,8 +4702,14 @@ else {
     buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
     int sym_poly = (repr_hash_is(hr, TY_SYMBOL, TY_POLY) || repr_hash_is(hr, TY_STRING, TY_POLY));
     int poly_poly = (repr_hash_is(hr, TY_POLY, TY_POLY));
+    LitRun run = { ht == TY_SYM_POLY_HASH ? "sp_lit" : "char *const",
+                   ht == TY_SYM_POLY_HASH ? "sp_SymPolyHash_set_lits" : ht == TY_STR_STR_HASH ? "sp_StrStrHash_set_lits" : NULL,
+                   t, 0, {0}, {0} };
     for (int j = 0; j < n; j++) {
       NodeKind ek = nt_kind(nt, els[j]);
+      int lit_pair = run.fn && ek == NK_AssocNode && !kwh_elem_dropped(nt, id, j) &&
+                     lit_run_node(nt, nt_ref(nt, els[j], "key")) && lit_run_node(nt, nt_ref(nt, els[j], "value"));
+      if (!lit_pair) lit_run_flush(&run);
       if (kwh_elem_dropped(nt, id, j)) { emit_dropped_value(c, nt_ref(nt, els[j], "value"), g_pre); continue; }
       if (ek == NK_AssocSplatNode) {
         /* `**h`: merge the spread hash into the fresh literal. In `{ **h, k: v }`
@@ -4626,6 +4767,9 @@ else {
       }
       int key = nt_ref(nt, els[j], "key");
       int val = nt_ref(nt, els[j], "value");
+      Buf pre; memset(&pre, 0, sizeof pre);
+      Buf *saved_pre = g_pre;
+      if (lit_pair) g_pre = &pre;
       Buf kb; memset(&kb, 0, sizeof kb);
       if (poly_poly) emit_boxed(c, key, &kb);
       else if (ty_is_hash(ht)) emit_coerce(c, key, ty_hash_key(ht), CO_HOLD, "a Hash literal's key", &kb);
@@ -4643,6 +4787,20 @@ else {
       }
       else if (ty_is_hash(ht)) emit_coerce(c, val, ty_hash_val(ht), CO_HOLD, "a Hash literal's value", &vb);
       else emit_expr(c, val, &vb);
+      if (lit_pair) {
+        g_pre = saved_pre;
+        Buf cell, st; memset(&cell, 0, sizeof cell); memset(&st, 0, sizeof st);
+        /* (a key the set alone holds in a temp, below, stays out) */
+        Buf kc, vc; memset(&kc, 0, sizeof kc); memset(&vc, 0, sizeof vc);
+        int ok = !(ty_is_hash(ht) && (subtree_may_allocate(nt, key) || strbuf_read_copies(c, key))) &&
+                 lit_cell(kb.p, ty_hash_key(ht), &kc) && lit_cell(vb.p, sym_poly ? TY_POLY : ty_hash_val(ht), &vc);
+        if (ok) buf_printf(&cell, ht == TY_SYM_POLY_HASH ? "{%s, %s}" : "%s, %s", kc.p, vc.p);
+        free(kc.p); free(vc.p);
+        buf_printf(&st, "sp_%sHash_set(_t%d, %s, %s);\n", hn, t, kb.p ? kb.p : "", vb.p ? vb.p : "");
+        int took = lit_run_take(&run, &pre, ok ? cell.p : NULL, st.p);
+        free(cell.p); free(st.p);
+        if (took) { free(kb.p); free(vb.p); continue; }
+      }
       emit_indent(g_pre, g_indent);
       /* A pair's key and value are the set's sibling arguments, as a store's
          are: a key that can allocate goes into a rooted temp ahead of the
@@ -4671,6 +4829,7 @@ else {
       buf_puts(g_pre, (tk >= 0 || tv >= 0) ? "); }\n" : ");\n");
       free(kb.p); free(vb.p);
     }
+    lit_run_flush(&run);
     buf_printf(b, "_t%d", t);
     return 1;
   }

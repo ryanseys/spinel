@@ -22648,6 +22648,31 @@ static inline sp_RbVal sp_strface_box_self(sp_RbVal v) { return v; }
 /* ...and a String of either face as the face slot `dst` has, where the
    emitter of `dst = v` knows neither (a block parameter a typed walk binds) */
 #define SP_STR_TO(dst, v) _Generic((dst), sp_String *: SP_STR_HDL(v), default: SP_STR_B(v))
+/* A literal's constant elements, as a static table the program holds: each
+   sp_*_lits stores n of them in order, with the call one element's store
+   makes (lit_run_flush). An sp_lit is a box's kind and value, and the key
+   of a Symbol-keyed Hash's pair. */
+enum { SP_LIT_NIL, SP_LIT_TRUE, SP_LIT_FALSE, SP_LIT_INT, SP_LIT_FLT, SP_LIT_SYM, SP_LIT_STR, SP_LIT_STR_NEW };
+typedef struct { sp_sym k; int32_t kind; union { sp_int i; sp_float f; const char *s; } v; } sp_lit;
+static sp_RbVal sp_lit_box(const sp_lit *l) {
+  switch (l->kind) {
+    case SP_LIT_TRUE: return sp_box_bool(1);
+    case SP_LIT_FALSE: return sp_box_bool(0);
+    case SP_LIT_INT: return sp_box_int(l->v.i);
+    case SP_LIT_FLT: return sp_box_float(l->v.f);
+    case SP_LIT_SYM: return sp_box_sym((sp_sym)l->v.i);
+    case SP_LIT_STR: return SP_STR_BOX((char *)l->v.s);
+    case SP_LIT_STR_NEW: return SP_STR_BOX(sp_String_new_shared(SP_STR_B((char *)l->v.s)));
+    default: return sp_box_nil();
+  }
+}
+static void sp_StrArray_push_lits(sp_StrArray *a, const char *const *l, sp_int n) { for (sp_int i = 0; i < n; i++) sp_StrArray_push(a, l[i]); }
+static void sp_IntArray_push_lits(sp_IntArray *a, const sp_int *l, sp_int n) { for (sp_int i = 0; i < n; i++) sp_IntArray_push(a, l[i]); }
+static void sp_FloatArray_push_lits(sp_FloatArray *a, const sp_float *l, sp_int n) { for (sp_int i = 0; i < n; i++) sp_FloatArray_push(a, l[i]); }
+static void sp_PolyArray_push_lits(sp_PolyArray *a, const sp_lit *l, sp_int n) { for (sp_int i = 0; i < n; i++) sp_PolyArray_push(a, sp_lit_box(&l[i])); }
+static void sp_SymPolyHash_set_lits(sp_SymPolyHash *h, const sp_lit *l, sp_int n) { for (sp_int i = 0; i < n; i++) sp_SymPolyHash_set(h, l[i].k, sp_lit_box(&l[i])); }
+/* (the String Hash's table is its pairs, key then value) */
+static void sp_StrStrHash_set_lits(sp_StrStrHash *h, const char *const *l, sp_int n) { for (sp_int i = 0; i < n; i++) sp_StrStrHash_set(h, l[2 * i], l[2 * i + 1]); }
 /* A String method's answer that is a new String: the channel a read of a
    handle inside it published is cleared after the answer is made, so a
    caller's pickup does not take that handle for it (one_tail_fresh) */
