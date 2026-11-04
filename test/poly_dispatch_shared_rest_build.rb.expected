@@ -1,0 +1,20 @@
+pen [0, "a", :pen] {} 1
+pen [:pen] {size: 2} 2
+pen [:s, :pen] {} 3
+pen [0, "b", :pen] {k: 1} 4
+pen [0, "c", :pen] {k: 1} 5
+ink 2 []
+ink 0 [:size]
+ink 1 []
+ink 2 [:k]
+ink 2 [:k]
+nib 2 {seen: true}
+nib nil {size: 2, seen: true}
+nib :s {seen: true}
+nib 2 {k: 1, seen: true}
+nib 2 {k: 1, seen: true}
+no tag
+{size: 2}
+pen [1, :pen] {k: 2} 1
+pen [1, :pen] {k: 2} 2
+false
