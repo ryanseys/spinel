@@ -19121,6 +19121,217 @@ void emit_state_release(EmitUnitState *s, int rollback) {
   free(s);
 }
 
+/* ---- Shared bodies of the compiler's own helper copies ----
+
+   A builtin Enumerable method is copied once per call site (`__enum_all?__0`,
+   `__enum_all?__1`, ...) so each site's types shape its own copy. Copies
+   whose sites have the same types come out as the same C, its procs with
+   it, apart from the names the copy's own name and its blocks' renamed
+   parameters give. Such a copy is written as a call of the first one. */
+typedef struct { char *text; int scope; } HelperBody;
+static HelperBody *g_helper_bodies;
+static int g_helper_bodies_n, g_helper_bodies_cap;
+
+static int hb_idch(char ch) {
+  return ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+
+/* The start of the text past a leading `#pragma spinel unit` line (the
+   unit's own tag, which names the copy). */
+static size_t hb_past_pragma(const Buf *b, size_t from) {
+  static const char pr[] = "#pragma spinel unit ";
+  if (b->len > from && b->len - from >= sizeof pr - 1 && memcmp(b->p + from, pr, sizeof pr - 1) == 0) {
+    const char *nl = memchr(b->p + from, '\n', b->len - from);
+    if (nl) return (size_t)(nl - b->p) + 1;
+  }
+  return from;
+}
+
+/* The end of the top-level item at t[i..n): a preprocessor line, or a
+   declaration or definition up to the `;` or `}` that closes it. */
+static size_t hb_item_end(const char *t, size_t i, size_t n) {
+  if (t[i] == '#') {
+    const char *nl = memchr(t + i, '\n', n - i);
+    return nl ? (size_t)(nl - t) + 1 : n;
+  }
+  int depth = 0;
+  while (i < n) {
+    char ch = t[i];
+    if (ch == '"' || ch == '\'') {
+      i++;
+      while (i < n && t[i] != ch) { if (t[i] == '\\') i++; i++; }
+      i++;
+      continue;
+    }
+    i++;
+    if (ch == '{') depth++;
+    else if (ch == '}' && --depth == 0) {
+      /* `typedef struct { ... } name;` runs on to its `;` */
+      size_t j = i;
+      while (j < n && (t[j] == ' ' || t[j] == '\t')) j++;
+      if (j < n && t[j] != '\n' && t[j] != '#') continue;
+      break;
+    }
+    else if (ch == ';' && depth == 0) break;
+  }
+  while (i < n && t[i] == '\n') i++;
+  return i;
+}
+
+/* Whether t[0..n) names the copy (stem, not followed by a digit). */
+static int hb_names(const char *t, size_t n, const char *stem) {
+  size_t sl = strlen(stem);
+  for (size_t i = 0; i + sl <= n; i++)
+    if (memcmp(t + i, stem, sl) == 0 && (i + sl == n || !(t[i + sl] >= '0' && t[i + sl] <= '9'))) return 1;
+  return 0;
+}
+
+/* nm's number among the names seen so far, a new one at the end */
+static int hb_number(char ***names, int *n, int *cap, const char *nm) {
+  for (int q = 0; q < *n; q++) if (sp_streq((*names)[q], nm)) return q;
+  if (*n == *cap) {
+    *cap = *cap ? *cap * 2 : 8;
+    *names = realloc(*names, sizeof **names * (size_t)*cap);
+    if (!*names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  (*names)[*n] = strdup(nm);
+  return (*n)++;
+}
+
+/* The text with the copy's own name (stem, not followed by a digit) and
+   each renamed block parameter numbered in order of first appearance, so
+   two copies compare equal exactly when one is the other with its own
+   names changed. String and character literals are kept as written. */
+static void hb_canon(Compiler *c, const char *t, size_t n, const char *stem, Buf *out,
+                     char ***bp, int *nbp, int *capbp) {
+  size_t sl = strlen(stem);
+  for (size_t i = 0; i < n; ) {
+    char ch = t[i];
+    if (ch == '"' || ch == '\'') {
+      size_t st = i++;
+      while (i < n && t[i] != ch) { if (t[i] == '\\') i++; i++; }
+      if (i < n) i++;
+      buf_putn(out, t + st, i - st);
+      continue;
+    }
+    if (!hb_idch(ch)) { buf_putn(out, t + i, 1); i++; continue; }
+    size_t st = i;
+    while (i < n && hb_idch(t[i])) i++;
+    size_t len = i - st;
+    const char *w = t + st;
+    /* a local (`lv_`) is the function's own, whatever it is called */
+    if (len > 3 && memcmp(w, "lv_", 3) == 0 && len < 256) {
+      char nm[256]; memcpy(nm, w, len); nm[len] = 0;
+      buf_printf(out, "@L%d@", hb_number(bp, nbp, capbp, nm));
+      continue;
+    }
+    for (size_t k = 0; k < len; ) {
+      if (len - k >= sl && memcmp(w + k, stem, sl) == 0 && (k + sl == len || !(w[k + sl] >= '0' && w[k + sl] <= '9'))) {
+        buf_puts(out, "@S@");
+        k += sl;
+        continue;
+      }
+      /* a renamed block parameter runs to the end of the word (`lv_x__bq...`,
+         `c_x__bq...`) */
+      if ((k == 0 || w[k - 1] == '_') && len - k > 4) {
+        char nm[256];
+        size_t nl = len - k < sizeof nm - 1 ? len - k : 0;
+        if (nl) { memcpy(nm, w + k, nl); nm[nl] = 0; }
+        if (nl && (strstr(nm, "__bp") || strstr(nm, "__bq")) && block_param_is_renamed(c, nm)) {
+          buf_printf(out, "@B%d@", hb_number(bp, nbp, capbp, nm));
+          k = len;
+          continue;
+        }
+      }
+      buf_putn(out, w + k, 1);
+      k++;
+    }
+  }
+}
+
+static void helper_bodies_reset(void) {
+  for (int k = 0; k < g_helper_bodies_n; k++) free(g_helper_bodies[k].text);
+  g_helper_bodies_n = 0;
+}
+
+/* Scope s, an Enumerable copy just written at body[at..] with its procs at
+   g_procs[procs_at..] and g_proc_protos[protos_at..]: when an earlier copy
+   was the same C, drop these and write s as a call of that one. */
+static void helper_body_share(Compiler *c, int s, Buf *body, size_t at, size_t procs_at, size_t protos_at) {
+  Scope *sc = &c->scopes[s];
+  if (g_opt_debug || !sc->name || strncmp(sc->name, "__enum_", 7) != 0 || !comp_scope_is_private_helper(c, s)) return;
+  char stem[UNIT_TAG_MAX + 64];
+  snprintf(stem, sizeof stem, "%s", mc_method(c, sc) + 3);
+  size_t b0 = hb_past_pragma(body, at), p0 = hb_past_pragma(&g_procs, procs_at), q0 = hb_past_pragma(&g_proc_protos, protos_at);
+  if (body->len <= b0) return;
+  Buf canon; memset(&canon, 0, sizeof canon);
+  char **bp = NULL; int nbp = 0, capbp = 0;
+  hb_canon(c, body->p + b0, body->len - b0, stem, &canon, &bp, &nbp, &capbp);
+  /* the procs' items that name the copy: an item that does not (a helper
+     written once for the program, by its first user) is kept wherever it
+     stands */
+  Buf keep[2]; memset(keep, 0, sizeof keep);
+  Buf *pb[2] = { &g_procs, &g_proc_protos };
+  size_t pfrom[2] = { p0, q0 };
+  for (int w = 0; w < 2; w++) {
+    buf_puts(&canon, w ? "\n@Q@\n" : "\n@P@\n");
+    for (size_t i = pfrom[w]; i < pb[w]->len; ) {
+      size_t e = hb_item_end(pb[w]->p, i, pb[w]->len);
+      if (hb_names(pb[w]->p + i, e - i, stem)) hb_canon(c, pb[w]->p + i, e - i, stem, &canon, &bp, &nbp, &capbp);
+      else buf_putn(&keep[w], pb[w]->p + i, e - i);
+      i = e;
+    }
+  }
+  for (int q = 0; q < nbp; q++) free(bp[q]);
+  free(bp);
+  int prev = -1;
+  for (int k = 0; k < g_helper_bodies_n && prev < 0; k++)
+    if (sp_streq(g_helper_bodies[k].text, canon.p)) prev = g_helper_bodies[k].scope;
+  if (prev < 0) {
+    free(keep[0].p); free(keep[1].p);
+    if (g_helper_bodies_n == g_helper_bodies_cap) {
+      g_helper_bodies_cap = g_helper_bodies_cap ? g_helper_bodies_cap * 2 : 32;
+      g_helper_bodies = realloc(g_helper_bodies, sizeof *g_helper_bodies * (size_t)g_helper_bodies_cap);
+      if (!g_helper_bodies) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    g_helper_bodies[g_helper_bodies_n].text = canon.p;
+    g_helper_bodies[g_helper_bodies_n++].scope = s;
+    return;
+  }
+  free(canon.p);
+  /* the parameters' names, the last word of each, from the signature */
+  Buf sig; memset(&sig, 0, sizeof sig);
+  emit_method_signature(c, sc, &sig);
+  const char *open = sig.p ? strchr(sig.p, '(') : NULL;
+  const char *close = sig.p ? strrchr(sig.p, ')') : NULL;
+  if (!open || !close || close < open) { free(sig.p); free(keep[0].p); free(keep[1].p); return; }
+  Buf args; memset(&args, 0, sizeof args);
+  int nargs = 0;
+  for (const char *q = open + 1; q < close; ) {
+    const char *e = q;
+    int depth = 0;
+    while (e < close && (depth > 0 || *e != ',')) { if (*e == '(') depth++; else if (*e == ')') depth--; e++; }
+    const char *we = e;
+    while (we > q && !hb_idch(we[-1])) we--;
+    const char *ws = we;
+    while (ws > q && hb_idch(ws[-1])) ws--;
+    if (we > ws && !(we - ws == 4 && memcmp(ws, "void", 4) == 0)) {
+      buf_printf(&args, "%s%.*s", nargs ? ", " : "", (int)(we - ws), ws);
+      nargs++;
+    }
+    q = e < close ? e + 1 : close;
+  }
+  body->len = b0; if (body->p) body->p[b0] = 0;
+  g_procs.len = p0; if (g_procs.p) g_procs.p[p0] = 0;
+  g_proc_protos.len = q0; if (g_proc_protos.p) g_proc_protos.p[q0] = 0;
+  if (keep[0].p) buf_puts(&g_procs, keep[0].p);
+  if (keep[1].p) buf_puts(&g_proc_protos, keep[1].p);
+  free(keep[0].p); free(keep[1].p);
+  buf_printf(body, "%s {\n  %s%s(%s);\n}\n", sig.p, method_is_void(sc) ? "" : "return ",
+             mc_method(c, &c->scopes[prev]), args.p ? args.p : "");
+  free(sig.p); free(args.p);
+}
+
 /* Emit one top-level output unit (a method, constructor, BEGIN/END block, or the
    top-level body). Each unit runs under a setjmp: an `unsupported` gap longjmps
    back here (instead of exiting), so one run surfaces every unsupported
@@ -22046,6 +22257,7 @@ char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   plain_note_parsed(c);   /* ahead of the analysis's desugars */
   analyze_program(c);
+  helper_bodies_reset();
   double tcg = sp_timing_now();
   if (g_dump_traits) { ty_traits_dump(c); exit(0); }
   /* --dump-repr: the analysis's answer, printed once the compile passes */
@@ -22667,10 +22879,11 @@ char *codegen_program(const NodeTable *nt) {
     int ndiag0 = g_ndiags, ndefer0 = g_stmt_deferrals;
     int orphan = scope_is_orphan_method(c, s);
     if (orphan) g_unsup_quiet = 1;
-    size_t pm_at = body->len;
+    size_t pm_at = body->len, pr_at = g_procs.len, pp_at = g_proc_protos.len;
     EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
     g_unsup_quiet = 0;
     if (g_ndiags == ndiag0 && poll_pure_wrapped(c, s)) poll_pure_split(c, s, body, pm_at);
+    else if (g_ndiags == ndiag0) helper_body_share(c, s, body, pm_at, pr_at, pp_at);
     /* An instance method of a class no instance of which is ever built is
        reachable by its name alone (another class's method of that name is
        called), and its argument types come from callers that never reach
