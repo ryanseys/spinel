@@ -481,8 +481,11 @@ typedef struct {
      method by name: the table answers it, and the versions it arms are
      replaced; main_n, codegen's
      number for a method of main's own whose name Object's methods have
-     too (both are top-level functions in C) */
-  unsigned char versioned, replaced;
+     too (both are top-level functions in C); attr_version, the method
+     made of a class-side accessor a later def replaces
+     (register_attr_versions), whose calls the slot stands in for
+     (cplan_sg_accessor) */
+  unsigned char versioned, replaced, attr_version;
   enum { ENTRY_NONE, ENTRY_DISPATCH, ENTRY_TABLE, ENTRY_NAMED } entry;
   int version_n, main_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
@@ -719,6 +722,14 @@ typedef struct {
    is both, the module's own method and its private instance method */
 static inline int scope_on_side(const Scope *s, int cm) {
   return cm ? s->is_cmethod : !s->is_cmethod || s->is_module_function;
+}
+
+/* Is s a method no lookup by name answers, and which shadows none: a
+   version entry (ENTRY_DISPATCH), or the method made of an accessor a
+   later def replaces (attr_version)? Only the calls call_target binds to
+   it reach it. */
+static inline int scope_by_name_hidden(const Scope *s) {
+  return s->entry == ENTRY_DISPATCH || s->attr_version;
 }
 
 static inline TyKind scope_set_ret(Scope *s, TyKind t) {
@@ -1743,14 +1754,19 @@ typedef struct {
      calls pinned to the method it runs. absent: asked for a call that may
      meet no version of the chain yet, 2 when the entry's else arm answers
      for none, 1 when it keeps the last version (ver_entries_demand);
-     cells: its histories' cells are written (ver_cells_write) */
-  struct VerEntry { const char *name; int guard, cls, sg, ar, scope, absent, cells; } *ver_entries;
+     cells: its histories' cells are written (ver_cells_write); finds:
+     what its else arm finds while no version is live, one of
+     VER_FINDS_* (call_plan.c, ver_else_finds). Each name is the entry's
+     own copy (ver_entry_add), as in ver_late, ver_memo and the chain
+     counts: a caller may ask with a name it frees itself
+     (desugar_call_op_write's setter name) */
+  struct VerEntry { char *name; int guard, cls, sg, ar, scope, absent, cells, finds; } *ver_entries;
   int nver_entries;
   /* the chains a typed call may meet with no version made yet, whose
      entry is not asked for that yet (call_plan.c, ver_absent_note); mm:
      where the call runs, method_missing is on the chain (1), is not (2),
      or both (ver_mm_at) */
-  struct VerLate { const char *name; int cls, sg, mi, ar, mm; } *ver_late;
+  struct VerLate { char *name; int cls, sg, mi, ar, mm; } *ver_late;
   int nver_late;
   int nver_refl;   /* the named entries whose name reflection does not answer (call_plan.c, ver_refl_named) */
   int ncond_disp;  /* the dispatchers defs under a run-time condition are lowered to (analyze_desugar.c; call_plan.c, ver_list_held) */
@@ -1784,9 +1800,9 @@ typedef struct {
      comp_name_is_shadow_copy reads */
   int *shadow_copies, nshadow_copies, cshadow_copies;
   /* the version each call asked on a class runs, once the entries are
-     made (call_plan.c, ct_version): open addressing, name NULL for a free
-     slot; dc the class it answers, -2 for the table's */
-  struct VerMemo { const char *name; int id, cls; unsigned flags; int vi, dc; } *ver_memo;
+     made (call_plan.c, ct_version): open addressing, name (the memo's own
+     copy) NULL for a free slot; dc the class it answers, -2 for the table's */
+  struct VerMemo { char *name; int id, cls; unsigned flags; int vi, dc; } *ver_memo;
   int ver_memo_cap, ver_memo_n;
   /* the operand-local reads splat_dispatch_on_length marked splat_view,
      which desugar_splat_view_scalars rewrites once typed (-1 once seen) */
@@ -2057,6 +2073,8 @@ int comp_defined_reads(Compiler *c, int pred, int *reads, int cap);
 /* a constant path whose leaf is no member of the class or module its parent
    names (analyze_util.c) */
 int const_path_misses_member(Compiler *c, int id);
+int class_lacks_own_const(Compiler *c, int k, const char *nm);   /* private_constant :nm in k is a NameError */
+int const_visibility_call_is_builtin(Compiler *c, int call, int k);   /* ... when the call is Module's own */
 int const_node_class_index(Compiler *c, int id);
 /* Does scope s call `super` in its body or its parameter defaults (analyze.c).
    Analysis and codegen both ask it. */
@@ -2473,6 +2491,8 @@ void comp_shadow_name(Compiler *c, int ci, const char *name, char *out, size_t s
 void comp_scope_set_shadow(Compiler *c, int si, int kind, const char *user);
 void comp_scope_copy_shadow(Compiler *c, int dst, int src, const char *suffix);
 const char *comp_scope_user_name(const Scope *s);
+int comp_scope_copied_away(Compiler *c, int s);
+int comp_scope_may_run(Compiler *c, int s);
 int comp_name_is_shadow_copy(Compiler *c, const char *name, int kind);
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod);
 const char *comp_scope_def_name(Compiler *c, const Scope *s);

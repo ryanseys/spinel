@@ -1,0 +1,9 @@
+[:render]
+[:render]
+[:process, :redirect]
+[:process, :redirect]
+Boom
+[]
+[]
+[:process, :redirect]
+[]

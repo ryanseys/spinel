@@ -220,8 +220,8 @@ static int sh_copied_self_targets(Compiler *c, int call, int *out, int cap) {
   const char *name = nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
   Scope *s = comp_scope_of(c, call);
   int si = (int)(s - c->scopes);
-  if (!name || nt_ref(nt, call, "receiver") >= 0 || nt_int(nt, call, "builtin_only", 0) || !s->is_transplanted_source ||
-      s->is_cmethod || s->def_node < 0 || scope_toplevel_included(c, si))
+  if (!name || nt_ref(nt, call, "receiver") >= 0 || nt_int(nt, call, "builtin_only", 0) || !comp_scope_copied_away(c, si) ||
+      s->is_cmethod || s->def_node < 0)
     return 0;
   /* (a name no class answers, a builtin's, reaches none) */
   int n = 0;
@@ -1554,6 +1554,17 @@ int share_frozen_literal(Compiler *c, int n) {
   if (k != NK_CallNode || nt_ref(nt, n, "arguments") >= 0 || nt_ref(nt, n, "block") >= 0 ||
       (bop_share_named(TY_STRING, nt_str(nt, n, "name")) != BSH_FROZEN && !is_freeze_name(nt_str(nt, n, "name")))) return 0;
   return share_frozen_literal(c, nt_ref(nt, n, "receiver"));
+}
+/* Is node n a frozen literal (share_frozen_literal) that runs nothing
+   besides: each parenthesis on the way holds the literal alone,
+   `("lit")` or `("lit").freeze`, never `(f; "lit")`, whose statements run
+   before the literal answers? */
+int share_frozen_literal_alone(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  n = nt_paren_single(nt, n);
+  if (nt_kind(nt, n) == NK_ParenthesesNode || !share_frozen_literal(c, n)) return 0;
+  /* (a freeze of one is one when its receiver is) */
+  return nt_kind(nt, n) != NK_CallNode || share_frozen_literal_alone(c, nt_ref(nt, n, "receiver"));
 }
 /* Is unary `+` of n a new String: n a builtin String constant
    (share_frozen_string), or what the builtin freeze answers, frozen

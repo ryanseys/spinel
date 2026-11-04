@@ -7278,7 +7278,7 @@ static void shadow_tab_build(Compiler *c, int raw) {
   if (!g_shadow_tab || !tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int k = n - 1; k >= 0; k--) {
     Scope *sc = &c->scopes[k];
-    if (!sc->name || sc->entry == ENTRY_DISPATCH) continue;   /* a hidden entry shadows no method; the public guard does */
+    if (!sc->name || scope_by_name_hidden(sc)) continue;   /* a hidden entry shadows no method; the public guard does */
     /* by the scope's own class, whatever an instance_exec block has moved
        (comp_scope_own_class): the move defines nothing in the class it
        moves to, and the table then reads the same whenever it is built */
@@ -7312,7 +7312,7 @@ static int shadow_tab_extend(Compiler *c) {
   int n = c->nscopes;
   if (g_shadow_n < 0 || g_shadow_n > n) return 0;
   for (int k = g_shadow_n; k < n; k++)
-    if (c->scopes[k].name && c->scopes[k].entry != ENTRY_DISPATCH) return 0;
+    if (c->scopes[k].name && !scope_by_name_hidden(&c->scopes[k])) return 0;
   unsigned char *t = realloc(g_shadow_tab, (size_t)(n > 0 ? n : 1));
   if (!t) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memset(t + g_shadow_n, 0, (size_t)(n - g_shadow_n));
@@ -7358,7 +7358,7 @@ static int scope_is_shadowed_scan(Compiler *c, int s) {
   for (int k = s + 1; k < c->nscopes; k++) {
     Scope *o = &c->scopes[k];
     if (o->class_id == sc->class_id && o->is_cmethod == sc->is_cmethod &&
-        o->name && o->entry != ENTRY_DISPATCH && sp_streq(o->name, sc->name)) return 1;
+        o->name && !scope_by_name_hidden(o) && sp_streq(o->name, sc->name)) return 1;
   }
   return 0;
 }
@@ -7557,21 +7557,10 @@ int scope_uses_ivars(Compiler *c, int mi) {
   return 0;
 }
 
-int scope_toplevel_included(Compiler *c, int s) {
-  if (s < 0 || s >= c->nscopes) return 0;
-  Scope *sc = &c->scopes[s];
-  if (sc->is_cmethod || sc->class_id < 0) return 0;
-  for (int i = 0; i < c->ntoplevel_includes; i++)
-    if (c->toplevel_includes[i] == sc->class_id) return 1;
-  return 0;
-}
-
 int scope_has_callable_symbol(Compiler *c, int s) {
   if (s < 0 || s >= c->nscopes) return 0;
   Scope *sc = &c->scopes[s];
-  return sc->reachable && !sc->yields &&
-         (!sc->is_transplanted_source || scope_toplevel_included(c, s)) &&
-         !scope_is_shadowed(c, s);
+  return comp_scope_may_run(c, s) && !sc->yields && !scope_is_shadowed(c, s);
 }
 /* What a keyword flag's value says at compile time: 1 for a literal Ruby
    treats as true (true, a number, a String, a Symbol, a container -- any
@@ -7999,8 +7988,11 @@ void emit_rooted_key_call(Compiler *c, const char *fn, const char *recv,
 }
 
 void emit_main_exit(Buf *b) {
+  /* the helpers stay up through the hooks: a thread a hook starts needs one */
+  if (g_uses_threads) buf_puts(b, "sp_sched_drain_runnable(); ");
+  buf_puts(b, "_sp_main_rc = sp_at_exit_run(0); ");
   if (g_uses_threads) buf_puts(b, "sp_sched_drain(); ");
-  buf_puts(b, "_sp_main_rc = sp_at_exit_run(0); return; }\n");
+  buf_puts(b, "return; }\n");
 }
 
 void emit_retf_return(int eid, int has_retval, Buf *b) {

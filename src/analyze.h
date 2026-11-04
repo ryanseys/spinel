@@ -247,7 +247,9 @@ typedef struct {
   int scope;            /* a def's or a define_method's: the method scope
                            the scope walk made of it (its Scope index; 0,
                            the program's top level, for none); a
-                           module_function copy's of one, that one's */
+                           module_function copy's of one, that one's; a
+                           class-side accessor's that a def replaces, the
+                           method made of it (elab_attr_scope) */
 } LrDef;
 typedef struct { int node, body; } LrOpen;
 typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /* LR_SG_PREPEND: a prepend of the singleton class, ahead of its own methods */
@@ -362,8 +364,11 @@ int elab_method_replaced(Compiler *c, const char *name);
 int elab_method_late(Compiler *c, const char *name);
 /* Does a reflection reader that answers from the method table (respond_to?,
    method_defined?, defined?, a list of methods: not a Method's maker) name
-   `name`, or one name any (lr_refl_take)? */
-int elab_method_reflected(Compiler *c, const char *name);
+   `name` among the methods of side sg (1 the class side), or one name any
+   (lr_refl_take)? A reader of instance methods counts for the class side
+   too in a program with an extend (lr_singleton_mixed). A respond_to?
+   whose answer the version cells hold for a class method (sg) does not. */
+int elab_method_reflected(Compiler *c, const char *name, int sg);
 /* The record's histories of method `name`, one class and side at a time:
    the first with i -1, then the one after i; -1 past the last. *cls the
    class (-1 main's), *sg 1 for its singleton side. */
@@ -435,13 +440,15 @@ void elab_window_open(Compiler *c, ElabWindow *w);
    elsewhere or the record cannot order, the changes of more than one
    history in a body that runs again, a stretch whose version the record
    cannot tell); -1 when cls's chain moves inside w (a mixin of a module
-   that has or may have the name, code the record cannot follow). */
+   that has or may have the name, code the record cannot follow that may
+   define). */
 enum { ELAB_SPAN_ANY = -2 };
 int elab_method_span(Compiler *c, int cls, const char *name, int sg, const ElabWindow *w, const LrDef **out, int cap);
 /* does cls's chain (its singleton's when sg) hold still for `name` from p
    to the load's end: each mixin of a module that has or may have the name
    into a class on it ran before p for certain, and no code the record
-   cannot follow runs on one of them? Then the chain the record holds at
+   cannot follow that may define (not one that only writes) runs on one of
+   them? Then the chain the record holds at
    the load's end (elab_chain_versions) is the one a call after p meets. */
 int elab_chain_settled(Compiler *c, int cls, int sg, const char *name, LoadPoint p);
 /* the versions of cls's method `name` (singleton when sg) in the histories
@@ -654,6 +661,16 @@ typedef struct { int cls, sg, kind, node; const char *name, *target; int scope; 
    time (lr_stmt_applied: 2) */
 enum { ELAB_ENTRY_MAY = 1 << 30 };
 ElabEntry *elab_entries(Compiler *c, unsigned mask, int *n);
+/* The class-side accessor versions of each history that ends in a def
+   (`class << self; attr_writer :cfg; end`, then `def self.cfg=`): a call
+   that runs while one is live runs the accessor, any other the def, so
+   each is a version of its own, a method register_attr_versions makes and
+   elab_attr_scope links to it (LrDef.scope); *n of them, the caller frees
+   the array. An accessor no def follows stays its class's slot alone. */
+ElabEntry *elab_replaced_attrs(Compiler *c, int *n);
+void elab_attr_scope(Compiler *c, const ElabEntry *e, int scope);
+/* does class cls's own side hold such an accessor version of name? */
+int elab_attr_replaced(Compiler *c, int cls, const char *name);
 /* did code the record cannot follow (a send, an eval of a String, a mixin
    of a module it does not know, a computed method name, a method of the
    program its body calls) run on cls before p? */
@@ -735,8 +752,6 @@ int an_push_widens_fresh(Compiler *c, int id);
    (analyze_infer.c) */
 enum { AN_LIFT_INT = 1, AN_LIFT_FLOAT = 2, AN_LIFT_STRING = 4, AN_LIFT_SYMBOL = 8, AN_LIFT_OTHER = 16 };
 int an_push_lifts_boxed(Compiler *c, int id);
-/* a builtin of this name answers a new Array where it answers one (analyze_pass.c) */
-int fresh_array_builtin_name(const char *nm);
 /* the value of node n is dropped where it is: a statement's, a loop
    body's, an ensure clause's (an_value_dropped, analyze_infer.c) */
 int an_node_dropped(Compiler *c, int n);
@@ -1075,6 +1090,7 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name);
 int an_module_methods_listable(Compiler *c, int m, const char *name);
 int an_module_defines(Compiler *c, int m, const char *nm, int *vis);
 int an_object_methods_all_arg(Compiler *c, int cid, int argc, const int *argv);
+int an_poly_object_methods_listable(Compiler *c, int id, const char *name, int argc, const int *argv);   /* a boxed receiver's list, per class it can hold */
 /* obj.methods / public_methods on a builtin value: the core class it lists as */
 const char *an_value_methods_class(Compiler *c, int recv, TyKind rt, const char *name, int argc,
                                    const int *argv);
@@ -1094,6 +1110,11 @@ void ie_body_restore(Compiler *c, int *snap);
 int ie_call_kwhash(Compiler *c, int id);
 size_t block_param_written_len(const Compiler *c, const char *name);
 size_t reassigned_param_written_len(const Compiler *c, const char *name);
+size_t param_written_len(const Compiler *c, const char *n);
+/* What a parameter node the desugar made or named stands for, as its
+   "desugared_param" mark says (desugared_param_name) */
+enum { DPN_OWN, DPN_WRITTEN, DPN_NAMELESS, DPN_NONE };
+int desugared_param_name(const NodeTable *nt, int p, const char **written);
 int block_param_is_renamed(const Compiler *c, const char *name);
 int block_param_made_for(const Compiler *c, const char *name, int blk);   /* an invented name of that block */
 char *block_param_invent_name(Compiler *c, const char *written, int blk);

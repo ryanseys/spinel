@@ -9489,16 +9489,27 @@ static TyKind lambda_nonlocal_return_ty(Compiler *c, int id) {
    the suffix while the positional ones were stripped (#4045). */
 static const char *param_public_name(const Compiler *c, const char *n) {
   if (!n) return n;
-  if (!strncmp(n, "__blk_kwrest", 12)) return "**";   /* name_anon_block_kwrest */
-  /* the slot of a parameter the body assigns (desugar_reassigned_block_params)
-     stands for the name written, with or without the shadow rename's suffix */
-  size_t len = reassigned_param_written_len(c, n);
-  if (!n[len]) len = block_param_written_len(c, n);
+  size_t len = param_written_len(c, n);
   if (!n[len]) return n;
   { static char *buf; static size_t cap;   /* a name of any length: nothing is cut */
     if (len + 1 > cap) { cap = len + 1; buf = (char *)realloc(buf, cap); }
     memcpy(buf, n, len); buf[len] = 0;
     return buf; }
+}
+/* The symbol Proc#parameters reports for parameter node p: the name the
+   program wrote (param_public_name), `anon` for one with no name, CRuby's
+   text for an anonymous one the desugar named; -1 for a destructuring
+   group's slot, which has no name, and -2 for a parameter the desugar made
+   that is none, the implicit rest of a trailing comma (`|a,|`, #4045)
+   (desugared_param_name) */
+static int proc_param_sym(Compiler *c, int p, const char *anon) {
+  const char *w, *nm = nt_str(c->nt, p, "name");
+  switch (desugared_param_name(c->nt, p, &w)) {
+  case DPN_NONE: return -2;
+  case DPN_NAMELESS: return -1;
+  case DPN_WRITTEN: return comp_sym_intern(c, w);
+  default: nm = param_public_name(c, nm); return comp_sym_intern(c, nm ? nm : anon);
+  }
 }
 
 /* Lower a `proc {}` / `lambda {}` / `Proc.new {}` / `->(){}` literal: emit a
@@ -10178,9 +10189,10 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
       meta_arity = neg ? -(mandatory + 1) : mandatory;
       /* the trailing parameter synthesized for a `|x,|` rest is not one the
          signature has -- CRuby reports `proc { |x,| }.arity` as 1 */
-      for (int k = 0; k < arity; k++) {
-        const char *pnm = proc_param_name(c, create, k);
-        if (pnm && strncmp(pnm, "__implicit_rest_", 16) == 0) {
+      int nreq = 0; const int *reqs = nt_arr(nt, pn, "requireds", &nreq);
+      for (int k = 0; k < nreq; k++) {
+        const char *w;
+        if (desugared_param_name(nt, reqs[k], &w) == DPN_NONE) {
           meta_arity = meta_arity < 0 ? meta_arity + 1 : meta_arity - 1;
           break;
         }
@@ -10381,58 +10393,50 @@ else if (orecv >= 0 && onm) {
       const char *pos_kind = "req";
       (void)is_lambda;
       ids = nt_arr(nt, pn, "requireds", &n);
+      /* each by proc_param_sym: a destructuring group has no name of its
+         own, and neither the synthesized one nor a renamed local's suffix
+         leaks (#3679) */
       for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
-        /* the implicit rest a trailing comma synthesizes (`|a,|`) is not a
-           parameter Ruby reports at all (#4045) */
-        { const char *inm = nt_str(nt, ids[i], "name");
-          if (inm && strncmp(inm, "__implicit_rest", 15) == 0) continue; }
+        int s = proc_param_sym(c, ids[i], NULL);
+        if (s == -2) continue;
         pkind[meta_count] = pos_kind;
-        /* a destructuring group has no name of its own; the synthesized one
-           must not leak, and neither must a renamed local's suffix (#3679) */
-        const char *rnm = nt_str(nt, ids[i], "name");
-        pname[meta_count++] = (rnm && strncmp(rnm, "__destr_", 8) == 0)
-                                ? -1 : comp_sym_intern(c, param_public_name(c, rnm));
+        pname[meta_count++] = s;
       }
       ids = nt_arr(nt, pn, "optionals", &n);
       for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
-        { const char *inm = nt_str(nt, ids[i], "name");
-          if (inm && strncmp(inm, "__implicit_rest", 15) == 0) continue; }
+        int s = proc_param_sym(c, ids[i], NULL);
+        if (s == -2) continue;
         pkind[meta_count] = "opt";
-        { const char *onm = nt_str(nt, ids[i], "name");
-          pname[meta_count++] = (onm && strncmp(onm, "__destr_", 8) == 0)
-                                  ? -1 : comp_sym_intern(c, param_public_name(c, onm)); }
+        pname[meta_count++] = s;
       }
       int rest = nt_ref(nt, pn, "rest");
       NodeKind rk = nt_kind(nt, rest);
       if (rk == NK_RestParameterNode && meta_count < PMETA_MAX) {
-        const char *nm = param_public_name(c, nt_str(nt, rest, "name"));
         pkind[meta_count] = "rest";
-        pname[meta_count++] = comp_sym_intern(c, nm ? nm : "*");
+        pname[meta_count++] = proc_param_sym(c, rest, "*");
       }
       ids = nt_arr(nt, pn, "posts", &n);
       for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
         pkind[meta_count] = pos_kind;
-        pname[meta_count++] = comp_sym_intern(c, param_public_name(c, nt_str(nt, ids[i], "name")));
+        pname[meta_count++] = proc_param_sym(c, ids[i], NULL);
       }
       ids = nt_arr(nt, pn, "keywords", &n);
       for (int i = 0; i < n && meta_count < PMETA_MAX; i++) {
         NodeKind kk = nt_kind(nt, ids[i]);
         pkind[meta_count] = (kk == NK_OptionalKeywordParameterNode) ? "key" : "keyreq";
-        pname[meta_count++] = comp_sym_intern(c, param_public_name(c, nt_str(nt, ids[i], "name")));
+        pname[meta_count++] = proc_param_sym(c, ids[i], NULL);
       }
       int kwrest = nt_ref(nt, pn, "keyword_rest");
       NodeKind kwty_k = nt_kind(nt, kwrest);
       if (kwty_k == NK_KeywordRestParameterNode && meta_count < PMETA_MAX) {
-        const char *nm = param_public_name(c, nt_str(nt, kwrest, "name"));
         pkind[meta_count] = "keyrest";
-        pname[meta_count++] = comp_sym_intern(c, nm ? nm : "**");
+        pname[meta_count++] = proc_param_sym(c, kwrest, "**");
       }
       int bpar = nt_ref(nt, pn, "block");
       NodeKind bk = nt_kind(nt, bpar);
       if (bk == NK_BlockParameterNode && meta_count < PMETA_MAX) {
-        const char *nm = param_public_name(c, nt_str(nt, bpar, "name"));
         pkind[meta_count] = "block";
-        pname[meta_count++] = comp_sym_intern(c, nm ? nm : "&");
+        pname[meta_count++] = proc_param_sym(c, bpar, "&");
       }
     }
     else if (nnumbered > 0) {
@@ -12285,7 +12289,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
           comp_resolve_member(c, cid, "inspect", 0, NULL, NULL) == SP_MEMBER_ATTR) {
         /* (one-String mode: the member is the handle, answered as its bytes face) */
         buf_printf(b, "static const char *sp_%s_inspect(sp_%s *self) { return SP_STR_B(self->iv_inspect); }\n",
-                   ci->name, ci->name);
+                   ci->c_name, ci->c_name);
       }
       else if (comp_method_in_chain(c, cid, "inspect", NULL) < 0) {
       const char *rn = class_ruby_name(c, cid); if (!rn) rn = ci->name;
@@ -12368,10 +12372,10 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
                           (ci->ivar_types[tosidx] == TY_STRBUF)) &&
           comp_resolve_member(c, cid, "to_s", 0, NULL, NULL) == SP_MEMBER_ATTR)
         buf_printf(b, "static const char *sp_%s_to_s(sp_%s *self) { return SP_STR_B(self->iv_to_s); }\n",
-                   ci->name, ci->name);
+                   ci->c_name, ci->c_name);
       else
         buf_printf(b, "static const char *sp_%s_to_s(sp_%s *self) { return sp_%s_inspect(self); }\n",
-                   ci->name, ci->name, ci->name);
+                   ci->c_name, ci->c_name, ci->c_name);
     }
     return;
   }
@@ -15843,7 +15847,10 @@ void emit_super(Compiler *c, int id, Buf *b) {
       /* SystemCallError#initialize(msg = nil, func = nil) builds the message
          from the class's errno ("No such file or directory - msg") and
          stores #errno; a bare `super` forwards this initialize's parameters */
-      if (class_is_syserr(c, s->class_id)) {
+      /* SystemExit#initialize(status = true, msg = nil) stores the status */
+      int super_exit = class_is_sysexit(c, s->class_id);
+      const char *super_fn = super_exit ? "sp_sysexit_super" : "sp_syserr_super";
+      if (super_exit || class_is_syserr(c, s->class_id)) {
         char lead[64]; snprintf(lead, sizeof lead, "(sp_Exception *)%s, ", g_self);
         if (ty_k == NK_ForwardingSuperNode) {
           /* a declared keyword (`def initialize(msg:)`) goes over as a Hash
@@ -15852,8 +15859,9 @@ void emit_super(Compiler *c, int id, Buf *b) {
           int nkwd = 0;
           if (pnd >= 0) (void)nt_arr(c->nt, pnd, "keywords", &nkwd);
           if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || nkwd > 0 || nt_ref(c->nt, id, "block") >= 0)
-            unsupported(c, id, "a bare super forwarding a rest, keyword or block parameter to SystemCallError#initialize");
-          if (s->nparams == 0) { buf_printf(b, "sp_syserr_super(%s0, NULL)", lead); return; }
+            unsupported(c, id, super_exit ? "a bare super forwarding a rest, keyword or block parameter to SystemExit#initialize"
+                                          : "a bare super forwarding a rest, keyword or block parameter to SystemCallError#initialize");
+          if (s->nparams == 0) { buf_printf(b, "%s(%s0, NULL)", super_fn, lead); return; }
           int t0 = g_tmp + 1;
           g_tmp += s->nparams;
           buf_puts(b, "({ ");
@@ -15866,12 +15874,12 @@ void emit_super(Compiler *c, int id, Buf *b) {
             buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", t0 + k);
             free(rn.p);
           }
-          buf_printf(b, "sp_syserr_super(%s%d, (sp_RbVal[]){", lead, s->nparams);
+          buf_printf(b, "%s(%s%d, (sp_RbVal[]){", super_fn, lead, s->nparams);
           for (int k = 0; k < s->nparams; k++) buf_printf(b, "%s_t%d", k ? ", " : "", t0 + k);
           buf_puts(b, "}); })");
           return;
         }
-        emit_syserr_call(c, id, "sp_syserr_super", lead, argc2, argv2, b);
+        emit_syserr_call(c, id, super_fn, lead, argc2, argv2, b);
         return;
       }
       if (argc2 > 0) {
@@ -16360,7 +16368,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     const char *builtin_guard = NULL; /* operand cls_id a boxed-builtin param requires */
     if (ty_is_object(pt)) {
       int pcls = ty_object_class(pt);
-      const char *pcn = c->classes[pcls].name;
+      const char *pcn = c->classes[pcls].c_name;
       pcid = pcls;   /* guard b against the OPERAND's class, not the receiver's */
       snprintf(argbuf, sizeof argbuf, "%s(sp_%s *)b.v.p",
                c->classes[pcls].is_value_type ? "*" : "", pcn);
@@ -16483,7 +16491,7 @@ static int user_dispatch_arg(Compiler *c, Scope *m, int pi, const char *v,
     snprintf(guard, gsz, "%s.tag == SP_TAG_OBJ && %s.cls_id == %d",
              v, v, pcls);
     snprintf(arg, asz, "%s(sp_%s *)%s.v.p",
-             c->classes[pcls].is_value_type ? "*" : "", c->classes[pcls].name, v);
+             c->classes[pcls].is_value_type ? "*" : "", c->classes[pcls].c_name, v);
   }
   else if (pt == TY_POLY) snprintf(arg, asz, "%s", v);
   /* a parameter slot that holds its nil takes nil too, as its oint */
@@ -16769,7 +16777,7 @@ static void emit_user_op_dispatch(Compiler *c, Buf *b, const char *fname, const 
                        pcls2);
               cguard = cgb;
               snprintf(cargs, sizeof cargs, "%s(sp_%s *)b.v.p",
-                       c->classes[pcls2].is_value_type ? "*" : "", c->classes[pcls2].name);
+                       c->classes[pcls2].is_value_type ? "*" : "", c->classes[pcls2].c_name);
             }
             else snprintf(cargs, sizeof cargs, "b");
             buf_printf(b, "      if (strcmp(op, \"==\") == 0%s%s%s) {\n",
@@ -22323,7 +22331,7 @@ char *codegen_program(const NodeTable *nt) {
   /* A proc form is named only by a poly dispatch, which is emitted later, so
      the reachability pass cannot see it. Emit it and let the C compiler drop
      it if no arm ends up calling it (#3399). */
-  for (int s = 1; s < c->nscopes; s++) { if (prog_is_top_scope(c, &c->scopes[s]) || c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); if (poll_pure_wrapped(c, s)) poll_pure_proto(c, s, &b); }
+  for (int s = 1; s < c->nscopes; s++) { if (prog_is_top_scope(c, &c->scopes[s]) || c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || comp_scope_copied_away(c, s)) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); if (poll_pure_wrapped(c, s)) poll_pure_proto(c, s, &b); }
 
   emit_cext_dispatch(c, &b);
   emit_user_exc_dispatch(c, &b);
@@ -22655,7 +22663,7 @@ char *codegen_program(const NodeTable *nt) {
       if (cg_prev_s >= 0) cg_slow_note(cg_prev_s, now - cg_prev_t);
       cg_prev_s = s; cg_prev_t = now;
     }
-    if (prog_is_top_scope(c, &c->scopes[s]) || c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue;
+    if (prog_is_top_scope(c, &c->scopes[s]) || c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || comp_scope_copied_away(c, s)) continue;
     int ndiag0 = g_ndiags, ndefer0 = g_stmt_deferrals;
     int orphan = scope_is_orphan_method(c, s);
     if (orphan) g_unsup_quiet = 1;
@@ -22843,7 +22851,7 @@ char *codegen_program(const NodeTable *nt) {
      randomness pays nothing and one that does still varies per run. */
   /* Register END blocks (atexit runs LIFO, so they execute in reverse registration order) */
   for (int e = 1; e <= end_count; e++)
-    buf_printf(body, "    atexit(sp_end_fn_%d);\n", e);
+    buf_printf(body, "    sp_at_exit_armed = 1; atexit(sp_end_fn_%d);\n", e);
   size_t main_dbeg = body->len;
   int main_ndecl = c->scopes[0].nlocals;
   size_t *main_dends = (size_t *)calloc((size_t)(main_ndecl + 1), sizeof(size_t));
@@ -22904,14 +22912,18 @@ char *codegen_program(const NodeTable *nt) {
      there -- an entry that spawns a Thread then found no worker to run it,
      and its join waited forever. Threads the init spawned run on the
      helpers, or at the next entry that blocks, as after a require. */
-  if (g_uses_threads && !g_ext_init_name) buf_puts(body, "    sp_sched_drain();\n");
+  if (g_uses_threads && !g_ext_init_name) buf_puts(body, g_needs_at_exit ? "    sp_sched_drain_runnable();\n" : "    sp_sched_drain();\n");
   /* main's exit status is the hooks' to change: a hook that calls `exit`, or
      that raises, decides what the program exits with (sp_at_exit_run); an
      ext-init arms them to run when the host exits (emit_ext_at_exit_arming) */
   if (g_needs_at_exit && g_ext_init_name) emit_ext_at_exit_arming(body);
   if (g_ext_init_name) buf_puts(body, "}\n");
   else {
-    if (g_needs_at_exit) buf_puts(body, "  _sp_main_rc = sp_at_exit_run(0);\n}\n");
+    if (g_needs_at_exit) {
+      buf_puts(body, "  _sp_main_rc = sp_at_exit_run(0);\n");
+      if (g_uses_threads) buf_puts(body, "  sp_sched_drain();\n");
+      buf_puts(body, "}\n");
+    }
     /* without hooks, the finalizers still registered run here, where the
        program ends in Ruby terms -- before the C exit handlers, a library's
        own teardown among them (sp_at_exit_run does the same with hooks) */

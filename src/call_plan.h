@@ -66,6 +66,11 @@ typedef struct {
                               stand-in, a subclass's override of a reader, a
                               reopen) */
   unsigned char method_call; /* a Method invocation, even with no source node */
+  unsigned char absent;    /* a `method(:sym)` that finds no method of
+                              owner_ci's side (2 its class side, 1 its
+                              instance side): CRuby's NameError, where it
+                              runs (mi -1) or while no version of the entry
+                              mi is live (cplan_capture_absent) */
   unsigned char rkind;     /* CP_REFUSE: CplanRefuse */
   const char *msg;         /* CP_REFUSE: the message, as the compiler prints it */
   unsigned char rfrom;     /* CP_REFUSE: CplanRefuseFrom */
@@ -189,6 +194,22 @@ int cplan_implied_version(Compiler *c, int id, const char *name, int op, int cls
 /* The classes whose to_ary that call reaches on a boxed operand, where
    the record proves it: into out[0..cap), the count */
 int cplan_boxed_to_ary_classes(Compiler *c, int id, int op, int *out, int cap);
+/* The program's `[]=` an index store on an instance of class cls calls:
+   its method scope, with the class defining it in *cdef when cdef is
+   given; -1 when the chain has none that takes a key and a value. */
+int cplan_index_writer(Compiler *c, int cls, int *cdef);
+/* What storing into attribute or index target tgt (`o.x`, `a[i]` of a
+   multiple assignment) does besides the store: CPS_CODE when it may call
+   a method of the program -- a store on a receiver typed at run time, a
+   writer that is a method of the program (a plain attr_writer is one
+   field store), the program's `[]=` (cplan_index_writer), or a builtin
+   `[]=` whose callbacks on the keys it is handed (the builtin-callback
+   rows: a Hash's #hash and #eql?, an Array's #to_int) reach a method of
+   the program; CPS_CHANGES_ARRAY when it is a builtin `[]=` on an Array,
+   which changes its receiver in place (the name's mutation row). 0 for
+   any other target. */
+enum { CPS_CODE = 1u, CPS_CHANGES_ARRAY = 2u };
+unsigned cplan_target_store_effect(Compiler *c, int tgt);
 /* cplan_entries, for a reader that wants the code the call's emission
    names (reachability): the same answer, but for a call on a boxed receiver
    the methods of the arms its dispatch has, which the receiver's class
@@ -678,6 +699,54 @@ int cplan_self_builtin(Compiler *c, int id);
    (elab_blocks_run_now: a builtin iterator on a literal); 0 too for a class
    whose chain the record does not know. */
 int cplan_cmethod_later(Compiler *c, int id, int cls, const char *name);
+/* What call id of class method `name` on program class ci runs where ci
+   has a `class << self` accessor of the name: CP_SG_NONE where it has none
+   (the call is an ordinary class method's); CP_SG_SLOT, the slot, named
+   into slot (the writer's base, the reader's name past an alias), where
+   the call binds to no method or to the accessor's own version (one a
+   later def replaces, Scope.attr_version) or where the record tells no
+   version; CP_SG_METHOD where it binds to that def or to the entry that
+   chooses between them at run time, which the call's emitter calls (an
+   accessor no def follows has no method: its calls take the slot). */
+enum { CP_SG_NONE, CP_SG_SLOT, CP_SG_METHOD, CP_SG_UNTOLD };
+int cplan_sg_accessor(Compiler *c, int id, int ci, const char *name, char *slot, size_t cap);
+/* For call node id of `name` on class ci, where a later def replaces ci's
+   class-side accessor of the name (elab_attr_replaced): CP_SG_SLOT where
+   the call binds to the accessor's own version, CP_SG_METHOD where it binds
+   to the def or the entry between them, CP_SG_UNTOLD where the record tells
+   no version (each emitter then keeps its answer without versions).
+   CP_SG_NONE where no def replaces the accessor. */
+int cplan_sg_version(Compiler *c, int id, int ci, const char *name);
+/* Does call node id, written with `name` (not a send or a capture of it),
+   run no method on class ci: the plan's answer for it is the class's
+   accessor slot (cplan_sg_accessor). The reach pass then reaches no scope
+   from it, though the version it binds to is the accessor's own. */
+int cplan_sg_slot_call(Compiler *c, int id, int ci, const char *name);
+/* The class whose own class methods `respond_to?` call id asks about: a
+   constant receiver's, or self's in a class method or a class body; -1 for
+   any other receiver, an instance's, and for a call of another shape
+   (respond_to_cells_shape). */
+int cplan_presence_class(Compiler *c, int id);
+/* The version cells that answer whether class cls has its class method
+   `name` where respond_to? call id runs: the cells of the version entry a
+   call of the name there would take, where the record cannot order the
+   call against a version (a method body's def, which may run any number
+   of times). Each cell holds one of the chain's versions while that
+   version is the method; only public ones unless include_all; and els,
+   whether the entry's else arm, which the call runs while none is live,
+   finds the method so (cplan_entry_finds). 1 with the
+   cells in *out, 0 where the answer is the table's or the record's at the
+   point (cplan_cmethod_later), for a chain whose entry arms an undef or
+   a remove, and in a program that defines respond_to_missing?
+   (respond_to_missing_defined). */
+typedef struct { int n; char cell[VER_MAX_ARMS][32]; int val[VER_MAX_ARMS]; int els; } CplanCells;
+int cplan_cmethod_presence(Compiler *c, int id, int cls, const char *name, int include_all, CplanCells *out);
+/* What version entry scope e's else arm finds while no version of its
+   chain is live, as respond_to? and a Method's maker see it
+   (VerEntry.finds): a public method, a private or protected one, or none
+   (NoMethodError, method_missing); -1 for a scope that is no entry */
+enum { VER_FINDS_NONE, VER_FINDS_HIDDEN, VER_FINDS_PUBLIC };
+int cplan_entry_finds(const Compiler *c, int e);
 /* How a NameError or NoMethodError of call id names self, into buf:
    "class U" or "module M" in a class or module body and "main" at the top
    level (the record's self where the call runs, elab_self_at), else "an

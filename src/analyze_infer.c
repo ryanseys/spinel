@@ -3075,24 +3075,17 @@ static int an_reopen_method(Compiler *c, int cls, const char *name) {
 
 int class_has_subclass(Compiler *c, int ocid);
 
-static int sg_accessor_type(Compiler *c, int ci, const char *name, TyKind *out) {
+/* The type of call id where the plan answers the slot of ci's `class <<
+   self` accessor (cplan_sg_accessor); 0 for a call that runs a method. An
+   accessor backed by the class-level ivar reads that slot's type; the
+   alias table maps a renamed accessor onto it (#3776) */
+static int sg_accessor_type(Compiler *c, int id, int ci, const char *name, TyKind *out) {
   ClassInfo *cls = &c->classes[ci];
-  char base[256];
-  const char *rn;
-  if (setter_base_name(name, base, sizeof base)) {
-    if (!comp_is_sg_writer(cls, base)) return 0;
-    rn = base;
-  }
-  else {
-    /* an accessor backed by the class-level ivar reads that slot's type;
-       the alias table maps a renamed accessor onto it (#3776) */
-    rn = comp_resolve_cm_alias_at(c, ci, name, NULL);
-    if (!rn) rn = name;
-    if (!comp_is_sg_reader(cls, rn)) return 0;
-  }
+  char rn[256];
+  if (cplan_sg_accessor(c, id, ci, name, rn, sizeof rn) != CP_SG_SLOT) return 0;
   *out = TY_POLY;
   if (comp_is_sg_civ(cls, rn)) {
-    char ivn[sizeof base + 1]; snprintf(ivn, sizeof ivn, "@%s", rn);
+    char ivn[sizeof rn + 1]; snprintf(ivn, sizeof ivn, "@%s", rn);
     int ivi = comp_ivar_index(cls, ivn);
     if (ivi >= 0 && cls->ivar_types[ivi] != TY_UNKNOWN) *out = ivar_value_ty(cls, ivi);
   }
@@ -5961,16 +5954,34 @@ int class_any_cmethod_eqq(Compiler *c, int ci) {
   return mi;
 }
 
-/* The same, only for a method of one plain parameter: the `when` and `in`
-   arms, grep and a class value call it. Another one (a keyword, a default,
-   a rest) is called only by a written `Klass === x`, through its call
-   plan. */
+/* Can the call give this default in its place, with no frame of the
+   method: a literal or a constant read, which reads no local, no self, and
+   calls nothing. (An Array or Hash literal is left out: the boxed dispatch
+   that grep and a class value use builds no value of its own. A String
+   literal too: given in place it is the frozen literal, where the method's
+   own default is a new String.) */
+static int eqq_default_is_plain(const NodeTable *nt, int node) {
+  switch (nt_kind(nt, node)) {
+    case NK_IntegerNode: case NK_FloatNode: case NK_NilNode: case NK_TrueNode:
+    case NK_FalseNode: case NK_SymbolNode: case NK_ConstantReadNode:
+      return 1;
+    default: return 0;
+  }
+}
+
+/* The same, only for a method the `when` and `in` arms, grep and a class
+   value can call with the one value: one plain parameter, then only
+   optional ones whose defaults are plain (eqq_default_is_plain). Another
+   one (a keyword, a rest, a default that needs the method's frame) is
+   called only by a written `Klass === x`, through its call plan. */
 int class_own_cmethod_eqq(Compiler *c, int ci) {
   int mi = class_any_cmethod_eqq(c, ci);
   if (mi < 0) return -1;
   const Scope *s = &c->scopes[mi];
-  if (s->nparams != 1 || s->rest_idx >= 0 || s->kwrest_idx >= 0 || s->ps_nkw > 0 || s->blk_param || s->yields ||
+  if (s->nparams < 1 || s->rest_idx >= 0 || s->kwrest_idx >= 0 || s->ps_nkw > 0 || s->blk_param || s->yields ||
       (s->pdefault && s->pdefault[0] >= 0)) return -1;
+  for (int i = 1; i < s->nparams; i++)
+    if (!s->pdefault || s->pdefault[i] < 0 || !eqq_default_is_plain(c->nt, s->pdefault[i])) return -1;
   return mi;
 }
 
@@ -6298,7 +6309,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     const char *cn = nt_str(nt, recv, "name");
     int ci = cn ? comp_class_index(c, cn) : -1;
     TyKind sgt;
-    if (ci >= 0 && sg_accessor_type(c, ci, name, &sgt)) { *out = sgt; return 1; }
+    if (ci >= 0 && sg_accessor_type(c, id, ci, name, &sgt)) { *out = sgt; return 1; }
   }
   /* self.singleton_writer= / self.singleton_reader: inside a class method
      or directly in a class/module body (node_cbody). */
@@ -6308,7 +6319,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     int _sg_cid = (_self && _self->is_cmethod && _self->class_id >= 0) ? _self->class_id : -1;
     if (_sg_cid < 0 && _self && _self->class_id < 0) _sg_cid = c->node_cbody[id];
     TyKind sgt;
-    if (_sg_cid >= 0 && sg_accessor_type(c, _sg_cid, name, &sgt)) { *out = sgt; return 1; }
+    if (_sg_cid >= 0 && sg_accessor_type(c, id, _sg_cid, name, &sgt)) { *out = sgt; return 1; }
   }
 
   /* FFI: call on a module that registered ffi_func/ffi_buffer/ffi_read_* */
@@ -6737,7 +6748,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
           { *out = r; return 1; }
         }
         TyKind sgt;
-        if (!class_has_subclass(c, cid) && sg_accessor_type(c, cid, name, &sgt)) { *out = sgt; return 1; }
+        if (!class_has_subclass(c, cid) && sg_accessor_type(c, id, cid, name, &sgt)) { *out = sgt; return 1; }
       }
     }
   }
@@ -8862,7 +8873,34 @@ static int infer_enum_desugar_call(const char *name, int argc, TyKind *out) {
 /* obj.methods / public_methods / singleton_methods the compiler lists: on
    a typed user object (an_object_methods_listable) or a builtin value
    (an_value_methods_class) */
-static int infer_methods_listed(Compiler *c, int recv, TyKind rt, const char *name, int argc,
+/* See analyze.h: obj.methods / public_methods / singleton_methods on a boxed
+   receiver, which the emitter lists per class
+   (emit_poly_object_methods_reflection). The arguments are a list's, no
+   class the receiver can hold (poly_recv_classes; every instantiated class
+   of the program when the walk bounds none) defines a method or a reader
+   of the name itself, which the call would reach instead, and some class
+   it can hold lists the name (an_object_methods_listable); one that does
+   not (an exception, a native class, a class under a builtin) is answered
+   with a NotImplementedError naming it, should the receiver be its
+   instance. */
+int an_poly_object_methods_listable(Compiler *c, int id, const char *name, int argc, const int *argv) {
+  if (!name || (!sp_streq(name, "methods") && !sp_streq(name, "public_methods") &&
+                !sp_streq(name, "singleton_methods"))) return 0;
+  if (nt_ref(c->nt, id, "block") >= 0 || an_object_methods_all_arg(c, -1, argc, argv) < 0 ||
+      comp_object_defines(c, name)) return 0;
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, id, &nk);
+  int n = ks ? nk : c->nclasses, any = 0;
+  for (int i = 0; i < n; i++) {
+    int k = ks ? ks[i] : i;
+    if (k < 0 || k >= c->nclasses || !c->classes[k].instantiated || is_builtin_reopen(c->classes[k].name)) continue;
+    if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)) return 0;
+    if (an_object_methods_listable(c, k, name)) any = 1;
+  }
+  return any;
+}
+
+static int infer_methods_listed(Compiler *c, int id, int recv, TyKind rt, const char *name, int argc,
                                 const int *argv) {
   if (recv >= 0 && ty_is_object(rt) &&
       (sp_streq(name, "methods") || sp_streq(name, "public_methods") ||
@@ -8870,6 +8908,7 @@ static int infer_methods_listed(Compiler *c, int recv, TyKind rt, const char *na
       an_object_methods_all_arg(c, ty_object_class(rt), argc, argv) >= 0 &&
       an_object_methods_listable(c, ty_object_class(rt), name))
     return 1;
+  if (recv >= 0 && rt == TY_POLY && an_poly_object_methods_listable(c, id, name, argc, argv)) return 1;
   return an_value_methods_class(c, recv, rt, name, argc, argv) != NULL;
 }
 
@@ -9708,7 +9747,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && ty_is_object(rt) && argc == 0 &&
       sp_streq(name, "instance_variables"))
     return TY_POLY_ARRAY;
-  if (infer_methods_listed(c, recv, rt, name, argc, argv)) return TY_POLY_ARRAY;
+  if (infer_methods_listed(c, id, recv, rt, name, argc, argv)) return TY_POLY_ARRAY;
 
   /* Kernel#puts / #print return nil; typed so the value form composes. */
   if (recv < 0 && !an_bare_call_class_owned(c, id) && (is_text_print(name)) &&

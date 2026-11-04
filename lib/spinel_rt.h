@@ -16003,7 +16003,7 @@ static sp_RbVal sp_poly_thread_status(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) return sp_Thread_status((sp_thread *)v.v.p);
   /* a SystemExit's exit status, as the typed accessor reads it; any other
      exception keeps the NoMethodError below, which carries its receiver */
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p &&
+  if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id)) && v.v.p &&
       sp_exc_cls_matches(((sp_Exception *)v.v.p)->cls_name, "SystemExit"))
     return sp_box_int(sp_exc_status_acc((sp_Exception *)v.v.p));
   sp_raise_nomethod(sp_nomethod_msg("status", v));
@@ -16448,15 +16448,20 @@ static SP_INLINE void *sp_errinfo(void) {
   void *h = sp_cur_handled();
   return h && strcmp(((sp_Exception *)h)->cls_name, "FiberKillSignal") == 0 ? NULL : h;
 }
+extern void *sp_at_exit_errinfo;        /* lib/sp_exc.c */
 /* Push a handled exception. sp_rescue_sp grows with recursion *through* rescue
    bodies (the handler stays pushed across the recursive call it makes, unlike a
    begin frame which is popped first), so a fixed SP_EXC_STACK_MAX can be reached;
-   fail loudly rather than write past sp_exc_handling. */
+   fail loudly rather than write past sp_exc_handling.
+   An exception an at_exit hook handles takes the place of the one ending the
+   program: `$!` is nil once that rescue is done, until the next hook, as in
+   CRuby, whose rescue clears the errinfo a hook started with. */
 static void sp_rescue_push(void *e) {
   if (sp_rescue_sp >= SP_EXC_STACK_MAX) {
     fprintf(stderr, "rescue nesting too deep (> %d)\n", SP_EXC_STACK_MAX);
     exit(1);
   }
+  if (sp_rescue_sp == 1 && sp_exc_handling[0] == sp_at_exit_errinfo) sp_exc_handling[0] = NULL;
   sp_exc_handling[sp_rescue_sp++] = e;
 }
 #if defined(SP_CEXT) && !defined(SPINEL_EXT_HOST)
@@ -16566,6 +16571,8 @@ struct sp_Exception_s;
    sp_ tokens, comments included, so a comment must not spell one either. */
 static int sp_at_exit_run(int status);
 extern int (*sp_at_exit_run_fn)(int);   /* lib/sp_exc.c: the raise's way to the hooks */
+extern int sp_at_exit_armed;            /* lib/sp_exc.c */
+void *sp_exc_ending_obj(const char *cls, const char *msg, void *obj, void *cause);   /* lib/sp_exc.c */
 void sp_fin_run_exit(void);   /* lib/sp_gc.c: finalizers still registered at exit */
 /* Print an uncaught exception in CRuby's tail format. Factored out because two
    places print it now: the end of sp_raise_cls, and a hook whose own exception
@@ -16621,41 +16628,20 @@ static const char *sp_bm_owner_name(sp_BoundMethod *m) {
     memcpy(r, p, n); r[n] = 0;
     return r; }
 }
-/* #parameters from the same rendering: `a`, `b=...`, `*r`, `**k` (#3692). */
+/* #parameters from the list the bind site stamped (sp_BoundMethod.params):
+   [kind] or [kind, name] per entry */
 static sp_PolyArray *sp_bm_parameters(sp_BoundMethod *m) {
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-  if (!m || !m->desc) return out;
-  const char *o = strchr(m->desc, '(');
-  if (!o) return out;
-  const char *p = o + 1;
-  while (*p && *p != ')') {
-    while (*p == ' ' || *p == ',') p++;
-    if (!*p || *p == ')') break;
-    const char *kind = "req";
-    if (p[0] == '*' && p[1] == '*') { kind = "keyrest"; p += 2; }
-    else if (p[0] == '*') { kind = "rest"; p++; }
-    else if (p[0] == '&') { kind = "block"; p++; }
-    const char *ns = p;
-    while (*p && *p != ',' && *p != ')' && *p != '=' && *p != ':') p++;
-    { size_t n = (size_t)(p - ns);
-      char nm[128]; if (n >= sizeof nm) n = sizeof nm - 1;
-      memcpy(nm, ns, n); nm[n] = 0;
-      if (*p == '=') { kind = "opt"; while (*p && *p != ',' && *p != ')') p++; }
-      /* a keyword, as the description writes it: `k:` required, `k: ...`
-         with a default */
-      else if (*p == ':') {
-        p++;
-        while (*p == ' ') p++;
-        kind = *p == '.' ? "key" : "keyreq";
-        while (*p && *p != ',' && *p != ')') p++;
-      }
-      if (n) {
-        sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
-        sp_PolyArray_push(pair, sp_box_sym(sp_sym_intern(kind)));
-        sp_PolyArray_push(pair, sp_box_sym(sp_sym_intern(nm)));
-        sp_PolyArray_push(out, sp_box_poly_array(pair));
-      }
-    }
+  const char *p = m ? m->params : NULL;
+  while (p && *p) {
+    const char *e = p;
+    while (*e && *e != ' ') e++;
+    const char *colon = memchr(p, ':', (size_t)(e - p));
+    sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
+    sp_PolyArray_push(pair, sp_box_sym(sp_sym_intern_n(p, (size_t)((colon ? colon : e) - p))));
+    if (colon) sp_PolyArray_push(pair, sp_box_sym(sp_sym_intern_n(colon + 1, (size_t)(e - colon - 1))));
+    sp_PolyArray_push(out, sp_box_poly_array(pair));
+    p = *e ? e + 1 : e;
   }
   return out;
 }
@@ -16927,6 +16913,7 @@ static void sp_mark_in_flight_exceptions(void) {
   if (sp_inflight_cause) sp_gc_mark(sp_inflight_cause);
   for (int i = 0; i < sp_rescue_sp; i++)
     if (sp_exc_handling[i]) sp_gc_mark(sp_exc_handling[i]);  /* handled exceptions */
+  if (sp_at_exit_errinfo) sp_gc_mark(sp_at_exit_errinfo);
 }
 
 /* sp_Exception: first-class exception object. cls_name is a pointer
@@ -16946,10 +16933,11 @@ void (*sp_user_exc_ivinit_fn)(void *) = NULL;
 void (*sp_exc_bivar_copy_fn)(void *, void *) = NULL;
 #endif
 /* Kernel#exit: raises a rescuable SystemExit carrying the status; with no
-   handler in scope it terminates directly (#2761). exit! stays direct. */
+   handler in scope and no at_exit hook to read it as `$!`, it terminates
+   directly (#2761). exit! stays direct. */
 static void sp_raise_exc(volatile sp_Exception *ve);   /* defined below */
 SP_NORETURN SP_COLD static void sp_exit_raise(int status) {
-  if (sp_exc_top > 0) {
+  if (sp_exc_top > 0 || sp_at_exit_armed) {
     sp_Exception *e = sp_exc_new("SystemExit", "exit");
     SP_GC_ROOT(e);
     e->result = sp_box_int((sp_int)status);
@@ -16961,7 +16949,7 @@ SP_NORETURN SP_COLD static void sp_exit_raise(int status) {
    SystemExit with status 1 carrying that message (#3077). */
 SP_NORETURN SP_COLD static void sp_abort_raise(const char *msg) {
   if (msg) { fputs(msg, stderr); fputc('\n', stderr); }
-  if (sp_exc_top > 0) {
+  if (sp_exc_top > 0 || sp_at_exit_armed) {
     sp_Exception *e = sp_exc_new("SystemExit", msg ? msg : "exit");
     SP_GC_ROOT(e);
     e->result = sp_box_int((sp_int)1);
@@ -17123,6 +17111,31 @@ static const char *sp_syserr_super(sp_Exception *self, sp_int argc, const sp_RbV
   self->xkey = sp_box_nil();
   sp_exc_syserr_init(self);
   return m;
+}
+/* SystemExit#initialize, for it and the program's classes below it: a leading
+   true, false or number is the status, and what is left goes to
+   Exception#initialize, which takes one message. Anything else leads as that
+   message, with status 0. */
+static const char *sp_sysexit_super(sp_Exception *self, sp_int argc, const sp_RbVal *av) {
+  SP_GC_ROOT(self);
+  sp_int status = 0, lead = 0;
+  if (argc > 0) {
+    if (av[0].tag == SP_TAG_BOOL) { status = av[0].v.b ? 0 : 1; lead = 1; }
+    else if (av[0].tag == SP_TAG_INT) { status = av[0].v.i; lead = 1; }
+    else if (av[0].tag == SP_TAG_FLT) { status = (sp_int)sp_float_to_i_checked(av[0].v.f); lead = 1; }
+  }
+  if (argc - lead > 1)
+    sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %lld, expected 0..1)",
+                                             (long long)(argc - lead)));
+  self->result = sp_box_int(status);
+  if (argc > lead && av[lead].tag != SP_TAG_NIL) {
+    const char *m = sp_poly_to_s(av[lead]);
+    SP_GC_ROOT(m);
+    sp_gc_wb((void *)self);
+    /* an explicitly given message stays, even empty (#3713) */
+    self->msg = m[0] ? sp_str_retained(m) : sp_exc_no_msg;
+  }
+  return self->msg;
 }
 /* SystemCallError.new(msg, errno = nil, func = nil): an errno with an Errno
    class builds an instance of that class (SystemCallError.new("x", 2) is an
@@ -18151,6 +18164,7 @@ static inline struct sp_Proc *sp_at_exit_push(struct sp_Proc *p) {
   SP_AT_EXIT_LOCK();
   sp_at_exit_hooks[sp_at_exit_count++] = p;
   SP_AT_EXIT_UNLOCK();
+  sp_at_exit_armed = 1;
   return p;
 }
 static void sp_mark_at_exit_hooks(void) {
@@ -19377,7 +19391,8 @@ static sp_RbVal sp_poly_upto_enum(sp_RbVal r, sp_RbVal lim, int up) {
     if (sp_poly_cmp_ck(span, sp_box_int(0)) >= 0) size = sp_poly_add(span, sp_box_int(1));
     /* a Float count (CRuby counts a Float limit in Floats too) as the
        Integer it is, not narrowed to a word, which a far limit overflows */
-    if (size.tag == SP_TAG_FLT) size = sp_box_bigint(sp_bigint_new_double(size.v.f));
+    /* (one past the Floats, `(-2**1023).upto(Float::MAX)`, stays Infinity, as CRuby's) */
+    if (size.tag == SP_TAG_FLT && isfinite(size.v.f)) size = sp_box_bigint(sp_bigint_new_double(size.v.f));
   }
   return sp_box_nullable_obj((void *)sp_enum_step_labeled(sp_Enumerator_new_gen(sp_big_step_gen, cap, size), r, op, &lim, 1),
                              SP_BUILTIN_ENUMERATOR);
@@ -20572,7 +20587,12 @@ static inline sp_int sp_proc_yield(sp_Proc *p, sp_int argc, sp_int *args) {
    registers another one during the drain gets it run (CRuby does too), and no
    hook can run twice. The popped hook is rooted for the duration of its call:
    the table is the collector's only handle on it, and the pop takes that handle
-   away. */
+   away.
+
+   Each hook reads `$!` as the exception ending the program, or as the last
+   hook's that raised or exited, and nil when there is none: it starts with
+   that one as the only exception being handled, so a raise in it takes that
+   one as its cause too, as in CRuby. */
 static int sp_at_exit_run(int status) {
   /* The hooks run at top level. A raise that reached here unhandled, or an exit
      from inside a walk, abandoned whatever walk it was inside; drop the frames
@@ -20589,6 +20609,13 @@ static int sp_at_exit_run(int status) {
   volatile int st = status;
   sp_int args[16] = {0};   /* sp_proc_call's fixed slot convention */
   for (;;) {
+    /* an END block runs later, from the C exit handlers, and reads it here too */
+    sp_rescue_sp = 0;
+    if (sp_at_exit_errinfo) {
+      sp_Exception *xe = (sp_Exception *)sp_at_exit_errinfo;
+      sp_rescue_push(xe);
+      if (!xe->backtrace) { sp_StrArray *xbt = sp_backtrace_captured(); sp_gc_wb((void *)xe); xe->backtrace = xbt; }
+    }
     SP_AT_EXIT_LOCK();
     sp_int n = sp_at_exit_count;
     sp_Proc *h = n > 0 ? sp_at_exit_hooks[--sp_at_exit_count] : NULL;
@@ -20625,11 +20652,14 @@ static int sp_at_exit_run(int status) {
       void *eobj = sp_exc_obj[sp_exc_top];
       SP_GC_ROOT_STR(emsg);   /* printing formats a backtrace, which allocates */
       SP_GC_ROOT(eobj);
-      if (ecls && strcmp(ecls, "SystemExit") == 0) st = sp_exc_exit_status(eobj);
+      if (ecls && sp_exc_cls_matches(ecls, "SystemExit")) st = sp_exc_exit_status(eobj);
       else {
         sp_exc_print_uncaught(ecls ? ecls : "RuntimeError", emsg, eobj ? ((sp_Exception *)eobj)->backtrace : NULL);
         st = 1;
       }
+      /* the hooks after this one read it as `$!` */
+      sp_at_exit_errinfo = sp_exc_ending_obj(ecls ? ecls : "RuntimeError", emsg, eobj, sp_pending_cause);
+      sp_pending_cause = NULL;
     }
   }
   /* then the finalizers still registered, as CRuby's ruby_finalize runs them:

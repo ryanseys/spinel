@@ -1338,7 +1338,10 @@ static int infer_case_pattern_locals(Compiler *c) {
    same reasoning as a push of a foreign element, on a mutation that rewrites
    the whole array rather than extending it. Without this the typed setter took
    the tail raw (`sp_IntArray_set(a, i, <a String>)`) and the C build failed.
-   Widening only: a receiver whose element type already fits is untouched. */
+   Widening only: a receiver whose element type already fits is untouched.
+   The receiver is the Array the mutation lands in (mutated_array), past the
+   calls before it that answer their receiver: `a.each_slice(1) { }.map! { }`
+   changes a. */
 int widen_arrays_from_map_bang(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -1353,6 +1356,7 @@ int widen_arrays_from_map_bang(Compiler *c) {
     TyKind tt = infer_type(c, bb[bn - 1]);
     if (tt == TY_UNKNOWN) continue;
     int recv = nt_ref(nt, id, "receiver");
+    if (recv >= 0) recv = mutated_array(c, recv);
     if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
     const char *rnm = nt_str(nt, recv, "name");
     Scope *ls = rnm ? comp_scope_of(c, recv) : NULL;
@@ -4168,7 +4172,10 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         /* An unfinished receiver supplies no getter-owner evidence yet.
            If it stays unknown, the conservative phase still visits every
            possible owner; a runtime-broad receiver does so in both phases. */
-        if (!is_push && grt == TY_UNKNOWN && g_infer_optimistic) continue;
+        if (!is_push && grt == TY_UNKNOWN && g_infer_optimistic) {
+          g_infer_getter_write_pending = 1;
+          continue;
+        }
         gcid = ty_is_object(grt) ? ty_object_class(grt) : -1;
         /* An index write through a receiver of a known non-object type is
            no user getter's; a boxed or still-settling one may be any class
@@ -5494,6 +5501,9 @@ int infer_write_types(Compiler *c) {
     int recv = nt_ref(nt, value, "receiver");
     TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
     if (!ty_is_hash(rt) || ty_hash_val(rt) != TY_POLY) continue;
+    /* a hash whose values are all one class reads that class (#4846), nil
+       a NULL: the local holds the class, as `if node = cache[key]` needs */
+    if (hv_value_class(c, recv) >= 0) continue;
     const char *nm = nt_str(nt, id, "name");
     LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
     if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
@@ -6382,18 +6392,6 @@ static int widen_arg_hash(Compiler *c, int arg) {
   }
   ty_ref_set(c, slot, TY_POLY_POLY_HASH);
   return 1;
-}
-
-/* A builtin of this name answers, where it answers an Array, a new one
-   nothing else holds. */
-int fresh_array_builtin_name(const char *nm) {
-  static const char *const fresh[] = {
-    "map", "collect", "flat_map", "collect_concat", "filter_map", "select", "filter",
-    "reject", "sort", "sort_by", "reverse", "uniq", "compact", "flatten", "zip",
-    "split", "chars", "bytes", "lines", "scan", "keys", "values", "dup",
-    "take", "drop", "take_while", "drop_while", "rotate", "shuffle", "each_slice",
-    "each_cons", "+", "-", "*", "&", "|", NULL };
-  return nm && str_in(nm, fresh);
 }
 
 /* 1 when `v` builds a new array nothing else holds: a literal, `Array.new`,
@@ -8513,18 +8511,18 @@ static int param_seed_holds_arg(Compiler *c, LocalVar *p, int anode, TyKind at) 
   return param_seed_holds(p, at);
 }
 
-/* Type method mi's parameters from the arguments `argv` of call_id. */
-/* A module method an include copied away never runs as itself: each copy
-   binds its own calls, typed against its class. The original, whose ivars
-   nothing writes, sent its arguments to every method of the name.
-   An unbound entry likewise supplies no arguments to its arms. */
+/* A method copied into its users never runs as itself
+   (comp_scope_may_run): each copy binds its own calls, typed against its
+   class. The original, whose ivars nothing writes, sent its arguments to
+   every method of the name. An unbound entry likewise supplies no
+   arguments to its arms. */
 static int call_in_inactive_scope(Compiler *c, int call_id) {
   Scope *cs = comp_scope_of(c, call_id);
   if (cs && cs->is_proc_form) {
     int s = proc_form_source(c, cs->idx);
     if (s >= 0 && c->scopes[s].entry != ENTRY_NONE) cs = &c->scopes[s];
   }
-  return cs && (cs->is_transplanted_source || (cs->entry != ENTRY_NONE && !cs->reachable));
+  return cs && (cs->is_transplanted_source || cs->entry != ENTRY_NONE) && !comp_scope_may_run(c, (int)(cs - c->scopes));
 }
 
 /* 1 when class `cls` writes instance variable `ivn` somewhere, and every
@@ -8926,6 +8924,7 @@ static TyKind kwrest_forward_hash_type(Compiler *c, Scope *m, const char *kname)
   return TY_UNKNOWN;
 }
 
+/* Type method mi's parameters from the arguments `argv` of call_id. */
 static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, int argc) {
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
@@ -9519,6 +9518,142 @@ static int param_supplied_memo(Compiler *c, int s, int i) {
     *asked |= 1 << i;
   }
   return (*yes >> i) & 1;
+}
+
+/* Whether no call can supply parameter i of scope s, in a stricter sense
+   than param_supplied_anywhere: a field written from the parameter takes
+   it as the nil it always is (nil_param_read). Beside the calls that
+   asks about, a `send`/`method` naming `new` reaches an initialize, and an
+   alias of the method (or of `new`) calls it under another name. A
+   `super` reaches only a method of its own name, so only one in a method
+   of this name, or in a body with no def of its own, supplies it, and so
+   does one in a `self.new` for an initialize. A method the runtime calls
+   (method_name_implicitly_invoked) may be passed anything. */
+/* A Symbol or String argument's text, or NULL. */
+static const char *nil_param_lit(const NodeTable *nt, int node) {
+  NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
+  if (k != NK_SymbolNode && k != NK_StringNode) return NULL;
+  const char *v = nt_str(nt, node, "value");
+  return v ? v : nt_str(nt, node, "unescaped");
+}
+static int nil_param_alias_names(Compiler *c, const char *a, const char *b) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_AliasMethodNode, id) {
+    const char *o = nil_param_lit(nt, nt_ref(nt, id, "old_name"));
+    if (!o || sp_streq(o, a) || (b && sp_streq(o, b))) return 1;
+  }
+  for (int id = an_calls_named_first(c, "alias_method"); id >= 0; id = an_calls_named_next(id)) {
+    int args = nt_ref(nt, id, "arguments"), n = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+    const char *o = n >= 2 ? nil_param_lit(nt, av[1]) : NULL;
+    if (!o || sp_streq(o, a) || (b && sp_streq(o, b))) return 1;
+  }
+  return 0;
+}
+/* Whether a call made from class `from` (a `super` there, or `K.new` /
+   `K.send(:new)` with K = from) can reach a method of class `to`: unless
+   `to` is `from` or one of its ancestors it cannot. A module, or a class
+   not known, can be anywhere. */
+static int nil_param_reaches(Compiler *c, int from, int to) {
+  if (from < 0 || to < 0 || comp_class_is_module(c, &c->classes[from]) || comp_class_is_module(c, &c->classes[to])) return 1;
+  for (int x = from, guard = 0; x >= 0 && guard++ < 10000; x = c->classes[x].parent) if (x == to) return 1;
+  return 0;
+}
+/* The class a receiver names when it is a written constant, else -1. */
+static int nil_param_recv_class(Compiler *c, int call) {
+  int recv = nt_ref(c->nt, call, "receiver");
+  NodeKind rk = recv >= 0 ? nt_kind(c->nt, recv) : NK_NONE;
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return -1;
+  const char *rn = nt_str(c->nt, recv, "name");
+  return rn ? comp_class_index(c, rn) : -1;
+}
+static int nil_param_never_supplied(Compiler *c, int s, int i) {
+  Scope *sc = &c->scopes[s];
+  const NodeTable *nt = c->nt;
+  if (!sc->name || sc->pdefault[i] < 0 || nt_kind(nt, sc->pdefault[i]) != NK_NilNode) return 0;
+  /* the runtime calls these with no call node of the program's (`2 + obj`
+     calls obj.coerce(2)), and so may pass the parameter */
+  if (method_name_implicitly_invoked(sc->name) || sp_streq(sc->name, "method_missing") ||
+      sp_streq(sc->name, "respond_to_missing?") || sp_streq(sc->name, "===")) return 0;
+  int is_init = sp_streq(sc->name, "initialize");
+  int is_kw = param_is_keyword(c, sc, i);
+  const char *names[] = { sc->name, is_init ? "new" : NULL, "send", "__send__", "public_send", "method", "instance_method", "define_method" };
+  for (int k = 0; k < (int)(sizeof names / sizeof *names); k++) {
+    if (!names[k]) continue;
+    for (int id = an_calls_named_first(c, names[k]); id >= 0; id = an_calls_named_next(id)) {
+      /* a dynamic reference (send, method, ...) of a builtin's: it can
+         reach the method only by naming it, or `new` for an initialize,
+         and a name it does not spell out could be anything */
+      if (k >= 2 && !an_user_defines_method(c, names[k])) {
+        int dargs = nt_ref(nt, id, "arguments"), dn = 0;
+        const int *dav = dargs >= 0 ? nt_arr(nt, dargs, "arguments", &dn) : NULL;
+        const char *lit = dn > 0 ? nil_param_lit(nt, dav[0]) : NULL;
+        if (!lit || sp_streq(lit, sc->name)) return 0;
+        if (is_init && sp_streq(lit, "new") && nil_param_reaches(c, nil_param_recv_class(c, id), sc->class_id)) return 0;
+        continue;
+      }
+      if (psa_call_supplies(c, sc, i, is_init, is_kw, id, names[k])) return 0;
+    }
+  }
+  if (nil_param_alias_names(c, sc->name, is_init ? "new" : NULL)) return 0;
+  const NodeKind sk[2] = { NK_SuperNode, NK_ForwardingSuperNode };
+  for (int k = 0; k < 2; k++) {
+    NT_FOREACH_KIND(nt, sk[k], id) {
+      Scope *ss = comp_scope_of(c, id);
+      if (!ss || !ss->name || ss->def_node < 0 || nt_kind(nt, ss->def_node) != NK_DefNode) return 0;
+      if (sp_streq(ss->name, sc->name) && nil_param_reaches(c, ss->class_id, sc->class_id)) return 0;
+      /* a `super` in `self.new` is Class#new, whose arguments reach the
+         initialize of the class it builds: one above the `self.new`'s, or,
+         for a `self.new` a subclass inherits, one below it */
+      if (is_init && comp_super_is_class_new(c, id) &&
+          (nil_param_reaches(c, ss->class_id, sc->class_id) || nil_param_reaches(c, sc->class_id, ss->class_id))) return 0;
+    }
+  }
+  return 1;
+}
+/* The answer reads only the program's shape, so it is kept per parameter
+   until the node table or the scopes change (as psa_memo is). */
+static int *npn_memo;   /* per scope: [asked bits, never-supplied bits] */
+static int npn_ns = -1, npn_nn = -1;
+static int nil_param_never_supplied_memo(Compiler *c, int s, int i) {
+  if (i >= 31) return nil_param_never_supplied(c, s, i);
+  if (!npn_memo || npn_ns != c->nscopes || npn_nn != c->nt->count) {
+    free(npn_memo);
+    npn_memo = calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1) * 2, sizeof(int));
+    if (!npn_memo) return nil_param_never_supplied(c, s, i);
+    npn_ns = c->nscopes; npn_nn = c->nt->count;
+  }
+  int *asked = &npn_memo[2 * s], *yes = &npn_memo[2 * s + 1];
+  if (!(*asked & (1 << i))) {
+    if (nil_param_never_supplied(c, s, i)) *yes |= 1 << i;
+    *asked |= 1 << i;
+  }
+  return (*yes >> i) & 1;
+}
+/* Whether node is a read of a parameter that is always nil: its default is
+   nil, no call can supply it (nil_param_never_supplied) and its method never
+   writes it. */
+int nil_param_read(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_LocalVariableReadNode) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  Scope *sc = comp_scope_of(c, node);
+  if (!nm || !sc) return 0;
+  int pi = -1;
+  for (int i = 0; i < sc->nparams; i++) if (sc->pnames[i] && sp_streq(sc->pnames[i], nm)) { pi = i; break; }
+  if (pi < 0 || sc->pdefault[pi] < 0 || nt_kind(nt, sc->pdefault[pi]) != NK_NilNode) return 0;
+  if (!nil_param_never_supplied_memo(c, (int)(sc - c->scopes), pi)) return 0;
+  static const NodeKind wk[] = { NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
+    NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode, NK_LocalVariableTargetNode };
+  for (int k = 0; k < (int)(sizeof wk / sizeof *wk); k++) {
+    NT_FOREACH_KIND(nt, wk[k], w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (wn && sp_streq(wn, nm) && comp_scope_of(c, w) == sc) return 0;
+    }
+  }
+  for (int id = an_calls_named_first(c, "binding"); id >= 0; id = an_calls_named_next(id))
+    if (comp_scope_of(c, id) == sc) return 0;
+  return 1;
 }
 
 void seed_unsupplied_nil_defaults(Compiler *c) {
@@ -15248,6 +15383,7 @@ int desugar_block_destructure_params_at(Compiler *c, LowerCtx *lc, int id) {
     int rp = nt_new_node(nt, "RequiredParameterNode");
     if (rp < 0) { ok = 0; break; }
     nt_node_set_str(nt, rp, "name", nm);
+    nt_node_set_int(nt, rp, "desugared_param", DPN_NAMELESS);
     newreqs[k] = rp;
     if (!bind) continue;  /* anonymous splat: nothing to assign */
     int rd = nt_new_node(nt, "LocalVariableReadNode");
@@ -19610,7 +19746,7 @@ static void cr_mark_version(Compiler *c, int id, const char *nm, int k, unsigned
   if (nt_kind(c->nt, id) == NK_CallNode && is_method_object_maker(nt_str(c->nt, id, "name"))) flags |= CT_CAPTURE;
   int mi = call_target(c, id, k, nm, flags, NULL);
   char mark[24];
-  if (mi < 0) return;
+  if (mi < 0 || (c->scopes[mi].attr_version && cplan_sg_slot_call(c, id, k, nm))) return;
   snprintf(mark, sizeof mark, "\x01%d", mi);
   cr_add_name(m->out, m->n, m->cap, mark);
 }
@@ -19884,7 +20020,9 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
     const char *cn = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) ? nt_str(nt, r, "name") : NULL;
     int k = cn ? comp_class_index(c, cn) : -1;
     int mi = k >= 0 ? call_target(c, id, k, nm, CT_CMETHOD, NULL) : -1;
-    if (mi >= 0) { snprintf(resolved, sizeof resolved, "\x01%d", mi); names[0] = resolved; }
+    /* (a call the plan compiles to the accessor's slot reaches nothing) */
+    if (mi >= 0 && c->scopes[mi].attr_version && cplan_sg_slot_call(c, id, k, nm)) names[0] = NULL;
+    else if (mi >= 0) { snprintf(resolved, sizeof resolved, "\x01%d", mi); names[0] = resolved; }
   }
   /* a call on main that finds main's own method reaches that one, not an
      Object method of the name (ct_main_target) */

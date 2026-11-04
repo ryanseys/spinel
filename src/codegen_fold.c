@@ -3922,6 +3922,15 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     if (hacc) acc_ty = TY_STRBUF;
     else if (bacc) acc_ty = TY_POLY;
   }
+  /* Not the seed's own kind for an accumulator a nested block captures boxed:
+     its cell is declared at the frame's top with the parameter's own type
+     (emit_cell_decl), and the fresh cell each turn and every read through it
+     have to agree with that, so it accumulates boxed */
+  {
+    Scope *csc = comp_scope_of(c, block);
+    LocalVar *cl0 = (csc && p0_orig) ? scope_local(csc, p0_orig) : NULL;
+    if (cl0 && cl0->is_cell && cl0->type == TY_POLY) acc_ty = TY_POLY;
+  }
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -4150,6 +4159,12 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   else buf_printf(b, "_t%d; })", tacc);
   if (rlv0) lv_set_type(rlv0, rpt0);
   if (rlv1) lv_set_type(rlv1, rpt1);
+  /* the body's nodes back to the parameters' own types: they were typed
+     for this fold's accumulator, and the block emitted again elsewhere (a
+     program class's inject beside it takes the block as a proc, whose
+     parameters are boxed) read `a` as the seed's Array (#10931) */
+  if (rlv0 || rlv1)
+    for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
   return 1;
 }
 

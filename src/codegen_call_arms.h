@@ -128,6 +128,12 @@ int emit_respond_to_exc_cls(Compiler *c, int recv, const char *qm, int argc, con
 int method_hidden_from_reflection(Compiler *c, int cid, const char *m);
 int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m);
 int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const char *qm, int argc, const int *argv);
+/* respond_to? call id (its argc arguments argv, asking qm) of a class's own
+   class method whose answer the version cells hold (cplan_cmethod_presence):
+   one of the versions' cells, or what the class answers with none of them,
+   written to b. 0, writing nothing, for a call the plan does not answer
+   so; with b NULL, only asked. */
+int emit_respond_to_cells(Compiler *c, int id, const char *qm, int argc, const int *argv, Buf *b);
 int respond_to_user_defined(Compiler *c, int id, int recv);
 extern const char *const respond_universal[];
 extern const char *const respond_universal_all[]; /* public and private */
@@ -140,7 +146,7 @@ int root_reopen_defines_own(Compiler *c, int k, const char *qm);   /* a root reo
 int root_reopen_method_vis(Compiler *c, int cid, const char *qm);   /* an Object, Kernel or BasicObject reopening's method qm: its visibility, or -1 */
 int private_answer_overridden(Compiler *c, const char *qm, TyKind rt);
 int refl_md_dynamic_used(Compiler *c);
-void emit_method_parameters_pushes(Compiler *c, int pn4, int tr4, Buf *b);
+void emit_scope_parameters_pushes(Compiler *c, int mi, int tr4, Buf *b);
 int refl_im_params_used(Compiler *c);
 int emit_refl_im_params_call(Compiler *c, int id, Buf *b);
 void emit_refl_im_params(Compiler *c, Buf *b);

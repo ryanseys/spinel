@@ -1386,6 +1386,38 @@ static int fetch_operand_is_inert(Compiler *c, int n) {
   }
 }
 
+/* A fetch receiver held in an ordinary rooted C local needs no second
+   root while an inert integer index is evaluated. Keep captures, temporary
+   receivers, defaults and blocks on the existing path. In particular, a
+   type alone does not prove `+` inert: a reopened operator can rebind the
+   local through a closure and collect the old receiver. */
+static int fetch_recv_in_slot(Compiler *c, int recv, int index, const char *rendered) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  const char *nm = nt_str(nt, recv, "name");
+  if (!nm) return 0;
+  LocalVar *lv = scope_local(comp_scope_of(c, recv), nm);
+  if (!lv || lv->is_cell || (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm))) return 0;
+  char want[300];
+  snprintf(want, sizeof want, "lv_%s", nm);
+  if (!rendered || !sp_streq(rendered, want)) return 0;
+
+  index = nt_paren_single(nt, index);
+  if (index < 0 || repr_of(c, index).kind != RK_SCALAR || comp_ntype(c, index) != TY_INT) return 0;
+  NodeKind k = nt_kind(nt, index);
+  if (k == NK_CallNode) {
+    const char *op = nt_str(nt, index, "name");
+    int ir = nt_ref(nt, index, "receiver"), ac = 0;
+    const int *av = call_args(nt, index, &ac);
+    if (!op || !sp_streq(op, "+") || nt_ref(nt, index, "block") >= 0 || ac != 1 ||
+        nt_kind(nt, av[0]) != NK_IntegerNode || comp_ntype(c, av[0]) != TY_INT ||
+        ir < 0 || nt_kind(nt, ir) != NK_LocalVariableReadNode || comp_ntype(c, ir) != TY_INT ||
+        repr_of(c, ir).kind != RK_SCALAR || cplan_user(c, index)->dispatch != CP_NONE) return 0;
+  }
+  else if (k != NK_IntegerNode && k != NK_LocalVariableReadNode) return 0;
+  return decide_node(nt, recv, "fetch-slot", NULL);
+}
+
 /* The text argument of String#insert. A splat there (`s.insert(i, *r)`, left
    whole because Array#insert takes any count) has to hold exactly the text. */
 void emit_str_insert_text(Compiler *c, int arg, Buf *b) {
@@ -2620,7 +2652,9 @@ else {
        return or a chain is held by nothing else, and an index that
        allocates let a collection hand the array's slot on before the
        length and the element were read. */
-    buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta); free(ra.p);
+    int held = argc == 1 && blk < 0 && fetch_recv_in_slot(c, recv, argv[0], ra.p);
+    buf_printf(b, "({ sp_%sArray *_t%d = %s;", k, ta, ra.p ? ra.p : "NULL"); free(ra.p);
+    if (!held) buf_printf(b, " SP_GC_ROOT(_t%d);", ta);
     buf_printf(b, " sp_int _t%d = ", ti); emit_int_expr(c, argv[0], b); buf_puts(b, ";");
     buf_printf(b, " sp_int _t%d = sp_%sArray_length(_t%d);", tn, k, ta);
     buf_printf(b, " sp_int _t%d = _t%d < 0 ? _t%d + _t%d : _t%d;", tnorm, ti, ti, tn, ti);
@@ -11435,7 +11469,7 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
   if (is_to_a && argc == 0) {
     int t = ++g_tmp; int rt2 = ++g_tmp;
     Buf rb = expr_buf(c, recv);
-    buf_printf(b, "({ sp_%s *_t%d = %s;", sc->name, t, rb.p ? rb.p : "");
+    buf_printf(b, "({ sp_%s *_t%d = %s;", sc->c_name, t, rb.p ? rb.p : "");
     emit_struct_recv_root(c, recv, t, b);
     buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rt2, rt2);
     for (int i = 0; i < sc->nmembers; i++) {
@@ -11456,7 +11490,7 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
     const char *hn = ty_hash_cname(hr.as_ty);
     if (!hn) hn = "SymPoly";
     buf_printf(b, "({ sp_%s *_t%d = %s; SP_GC_ROOT(_t%d); sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);",
-               sc->name, t, rb.p ? rb.p : "", t, hn, rh, hn, rh);
+               sc->c_name, t, rb.p ? rb.p : "", t, hn, rh, hn, rh);
     free(rb.p);
     if (block >= 0) {
       /* to_h { |k, v| [nk, nv] }: per member, bind k/v then set hash[nk] = nv */
@@ -18750,6 +18784,14 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY &&
       sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
     unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
+  /* obj.methods / public_methods / singleton_methods on a boxed receiver: the
+     list of whichever class of the program it is an instance of
+     (emit_poly_object_methods_reflection); anything else is the
+     NoMethodError CRuby raises */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 && argc <= 1 &&
+      (sp_streq(name, "methods") || sp_streq(name, "public_methods") || sp_streq(name, "singleton_methods")) &&
+      emit_poly_object_methods_reflection(c, id, name, recv, argc, argv, b))
+    return 1;
   /* Module#constants on a boxed value that is a class: the switch a typed
      class value takes (emit_class_value_constants); anything else is the
      NoMethodError CRuby raises */

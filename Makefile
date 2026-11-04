@@ -1846,7 +1846,7 @@ test-run: decisions-test
 # would be named by no bisect. A key holds the whole of a long name.
 # Each kind also has its row in the table in tools/README.md.
 DECISION_TESTS = $(shell grep -l '^\# spinel: decisions$$' test/*.rb test/fixtures/decisions/*.rb)
-DECISION_KINDS = aon-get case-root fetch-inert gc-save index-sum inline-force masgn-root nn-inb nn-read no-alloc \
+DECISION_KINDS = aon-get case-root fetch-inert fetch-slot gc-save index-sum inline-force masgn-root nn-inb nn-read no-alloc \
                  pd-hoist push-slot root-elide root-frame strbuf-raw
 decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-decisions.XXXXXX); : > "$$tmp/none"; \
@@ -5059,6 +5059,11 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	[ "$$(awk '/^struct sp_(Heap|Plain)_s \{/ { c = $$2 } c && /iv_heap/ { print c, $$1; c = "" }' "$$tmp/itm.c" | tr '\n' ' ')" = "sp_Heap_s sp_PtrArray sp_Plain_s sp_PtrArray " ] || { echo "infer-test: FAIL (a table of Integer rows that moves its own rows stayed boxed under a signature)"; ok=0; }; \
 	$(SPINEL) test/object_array_reader_boxed_receiver.rb -c --no-line-map -o "$$tmp/orb.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_array_reader_boxed_receiver: -c)"; ok=0; }; \
 	[ "$$(awk '/^struct sp_(Node|Box|Crate|Pile|Bin)_s \{/ { c = $$2 } c && /iv_(links|items|first|slots)/ { print c, $$1; c = "" }' "$$tmp/orb.c" | tr '\n' ' ')" = "sp_Node_s sp_PtrArray sp_Box_s sp_PolyArray sp_Crate_s sp_PolyArray sp_Pile_s sp_PolyArray sp_Bin_s sp_PolyArray " ] || { echo "infer-test: FAIL (a reader called on a boxed value of one class kept its list boxed, or one that another class, a builtin or a foreign element could reach narrowed it)"; ok=0; }; \
+	$(SPINEL) test/one_class_hash_read_local.rb -c --no-line-map -o "$$tmp/ohr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (one_class_hash_read_local: -c)"; ok=0; }; \
+	[ "$$(awk '/^struct sp_(Lru|Nd)_s \{/ { c = $$2 } /^\}/ { c = "" } c && /^ +[a-zA-Z_]+ \*? ?iv_(h|head|nxt);/ { print c, $$1, $$NF }' "$$tmp/ohr.c" | tr '\n' ' ')" = "sp_Nd_s sp_Nd iv_nxt; sp_Lru_s sp_StrPolyHash iv_h; sp_Lru_s sp_Nd iv_head; " ] || { echo "infer-test: FAIL (a one-class hash read kept in a local boxed what it reached)"; ok=0; }; \
+	[ "$$(grep -c 'sp_Nd \* lv_n = NULL;' "$$tmp/ohr.c")" = 2 ] && grep -q 'sp_Lru_touch(sp_Lru \*self, sp_Nd \* lv_n) {' "$$tmp/ohr.c" && grep -q 'sp_RbVal lv_v = sp_box_nil();' "$$tmp/ohr.c" || { echo "infer-test: FAIL (a one-class hash read's local stayed boxed, or a mixed hash's read narrowed)"; ok=0; }; \
+	$(SPINEL) test/field_from_unpassed_nil_param.rb -c --no-line-map -o "$$tmp/fnp.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (field_from_unpassed_nil_param: -c)"; ok=0; }; \
+	[ "$$(awk '/^struct sp_[A-Za-z]+_s \{/ { c = $$2 } /^\}/ { c = "" } c && /^ +[a-zA-Z_]+ \*? ?iv_(prev|next|last|flag);/ { print c, $$1, $$NF }' "$$tmp/fnp.c" | tr '\n' ' ')" = "sp_Node_s sp_Node iv_prev; sp_Node_s sp_Node iv_next; sp_BySend_s sp_String iv_prev; sp_ByAliasMethod_s sp_String iv_prev; sp_BySuper_s sp_String iv_prev; sp_BySuperKid_s sp_String iv_prev; sp_ByZsuper_s sp_String iv_prev; sp_ByZsuperKid_s sp_String iv_prev; sp_ByBind_s sp_String iv_prev; sp_Rewritten_s sp_String iv_prev; sp_BySelfNew_s sp_String iv_prev; sp_ByCoerce_s sp_RbVal iv_last; sp_ExecTarget_s sp_RbVal iv_flag; sp_ByExec_s sp_RbVal iv_flag; sp_BaseInit_s sp_String iv_prev; sp_ChildNew_s sp_String iv_prev; sp_ExecA_s sp_RbVal iv_flag; sp_ExecB_s sp_RbVal iv_flag; sp_ByPolyExec_s sp_RbVal iv_flag; sp_Plain_s sp_Plain iv_prev; sp_PlainKid_s sp_Plain iv_prev; " ] || { echo "infer-test: FAIL (a field written from a never-supplied nil parameter stayed boxed, or one a call can supply narrowed)"; ok=0; }; \
 	$(SPINEL) test/infer/obj_array_literal_arg.rb -c --no-line-map -o "$$tmp/oal.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_literal_arg: -c)"; ok=0; }; \
 	grep -q 'sp_PtrArray \* iv_steps;' "$$tmp/oal.c" && grep -q 'sp_total(sp_PtrArray \* lv_parts' "$$tmp/oal.c" || { echo "infer-test: FAIL (an object Array literal passed as an argument stayed boxed)"; ok=0; }; \
 	$(SPINEL) test/obj_array_removals.rb -c --no-line-map -o "$$tmp/oar.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_removals: -c)"; ok=0; }; \
@@ -5334,6 +5339,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/poll_dynamic_call_reacher.rb -c --no-line-map -o "$$tmp/pdc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poll_dynamic_call_reacher: -c)"; ok=0; }; \
 	awk '/^[a-z].* sp_Device_peek\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' && awk '/^[a-z].* sp_Bus_sum\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' || { echo "infer-test: FAIL (a method making a proc's call, or the caller of a yielder making one, does not poll at its entry)"; ok=0; }; \
 	awk '/^[a-z].* sp_Bus_read\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' && { echo "infer-test: FAIL (a method that only reaches a proc's call polls at its entry)"; ok=0; }; \
+	$(SPINEL) test/included_hook_copy_calls_class_method.rb -c --no-line-map -o "$$tmp/ihc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (included_hook_copy_calls_class_method: -c)"; ok=0; }; \
+	! grep -q '_s_record_entry(' "$$tmp/ihc.c" && grep -q 'sp_Order_s_record(sp_sym lv_event)' "$$tmp/ihc.c" || { echo "infer-test: FAIL (a call in a method an include copied away made a version entry that no copy calls, and widened the method it arms)"; ok=0; }; \
 	if [ "$(FFI_AVAILABLE)" = yes ]; then \
 	  for flags in '' --share-strings; do \
 	    $(SPINEL) $$flags --dump-repr packages/fiddle/test/fiddle_importer.rb > "$$tmp/fi.repr" 2>/dev/null || { echo "infer-test: FAIL (fiddle_importer $$flags)"; ok=0; }; \

@@ -551,7 +551,11 @@ void comp_free(Compiler *c) {
   for (int i = 0; i < c->pres_ord_n; i++) free(c->pres_ord[i]);
   free(c->pres_ord); c->pres_ord = NULL; c->pres_ord_n = 0;
   free(c->splat_views); c->splat_views = NULL; c->nsplat_views = 0;
+  for (int i = 0; i < c->nver_entries; i++) free(c->ver_entries[i].name);
   free(c->ver_entries); c->ver_entries = NULL; c->nver_entries = 0;
+  ver_memo_drop(c);
+  for (int i = 0; i < c->nver_late; i++) free(c->ver_late[i].name);
+  free(c->ver_late); c->ver_late = NULL; c->nver_late = 0;
   ver_hold_free(c);
   ver_chain_free(c);
   free(c->ver_ix); free(c->ver_ix_next); free(c->ver_names); free(c->ver_names_next);
@@ -1012,15 +1016,37 @@ static int sp_name_collides_runtime(const char *n) {
   return 0;
 }
 /* The C-identifier stem for a class: the name, disambiguated if it would clash
-   with a runtime typedef. Caller owns the returned strdup'd string. */
-static char *sp_class_c_name(const char *name) {
+   with a runtime typedef. A stem past SP_CLASS_C_NAME_MAX keeps its first
+   characters and a hash of the whole (salted past another class's stem):
+   the emitters build casts and calls of a stem in fixed buffers, and a long
+   (namespaced) name cut them short, so the C did not compile. Caller owns
+   the returned string. */
+#define SP_CLASS_C_NAME_MAX 40
+static char *sp_class_c_name(const Compiler *c, const char *name) {
   if (!name) return NULL;
-  if (!sp_name_collides_runtime(name)) return strdup(name);
-  size_t n = strlen(name);
-  char *m = malloc(n + 3);
-  if (!m) return strdup(name);
-  m[0] = 'u'; m[1] = '_'; memcpy(m + 2, name, n + 1);
-  return m;
+  char *m;
+  if (!sp_name_collides_runtime(name)) m = strdup(name);
+  else {
+    size_t n = strlen(name);
+    m = malloc(n + 3);
+    if (!m) return strdup(name);
+    m[0] = 'u'; m[1] = '_'; memcpy(m + 2, name, n + 1);
+  }
+  if (!m || strlen(m) <= SP_CLASS_C_NAME_MAX) return m;
+  char *s = malloc(SP_CLASS_C_NAME_MAX + 1);
+  if (!s) return m;
+  /* the cut backs up to a character's first byte: a C identifier is UTF-8 */
+  int keep = SP_CLASS_C_NAME_MAX - 9;
+  while (keep > 0 && ((unsigned char)m[keep] & 0xC0) == 0x80) keep--;
+  for (unsigned salt = 0;; salt++) {
+    snprintf(s, SP_CLASS_C_NAME_MAX + 1, "%.*s_%08x", keep, m, sp_strhash(m) + salt);
+    int clash = 0;
+    for (int k = 0; k < c->nclasses && !clash; k++)
+      clash = c->classes[k].c_name && sp_streq(c->classes[k].c_name, s) && !sp_streq(c->classes[k].name, name);
+    if (!clash) break;
+  }
+  free(m);
+  return s;
 }
 /* name -> class index: chains over the classes' names, each name linked
    once, at its lowest index. comp_class_index is called per node during
@@ -1094,7 +1120,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   ci->ctor_site = 1;
   ci->name = name ? strdup(name) : NULL;
   class_hash_add(c, ci->idx);
-  ci->c_name = sp_class_c_name(name);
+  ci->c_name = sp_class_c_name(c, name);
   ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
   /* Creation is where a builtin's name becomes a class id. The fill moves
      to the class entity later (#9898); the first class of this name answers
@@ -1520,8 +1546,10 @@ static void sm_build(Compiler *c) {
    1 the class side), or, for side 2, a receiverless call's in an instance
    of the class: an instance method or a module function of the module,
    which is also its private instance method (the later of the two
-   answers) */
+   answers); never by name a method only a bound call reaches
+   (scope_by_name_hidden), which its version's lookup by def finds */
 static int sm_owns_side(const Compiler *c, int s, int class_id, int side) {
+  if (c->scopes[s].attr_version) return 0;
   if (side < 2) return sm_owns(c, s, class_id, side);
   return sm_owns(c, s, class_id, 0) || (scope_on_side(&c->scopes[s], 0) && sm_owns(c, s, class_id, 1));
 }
@@ -5068,6 +5096,44 @@ const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name) 
    parent, and past the top of an explicit chain, Object -- where a method the
    program defines on Object is every class's superclass method. A module's
    super is its includer's, and a class method's chain has no such end. */
+/* Is class ci under BasicObject with no Kernel among its ancestors? The
+   includes registration recorded are asked first (an `include` through a
+   constant alias, in a block or a class method of the body), then the
+   bodies' text (class_lacks_kernel), which runs for such a class alone. */
+static int blank_slate_without_kernel(Compiler *c, int ci) {
+  int ans = class_is_blank_slate(c, ci);
+  int ke = comp_core_class(c, CORE_KERNEL);
+  for (int k = ci, d = 0; ans && k >= 0 && k < c->nclasses && d < 64; k = c->classes[k].parent, d++) {
+    const ClassInfo *ki = &c->classes[k];
+    for (int i = 0; ans && i < ki->nincluded_mod_names; i++) {
+      const char *n = ki->included_mod_names[i], *l = n ? strrchr(n, ':') : NULL;
+      if (n && sp_streq(l ? l + 1 : n, "Kernel")) ans = 0;
+    }
+    for (int i = 0; ans && ke >= 0 && i < ki->nincluded_mods; i++) {
+      int m = ki->included_mods[i];
+      if (m == ke || (m >= 0 && comp_module_includes(c, m, ke, 0))) ans = 0;
+    }
+  }
+  if (!ans || !class_lacks_kernel(c, ci)) return 0;
+  /* an `include` the body makes another way (through a constant alias, in
+     a block, in a class method it calls) may bring Kernel in: such a chain
+     keeps the lookup it had */
+  NodeTable *nt = (NodeTable *)c->nt;
+  for (int k = ci, d = 0; k >= 0 && k < c->nclasses && d < 64; k = c->classes[k].parent, d++) {
+    int body = c->classes[k].def_node >= 0 ? nt_ref(nt, c->classes[k].def_node, "body") : -1;
+    if (body < 0) continue;
+    int n = 0, found = 0, *ids = nt_subtree_ids(nt, &body, 1, &n);
+    for (int i = 0; i < n && !found; i++) {
+      if (nt_kind(nt, ids[i]) != NK_CallNode || nt_ref(nt, ids[i], "arguments") < 0) continue;
+      const char *nm = nt_str(nt, ids[i], "name");
+      int r = nt_ref(nt, ids[i], "receiver");
+      found = nm && sp_streq(nm, "include") && (r < 0 || nt_kind(nt, r) == NK_SelfNode);
+    }
+    free(ids);
+    if (found) return 0;
+  }
+  return 1;
+}
 int comp_super_parent(Compiler *c, int class_id, int is_cmethod) {
   if (class_id < 0) return -1;
   int p = c->classes[class_id].parent;
@@ -5075,6 +5141,10 @@ int comp_super_parent(Compiler *c, int class_id, int is_cmethod) {
   int obj = comp_core_class(c, CORE_OBJECT);
   if (obj < 0 || obj == class_id) return -1;
   if (comp_class_is_module(c, &c->classes[class_id])) return -1;
+  /* under BasicObject with no `include Kernel`, neither Object nor Kernel
+     is in the chain: a super finds no method there (one that includes
+     Kernel reaches Kernel's methods through Object's chain, as before) */
+  if (blank_slate_without_kernel(c, class_id)) return -1;
   return obj;
 }
 
@@ -5141,6 +5211,32 @@ void comp_scope_copy_shadow(Compiler *c, int dst, int src, const char *suffix) {
    else s's own name, whatever its spelling */
 const char *comp_scope_user_name(const Scope *s) {
   return s->shadow_user ? s->shadow_user : s->name;
+}
+
+/* Is scope s an instance method of a class or module the top level includes
+   or extends? */
+static int scope_toplevel_included(Compiler *c, int s) {
+  if (s < 0 || s >= c->nscopes) return 0;
+  const Scope *sc = &c->scopes[s];
+  if (sc->is_cmethod || sc->class_id < 0) return 0;
+  for (int i = 0; i < c->ntoplevel_includes; i++)
+    if (c->toplevel_includes[i] == sc->class_id) return 1;
+  return 0;
+}
+
+/* Is scope s a method copied into its users, whose copies run in its place
+   (each binds its own calls, against its class)? is_transplanted_source marks
+   them: a module's methods an include, prepend, extend or hook copies, a
+   class method specialized per subclass and never called directly, a Struct
+   base's methods. The original still runs as itself where its module is also
+   included at the top level, which codegen emits as itself. */
+int comp_scope_copied_away(Compiler *c, int s) {
+  return c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s);
+}
+
+/* May scope s's body run as itself: reachable, and not copied away */
+int comp_scope_may_run(Compiler *c, int s) {
+  return c->scopes[s].reachable && !comp_scope_copied_away(c, s);
 }
 
 /* Is `name` the name of a hidden copy of the given kind? A SHADOW_PREP name is

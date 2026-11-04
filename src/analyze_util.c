@@ -238,6 +238,100 @@ int const_path_misses_member(Compiler *c, int id) {
   const_path_scope(c, id, &missing);
   return missing;
 }
+/* Is NAME sure to be no constant of program class or module k's own table,
+   whatever runs: `private_constant :NAME` there is CRuby's NameError
+   ("constant K::NAME not defined"), which looks in k's own table only, not
+   its ancestors'. Sure only when nothing in the program can write the
+   name: no class or module nested in k has it, no constant write of the
+   name anywhere (in any scope, also one the qualifying passes renamed to
+   `Mod__NAME`), no path written through a dynamic parent, and no
+   const_set, autoload or eval that could place it. */
+int class_lacks_own_const(Compiler *c, int k, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (!nm || k < 0 || k >= c->nclasses || !c->classes[k].name || c->classes[k].is_builtin_const ||
+      c->classes[k].is_native_class) return 0;
+  size_t nl = strlen(nm);
+  for (int j = 0; j < c->nclasses; j++) {
+    const char *cn = c->classes[j].name;
+    size_t cl = cn ? strlen(cn) : 0;
+    if (cn && (sp_streq(class_leaf_name(cn), nm) || sp_streq(cn, nm))) return 0;
+    if (cl > nl + 2 && sp_streq(cn + cl - nl, nm) && !strncmp(cn + cl - nl - 2, "__", 2)) return 0;
+    const char *rn = c->classes[j].ruby_name_cache;
+    size_t rl = rn ? strlen(rn) : 0;
+    if (rl > nl + 2 && sp_streq(rn + rl - nl, nm) && !strncmp(rn + rl - nl - 2, "::", 2)) return 0;
+  }
+  static const NodeKind writes[] = { NK_ConstantWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode,
+                                     NK_ConstantOperatorWriteNode, NK_ConstantTargetNode };
+  for (int i = 0; i < 5; i++)
+    NT_FOREACH_KIND(nt, writes[i], w) {
+      const char *wn = nt_str(nt, w, "name"), *on = nt_str(nt, w, "qc_orig_name");
+      size_t wl = wn ? strlen(wn) : 0;
+      if ((wn && sp_streq(wn, nm)) || (on && sp_streq(on, nm))) return 0;
+      if (wl > nl + 2 && sp_streq(wn + wl - nl, nm) && !strncmp(wn + wl - nl - 2, "__", 2)) return 0;
+    }
+  if (program_writes_const_in(c, c->classes[k].name, nm)) return 0;
+  const char *kl = class_leaf_name(c->classes[k].name);
+  if (kl != c->classes[k].name && program_writes_const_in(c, kl, nm)) return 0;
+  if (program_places_const_dynamically(c, nm)) return 0;
+  /* an autoload registers the name (the parser turns the call into a
+     require, so no call node is left), and an ffi_const defines it */
+  for (int i = 0; i < nt->nautoloads; i++) if (sp_streq(nt->autoloads[i].name, nm)) return 0;
+  for (int i = 0; i < c->n_ffi_consts; i++) if (sp_streq(c->ffi_consts[i].name, nm)) return 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, call) {
+    const char *cn = nt_str(nt, call, "name");
+    /* (an autoload the parser could not turn into a require stays a call) */
+    if (cn && (sp_streq(cn, "const_set") || sp_streq(cn, "eval") || sp_streq(cn, "autoload") ||
+               sp_streq(cn, "class_eval") || sp_streq(cn, "module_eval") || sp_streq(cn, "instance_eval") ||
+               sp_streq(cn, "send") || sp_streq(cn, "__send__") || sp_streq(cn, "public_send")))
+      return 0;
+  }
+  return 1;
+}
+/* Does the subtree at `root` hold node `id`? */
+static int subtree_holds(const NodeTable *nt, int root, int id) {
+  if (root < 0) return 0;
+  if (root == id) return 1;
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) if (subtree_holds(nt, nt_ref_at(nt, root, i), id)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int m = 0;
+    const int *ids = nt_arr_at(nt, root, i, &m);
+    for (int j = 0; j < m; j++) if (subtree_holds(nt, ids[j], id)) return 1;
+  }
+  return 0;
+}
+/* Is call `call`, `private_constant` (or public_constant, deprecate_constant)
+   in a body of class k, sure to be Module's builtin, run on k itself? Not
+   when the program defines a method of that name anywhere (an extended
+   module, a reopened Module, a singleton def) or a method_missing, nor in
+   a `class << self` body (its receiver is the singleton class), nor for an
+   anonymous class, nor when the program freezes a class or module (a
+   frozen one raises FrozenError first). */
+int const_visibility_call_is_builtin(Compiler *c, int call, int k) {
+  const NodeTable *nt = c->nt;
+  const char *dn = nt_str(nt, call, "name");
+  if (!dn || k < 0 || k >= c->nclasses || comp_class_anonymous(c, k)) return 0;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && (sp_streq(c->scopes[s].name, dn) || sp_streq(c->scopes[s].name, "method_missing"))) return 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, other) {
+    const char *on = nt_str(nt, other, "name");
+    if (!on) continue;
+    if (sp_streq(on, "define_method") || sp_streq(on, "alias_method") || sp_streq(on, "define_singleton_method"))
+      return 0;
+    if (sp_streq(on, "freeze")) {
+      int r = nt_ref(nt, other, "receiver");
+      NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_SelfNode;
+      if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) return 0;
+    }
+  }
+  int naliases = 0;
+  nt_nodes_of_kind(nt, NK_AliasMethodNode, &naliases);
+  if (naliases > 0) return 0;
+  NT_FOREACH_KIND(nt, NK_SingletonClassNode, sc)
+    if (subtree_holds(nt, sc, call)) return 0;
+  return 1;
+}
 /* The program class a constant or constant path names by its leaf, as
    comp_class_index answers for the name; -1 for a path to a top-level
    class whose parent, a class or module of the program, holds no member of
@@ -2752,6 +2846,28 @@ static int yvt_proc_arg_body(Compiler *c, int blk) {
   return -1;
 }
 
+/* Does the body hold a `return` or `break` of its own? A `return` in a
+   nested def, lambda, class or module belongs to that body. A `break` also
+   belongs to a nested block or loop. In a lambda, `return v` and `break v`
+   make v the lambda's value. In a proc, `return` leaves the enclosing
+   method. */
+static int yvt_body_has_exit(const NodeTable *nt, int id, int in_loop, int depth) {
+  if (id < 0 || depth > 200) return depth > 200;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_ReturnNode) return 1;
+  if (k == NK_BreakNode && !in_loop) return 1;
+  if (k == NK_DefNode || k == NK_LambdaNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (k == NK_BlockNode || k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode) in_loop = 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (yvt_body_has_exit(nt, nt_ref_at(nt, id, i), in_loop, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *ids = nt_arr_at(nt, id, i, &an);
+    for (int j = 0; j < an; j++) if (yvt_body_has_exit(nt, ids[j], in_loop, depth + 1)) return 1;
+  }
+  return 0;
+}
+
 /* What a callee yields to when the call passes a proc value of its own
    (call_forwards_own_block is 0): a literal written there types like an
    ordinary literal block, its tail being the value; any other callable is
@@ -2762,8 +2878,16 @@ static TyKind yvt_proc_arg_value(Compiler *c, int blk) {
   if (pbody < 0) return TY_POLY;
   int pn = 0; const int *pd = nt_arr(c->nt, pbody, "body", &pn);
   if (pn == 0) return TY_NIL;
+  /* (a `return v` or `break v` can give a value of any kind: only known
+     at run time) */
+  if (yvt_body_has_exit(c->nt, pbody, 0, 0)) return TY_POLY;
   TyKind pt = infer_type(c, pd[pn - 1]);
-  if (pt == TY_VOID) return TY_NIL;
+  if (pt == TY_VOID) pt = TY_NIL;
+  /* (a `next v` in the body gives v too. The proc's value arrives boxed,
+     so when v and the tail are of different kinds (`next 7 if c; nil`),
+     the value is only known at run time) */
+  TyKind nx = block_next_value_ty(c, pbody);
+  if (nx != TY_UNKNOWN && nx != pt) return TY_POLY;
   return pt == TY_UNKNOWN ? TY_POLY : pt;
 }
 
@@ -2947,6 +3071,7 @@ int yield_block_tails(Compiler *c, int mi, int *out, int max) {
         int pbody = yvt_proc_arg_body(c, blk);
         int pn = 0; const int *pd = pbody >= 0 ? nt_arr(nt, pbody, "body", &pn) : NULL;
         if (pd && pn > 0) out[n++] = pd[pn - 1];
+        if (yield_block_tails_next && pd && n < max) n += ybt_collect_next(nt, pbody, out + n, max - n, 0);
         continue;
       }
       Scope *encl = comp_scope_of(c, cid);
@@ -3028,6 +3153,10 @@ TyKind yield_value_type_via_super(Compiler *c, int mi) {
     int sb = nt_ref(nt, yvt_sup_ids[ii], "block");
     TyKind ft;
     if (sb >= 0 && nt_kind(nt, sb) == NK_BlockNode) ft = yvt_literal_block_value(c, sb);
+    /* `super(a, &pr)` with a proc value of the child's own (not the child's
+       block forwarded on): mi's yield runs that proc, as a call's does */
+    else if (sb >= 0 && nt_kind(nt, sb) == NK_BlockArgumentNode && !call_forwards_own_block(c, yvt_sup_ids[ii]))
+      ft = yvt_proc_arg_value(c, sb);
     else {
       ft = yield_value_type(c, cmi);
       if (ft == TY_UNKNOWN) ft = yield_value_type_via_super(c, cmi);
@@ -4199,14 +4328,22 @@ const char *method_sym_arg(Compiler *c, int node) {
 
 /* Does call node's receiver hold an object whose class's chain has a
    program def of `method` (an instance method the program wrote, not the
-   builtin's)? Only a receiver typed as one object class is asked. */
+   builtin's)? Only a receiver typed as one object class is asked, or no
+   receiver in an instance method, whose self is an object of its class. */
 int method_user_override_recv(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  int recv = nt_ref(nt, node, "receiver");
-  if (recv < 0) return 0;
-  TyKind rt = comp_ntype(c, recv);
-  if (!ty_is_object(rt)) return 0;
-  int k = ty_object_class(rt);
+  int recv = nt_ref(nt, node, "receiver"), k;
+  if (recv < 0) {
+    int s = c->nscope ? c->nscope[node] : -1, cm = 0;
+    if (s <= 0 || s >= c->nscopes) return 0;
+    k = comp_scope_own_class(c, s, &cm);
+    if (cm || c->scopes[s].is_module_function) return 0;
+  }
+  else {
+    TyKind rt = comp_ntype(c, recv);
+    if (!ty_is_object(rt)) return 0;
+    k = ty_object_class(rt);
+  }
   if (k < 0 || k >= c->nclasses) return 0;
   int mi = comp_method_in_chain(c, k, "method", NULL);
   return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
@@ -5054,7 +5191,11 @@ const char *time_strict_parser_call(Compiler *c, int id) {
 /* The program's parent map (an_parent_map), kept on the Compiler as the
    emitter's is (codegen_parents, the same fields) and rebuilt whenever the
    node table changed, for an analysis that asks where a node sits on every
-   round. */
+   round. The map is borrowed: the first ask after an edit that changes the
+   table's version or count (a string, a type, a new node, a placement)
+   rebuilds it and frees the one handed out before. A caller that holds it
+   across such an edit reads freed memory once anything asks again: it finds
+   what it needs from the map first and edits after. */
 const int *comp_parent_map(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (!c->cg_parent || c->cg_parent_n != nt->count || c->cg_parent_ver != nt->version) {
@@ -5651,3 +5792,26 @@ int loop_may_stop(Compiler *c, int loop_call) {
   if (loop_call < g_si.count) g_si.loop_memo[loop_call] = (signed char)r;
   return r;
 }
+
+/* See analyze_internal.h. */
+int respond_to_cells_shape(const NodeTable *nt, int id) {
+  int ac = 0;
+  const int *av = nt_kind(nt, id) == NK_CallNode && is_respond_to_name(nt_str(nt, id, "name")) &&
+                  nt_ref(nt, id, "block") < 0 ? call_args(nt, id, &ac) : NULL;
+  int recv = av ? nt_ref(nt, id, "receiver") : -1;
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode, ak = ac == 2 ? nt_kind(nt, av[1]) : NK_FalseNode;
+  return av && (ac == 1 || ac == 2) && nt_kind(nt, av[0]) == NK_SymbolNode && (ak == NK_TrueNode || ak == NK_FalseNode) &&
+         (rk == NK_SelfNode || rk == NK_ConstantReadNode || rk == NK_ConstantPathNode);
+}
+/* See analyze_internal.h. */
+int capture_cells_shape(const NodeTable *nt, int id) {
+  int ac = 0;
+  const int *av = nt_kind(nt, id) == NK_CallNode && is_bound_method_maker(nt_str(nt, id, "name")) &&
+                  nt_ref(nt, id, "block") < 0 ? call_args(nt, id, &ac) : NULL;
+  int recv = av ? nt_ref(nt, id, "receiver") : -1;
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
+  return av && ac == 1 && nt_kind(nt, av[0]) == NK_SymbolNode &&
+         (rk == NK_SelfNode || rk == NK_ConstantReadNode || rk == NK_ConstantPathNode);
+}
+/* See analyze_internal.h. */
+int respond_to_missing_defined(Compiler *c) { return !an_name_binder_free(c, "respond_to_missing?"); }

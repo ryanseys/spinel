@@ -636,6 +636,8 @@ int builtin_arity_violation(Compiler *c, int id);
 int builtin_object_method_known(const char *m);
 int name_is_enumerable_module_method(const char *m);
 int class_object_answers_builtin(const char *qm, int is_module);
+int emit_poly_object_methods_reflection(Compiler *c, int id, const char *name, int recv, int argc,
+                                        const int *argv, Buf *b);
 int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, int all,
                                    int arg, Buf *b);
 int scope_reads_callee(Compiler *c, int si);
@@ -1825,6 +1827,8 @@ const char *superclass_builtin_exc_name(const NodeTable *nt, int sc);   /* analy
 const char *errno_canonical_name(const char *n);   /* analyze_util.c */
 int is_syserr_family_name(const char *n);           /* analyze_util.c */
 int class_is_syserr(Compiler *c, int ci);          /* codegen_call.c */
+int class_is_sysexit(Compiler *c, int ci);         /* codegen_call.c */
+void emit_sysexit_new(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b);
 void emit_syserr_call(Compiler *c, int id, const char *fn, const char *lead,
                       int argc, const int *argv, Buf *b);   /* codegen_call.c */
 int class_inherits_builtin_exception(Compiler *c, int ci);  /* analyze_util.c */
@@ -2046,7 +2050,6 @@ int  proc_form_source(Compiler *c, int s);
 int  ctor_site_on_cycle(Compiler *c, int id, int initm);
 int  ctor_init_proc_form(Compiler *c, int cid);
 int scope_has_callable_symbol(Compiler *c, int s);
-int scope_toplevel_included(Compiler *c, int s);
 int scope_uses_ivars(Compiler *c, int mi);
 int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b);
 const char *forwarded_real_proc(int blk0, int blk);
