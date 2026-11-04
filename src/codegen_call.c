@@ -8907,6 +8907,174 @@ static int pd_region_temps(const char *r, size_t rn, int line_ok, int **tnum_out
   return ok;
 }
 
+/* ---- Arguments the user arms build alike ----
+
+   A method taking `*rest, **opts` gets them built in its arm: a new Array of
+   the positionals, a new Hash of the keywords. Every class whose method has
+   that shape builds the same two from the same temps, so the build is
+   written once ahead of the dispatch instead (one arm runs, so it is still
+   one new Array and Hash per call), and the arms take its temps. Only a
+   build that allocates and fills containers from the call's argument temps
+   moves: nothing in it runs code of the program's or reads the receiver
+   (a Hash keyed by any value is left out: its keys' #hash may be the
+   program's). */
+static int arm_share_word_ok(const char *w, size_t n) {
+  static const char *const ok[] = {
+    "sp_PolyArray", "sp_PolyPolyHash", "sp_SymPolyHash", "sp_StrPolyHash", "sp_RbVal", "sp_sym", "sp_int",
+    "SP_GC_ROOT", "SP_GC_ROOT_RBVAL", "sp_PolyArray_new", "sp_PolyArray_push",
+    "sp_PolyPolyHash_new", "sp_SymPolyHash_new", "sp_SymPolyHash_set", "sp_SymPolyHash_update",
+    "sp_StrPolyHash_new", "sp_box_int", "sp_box_sym", "sp_box_nil", "sp_box_float", "sp_box_bool",
+    "SP_STR_BOX", NULL };
+  if (n > 2 && w[0] == '_' && w[1] == 't') {
+    size_t k = 2;
+    while (k < n && w[k] >= '0' && w[k] <= '9') k++;
+    if (k == n) return 1;
+  }
+  for (int i = 0; ok[i]; i++) if (strlen(ok[i]) == n && memcmp(ok[i], w, n) == 0) return 1;
+  return 0;
+}
+
+static TyKind arm_share_decl_ty(const char *pre, size_t at) {
+  static const struct { const char *ct; TyKind ty; } tys[] = {
+    { "sp_PolyArray *", TY_POLY_ARRAY }, { "sp_PolyPolyHash *", TY_POLY_POLY_HASH },
+    { "sp_SymPolyHash *", TY_SYM_POLY_HASH }, { "sp_StrPolyHash *", TY_STR_POLY_HASH }, { "sp_RbVal", TY_POLY } };
+  size_t e = at;
+  while (e > 0 && pre[e - 1] == ' ') e--;
+  for (size_t i = 0; i < sizeof tys / sizeof tys[0]; i++) {
+    size_t n = strlen(tys[i].ct);
+    if (e >= n && memcmp(pre + e - n, tys[i].ct, n) == 0 && (e == n || !pd_idch(pre[e - n - 1]))) return tys[i].ty;
+  }
+  return TY_UNKNOWN;
+}
+
+/* text with each temp tnum[k] written as `<pfx><to[k]>` */
+static void arm_share_retemp(const char *t, const int *tnum, const int *to, int n, const char *pfx, Buf *out) {
+  for (size_t i = 0; t[i]; ) {
+    if (t[i] == '_' && t[i + 1] == 't' && t[i + 2] >= '0' && t[i + 2] <= '9' && (i == 0 || !pd_idch(t[i - 1]))) {
+      size_t e = i + 2;
+      while (pd_idch(t[e])) e++;
+      int num = atoi(t + i + 2), m = -1, digits = 1;
+      for (size_t q = i + 2; q < e; q++) if (t[q] < '0' || t[q] > '9') digits = 0;
+      for (int k = 0; digits && k < n && m < 0; k++) if (tnum[k] == num) m = k;
+      if (m >= 0) buf_printf(out, "%s%d", pfx, to[m]);
+      else buf_putn(out, t + i, e - i);
+      i = e;
+      continue;
+    }
+    if (pd_idch(t[i])) {
+      size_t e = i;
+      while (pd_idch(t[e])) e++;
+      buf_putn(out, t + i, e - i);
+      i = e;
+      continue;
+    }
+    buf_putn(out, t + i, 1);
+    i++;
+  }
+}
+
+/* An arm's build `pre` ahead of its call `cb`: its group, with alt_cb the
+   call reading the group's temps, or -1 when the build cannot move. */
+int arm_share_offer(Compiler *c, ArmShare *S, const char *pre, const char *cb, Buf *alt_cb) {
+  (void)c;
+  size_t rn = strlen(pre);
+  for (size_t i = 0; i < rn; ) {
+    char ch = pre[i];
+    if (ch == '#' || ch == '"' || ch == '\'') return -1;
+    if (ch >= '0' && ch <= '9') { while (i < rn && pd_idch(pre[i])) i++; continue; }
+    if (!pd_idch(ch)) { i++; continue; }
+    size_t st = i;
+    while (i < rn && pd_idch(pre[i])) i++;
+    if (!arm_share_word_ok(pre + st, i - st)) return -1;
+  }
+  int nt = 0, *tnum = NULL;
+  char *tdecl = NULL;
+  if (!pd_region_temps(pre, rn, 0, &tnum, &tdecl, &nt)) { free(tnum); free(tdecl); return -1; }
+  int nd = 0, ntop = 0, ok = 1;
+  int *decl = malloc(sizeof(int) * (size_t)(nt + 1)), *idx = malloc(sizeof(int) * (size_t)(nt + 1));
+  int *top = malloc(sizeof(int) * (size_t)(nt + 1));
+  TyKind *topty = malloc(sizeof(TyKind) * (size_t)(nt + 1));
+  if (!decl || !idx || !top || !topty) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < nt && ok; k++) {
+    if (!tdecl[k]) {
+      int arg = 0;
+      for (int a = 0; a < S->nargs; a++) if (S->args[a] == tnum[k]) arg = 1;
+      if (!arg) ok = 0;
+      continue;
+    }
+    idx[nd] = nd;
+    decl[nd++] = tnum[k];
+    /* where it is declared, and at what depth */
+    char nm[32]; int nl = snprintf(nm, sizeof nm, "_t%d", tnum[k]);
+    int depth = 0;
+    for (size_t i = 0; i < rn; i++) {
+      char ch = pre[i];
+      if (ch == '(' || ch == '{') depth++;
+      else if (ch == ')' || ch == '}') depth--;
+      else if (ch == '_' && (i == 0 || !pd_idch(pre[i - 1])) && rn - i >= (size_t)nl &&
+               memcmp(pre + i, nm, (size_t)nl) == 0 && !pd_idch(pre[i + (size_t)nl])) {
+        if (depth == 0) {
+          TyKind ty = arm_share_decl_ty(pre, i);
+          if (ty == TY_UNKNOWN) ok = 0;
+          top[ntop] = tnum[k]; topty[ntop++] = ty;
+        }
+        break;
+      }
+    }
+  }
+  /* the call reads the build only through the temps declared outside any expression */
+  if (ok && ntop == 0) ok = 0;
+  Buf canon; memset(&canon, 0, sizeof canon);
+  if (ok) arm_share_retemp(pre, decl, idx, nd, "_d", &canon);
+  free(tnum); free(tdecl);
+  if (!ok) { free(decl); free(idx); free(top); free(topty); free(canon.p); return -1; }
+  int g = -1;
+  for (int i = 0; i < S->ng && g < 0; i++) if (sp_streq(S->g[i].canon, canon.p ? canon.p : "")) g = i;
+  if (g < 0) {
+    if (S->ng == S->cap) {
+      S->cap = S->cap ? S->cap * 2 : 4;
+      S->g = realloc(S->g, sizeof *S->g * (size_t)S->cap);
+      if (!S->g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    g = S->ng++;
+    ArmShareGroup *G = &S->g[g];
+    memset(G, 0, sizeof *G);
+    G->canon = canon.p ? canon.p : strdup("");
+    G->pre = strdup(pre);
+    G->decl = decl; G->ndecl = nd;
+    G->top = top; G->topty = topty; G->ntop = ntop;
+    free(idx);
+  }
+  else {
+    free(canon.p);
+    /* this arm's temps are the group's, in the same order */
+    arm_share_retemp(cb, decl, S->g[g].decl, nd, "_t", alt_cb);
+    free(decl); free(idx); free(top); free(topty);
+  }
+  if (S->g[g].uses == 0) buf_puts(alt_cb, cb);
+  S->g[g].uses++;
+  return g;
+}
+
+/* write group g's build ahead of the dispatch, its temps among the parameters */
+void arm_share_emit(ArmShare *S, int g) {
+  ArmShareGroup *G = &S->g[g];
+  buf_puts(&S->out, G->pre);
+  buf_puts(&S->out, " ");
+  S->ptmp = realloc(S->ptmp, sizeof(int) * (size_t)(S->np + G->ntop));
+  S->pty = realloc(S->pty, sizeof(TyKind) * (size_t)(S->np + G->ntop));
+  if (!S->ptmp || !S->pty) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < G->ntop; k++) { S->ptmp[S->np] = G->top[k]; S->pty[S->np++] = G->topty[k]; }
+}
+
+void arm_share_free(ArmShare *S) {
+  for (int i = 0; i < S->ng; i++) {
+    free(S->g[i].canon); free(S->g[i].pre); free(S->g[i].decl); free(S->g[i].top); free(S->g[i].topty);
+  }
+  free(S->g); free(S->cur_alt.p); free(S->out.p); free(S->ptmp); free(S->pty);
+  memset(S, 0, sizeof *S);
+}
+
 /* the hoisted function's result type when the dispatch's slot is an sp_oint /
    sp_ofloat (nil out of band): set by the dispatcher around its pd_hoist */
 static const char *g_pd_ret_ctype = NULL;
@@ -8921,6 +9089,18 @@ static int pd_hoist(Compiler *c, int id, const char *name, Buf *b, size_t from, 
   int nt = 0, *tnum = NULL;
   char *tdecl = NULL;
   int ok = pd_region_temps(r, rn, 0, &tnum, &tdecl, &nt);
+  /* a parameter the region never reads is left out, so two sites whose
+     dispatch reads the same temps share one function */
+  int *pid_u = malloc(sizeof(int) * (size_t)(np > 0 ? np : 1));
+  TyKind *pty_u = malloc(sizeof(TyKind) * (size_t)(np > 0 ? np : 1));
+  if (!pid_u || !pty_u) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int npu = 0;
+  for (int a = 0; a < np && ok; a++) {
+    int used = 0;
+    for (int k = 0; k < nt && !used; k++) if (tnum[k] == pid[a]) used = 1;
+    if (used) { pid_u[npu] = pid[a]; pty_u[npu++] = pty[a]; }
+  }
+  pid = pid_u; pty = pty_u; np = npu;
   /* every temp the region does not declare must be a parameter */
   for (int k = 0; k < nt && ok; k++) {
     if (tdecl[k]) continue;
@@ -8928,7 +9108,7 @@ static int pd_hoist(Compiler *c, int id, const char *name, Buf *b, size_t from, 
     for (int a = 0; a < np; a++) if (pid[a] == tnum[k]) is_p = 1;
     if (!is_p) ok = 0;
   }
-  if (!ok) { free(tnum); free(tdecl); return 0; }
+  if (!ok) { free(tnum); free(tdecl); free(pid_u); free(pty_u); return 0; }
   /* canonical numbering: the parameters first, then the region's own temps */
   int *canon = malloc(sizeof(int) * (size_t)(nt > 0 ? nt : 1));
   int next = np;
@@ -8939,7 +9119,7 @@ static int pd_hoist(Compiler *c, int id, const char *name, Buf *b, size_t from, 
   }
   int tr_canon = -1;
   for (int k = 0; k < nt; k++) if (tnum[k] == tr) tr_canon = canon[k];
-  if (tr_canon < 0 || !decide_node(c->nt, id, "pd-hoist", name)) { free(tnum); free(tdecl); free(canon); return 0; }
+  if (tr_canon < 0 || !decide_node(c->nt, id, "pd-hoist", name)) { free(tnum); free(tdecl); free(canon); free(pid_u); free(pty_u); return 0; }
   Buf body; memset(&body, 0, sizeof body);
   for (size_t i = 0; i < rn; ) {
     char ch = r[i];
@@ -9016,7 +9196,7 @@ static int pd_hoist(Compiler *c, int id, const char *name, Buf *b, size_t from, 
   buf_printf(b, " _t%d = sp_pd_%s(", tr, pd_fn_name(fn));
   for (int a = 0; a < np; a++) buf_printf(b, "%s_t%d", a ? ", " : "", pid[a]);
   buf_puts(b, ");");
-  free(tnum); free(tdecl); free(canon); free(body.p); free(sig.p); free(key.p);
+  free(tnum); free(tdecl); free(canon); free(body.p); free(sig.p); free(key.p); free(pid_u); free(pty_u);
   return 1;
 }
 
@@ -10900,9 +11080,38 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       buf_puts(b, ") {");
       if (g_plan_check) pa_resume(pa_frame);
       if (g_plan_check) pa_flags(form);
+      /* the argument temps a build the arms share may read: each is set
+         ahead of the dispatch (a String re-read past its handle is not) */
+      ArmShare share; memset(&share, 0, sizeof share);
+      int share_ok = !is_setter_val;
+      int *share_args = malloc(sizeof(int) * (size_t)(argc + kwn + 3));
+      if (!share_args) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      for (int a = 0; a < pos_argc; a++) {
+        if (htmp[a] > 0) share_ok = 0;
+        share_args[share.nargs++] = atmp[a];
+      }
+      if (kwh >= 0 && (kw_ds || (sp_streq(name, "fetch") && argc == 2))) share_args[share.nargs++] = atmp[pos_argc];
+      for (int e = 0; e < kwn; e++) {
+        if (kwhtmp && kwhtmp[e] > 0) share_ok = 0;
+        share_args[share.nargs++] = kwtmp[e];
+      }
+      if (kwall >= 0) share_args[share.nargs++] = kwall;
+      if (stk >= 0) share_args[share.nargs++] = stk;
+      share.args = share_args;
       { PolyUserArgs U = { argc, pos_argc, kwh, kwall, kwall_any, kw_pos, has_splat_arg, splat_a, stk,
-                           is_setter_val, blk_tmp2, tv, tr, ret, argv, atmp, htmp, atmp_ty, &kw, pform };
+                           is_setter_val, blk_tmp2, tv, tr, ret, argv, atmp, htmp, atmp_ty, &kw, pform,
+                           share_ok ? &share : NULL };
         emit_poly_user_arms_n(c, id, name, &U, b); }
+      /* the shared builds go ahead of the dispatch, the region pd_hoist moves */
+      if (share.out.len > 0) {
+        Buf nb; memset(&nb, 0, sizeof nb);
+        buf_putn(&nb, b->p, pd_from);
+        buf_puts(&nb, share.out.p);
+        buf_putn(&nb, b->p + pd_from, b->len - pd_from);
+        free(b->p); *b = nb;
+        pd_from += share.out.len;
+        sw_start += share.out.len;
+      }
       cplan_poly_free(pform);
       int is_aref = sp_streq(name, "[]") && argc == 1 && splat_a < 0;
       int is_aref2 = sp_streq(name, "[]") && argc == 2 && splat_a < 0;
@@ -10930,11 +11139,12 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (!is_setter_val) {
         /* the parameters: the receiver, the positional temps (and the
            keyword hash fetch holds in the next one), the keyword temps */
-        int npd = 3 + argc + kwn;
+        int npd = 3 + argc + kwn + share.np;
         int *pid = malloc(sizeof(int) * (size_t)npd);
         TyKind *pty = malloc(sizeof(TyKind) * (size_t)npd);
         int n = 0;
         pid[n] = tv; pty[n++] = TY_POLY;
+        for (int q = 0; q < share.np; q++) { pid[n] = share.ptmp[q]; pty[n++] = share.pty[q]; }
         for (int a = 0; a < pos_argc; a++) { pid[n] = atmp[a]; pty[n++] = atmp_ty[a]; }
         if (kwh >= 0 && (kw_ds || (sp_streq(name, "fetch") && argc == 2))) { pid[n] = atmp[pos_argc]; pty[n++] = atmp_ty[pos_argc]; }
         for (int e = 0; e < kwn; e++) { pid[n] = kwtmp[e]; pty[n++] = kwty[e]; }
@@ -10945,6 +11155,8 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         g_pd_ret_ctype = NULL;
         free(pid); free(pty);
       }
+      arm_share_free(&share);
+      free(share_args);
       if (!pd_done) buf_puts(b, " }");
       if (kw_pos) emit_poly_str_aset_writeback(c, recv, &ps, &ptemps, b);
       /* A handle the call is typed a String for answers its bytes, as the

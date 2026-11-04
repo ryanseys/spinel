@@ -48,6 +48,28 @@ void poly_arm_layout(Compiler *c, Scope *ms, const PolyArgs *A, ArgLayout *L);
 /* can user arm ks take the argument temps' types (call_plan.c)? */
 int  cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc, const TyKind *atmp_ty,
                         int kwall_any);
+/* The arguments user arms build alike (a rest's Array, a **kwrest's Hash
+   from the same temps): built once ahead of the dispatch, which takes them
+   as parameters, rather than in each arm. */
+typedef struct {
+  char *canon, *pre;   /* the build, its own temps numbered; as written */
+  int *decl, ndecl;    /* the temps it declares, in order */
+  int *top, ntop;      /* those declared outside any expression, the ones the arms read */
+  TyKind *topty;
+  int uses;
+} ArmShareGroup;
+typedef struct ArmShare_s {
+  ArmShareGroup *g;
+  int ng, cap;
+  const int *args; int nargs;   /* the temps a build may read: the call's arguments */
+  int cur_group;   /* the arm just written: its group, or -1, and its text using the group's temps */
+  Buf cur_alt;
+  Buf out;         /* the builds two arms or more share, to write ahead of the dispatch */
+  int *ptmp; TyKind *pty; int np;   /* their temps the arms read, and the types */
+} ArmShare;
+int  arm_share_offer(Compiler *c, ArmShare *S, const char *pre, const char *cb, Buf *alt_cb);
+void arm_share_emit(ArmShare *S, int g);
+void arm_share_free(ArmShare *S);
 /* a poly dispatch with arguments, as its user-class arms read it */
 typedef struct {
   int argc, pos_argc, kwh, kwall, kwall_any, kw_pos, has_splat_arg, splat_a, stk;
@@ -57,6 +79,7 @@ typedef struct {
   const TyKind *atmp_ty;
   const PolyKw *kw;
   const struct PolyPlan_s *plan;   /* the dispatch's plan (cplan_poly_arms) */
+  ArmShare *share;   /* NULL: each arm builds its own arguments */
 } PolyUserArgs;
 void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUserArgs *U, Buf *b);
 void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L, const PolyArgs *A, const char *selfd, const char *lead, Buf *pre, Buf *cb);

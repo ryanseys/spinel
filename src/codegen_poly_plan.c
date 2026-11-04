@@ -1384,6 +1384,9 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
   }
   else emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp2, &cb);
   buf_puts(&cb, ")");
+  /* the same build in another arm moves ahead of the dispatch (ArmShare) */
+  Buf alt_cb; memset(&alt_cb, 0, sizeof alt_cb);
+  int grp = U->share && pdpre.len > 0 ? arm_share_offer(c, U->share, pdpre.p, cb.p ? cb.p : "", &alt_cb) : -1;
   if (pdpre.len > 0) {
     /* the bindings and the call in one statement expression, so the
        arm stays a single expression for the boxing below */
@@ -1397,6 +1400,14 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
   TyKind mret8 = pf8 ? c->scopes[pfi8].ret : mret;
   int pconv = emit_poly_user_arm_n(c, id, k, cb.p, mret8, &c->scopes[pf8 ? pfi8 : mi], ret, tr,
                                    plan_slot_oint(c, id, ret), is_setter_val, b);
+  if (grp >= 0) {
+    U->share->cur_group = grp;
+    U->share->cur_alt.len = 0;
+    if (U->share->cur_alt.p) U->share->cur_alt.p[0] = 0;
+    emit_poly_user_arm_n(c, id, k, alt_cb.p, mret8, &c->scopes[pf8 ? pfi8 : mi], ret, tr,
+                         plan_slot_oint(c, id, ret), is_setter_val, &U->share->cur_alt);
+  }
+  free(alt_cb.p);
   free(cb.p);
   if (g_plan_check) pa_observe(pf8 ? PA_PROC_FORM : PA_USER, k, mi, mret8, pconv);
 }
@@ -1516,17 +1527,47 @@ void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUser
   int j = 0, recv = nt_ref(c->nt, id, "receiver");
   ArmText *at = NULL;
   int nat = 0, cat = 0;
+  /* per arm, its shared build's group (or -1) and its text reading that build */
+  int *grp = NULL; char **alt = NULL; int galt = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (cls_fact_excludes(c, recv, k)) continue;   /* a class the receiver never holds has no arm (#8530) */
     at = arm_text_next(at, &nat, &cat, k);
+    if (U->share && galt < cat) {
+      grp = realloc(grp, sizeof *grp * (size_t)cat);
+      alt = realloc(alt, sizeof *alt * (size_t)cat);
+      if (!grp || !alt) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      galt = cat;
+    }
+    if (U->share) { grp[nat - 1] = -1; alt[nat - 1] = NULL; U->share->cur_group = -1; }
     Buf *ab = &at[nat - 1].t;
     if (!served) { poly_user_arm_n_replay(c, id, name, U, k, ab); continue; }
-    if (j < n && arms[j].key == k) { emit_poly_user_arm_n_plan(c, id, name, U, &arms[j], ab); j++; continue; }
+    if (j < n && arms[j].key == k) {
+      emit_poly_user_arm_n_plan(c, id, name, U, &arms[j], ab); j++;
+      if (U->share && U->share->cur_group >= 0) {
+        grp[nat - 1] = U->share->cur_group;
+        alt[nat - 1] = strdup(U->share->cur_alt.p ? U->share->cur_alt.p : "");
+      }
+      continue;
+    }
     Buf scratch; memset(&scratch, 0, sizeof scratch);
     if (poly_user_arm_n_replay(c, id, name, U, k, &scratch) && g_plan_check)
       fprintf(stderr, "plan-check: cplan-conflict: poly-user-n node %d %s: class %d: decided only\n", id, name, k);
     free(scratch.p);
   }
+  /* a build two arms or more share is written once, ahead of the dispatch */
+  if (U->share) {
+    for (int g = 0; g < U->share->ng; g++)
+      if (U->share->g[g].uses >= 2) arm_share_emit(U->share, g);
+    for (int i = 0; i < nat; i++) {
+      if (grp[i] >= 0 && U->share->g[grp[i]].uses >= 2) {
+        free(at[i].t.p);
+        at[i].t.p = alt[i]; at[i].t.len = strlen(alt[i]); at[i].t.cap = at[i].t.len + 1;
+        alt[i] = NULL;
+      }
+      free(alt[i]);
+    }
+  }
+  free(grp); free(alt);
   arm_texts_flush(at, nat, b);
   free(at);
   free(arms);
